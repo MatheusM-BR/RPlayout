@@ -12,7 +12,8 @@ entradas NDI/SRT/RTMP e saídas RTMP/SRT com servidor interno para convidados.
 | Interface | Web (backend serve a UI; vários operadores simultâneos) |
 | Canais | Multicanal desde o início (`channel_id` em todo o modelo) |
 | Grafismo | Camada CEF com templates HTML + editor por formulário |
-| Servidor interno | MediaMTX embutido (ingest de convidados + republicação da saída) |
+| Hardware SDI | Decklink Duo 2 / Quad 2 — entrada **e** saída, placa como clock mestre |
+| Servidor interno | MediaMTX local na máquina (RTMP/SRT/HLS/WebRTC, ingest e distribuição) |
 | Automação | Motor de regras determinístico; Claude como camada opcional |
 | Primeira entrega | UI + scheduler com mídia simulada |
 
@@ -46,21 +47,23 @@ não o servidor inteiro. O server supervisiona e reinicia.
 ### Pipeline PGM
 
 ```
-[VT A] filesrc → decodebin ┐
-[VT B] filesrc → decodebin ┤
-[NDI]  ndisrc              ├→ videoconvert → videoscale → videorate
-[SRT]  srtsrc → tsdemux    ┤   → caps do canal (1920x1080, 50fps, I420)
-[RTMP] rtmp2src            ┤   → queue
-[SLATE] videotestsrc       ┘
+[VT A]  filesrc → decodebin ┐
+[VT B]  filesrc → decodebin ┤
+[SDI]   decklinkvideosrc    ├→ videoconvert → videoscale → videorate
+[NDI]   ndisrc              ┤   → caps do canal (1920x1080, 50fps, I420)
+[SRT]   srtsrc → tsdemux    ┤   → queue
+[RTMP]  rtmp2src            ┤
+[SLATE] videotestsrc        ┘
                               ↓
                           compositor (ou glvideomixer)
                               ├ pad 0: fundo / fonte no ar
                               ├ pad 1: camada de grafismo (CEF offscreen, BGRA)
                               └ pad 2: bug/logo permanente
                               ↓
-                          tee ─┬→ nvh264enc → flvmux  → rtmp2sink  (N destinos)
-                               ├→ nvh264enc → mpegtsmux → srtsink
-                               ├→ (baixo bitrate) → webrtcbin      (multiview UI)
+                          tee ─┬→ decklinkvideosink              (PGM em SDI, sem encode)
+                               ├→ nvh264enc → flvmux → rtmp2sink  (MediaMTX local, loopback)
+                               ├→ (sem a camada de GC) → clean feed
+                               ├→ (baixo bitrate) → webrtcbin     (multiview UI)
                                └→ matroskamux → filesink          (gravação as-run)
 
 Áudio: audiomixer + volume por camada + level (VU na UI) → 48kHz stereo
@@ -199,24 +202,165 @@ indicando de onde veio o trim atual e um botão "reverter para o padrão".
   (`+00:05 do início, dura 8s`), ou permanente por regra (bug sempre no ar).
 - Rundown de grafismo paralelo ao rundown de vídeo, com as mesmas âncoras.
 
-## 7. Entradas, saídas e servidor interno
+## 7. Hardware SDI (Decklink)
 
-**Entradas:** NDI com discovery automático na rede, SRT listener e caller,
-RTMP via MediaMTX interno, arquivos locais, slate/cor sólida.
+### Modelo de dispositivo
 
-**Saídas:** N destinos RTMP simultâneos com reconexão automática e backoff
-exponencial; SRT caller/listener com latência configurável; gravação local.
+Duo 2 e Quad 2 não são "uma placa, uma entrada": são 4 ou 8 conectores
+independentes, cada um configurado como entrada **ou** saída pelo perfil da placa
+no Desktop Video. O modelo de dados precisa enxergar o **sub-dispositivo**, nunca
+só o índice da placa:
 
-**MediaMTX embutido** como processo filho, com config gerada pelo server:
-- Chave de stream por convidado, criada na UI, revogável.
-- Painel "quem está conectado", com bitrate, resolução e tempo de conexão.
-- Um clique para pôr o convidado no preview, outro para o PGM.
-- Republicação do PGM em RTMP/SRT/HLS/WebRTC para quem precisar puxar.
+```ts
+type DecklinkDevice = {
+  id: string
+  cardIndex: number          // placa física
+  subDeviceIndex: number      // é o device-number do GStreamer
+  label: string               // "Quad 2 — SDI 3"
+  direction: 'IN' | 'OUT' | 'UNSET'
+  connection: 'SDI' | 'HDMI' | 'OPTICAL' | 'COMPONENT' | 'COMPOSITE'
+  profile: string             // perfil half/full duplex lido do driver
+  capabilities: { maxMode: string; keyAndFill: boolean; timecode: boolean }
+}
 
-**Perfis de saída** por canal: resolução, fps, bitrate, encoder (NVENC ou x264),
-GOP, perfil de áudio. Vários perfis ativos ao mesmo tempo.
+type ChannelIoBinding = {
+  channelId: string
+  role: 'INPUT' | 'PROGRAM_OUT' | 'CLEAN_OUT'
+  deviceId: string
+  mode: string                // 1080i59.94, 1080p50, 720p59.94, auto
+  audioChannels: 2 | 8 | 16
+}
+```
 
-## 8. Automação e aprendizado
+O servidor é dono da **alocação exclusiva**: dois canais nunca pegam o mesmo
+sub-dispositivo, e o conflito aparece na interface antes de virar erro de pipeline.
+O perfil da placa (half-duplex vs full-duplex) é **lido**, nunca alterado pelo app —
+mudar perfil derruba todos os conectores da placa e isso não pode acontecer no ar.
+
+### Orçamento de conectores
+
+Em half-duplex cada conector é entrada **ou** saída, então um canal com SDI de
+entrada + PGM em SDI consome **dois** conectores. Isso amarra direto no multicanal:
+
+| Placa | Conectores | Canais com SDI in + out |
+|---|---|---|
+| DeckLink Duo 2 | 4 | 2 |
+| DeckLink Quad 2 | 8 | 4 |
+
+A interface mostra o orçamento de conectores como um mapa da placa, com o que está
+livre, o que está alocado e para qual canal.
+
+### Elementos e pipeline
+
+- Entrada: `decklinkvideosrc` + `decklinkaudiosrc` (`device-number`, `connection=sdi`,
+  `mode=auto` para detecção automática de formato).
+- Saída: `decklinkvideosink` + `decklinkaudiosink` pendurados no mesmo `tee` do PGM,
+  sem passar por encoder — SDI sai em vídeo não comprimido.
+- Áudio embedded: 2, 8 ou 16 canais, com mapa de quais pares SDI entram no mix.
+
+### A placa vira o relógio do canal
+
+Esta é a mudança mais importante que a Decklink traz. Com saída SDI ativa, o
+`decklinkvideosink` fornece o clock do pipeline e o canal inteiro passa a correr no
+relógio da placa, não no relógio do sistema. Hierarquia:
+
+1. Canal com saída Decklink → **clock da placa** é o mestre.
+2. Canal sem saída Decklink → clock do sistema, sincronizado por NTP.
+
+Em multicanal, se todas as placas estiverem genlockadas na mesma referência
+(black burst ou tri-level), os canais ficam em fase entre si. Sem genlock, cada canal
+corre no seu próprio cristal e a interface avisa que eles vão derivar entre si.
+
+### Detecção de sinal e timecode
+
+- Perda de sinal na entrada emite `sourceStatus: NO_SIGNAL` em até um frame; o canal
+  cai para slate ou para a fonte de fallback configurada, sem derrubar o pipeline.
+- Mudança de formato na entrada (1080i59.94 → 1080p50) é detectada e reportada; o
+  conversor de formato absorve, mas o operador é avisado.
+- Timecode LTC/VITC embutido no SDI é lido e gravado no as-run log — é o que permite
+  amarrar o playout ao relógio da casa.
+
+**Key e fill** ficam fora do escopo inicial: exigem dois conectores de saída
+genlockados só para o grafismo. As capabilities já são lidas do driver, então quando
+fizer sentido é só mais um `role` no binding.
+
+## 8. Rede, servidor RTMP local e distribuição
+
+### Entradas e saídas
+
+| Direção | Protocolos |
+|---|---|
+| Entrada | SDI/HDMI (Decklink) · NDI com discovery na rede · SRT listener e caller · RTMP · arquivo · slate |
+| Saída | SDI (Decklink) · RTMP · SRT · HLS · WebRTC · gravação local |
+
+### O RTMP nasce na própria máquina
+
+O MediaMTX roda como serviço Windows, subido e supervisionado pelo servidor, com a
+config gerada a partir do banco. **O engine publica o PGM no servidor local por
+loopback** (`rtmp2sink location=rtmp://127.0.0.1:1935/ch1`) e nunca fala com a
+internet diretamente.
+
+```
+                 rtmp://127.0.0.1:1935/ch1          (loopback, sem rede)
+engine ch1 ─────────────────────────────────► MediaMTX local
+                                                   │
+                        ┌──────────────────────────┼──────────────────────────┐
+                        │                          │                          │
+                  quem se conecta            relay supervisionado        ingest de
+                  na LAN puxa                (ffmpeg -c copy)            convidado
+                        │                          │                          │
+        rtmp://IP:1935/ch1                  YouTube / Facebook       rtmp://IP:1935/
+        srt://IP:8890?streamid=ch1          destino do cliente        guest/<chave>
+        http://IP:8888/ch1  (HLS)           backup SRT                     │
+        http://IP:8889/ch1  (WebRTC)                                       ▼
+                                                                  vira fonte no switcher
+```
+
+Portas padrão: RTMP 1935, RTMPS 1936, SRT 8890/udp, HLS 8888, WebRTC/WHEP 8889,
+API de controle 9997 (só em loopback).
+
+### Um encode, N destinos
+
+Isto **revisa** o desenho anterior, em que o engine abria um `rtmp2sink` por destino.
+Agora o engine codifica uma vez e publica uma vez; o fan-out para destinos externos é
+feito por um processo de relay por destino (`ffmpeg -c copy`, sem recodificar),
+supervisionado pelo servidor e puxando do MediaMTX local.
+
+Ganho concreto: o YouTube cair, engasgar ou rejeitar a chave **não toca no encoder**,
+não afeta os outros destinos e não afeta a saída SDI. O relay reconecta sozinho com
+backoff exponencial e o estado de cada destino aparece na interface separadamente.
+
+### Caminhos por canal
+
+| Caminho | Conteúdo |
+|---|---|
+| `/ch1` | PGM completo, com grafismo |
+| `/ch1/clean` | Clean feed, sem grafismo (segundo pad do `tee`) |
+| `/guest/<chave>` | Ingest de convidado, vira fonte no switcher |
+
+### Convidados e credenciais
+
+- Chave de stream por convidado, criada na interface e revogável na hora.
+- Autenticação interna do MediaMTX; a config é regerada e recarregada pela API em
+  `/v3/config/global/patch`, **sem derrubar quem está no ar**.
+- Painel de conectados: bitrate, resolução, tempo de conexão, e um clique para pôr
+  no preview, outro para o PGM.
+- A interface mostra os endereços prontos para copiar, já com o IP da máquina na LAN.
+
+### Segurança
+
+O bind é configurável: só loopback, só a LAN, ou todas as interfaces. O padrão é
+**só a LAN**, e a interface avisa em vermelho quando o servidor está exposto a todas
+as interfaces. Nenhum caminho aceita publicação sem chave. A regra de firewall do
+Windows é criada pelo instalador, uma por porta, e nunca abre a API de controle.
+
+### Perfis de saída
+
+Por canal: resolução, fps, bitrate, encoder (NVENC ou x264), GOP e perfil de áudio.
+Vários ativos ao mesmo tempo — mas cada perfil é **um encode**, então a interface
+mostra o custo em sessões de NVENC antes de você ligar mais um.
+
+## 9. Automação e aprendizado
 
 **Camada 1 — regras (sempre ativa, offline, sem custo):**
 templates de grade (dia útil / fim de semana / especial), blocos e categorias,
@@ -234,7 +378,7 @@ preferências — que categoria costuma entrar às 19h, duração média aceita,
 nunca se repete no mesmo dia — e alimenta tanto o motor de regras quanto o
 prompt do Claude. Tudo local, no SQLite. Sem chave de API, o app funciona 100%.
 
-## 9. Design da interface
+## 10. Design da interface
 
 Paleta (fundo escuro, detalhe azul escuro):
 
@@ -263,20 +407,20 @@ Contagem regressiva grande no item no ar, últimos 10s em vermelho.
 Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 `J`/`K`/`L` shuttle, `F1`–`F12` grafismos, `Esc` cancela.
 
-## 10. Roadmap
+## 11. Roadmap
 
 | Fase | Escopo | Entrega |
 |---|---|---|
 | F0 | Fundação: monorepo, TS, lint, testes, Drizzle + SQLite, protocolo zod, CI | Base |
 | F1 | **Rundown e scheduler**: modelo, âncoras, trim com escopos, UI completa com mídia simulada | Primeira entrega |
-| F2 | Engine: binário Rust/GStreamer, VT com A/B, PGM, saída RTMP, preview WebRTC | No ar |
-| F3 | Entradas ao vivo: NDI discovery, SRT in/out, MediaMTX, gestão de convidados | Ao vivo |
+| F2 | Engine: binário Rust/GStreamer, VT com A/B, PGM, **MediaMTX local** com o PGM em `rtmp://127.0.0.1:1935/ch1`, relays supervisionados para destinos externos, preview WebRTC | No ar |
+| F3 | Ao vivo: **Decklink entrada e saída** com alocação de sub-dispositivos, clock da placa e detecção de sinal; NDI discovery; SRT in/out; chaves e painel de convidados | Ao vivo |
 | F4 | Grafismo: camada CEF, templates + manifest, editor, rundown de GC | Grafismo |
 | F5 | Multicanal e perfis de saída, monitoramento e alertas | Escala |
 | F6 | Automação: regras, geração de grade, log de decisões, Claude opcional | Automação |
 | F7 | Robustez: watchdog, failover slate, as-run log, relatórios, backup | Produção |
 
-## 11. Riscos e mitigações
+## 12. Riscos e mitigações
 
 | Risco | Mitigação |
 |---|---|
