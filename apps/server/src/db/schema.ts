@@ -71,6 +71,8 @@ export const rundownItems = sqliteTable('rundown_items', {
   anchor: text('anchor', { mode: 'json' }).$type<Anchor>().notNull(),
   onOverrun: text('on_overrun').$type<OverrunPolicy>().notNull(),
   elastic: text('elastic', { mode: 'json' }).$type<Elastic | null>(),
+  /** Itens do mesmo bloco andam juntos na grade. */
+  blockId: text('block_id'),
   locked: integer('locked', { mode: 'boolean' }).notNull(),
   autoNext: integer('auto_next', { mode: 'boolean' }).notNull(),
   loop: integer('loop', { mode: 'boolean' }).notNull(),

@@ -6,6 +6,7 @@ import { rundownItems } from './db/schema.js'
 import { buildView, type RundownView } from './domain/plan.js'
 import { simulateMeter, SILENCE, type MeterReading } from './domain/meters.js'
 import { SimulatedTransport } from './domain/transport.js'
+import { History } from './domain/history.js'
 
 /**
  * Runtime de um canal. Guarda a grade já resolvida em cache porque o
@@ -102,13 +103,14 @@ export class ChannelRuntime {
 export interface App {
   readonly db: Db
   readonly runtimes: Map<string, ChannelRuntime>
+  readonly history: History
   close(): void
 }
 
 export async function createApp(file: string): Promise<App> {
   const { db, sqlite } = openDatabase(file)
   const runtimes = new Map<string, ChannelRuntime>()
-  return { db, runtimes, close: () => sqlite.close() }
+  return { db, runtimes, history: new History(), close: () => sqlite.close() }
 }
 
 export async function runtimeFor(app: App, channelId: string): Promise<ChannelRuntime | null> {

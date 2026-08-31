@@ -11,7 +11,8 @@ export interface ScopeResult {
   readonly message: string
 }
 
-async function targetItemIds(
+/** Quais linhas um escopo vai tocar. O desfazer precisa saber antes de aplicar. */
+export async function targetItemIds(
   db: Db,
   itemId: string,
   scope: EditScope,

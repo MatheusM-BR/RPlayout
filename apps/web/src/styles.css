@@ -553,3 +553,42 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
 }
 .state.next { color: var(--accent); }
 .rd tr.dropped .state { display: none; }
+
+/* ---------- blocos, arrasto e marcação ---------- */
+
+.rd tr.block td { border-bottom-color: var(--border-soft); }
+.rd tr.block td:first-child { box-shadow: inset 3px 0 0 var(--deep); }
+.rd tr.block.live td:first-child { box-shadow: inset 3px 0 0 var(--onair); }
+.rd tr.block.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
+.rd tr.block-head td {
+  background: var(--sunk);
+  border-bottom: 1px solid var(--border-soft);
+  padding: 5px 10px;
+}
+.block-head .wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.block-head .wrap .rail { width: 3px; height: 12px; background: var(--deep); border-radius: 2px; }
+.block-head .wrap .tot { color: var(--accent); letter-spacing: 0.04em; }
+.block-head .wrap .push { margin-left: auto; }
+
+.rd tr.marked td { background: rgba(76, 141, 255, 0.12); }
+.rd tr.dragging td { opacity: 0.4; }
+.rd tr.dropinto td { box-shadow: inset 0 2px 0 var(--accent); }
+.rd tr.dropinto td:first-child { box-shadow: inset 3px 0 0 var(--accent), inset 0 2px 0 var(--accent); }
+
+.rd .grip {
+  color: var(--dim);
+  cursor: grab;
+  user-select: none;
+  letter-spacing: -1px;
+}
+.rd tr:hover .grip { color: var(--muted); }

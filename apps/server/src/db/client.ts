@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS rundown_items (
   anchor TEXT NOT NULL,
   on_overrun TEXT NOT NULL,
   elastic TEXT,
+  block_id TEXT,
   locked INTEGER NOT NULL DEFAULT 0,
   auto_next INTEGER NOT NULL DEFAULT 1,
   loop INTEGER NOT NULL DEFAULT 0,
@@ -90,7 +91,10 @@ export function openDatabase(file: string) {
   sqlite.exec(DDL)
   // Colunas acrescentadas depois. Um banco de playout não pode ser recriado do
   // zero a cada versão, então a adição é tentada e ignorada se já existir.
-  for (const alter of ['ALTER TABLE rundowns ADD COLUMN loop INTEGER NOT NULL DEFAULT 1']) {
+  for (const alter of [
+    'ALTER TABLE rundowns ADD COLUMN loop INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE rundown_items ADD COLUMN block_id TEXT',
+  ]) {
     try {
       sqlite.exec(alter)
     } catch {

@@ -53,6 +53,13 @@ export const api = {
   setAudio: (id: string, audio: AudioLevel, scope: EditScope) =>
     post<Snapshot & { result: { message: string } }>(`/api/items/${id}/audio`, { audio, scope }),
 
+  undo: (rundownId: string) => post<Snapshot & { label: string }>(`/api/rundowns/${rundownId}/undo`, {}),
+  redo: (rundownId: string) => post<Snapshot & { label: string }>(`/api/rundowns/${rundownId}/redo`, {}),
+
+  group: (rundownId: string, itemIds: string[]) =>
+    post<Snapshot>(`/api/rundowns/${rundownId}/blocks`, { itemIds }),
+  ungroup: (blockId: string) => post<Snapshot>(`/api/blocks/${blockId}/ungroup`, {}),
+
   transport: (
     channelId: string,
     action: 'take' | 'cue' | 'stop' | 'park',

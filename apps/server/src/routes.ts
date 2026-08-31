@@ -12,7 +12,7 @@ import {
 } from './app.js'
 import { listAssets, listChannels, listRundowns } from './db/repo.js'
 import { operatorDecisions, rundownItems } from './db/schema.js'
-import { applyAudio, applyTrim } from './domain/scopes.js'
+import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { thumbnailSvg } from './domain/thumbnail.js'
 import type { RundownView } from './domain/plan.js'
 
@@ -88,10 +88,23 @@ async function logDecision(
   })
 }
 
-const snapshot = (runtime: ChannelRuntime) => ({
+const snapshot = (app: App, runtime: ChannelRuntime) => ({
   view: runtime.view,
   live: runtime.live(),
+  history: app.history.state(runtime.view?.rundown.id ?? ''),
 })
+
+/**
+ * Itens que andam junto com este. Um item de bloco nunca se move sozinho: o
+ * bloco comercial que se parte no meio é o pesadelo clássico do playout.
+ */
+function blockCompanions(runtime: ChannelRuntime, itemId: string): string[] {
+  const items = runtime.view?.items ?? []
+  const found = items.find((entry) => entry.item.id === itemId)
+  const blockId = found?.item.blockId
+  if (!blockId) return [itemId]
+  return items.filter((entry) => entry.item.blockId === blockId).map((entry) => entry.item.id)
+}
 
 export function registerRoutes(app: App, server: FastifyInstance, onChange: () => void): void {
   server.get('/api/health', async () => ({ ok: true }))
@@ -152,7 +165,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const { id } = request.params as { id: string }
     const runtime = await runtimeForRundown(app, id)
     if (!runtime) return reply.code(404).send({ error: 'Rundown não encontrado.' })
-    return snapshot(runtime)
+    return snapshot(app, runtime)
   })
 
   // ---- itens -----------------------------------------------------------
@@ -196,6 +209,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
           ? insertionIndexForTime(runtime.view, anchor.at)
           : runtime.view.items.length)
 
+    await app.history.capture(app.db, id, 'inserir item', { wholeRundown: true })
+
     const itemId = randomUUID()
     const ordered = runtime.view.items.map((v) => v.item.id)
     ordered.splice(index, 0, itemId)
@@ -231,7 +246,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     await logDecision(app, id, itemId, 'ITEM_ADDED', { anchor, index })
     await runtime.refresh()
     onChange()
-    return snapshot(runtime)
+    return snapshot(app, runtime)
   })
 
   const patchSchema = z.object({
@@ -258,11 +273,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
+    await app.history.capture(app.db, runtime.view.rundown.id, 'editar item', { itemIds: [id] })
     await app.db.update(rundownItems).set(body.data).where(eq(rundownItems.id, id))
     await logDecision(app, runtime.view.rundown.id, id, 'ITEM_EDITED', body.data)
     await runtime.refresh()
     onChange()
-    return snapshot(runtime)
+    return snapshot(app, runtime)
   })
 
   server.delete('/api/items/:id', async (request, reply) => {
@@ -270,11 +286,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
+    await app.history.capture(app.db, runtime.view.rundown.id, 'remover item', {
+      wholeRundown: true,
+    })
     await app.db.delete(rundownItems).where(eq(rundownItems.id, id))
     await logDecision(app, runtime.view.rundown.id, id, 'ITEM_REMOVED', {})
     await runtime.refresh()
     onChange()
-    return snapshot(runtime)
+    return snapshot(app, runtime)
   })
 
   server.post('/api/items/:id/move', async (request, reply) => {
@@ -289,8 +308,21 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const from = ids.indexOf(id)
     if (from < 0) return reply.code(404).send({ error: 'Item não está nesta grade.' })
 
-    ids.splice(from, 1)
-    ids.splice(Math.min(body.data.toIndex, ids.length), 0, id)
+    await app.history.capture(app.db, runtime.view.rundown.id, 'mover item', {
+      wholeRundown: true,
+    })
+
+    // O bloco inteiro viaja com o item arrastado, na ordem em que estava.
+    const moving = blockCompanions(runtime, id)
+    const movingSet = new Set(moving)
+    const anchorId = ids[Math.min(body.data.toIndex, ids.length - 1)]
+    const rest = ids.filter((candidate) => !movingSet.has(candidate))
+    const target =
+      anchorId && !movingSet.has(anchorId) ? rest.indexOf(anchorId) : Math.min(body.data.toIndex, rest.length)
+
+    rest.splice(target < 0 ? rest.length : target, 0, ...moving)
+    ids.length = 0
+    ids.push(...rest)
 
     for (const [position, itemId] of ids.entries()) {
       await app.db
@@ -305,7 +337,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     })
     await runtime.refresh()
     onChange()
-    return snapshot(runtime)
+    return snapshot(app, runtime)
   })
 
   // ---- corte e nível, com escopo ---------------------------------------
@@ -321,6 +353,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
+    const targets = await targetItemIds(app.db, id, body.data.scope)
+    await app.history.capture(app.db, runtime.view.rundown.id, 'marcar entrada e saída', {
+      itemIds: body.data.scope === 'ASSET_DEFAULT' ? [id] : targets.ids,
+      assetIds: body.data.scope === 'ASSET_DEFAULT' && targets.mediaId ? [targets.mediaId] : [],
+    })
+
     const result = await applyTrim(app.db, id, body.data.trim, body.data.scope)
     await logDecision(app, runtime.view.rundown.id, id, 'TRIM_APPLIED', {
       ...body.data,
@@ -328,7 +366,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     })
     await runtime.refresh()
     onChange()
-    return { ...snapshot(runtime), result }
+    return { ...snapshot(app, runtime), result }
   })
 
   server.post('/api/items/:id/audio', async (request, reply) => {
@@ -339,6 +377,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
+    const targets = await targetItemIds(app.db, id, body.data.scope)
+    await app.history.capture(app.db, runtime.view.rundown.id, 'nivelar áudio', {
+      itemIds: body.data.scope === 'ASSET_DEFAULT' ? [id] : targets.ids,
+      assetIds: body.data.scope === 'ASSET_DEFAULT' && targets.mediaId ? [targets.mediaId] : [],
+    })
+
     const result = await applyAudio(app.db, id, body.data.audio, body.data.scope)
     await logDecision(app, runtime.view.rundown.id, id, 'AUDIO_APPLIED', {
       ...body.data,
@@ -346,7 +390,102 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     })
     await runtime.refresh()
     onChange()
-    return { ...snapshot(runtime), result }
+    return { ...snapshot(app, runtime), result }
+  })
+
+  // ---- desfazer e refazer ----------------------------------------------
+
+  const step = (kind: 'undo' | 'redo') =>
+    async (request: { params: unknown }, reply: { code: (n: number) => { send: (b: unknown) => unknown } }) => {
+      const { id } = request.params as { id: string }
+      const runtime = await runtimeForRundown(app, id)
+      if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
+
+      const label = await (kind === 'undo'
+        ? app.history.undo(app.db, id)
+        : app.history.redo(app.db, id))
+      if (!label) {
+        return reply
+          .code(400)
+          .send({ error: kind === 'undo' ? 'Nada para desfazer.' : 'Nada para refazer.' })
+      }
+
+      await runtime.refresh()
+      onChange()
+      return { ...snapshot(app, runtime), label }
+    }
+
+  server.post('/api/rundowns/:id/undo', step('undo'))
+  server.post('/api/rundowns/:id/redo', step('redo'))
+
+  // ---- blocos ----------------------------------------------------------
+
+  server.post('/api/rundowns/:id/blocks', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z
+      .object({ itemIds: z.array(z.string()).min(2) })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Selecione pelo menos dois itens.' })
+
+    const runtime = await runtimeForRundown(app, id)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
+
+    const ids = runtime.view.items.map((entry) => entry.item.id)
+    const chosen = body.data.itemIds.filter((candidate) => ids.includes(candidate))
+    if (chosen.length < 2) {
+      return reply.code(400).send({ error: 'Os itens não são todos desta grade.' })
+    }
+
+    await app.history.capture(app.db, id, 'agrupar em bloco', { wholeRundown: true })
+
+    // O bloco fica contíguo na posição do primeiro escolhido: um bloco com
+    // buracos no meio não é um bloco.
+    const chosenSet = new Set(chosen)
+    const ordered = chosen.slice().sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
+    const rest = ids.filter((candidate) => !chosenSet.has(candidate))
+    const at = Math.min(...ordered.map((candidate) => ids.indexOf(candidate)))
+    const before = ids.slice(0, at).filter((candidate) => !chosenSet.has(candidate))
+    rest.splice(0, rest.length, ...before, ...rest.slice(before.length))
+    rest.splice(before.length, 0, ...ordered)
+
+    const blockId = randomUUID()
+    for (const [position, itemId] of rest.entries()) {
+      await app.db
+        .update(rundownItems)
+        .set({
+          sortOrder: (position + 1) * 10,
+          ...(chosenSet.has(itemId) ? { blockId } : {}),
+        })
+        .where(eq(rundownItems.id, itemId))
+    }
+
+    await logDecision(app, id, null, 'BLOCK_CREATED', { blockId, itemIds: ordered })
+    await runtime.refresh()
+    onChange()
+    return snapshot(app, runtime)
+  })
+
+  server.post('/api/blocks/:blockId/ungroup', async (request, reply) => {
+    const { blockId } = request.params as { blockId: string }
+    const [row] = await app.db
+      .select({ rundownId: rundownItems.rundownId })
+      .from(rundownItems)
+      .where(eq(rundownItems.blockId, blockId))
+    if (!row) return reply.code(404).send({ error: 'Bloco não encontrado.' })
+
+    const runtime = await runtimeForRundown(app, row.rundownId)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
+
+    await app.history.capture(app.db, row.rundownId, 'desfazer bloco', { wholeRundown: true })
+    await app.db
+      .update(rundownItems)
+      .set({ blockId: null })
+      .where(eq(rundownItems.blockId, blockId))
+
+    await logDecision(app, row.rundownId, null, 'BLOCK_REMOVED', { blockId })
+    await runtime.refresh()
+    onChange()
+    return snapshot(app, runtime)
   })
 
   // ---- transporte ------------------------------------------------------
@@ -396,6 +535,6 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     await runtime.refresh()
     onChange()
-    return snapshot(runtime)
+    return snapshot(app, runtime)
   })
 }

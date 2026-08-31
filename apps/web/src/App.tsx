@@ -3,7 +3,15 @@ import { anchorTarget } from '@rplayout/protocol'
 import type { AudioLevel, Anchor, EditScope, Trim } from '@rplayout/protocol'
 import { api } from './api.js'
 import { clock, dur } from './format.js'
-import type { ItemView, LibraryAsset, LibraryFolder, Live, RundownView, Snapshot } from './types.js'
+import type {
+  HistoryState,
+  ItemView,
+  LibraryAsset,
+  LibraryFolder,
+  Live,
+  RundownView,
+  Snapshot,
+} from './types.js'
 import { AddItemDialog } from './components/AddItemDialog.js'
 import { AudioDialog } from './components/AudioDialog.js'
 import { Explorer } from './components/Explorer.js'
@@ -24,6 +32,15 @@ export function App() {
   const [dialog, setDialog] = useState<Dialog>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [history, setHistory] = useState<HistoryState>({
+    canUndo: false,
+    canRedo: false,
+    undoLabel: null,
+    redoLabel: null,
+  })
+  /** Linhas marcadas para agrupar. Marcar não é armar: o PGM não muda. */
+  const [marked, setMarked] = useState<Set<string>>(new Set())
+  const lastClicked = useRef<string | null>(null)
   const toastTimer = useRef<number | null>(null)
 
   const assets = useMemo<LibraryAsset[]>(
@@ -40,6 +57,7 @@ export function App() {
   const absorb = useCallback((snapshot: Snapshot) => {
     if (snapshot.view) setView(snapshot.view)
     setLive(snapshot.live)
+    setHistory(snapshot.history)
   }, [])
 
   const guard = useCallback(async (action: () => Promise<void>) => {
@@ -159,6 +177,18 @@ export function App() {
     [view, guard, absorb],
   )
 
+  const undo = useCallback(
+    (direction: 'undo' | 'redo') =>
+      guard(async () => {
+        if (!view) return
+        const result =
+          direction === 'undo' ? await api.undo(view.rundown.id) : await api.redo(view.rundown.id)
+        absorb(result)
+        say(`${direction === 'undo' ? 'Desfeito' : 'Refeito'}: ${result.label}.`)
+      }),
+    [view, guard, absorb, say],
+  )
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       const element = event.target as HTMLElement | null
@@ -166,6 +196,16 @@ export function App() {
 
       if (event.key === 'Escape') {
         setDialog(null)
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault()
+        void undo(event.shiftKey ? 'redo' : 'undo')
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+        event.preventDefault()
+        void undo('redo')
         return
       }
       if (typing || dialog) return
@@ -191,7 +231,60 @@ export function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [dialog, selected, selectedId, command, view])
+  }, [dialog, selected, selectedId, command, view, undo])
+
+  const move = (id: string, toIndex: number): void => {
+    void guard(async () => {
+      absorb(await api.moveItem(id, toIndex))
+    })
+  }
+
+  const group = (): void => {
+    if (!view || marked.size < 2) return
+    void guard(async () => {
+      absorb(await api.group(view.rundown.id, [...marked]))
+      setMarked(new Set())
+      say('Bloco criado. Os itens passam a andar juntos.')
+    })
+  }
+
+  const ungroup = (blockId: string): void => {
+    void guard(async () => {
+      absorb(await api.ungroup(blockId))
+      say('Bloco desfeito.')
+    })
+  }
+
+  /** Clique simples arma; shift marca faixa; ctrl marca item a item. */
+  const select = (id: string, modifier: 'none' | 'range' | 'toggle'): void => {
+    const items = view?.items ?? []
+
+    if (modifier === 'none') {
+      setMarked(new Set())
+      lastClicked.current = id
+      void command('cue', { itemId: id })
+      return
+    }
+
+    setMarked((current) => {
+      const next = new Set(current)
+      if (modifier === 'toggle') {
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      }
+
+      const from = items.findIndex((entry) => entry.item.id === (lastClicked.current ?? id))
+      const to = items.findIndex((entry) => entry.item.id === id)
+      if (from < 0 || to < 0) return next
+      for (let index = Math.min(from, to); index <= Math.max(from, to); index++) {
+        const entry = items[index]
+        if (entry) next.add(entry.item.id)
+      }
+      return next
+    })
+    lastClicked.current = id
+  }
 
   const applyTrim = (trim: Trim, scope: EditScope): void => {
     const item = dialog?.kind === 'trim' ? dialog.view : null
@@ -308,7 +401,10 @@ export function App() {
               onAirId={onAirId}
               remainingOnAir={remainingOnAir}
               errorIds={errorIds}
-              onSelect={(id) => void command('cue', { itemId: id })}
+              marked={marked}
+              onSelect={select}
+              onMove={move}
+              onUngroup={ungroup}
               onOpenTrim={(item) => setDialog({ kind: 'trim', view: item })}
               onOpenAudio={(item) => setDialog({ kind: 'audio', view: item })}
               onNotes={saveNotes}
@@ -385,7 +481,28 @@ export function App() {
         <button className="btn" onClick={() => setDialog({ kind: 'add' })}>
           inserir item
         </button>
+        {marked.size >= 2 && (
+          <button className="btn take" onClick={group}>
+            agrupar {marked.size} itens
+          </button>
+        )}
         <div className="spacer" />
+        <button
+          className="btn"
+          disabled={!history.canUndo}
+          onClick={() => void undo('undo')}
+          title={history.undoLabel ? `Desfazer: ${history.undoLabel}` : 'Nada para desfazer'}
+        >
+          desfazer<kbd>ctrl z</kbd>
+        </button>
+        <button
+          className="btn"
+          disabled={!history.canRedo}
+          onClick={() => void undo('redo')}
+          title={history.redoLabel ? `Refazer: ${history.redoLabel}` : 'Nada para refazer'}
+        >
+          refazer
+        </button>
         {error && (
           <div className="meta" style={{ color: 'var(--onair)' }}>
             {error}

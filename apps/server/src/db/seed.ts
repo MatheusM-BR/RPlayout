@@ -169,14 +169,16 @@ interface ItemSeed {
   onOverrun?: 'TRIM_PREV' | 'DROP_FILLER' | 'PUSH' | 'SKIP'
   elastic?: { min: number; max: number }
   locked?: boolean
+  /** Chave lógica do bloco no seed; vira um blockId de verdade na inserção. */
+  block?: string
 }
 
 const ITEMS: ItemSeed[] = [
   { asset: 'vinheta-abertura', type: 'VT' },
   { asset: 'previsao', type: 'VT', minSeconds: 60, onOverrun: 'TRIM_PREV' },
   { asset: 'esporte', type: 'VT', minSeconds: 150, onOverrun: 'TRIM_PREV' },
-  { asset: 'com-supermercado', type: 'COMMERCIAL', locked: true },
-  { asset: 'com-concessionaria', type: 'COMMERCIAL', locked: true },
+  { asset: 'com-supermercado', type: 'COMMERCIAL', locked: true, block: 'comercial-1' },
+  { asset: 'com-concessionaria', type: 'COMMERCIAL', locked: true, block: 'comercial-1' },
   { asset: 'porto-seco', type: 'VT', minSeconds: 140, onOverrun: 'TRIM_PREV' },
   // O filler vem antes da âncora: elástico só cobre folga do que está à frente
   // dele, então colocá-lo depois seria deixá-lo sem serventia.
@@ -274,6 +276,8 @@ async function seed(): Promise<void> {
     updatedAt: now,
   })
 
+  const blockIds = new Map<string, string>()
+
   for (const [index, seedItem] of ITEMS.entries()) {
     const assetKey = seedItem.asset
     const asset = assetKey ? ASSETS.find((a) => a.key === assetKey) : undefined
@@ -294,6 +298,10 @@ async function seed(): Promise<void> {
       anchor: seedItem.anchor ?? { kind: 'FLOW' },
       onOverrun: seedItem.onOverrun ?? 'PUSH',
       elastic: seedItem.elastic ?? null,
+      blockId: seedItem.block
+        ? (blockIds.get(seedItem.block) ??
+          blockIds.set(seedItem.block, randomUUID()).get(seedItem.block)!)
+        : null,
       locked: seedItem.locked ?? false,
       autoNext: true,
       loop: false,

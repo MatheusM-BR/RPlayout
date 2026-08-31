@@ -63,7 +63,15 @@ export interface LibraryFolder {
   assets: LibraryAsset[]
 }
 
+export interface HistoryState {
+  canUndo: boolean
+  canRedo: boolean
+  undoLabel: string | null
+  redoLabel: string | null
+}
+
 export interface Snapshot {
   view: RundownView | null
   live: Live
+  history: HistoryState
 }

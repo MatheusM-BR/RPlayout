@@ -117,6 +117,12 @@ export interface RundownItem {
   readonly onOverrun: OverrunPolicy
   readonly elastic: Elastic | null
 
+  /**
+   * Bloco a que o item pertence. Itens do mesmo bloco andam juntos: arrastar
+   * um arrasta todos, e o bloco entra e sai inteiro.
+   */
+  readonly blockId: string | null
+
   /** Item travado não é cortado, removido nem reordenado pelo scheduler. */
   readonly locked: boolean
   /** false segura no último frame esperando take manual. */
