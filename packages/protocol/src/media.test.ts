@@ -136,6 +136,14 @@ describe('precedência do nivelamento', () => {
     expect(resolved.value.measured).toEqual(file)
   })
 
+  it('AUTO herdado do acervo recebe a medição do arquivo', () => {
+    const file = measurement(-19.8, -1.2)
+    const semMedicao: AudioLevel = { mode: 'AUTO', gainDb: 0, measured: null }
+    const resolved = resolveAudio(null, asset({ defaultAudio: semMedicao, loudnessFile: file }))
+    expect(resolved.value.measured).toEqual(file)
+    expect(effectiveGainDb(resolved.value, -23, -1)).toBe(-3.2)
+  })
+
   it('sem medição nenhuma, a origem é NONE', () => {
     expect(resolveAudio(null, asset()).source).toBe('NONE')
   })

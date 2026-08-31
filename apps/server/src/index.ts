@@ -1,0 +1,86 @@
+import cors from '@fastify/cors'
+import websocket from '@fastify/websocket'
+import Fastify from 'fastify'
+import { createApp, runtimeFor } from './app.js'
+import { DB_FILE, HOST, PORT } from './config.js'
+import { listChannels, listRundowns } from './db/repo.js'
+import { registerRoutes } from './routes.js'
+
+/** Cadência do estado ao vivo. Vinte por segundo já engana o olho no medidor. */
+const LIVE_HZ = 20
+
+async function main(): Promise<void> {
+  const app = await createApp(DB_FILE)
+  const server = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } })
+
+  await server.register(cors, { origin: true })
+  await server.register(websocket)
+
+  const sockets = new Set<{ send: (data: string) => void }>()
+
+  const broadcast = (payload: unknown): void => {
+    const data = JSON.stringify(payload)
+    for (const socket of sockets) {
+      try {
+        socket.send(data)
+      } catch {
+        sockets.delete(socket)
+      }
+    }
+  }
+
+  /** Uma alteração no rundown vale por uma grade inteira nova na tela. */
+  const pushViews = (): void => {
+    for (const runtime of app.runtimes.values()) {
+      broadcast({ type: 'view', channelId: runtime.channel.id, view: runtime.view })
+    }
+  }
+
+  registerRoutes(app, server, pushViews)
+
+  server.get('/ws', { websocket: true }, (socket) => {
+    sockets.add(socket)
+    for (const runtime of app.runtimes.values()) {
+      socket.send(
+        JSON.stringify({ type: 'view', channelId: runtime.channel.id, view: runtime.view }),
+      )
+    }
+    socket.on('close', () => sockets.delete(socket))
+  })
+
+  // Carrega a primeira grade de cada canal para que o transporte tenha o que
+  // executar assim que o servidor sobe.
+  for (const channel of await listChannels(app.db)) {
+    const runtime = await runtimeFor(app, channel.id)
+    const [first] = await listRundowns(app.db, channel.id)
+    if (runtime && first) await runtime.load(first.id)
+  }
+
+  const timer = setInterval(() => {
+    if (sockets.size === 0) return
+    for (const runtime of app.runtimes.values()) {
+      // O transporte avançou de item: a grade toda muda de forma.
+      if (runtime.transport.tick()) {
+        void runtime.refresh().then(pushViews)
+      }
+      broadcast({ type: 'live', channelId: runtime.channel.id, ...runtime.live() })
+    }
+  }, 1000 / LIVE_HZ)
+
+  const shutdown = async (): Promise<void> => {
+    clearInterval(timer)
+    await server.close()
+    app.close()
+    process.exit(0)
+  }
+  process.on('SIGINT', () => void shutdown())
+  process.on('SIGTERM', () => void shutdown())
+
+  await server.listen({ port: PORT, host: HOST })
+  server.log.info(`RPlayout · banco em ${DB_FILE}`)
+}
+
+main().catch((error: unknown) => {
+  console.error(error)
+  process.exit(1)
+})

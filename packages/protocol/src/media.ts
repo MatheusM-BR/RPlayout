@@ -93,10 +93,15 @@ export function resolveAudio(
   itemAudio: AudioLevel | null | undefined,
   asset: Pick<MediaAsset, 'defaultAudio' | 'loudnessFile'>,
 ): Resolved<AudioLevel> {
-  if (itemAudio) return { value: itemAudio, source: 'ITEM' }
-  if (asset.defaultAudio) return { value: asset.defaultAudio, source: 'ASSET' }
+  // A medição do arquivo é do arquivo, não do nível. Um AUTO gravado sem
+  // medição é um AUTO que ainda não sabe o que fazer — aqui ele passa a saber.
+  const withMeasurement = (level: AudioLevel): AudioLevel =>
+    level.measured ? level : { ...level, measured: asset.loudnessFile }
+
+  if (itemAudio) return { value: withMeasurement(itemAudio), source: 'ITEM' }
+  if (asset.defaultAudio) return { value: withMeasurement(asset.defaultAudio), source: 'ASSET' }
   return {
-    value: { ...NO_AUDIO_LEVEL, measured: asset.loudnessFile },
+    value: withMeasurement(NO_AUDIO_LEVEL),
     source: asset.loudnessFile ? 'FILE' : 'NONE',
   }
 }
