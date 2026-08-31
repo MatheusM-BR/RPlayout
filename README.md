@@ -109,15 +109,28 @@ Planejamento concluído. **F0** e **F1** entregues:
 - Servidor de mídia local: config gerada do banco, chaves de convidado que
   criam e revogam caminhos, e o programa publicado por loopback e legível de
   volta pelo servidor.
-- Falta: **entrega do relay para destino externo** (ver abaixo), preview por
-  WebRTC, e a medição de loudness R128 no pipeline — hoje o medidor do programa
+- Relays entregando a destinos externos, com estado e contagem do que foi
+  efetivamente entregue.
+- Falta: preview por WebRTC, painel de distribuição na interface, e a medição de
+  loudness R128 no pipeline — hoje o medidor do programa
   reporta RMS, que é aproximação e está marcado como tal no código.
 
-### Pendência conhecida: entrega do relay
+### Como o relay entrega
 
-O relay conecta na origem e monta a saída com os dois fluxos (`assembled`
-informa `offered: 2, linked: 2`), mas nenhum dado chega ao `rtmp2sink`: o
-destino abre a conexão TCP, espera, e fecha por *i/o timeout* porque o
-publish nunca acontece. A supervisão em volta funciona -- processo por destino,
-estado, tentativas e backoff exponencial -- mas a entrega em si ainda não foi
-verificada de ponta a ponta.
+Um processo por destino: lê o programa do servidor local por RTSP em loopback e
+empurra por RTMP **sem recodificar** -- só troca de embalagem, do RTP para o
+FLV. O H.264 e o AAC que chegam ao destino são os mesmos que o canal codificou.
+
+Três coisas precisaram ser verdade ao mesmo tempo, e cada uma custou um defeito:
+
+- Os fluxos do `rtspsrc` só aparecem **depois** do PLAYING, e nesse momento os
+  dados já correm. Um ramo que empurra sem destino leva `not-linked` e para de
+  vez -- era isso que deixava o vídeo mudo enquanto o áudio passava.
+- O `no-more-pads` do `rtspsrc` chega **antes** dos próprios pads, então esperar
+  por ele monta a saída vazia.
+- Um `flvmux` que começa com um fluxo só escreve um cabeçalho que o destino
+  recusa, e um sem pad nenhum atrapalha a subida.
+
+A saída foi reservar os dois lugares do muxer antes de qualquer fluxo aparecer e
+ligar cada ramo assim que ele é anunciado. O programa de um canal sempre tem
+vídeo e áudio, então os dois lugares sempre são ocupados.
