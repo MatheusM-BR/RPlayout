@@ -7,8 +7,19 @@ import { DB_FILE } from '../config.js'
 
 const FPS = 50
 const s = (n: number): number => Math.round(n * FPS)
-const at = (h: number, m: number, sec = 0): number => s(h * 3600 + m * 60 + sec)
 const now = new Date().toISOString()
+
+/**
+ * A grade semeada começa daqui a pouco, não numa hora fixa do dia. Uma grade
+ * cravada às 19:50 só faz sentido de noite; assim a demonstração fecha as
+ * âncoras a qualquer hora em que alguém suba o servidor.
+ */
+const clockNow = new Date()
+const START = s(
+  clockNow.getHours() * 3600 + clockNow.getMinutes() * 60 + clockNow.getSeconds() + 90,
+)
+/** Deslocamento em segundos a partir do início da grade. */
+const after = (seconds: number): number => START + s(seconds)
 
 const hash = (seed: string): string => createHash('sha256').update(seed).digest('hex')
 
@@ -159,7 +170,7 @@ const ITEMS: ItemSeed[] = [
   {
     asset: 'vinheta-bloco',
     type: 'VT',
-    anchor: { kind: 'SOFT', at: at(19, 59, 28), tolerance: s(90), priority: 3 },
+    anchor: { kind: 'SOFT', at: after(9 * 60 + 28), tolerance: s(90), priority: 3 },
   },
   {
     asset: 'institucional',
@@ -173,7 +184,7 @@ const ITEMS: ItemSeed[] = [
     sourceRef: 'sdi:0',
     durationOverride: s(840),
     minSeconds: 600,
-    anchor: { kind: 'FIXED', at: at(20, 0) },
+    anchor: { kind: 'FIXED', at: after(10 * 60) },
   },
   { asset: 'vinheta-intervalo', type: 'VT' },
   { asset: 'documentario', type: 'VT', minSeconds: 600, onOverrun: 'TRIM_PREV' },
@@ -186,7 +197,7 @@ const ITEMS: ItemSeed[] = [
   {
     asset: 'chamada',
     type: 'VT',
-    anchor: { kind: 'SOFT', at: at(20, 30), tolerance: s(60), priority: 2 },
+    anchor: { kind: 'SOFT', at: after(40 * 60), tolerance: s(60), priority: 2 },
   },
   // Segunda ocorrência do mesmo arquivo: é o que dá sentido a "aplicar em todos
   // os itens com a mesma correspondência".
@@ -243,7 +254,7 @@ async function seed(): Promise<void> {
     id: rundownId,
     channelId,
     name: 'Grade — noite',
-    plannedStart: at(19, 50),
+    plannedStart: START,
     date: new Date().toISOString().slice(0, 10),
     createdAt: now,
     updatedAt: now,

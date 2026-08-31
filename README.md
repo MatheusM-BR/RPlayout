@@ -19,7 +19,45 @@ O plano completo de arquitetura, modelo de dados e roadmap está em
 - **Servidor interno:** MediaMTX local (RTMP/SRT/HLS/WebRTC, ingest e distribuição)
 - **Automação:** motor de regras determinístico, Claude como camada opcional
 
+## Como rodar
+
+```bash
+pnpm install
+
+# semeia um canal, doze arquivos com loudness desigual e uma grade de noite
+pnpm --filter @rplayout/server seed
+
+# servidor (API + WebSocket) na 4000
+pnpm --filter @rplayout/server dev
+
+# interface na 5173, com proxy para a 4000
+pnpm --filter @rplayout/web dev
+```
+
+`pnpm test` roda a suíte; `pnpm typecheck` e `pnpm lint` cobrem o resto.
+A grade semeada nasce a partir do relógio da máquina, então as âncoras fecham a
+qualquer hora do dia.
+
+## Estrutura
+
+```
+packages/protocol    domínio compartilhado: frames, timecode, âncoras, loudness
+packages/scheduler   motor de tempo, função pura e sem I/O
+apps/server          Fastify + SQLite, API REST e estado ao vivo por WebSocket
+apps/web             React + Vite, o rundown e os monitores
+```
+
 ## Status
 
-Fase de planejamento concluída. Próxima etapa: **F0 (fundação)** e
-**F1 (rundown + scheduler)**.
+Planejamento concluído. **F0** e **F1** entregues:
+
+- Motor de remanejamento com âncoras `FLOW`, `FIXED`, `SOFT` e `WINDOW`,
+  recuperação de tempo por ordem de custo e conflitos explicados em texto.
+- Timecode com drop-frame correto e frame rate como razão exata.
+- Nivelamento por loudness com ganho calculado e teto no true peak.
+- Corte e nível com os quatro escopos, inclusive padrão do acervo.
+- Inserção de item por horário, com a grade se remanejando em volta.
+- Interface escura com rundown, PGM, preview, medidores e painel de conflitos.
+- Transporte simulado, com o mesmo contrato que o engine vai cumprir na F2.
+
+Próxima etapa: **F2** — engine Rust/GStreamer, MediaMTX local e preview WebRTC.
