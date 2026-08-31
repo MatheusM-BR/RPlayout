@@ -34,6 +34,26 @@ pnpm --filter @rplayout/server dev
 pnpm --filter @rplayout/web dev
 ```
 
+### Com o engine de vídeo
+
+Sem `RPLAYOUT_ENGINE`, o servidor usa o transporte simulado e a grade inteira
+continua operável numa máquina sem GStreamer. Apontando para o binário, o take
+passa a mover vídeo de verdade:
+
+```bash
+cd apps/engine && cargo build --release
+
+RPLAYOUT_ENGINE=apps/engine/target/release/rplayout-engine \
+RPLAYOUT_ENGINE_OUTPUT=null \
+pnpm --filter @rplayout/server dev
+```
+
+`RPLAYOUT_ENGINE_OUTPUT` aceita várias saídas separadas por vírgula: `null`,
+`file:<caminho>`, `rtmp://…`, `srt://…` e `snapshot:<padrão.jpg>`.
+
+Para exercitar sem acervo, semeie apontando para uma pasta de arquivos reais:
+`RPLAYOUT_MEDIA_DIR=/caminho/para/midia pnpm --filter @rplayout/server seed`.
+
 `pnpm test` roda a suíte; `pnpm typecheck` e `pnpm lint` cobrem o resto.
 A grade semeada nasce a partir do relógio da máquina, então as âncoras fecham a
 qualquer hora do dia.
@@ -60,4 +80,12 @@ Planejamento concluído. **F0** e **F1** entregues:
 - Interface escura com rundown, PGM, preview, medidores e painel de conflitos.
 - Transporte simulado, com o mesmo contrato que o engine vai cumprir na F2.
 
-Próxima etapa: **F2** — engine Rust/GStreamer, MediaMTX local e preview WebRTC.
+**F2** em andamento:
+
+- Engine Rust/GStreamer entregue e verificado ponta a ponta.
+- Servidor liga no engine: o take da interface move vídeo de verdade, a posição
+  vem de quem está tocando o arquivo, o medidor do programa é medição real e a
+  grade vira de item sozinha no fim de cada trecho.
+- Falta: MediaMTX local com os relays por destino, preview por WebRTC, e a
+  medição de loudness R128 no pipeline — hoje o medidor do programa reporta
+  RMS, que é aproximação e está marcado como tal no código.

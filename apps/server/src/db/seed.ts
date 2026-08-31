@@ -48,6 +48,13 @@ const FOLDER: Record<string, string> = {
   filler: 'Fillers',
 }
 
+/**
+ * Onde estão os arquivos. Sem `RPLAYOUT_MEDIA_DIR`, o seed usa caminhos do
+ * Windows como ilustração; com ele, aponta para arquivos que existem de fato,
+ * que é o que permite exercitar o engine sem um acervo de verdade.
+ */
+const MEDIA_DIR = process.env.RPLAYOUT_MEDIA_DIR ?? ''
+
 interface AssetSeed {
   key: string
   title: string
@@ -63,6 +70,11 @@ interface AssetSeed {
  * Acervo simulado com loudness deliberadamente desigual — é o problema que o
  * nivelamento existe para resolver, e sem ele a tela fica bonita e muda.
  */
+const mediaPath = (asset: AssetSeed): string =>
+  MEDIA_DIR
+    ? `${MEDIA_DIR}/${asset.key}.mkv`
+    : `D:/Media/${FOLDER[asset.category] ?? 'Diversos'}/${asset.key}.mxf`
+
 const ASSETS: AssetSeed[] = [
   {
     key: 'vinheta-abertura',
@@ -251,7 +263,7 @@ async function seed(): Promise<void> {
     await db.insert(mediaAssets).values({
       id,
       contentHash: hash(asset.key),
-      path: `D:/Media/${FOLDER[asset.category] ?? 'Diversos'}/${asset.key}.mxf`,
+      path: mediaPath(asset),
       title: asset.title,
       kind: 'VIDEO',
       durationFrames: s(asset.seconds),

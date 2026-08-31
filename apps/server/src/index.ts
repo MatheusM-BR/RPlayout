@@ -69,6 +69,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     clearInterval(timer)
+    for (const runtime of app.runtimes.values()) runtime.transport.close()
     await server.close()
     app.close()
     process.exit(0)

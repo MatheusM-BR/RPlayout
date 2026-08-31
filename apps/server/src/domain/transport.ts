@@ -5,6 +5,7 @@ import {
   type PreviewTarget,
 } from '@rplayout/protocol'
 import type { RundownView } from './plan.js'
+import type { MeterReading } from './meters.js'
 
 export interface TransportState {
   readonly channelId: string
@@ -18,13 +19,32 @@ export interface TransportState {
 }
 
 /**
+ * O que o servidor precisa de um transporte, seja ele simulado ou o engine de
+ * verdade. Manter os dois atrás do mesmo contrato é o que permite trocar um
+ * pelo outro sem tocar em rota nem em interface.
+ */
+export interface Transport {
+  state(): TransportState
+  take(rundownId: string, itemId: string): void
+  cue(target: PreviewTarget | null): void
+  stop(): void
+  /** Arma a grade num item, parada, pronta para entrar no ar. */
+  park(itemId: string): void
+  /** Devolve true quando o estado mudou e a grade precisa ser recalculada. */
+  tick(): boolean
+  /** Medição real do programa, quando o transporte tem uma. */
+  programMeter(): MeterReading | null
+  close(): void
+}
+
+/**
  * Transporte simulado da F1.
  *
  * O engine ainda não existe, então quem faz o tempo andar é o relógio do
  * sistema. O contrato é o mesmo que o engine vai cumprir depois: o servidor
  * pergunta o estado, nunca calcula duração por conta própria.
  */
-export class SimulatedTransport {
+export class SimulatedTransport implements Transport {
   private rundownId: string | null = null
   private onAirItemId: string | null = null
   private startedAt: Frames = 0
@@ -136,5 +156,13 @@ export class SimulatedTransport {
     this.onAirItemId = next
     this.startedAt = this.startedAt + duration
     return true
+  }
+  /** O simulado não mede nada: quem mede é o engine. */
+  programMeter(): MeterReading | null {
+    return null
+  }
+
+  close(): void {
+    // Nada a encerrar: o simulado não tem processo nem soquete.
   }
 }

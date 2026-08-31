@@ -5,8 +5,10 @@ import { assetMap, getChannel, getRundown, listItems } from './db/repo.js'
 import { rundownItems } from './db/schema.js'
 import { buildView, type RundownView } from './domain/plan.js'
 import { simulateMeter, SILENCE, type MeterReading } from './domain/meters.js'
-import { SimulatedTransport } from './domain/transport.js'
+import { SimulatedTransport, type Transport } from './domain/transport.js'
+import { EngineTransport } from './domain/engine.js'
 import { History } from './domain/history.js'
+import { ENGINE_BINARY, ENGINE_BITRATE_KBPS, ENGINE_OUTPUTS } from './config.js'
 
 /**
  * Runtime de um canal. Guarda a grade já resolvida em cache porque o
@@ -15,7 +17,7 @@ import { History } from './domain/history.js'
  */
 export class ChannelRuntime {
   view: RundownView | null = null
-  readonly transport: SimulatedTransport
+  readonly transport: Transport
   /** Acervo em memória: o medidor do preview precisa dele a cada tick. */
   private assets: Map<string, MediaAsset> = new Map()
   private phase = 0
@@ -24,7 +26,15 @@ export class ChannelRuntime {
     readonly channel: Channel,
     private readonly db: Db,
   ) {
-    this.transport = new SimulatedTransport(channel.id, () => this.view)
+    // Sem engine configurado, a grade inteira continua operável no simulado:
+    // é o que permite montar programação numa máquina sem GStreamer.
+    this.transport = ENGINE_BINARY
+      ? new EngineTransport(channel, () => this.view, {
+          binary: ENGINE_BINARY,
+          outputs: ENGINE_OUTPUTS,
+          bitrateKbps: ENGINE_BITRATE_KBPS,
+        })
+      : new SimulatedTransport(channel.id, () => this.view)
   }
 
   async load(rundownId: string): Promise<RundownView | null> {
@@ -93,7 +103,9 @@ export class ChannelRuntime {
       transport: state,
       now: framesSinceMidnight(new Date(), this.channel.rate),
       meters: {
-        program: this.meterForItem(state.onAir?.itemId ?? null),
+        // Havendo engine, o medidor do programa é medição de verdade; o do
+        // preview segue simulado até o pipeline de preview existir.
+        program: this.transport.programMeter() ?? this.meterForItem(state.onAir?.itemId ?? null),
         preview: this.meterForPreview(state.preview),
       },
     }
