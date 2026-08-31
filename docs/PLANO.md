@@ -12,6 +12,7 @@ entradas NDI/SRT/RTMP e saídas RTMP/SRT com servidor interno para convidados.
 | Interface | Web (backend serve a UI; vários operadores simultâneos) |
 | Canais | Multicanal desde o início (`channel_id` em todo o modelo) |
 | Grafismo | Camada CEF com templates HTML + editor por formulário |
+| Áudio | Nivelamento por loudness (EBU R128) com os mesmos escopos do trim; limiter de true peak só como proteção |
 | Hardware SDI | Decklink Duo 2 / Quad 2 — entrada **e** saída, placa como clock mestre |
 | Servidor interno | MediaMTX local na máquina (RTMP/SRT/HLS/WebRTC, ingest e distribuição) |
 | Automação | Motor de regras determinístico; Claude como camada opcional |
@@ -66,7 +67,8 @@ não o servidor inteiro. O server supervisiona e reinicia.
                                ├→ (baixo bitrate) → webrtcbin     (multiview UI)
                                └→ matroskamux → filesink          (gravação as-run)
 
-Áudio: audiomixer + volume por camada + level (VU na UI) → 48kHz stereo
+Áudio: volume por item (nivelamento) → audiomixer → level → limiter true peak
+       → level (redução de ganho) → 48 kHz stereo
 ```
 
 **Sem gap na troca:** duas cadeias de player (A/B). O item N toca enquanto o
@@ -188,7 +190,150 @@ Ao salvar, o diálogo oferece três escopos:
 Precedência: **item > padrão do asset > arquivo inteiro**. A UI mostra um badge
 indicando de onde veio o trim atual e um botão "reverter para o padrão".
 
-## 6. Grafismo
+## 6. Nivelamento de áudio
+
+VT alto demais e VT baixo demais no mesmo bloco é problema de **medição**, não de
+ouvido. A régua é loudness, não pico.
+
+### Medir no ingest, antes de mexer em qualquer coisa
+
+Quando o arquivo entra na biblioteca, roda uma análise EBU R128 (`ebur128` /
+primeira passada do `loudnorm`) e o resultado fica gravado no asset:
+
+- `integratedLufs` — loudness integrada do programa
+- `lra` — faixa dinâmica (loudness range)
+- `truePeakDbtp` — pico verdadeiro, com oversampling
+
+### O ganho é calculado, não chutado
+
+```
+gainDb = alvoLufs − integratedLufs
+```
+
+Com um teto: se `truePeakDbtp + gainDb` passar do ceiling, o ganho é reduzido e a
+interface mostra **por quê** — o arquivo já veio quente demais e subir mais só
+entrega o problema para o limiter.
+
+Alvo por canal, com presets: **−23 LUFS** para TV (é a régua da TV digital no
+Brasil) e **−14 LUFS** para plataformas de streaming, que normalizam nessa faixa.
+
+### O trim muda a medição
+
+Este é o ponto que amarra o áudio ao in/out. A loudness do arquivo inteiro **não é**
+a do trecho que vai ao ar — um VT com 20s de silêncio na cabeça mede diferente do
+mesmo VT cortado. Por isso guardamos duas medições:
+
+| Escopo da medição | Quando é feita |
+|---|---|
+| `FILE` | No ingest, sobre o arquivo inteiro. |
+| `TRIM` | Em background, sempre que o in/out do item muda. |
+
+O modo `AUTO` usa a medição do **trecho**. Enquanto ela não terminou, o item mostra
+a do arquivo com um indicador de "medindo".
+
+### Escopos idênticos aos do trim
+
+Mesma pergunta, mesmo diálogo, mesmo selo de origem:
+
+| Escopo | Grava em | Efeito |
+|---|---|---|
+| Só este item | `rundown_item.audio` | Override local. |
+| Todos deste arquivo | itens com o mesmo `mediaId` | Neste rundown ou em todos. |
+| Padrão do asset | `media_asset.default_audio` | Todo item novo já nasce nivelado. |
+
+Precedência: **item > padrão do asset > 0 dB**.
+
+```ts
+type AudioLevel = {
+  mode: 'AUTO' | 'MANUAL' | 'OFF'
+  gainDb: number
+  measured: {
+    integratedLufs: number
+    lra: number
+    truePeakDbtp: number
+    scope: 'FILE' | 'TRIM'
+    measuredAt: string
+  }
+  channelMap?: number[]      // quais pares SDI entram no mix
+}
+```
+
+`rundown_item.audio` nulo significa herdar do asset — o mesmo padrão do trim.
+
+### Cadeia de áudio no engine
+
+```
+fonte → audioconvert → audioresample
+      → volume (gainDb do item)          ← nivelamento, ganho estático
+      → audiomixer  (soma das camadas: PGM + grafismo + fontes ao vivo)
+      → volume (master do canal)
+      → level                            ← medição PRÉ-limiter, alimenta o VU
+      → limiter true peak                ← rede de proteção, ceiling −1 dBTP
+      → level                            ← medição PÓS, dá a redução de ganho
+      → encoder / decklinkaudiosink
+```
+
+### Medidores: PPM e LUFS, não "VU" de verdade
+
+O VU clássico é RMS lento de 300 ms e não serve para pegar pico digital. O medidor
+do PGM e do preview mostra três leituras ao mesmo tempo:
+
+- **Pico verdadeiro** por canal, com hold e indicador de clip.
+- **Loudness momentânea (400 ms)** e **short-term (3 s)**.
+- **Integrada do item corrente**, para você ver se aquele VT específico está na régua.
+
+Escala dupla: dBFS com marcas em −18, −12, −9, −6, −3, 0; e LUFS com o alvo do canal
+marcado. Correlação de fase no estéreo, que é o que pega o clássico mono invertido.
+Em SDI com 8 ou 16 canais, um medidor por par, com o mapa de quais entram no mix.
+
+**Preview tem o mesmo medidor**, alimentado pelo pipeline de preview — dá para
+conferir o nível do VT antes de ele chegar no ar.
+
+Transporte: as mensagens do elemento `level` são agregadas pelo engine e enviadas por
+WebSocket a ~20 Hz. Medidor não precisa de um pacote por frame.
+
+### Limiter na saída: sim, mas como rede de proteção
+
+**Vale a pena.** Não pelos VTs — esses já estão nivelados por ganho calculado — mas
+por tudo que você não controla:
+
+- Convidado que entra pelo RTMP com o áudio estourado.
+- SDI do estúdio, cuja mesa não é sua.
+- Grafismo com áudio disparado por cima do VT.
+- A soma no mixer, que pode estourar mesmo com cada camada correta sozinha.
+
+E porque clipping no AAC é **irreversível**: depois que sai, saiu.
+
+**Como:** limiter de true peak no fim da cadeia, ceiling em −1 dBTP, look-ahead de
+uns 5 ms. O look-ahead custa latência, então o vídeo leva um delay igual para não
+perder o lip sync — isso fica declarado no perfil, não escondido.
+
+**O que não fazer:** usar AGC ou compressor agressivo como nivelador. Achata VT bem
+mixado e é exatamente o motivo de muito canal soar sem dinâmica. Nivelamento é ganho
+estático calculado; o limiter só segura o pico.
+
+**Regra de ouro: o limiter tem que ficar parado.** Se ele está trabalhando o tempo
+todo, o problema é gain staging, não limiting. Por isso a **redução de ganho (GR)** é
+métrica de primeira classe na interface, com alerta quando passar de um limite por
+mais de alguns segundos.
+
+**Bypass por saída.** Se o SDI alimenta um master control que já faz processamento de
+loudness, limitar duas vezes piora o resultado. Padrão: ligado nas saídas codificadas,
+com chave por perfil de saída para desligar no SDI.
+
+### As-run de áudio
+
+O log grava a loudness integrada do que **efetivamente** foi ao ar, por item. É o que
+serve para comprovar conformidade e para achar depois o VT que soou baixo, em vez de
+depender de alguém ter reclamado na hora.
+
+### Realimenta o aprendizado
+
+Ajuste manual de ganho depois do `AUTO` entra no mesmo log de decisões do operador.
+Se você sempre baixa 2 dB nos VTs de uma categoria, isso vira uma sugestão em vez de
+um trabalho repetido.
+
+## 7. Grafismo
 
 - Camada CEF offscreen por canal, alfa premultiplicado, no frame rate do canal.
 - Templates HTML com a API `update(data)` / `play()` / `stop()` / `next()`
@@ -202,7 +347,7 @@ indicando de onde veio o trim atual e um botão "reverter para o padrão".
   (`+00:05 do início, dura 8s`), ou permanente por regra (bug sempre no ar).
 - Rundown de grafismo paralelo ao rundown de vídeo, com as mesmas âncoras.
 
-## 7. Hardware SDI (Decklink)
+## 8. Hardware SDI (Decklink)
 
 ### Modelo de dispositivo
 
@@ -284,7 +429,7 @@ corre no seu próprio cristal e a interface avisa que eles vão derivar entre si
 genlockados só para o grafismo. As capabilities já são lidas do driver, então quando
 fizer sentido é só mais um `role` no binding.
 
-## 8. Rede, servidor RTMP local e distribuição
+## 9. Rede, servidor RTMP local e distribuição
 
 ### Entradas e saídas
 
@@ -360,7 +505,7 @@ Por canal: resolução, fps, bitrate, encoder (NVENC ou x264), GOP e perfil de �
 Vários ativos ao mesmo tempo — mas cada perfil é **um encode**, então a interface
 mostra o custo em sessões de NVENC antes de você ligar mais um.
 
-## 9. Automação e aprendizado
+## 10. Automação e aprendizado
 
 **Camada 1 — regras (sempre ativa, offline, sem custo):**
 templates de grade (dia útil / fim de semana / especial), blocos e categorias,
@@ -378,7 +523,7 @@ preferências — que categoria costuma entrar às 19h, duração média aceita,
 nunca se repete no mesmo dia — e alimenta tanto o motor de regras quanto o
 prompt do Claude. Tudo local, no SQLite. Sem chave de API, o app funciona 100%.
 
-## 10. Design da interface
+## 11. Design da interface
 
 Paleta (fundo escuro, detalhe azul escuro):
 
@@ -407,20 +552,20 @@ Contagem regressiva grande no item no ar, últimos 10s em vermelho.
 Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 `J`/`K`/`L` shuttle, `F1`–`F12` grafismos, `Esc` cancela.
 
-## 11. Roadmap
+## 12. Roadmap
 
 | Fase | Escopo | Entrega |
 |---|---|---|
 | F0 | Fundação: monorepo, TS, lint, testes, Drizzle + SQLite, protocolo zod, CI | Base |
-| F1 | **Rundown e scheduler**: modelo, âncoras, trim com escopos, UI completa com mídia simulada | Primeira entrega |
-| F2 | Engine: binário Rust/GStreamer, VT com A/B, PGM, **MediaMTX local** com o PGM em `rtmp://127.0.0.1:1935/ch1`, relays supervisionados para destinos externos, preview WebRTC | No ar |
+| F1 | **Rundown e scheduler**: modelo, âncoras, trim e **nivelamento de áudio** com escopos, UI completa com mídia simulada | Primeira entrega |
+| F2 | Engine: binário Rust/GStreamer, VT com A/B, PGM, **MediaMTX local** com o PGM em `rtmp://127.0.0.1:1935/ch1`, relays supervisionados para destinos externos, preview WebRTC, **cadeia de áudio com medidores e limiter** | No ar |
 | F3 | Ao vivo: **Decklink entrada e saída** com alocação de sub-dispositivos, clock da placa e detecção de sinal; NDI discovery; SRT in/out; chaves e painel de convidados | Ao vivo |
 | F4 | Grafismo: camada CEF, templates + manifest, editor, rundown de GC | Grafismo |
 | F5 | Multicanal e perfis de saída, monitoramento e alertas | Escala |
 | F6 | Automação: regras, geração de grade, log de decisões, Claude opcional | Automação |
 | F7 | Robustez: watchdog, failover slate, as-run log, relatórios, backup | Produção |
 
-## 12. Riscos e mitigações
+## 13. Riscos e mitigações
 
 | Risco | Mitigação |
 |---|---|

@@ -14,6 +14,7 @@ O plano completo de arquitetura, modelo de dados e roadmap está em
 - **Interface:** Web (backend serve a UI, vários operadores)
 - **Canais:** multicanal desde o início
 - **Grafismo:** camada CEF com templates HTML + editor
+- **Áudio:** nivelamento por loudness (EBU R128) com os mesmos escopos do trim; limiter de true peak como proteção
 - **Hardware SDI:** Decklink Duo 2 / Quad 2, entrada e saída, placa como clock mestre
 - **Servidor interno:** MediaMTX local (RTMP/SRT/HLS/WebRTC, ingest e distribuição)
 - **Automação:** motor de regras determinístico, Claude como camada opcional
