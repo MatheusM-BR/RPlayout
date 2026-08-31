@@ -1,0 +1,22 @@
+{
+  "name": "rplayout",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm -r --parallel run typecheck",
+    "lint": "eslint .",
+    "dev": "pnpm -r --parallel run dev"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.14.0",
+    "eslint": "^9.14.0",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.13.0",
+    "vitest": "^2.1.4"
+  }
+}
