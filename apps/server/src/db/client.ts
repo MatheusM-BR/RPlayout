@@ -72,6 +72,24 @@ CREATE TABLE IF NOT EXISTS rundown_items (
 CREATE INDEX IF NOT EXISTS rundown_items_rundown ON rundown_items (rundown_id, sort_order);
 CREATE INDEX IF NOT EXISTS rundown_items_media ON rundown_items (media_id);
 
+CREATE TABLE IF NOT EXISTS guest_keys (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  stream_key TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS destinations (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS operator_decisions (
   id TEXT PRIMARY KEY,
   rundown_id TEXT NOT NULL,

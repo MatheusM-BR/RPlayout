@@ -1,7 +1,7 @@
 import cors from '@fastify/cors'
 import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
-import { createApp, runtimeFor } from './app.js'
+import { createApp, runtimeFor, syncDistribution } from './app.js'
 import { DB_FILE, HOST, PORT } from './config.js'
 import { listChannels, listRundowns } from './db/repo.js'
 import { registerRoutes } from './routes.js'
@@ -47,6 +47,9 @@ async function main(): Promise<void> {
     }
     socket.on('close', () => sockets.delete(socket))
   })
+
+  // O servidor de mídia sobe antes dos canais: é nele que o engine publica.
+  await syncDistribution(app)
 
   // Carrega a primeira grade de cada canal para que o transporte tenha o que
   // executar assim que o servidor sobe.

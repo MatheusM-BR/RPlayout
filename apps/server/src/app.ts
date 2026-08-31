@@ -1,14 +1,25 @@
 import { eq } from 'drizzle-orm'
 import { framesSinceMidnight, type Channel, type MediaAsset, type PreviewTarget } from '@rplayout/protocol'
 import { openDatabase, type Db } from './db/client.js'
-import { assetMap, getChannel, getRundown, listItems } from './db/repo.js'
+import { assetMap, getChannel, getRundown, listChannels, listItems } from './db/repo.js'
 import { rundownItems } from './db/schema.js'
 import { buildView, type RundownView } from './domain/plan.js'
 import { simulateMeter, SILENCE, type MeterReading } from './domain/meters.js'
 import { SimulatedTransport, type Transport } from './domain/transport.js'
 import { EngineTransport } from './domain/engine.js'
 import { History } from './domain/history.js'
-import { ENGINE_BINARY, ENGINE_BITRATE_KBPS, ENGINE_OUTPUTS } from './config.js'
+import {
+  ENGINE_BINARY,
+  ENGINE_BITRATE_KBPS,
+  ENGINE_OUTPUTS,
+  MEDIAMTX_BINARY,
+  MEDIAMTX_BIND,
+  RELAY_BINARY,
+} from './config.js'
+import { MediaMtx, channelPaths, type ChannelPaths } from './domain/mediamtx.js'
+import { RelaySupervisor } from './domain/relays.js'
+import { destinations, guestKeys } from './db/schema.js'
+import { resolve as resolvePath } from 'node:path'
 
 /**
  * Runtime de um canal. Guarda a grade já resolvida em cache porque o
@@ -25,13 +36,15 @@ export class ChannelRuntime {
   constructor(
     readonly channel: Channel,
     private readonly db: Db,
+    /** Para onde este canal sai. Vem do servidor local quando ele existe. */
+    engineOutputs: readonly string[],
   ) {
     // Sem engine configurado, a grade inteira continua operável no simulado:
     // é o que permite montar programação numa máquina sem GStreamer.
     this.transport = ENGINE_BINARY
       ? new EngineTransport(channel, () => this.view, {
           binary: ENGINE_BINARY,
-          outputs: ENGINE_OUTPUTS,
+          outputs: engineOutputs,
           bitrateKbps: ENGINE_BITRATE_KBPS,
         })
       : new SimulatedTransport(channel.id, () => this.view)
@@ -116,13 +129,39 @@ export interface App {
   readonly db: Db
   readonly runtimes: Map<string, ChannelRuntime>
   readonly history: History
+  /** Servidor de mídia local. Nulo quando não há binário configurado. */
+  readonly mediamtx: MediaMtx | null
+  readonly relays: RelaySupervisor
+  /** Caminho de cada canal no servidor local. */
+  paths: ChannelPaths[]
   close(): void
 }
 
 export async function createApp(file: string): Promise<App> {
   const { db, sqlite } = openDatabase(file)
   const runtimes = new Map<string, ChannelRuntime>()
-  return { db, runtimes, history: new History(), close: () => sqlite.close() }
+  const mediamtx = MEDIAMTX_BINARY
+    ? new MediaMtx({
+        binary: MEDIAMTX_BINARY,
+        configPath: resolvePath(process.cwd(), 'mediamtx.yml'),
+        bind: MEDIAMTX_BIND,
+      })
+    : null
+
+  const app: App = {
+    db,
+    runtimes,
+    history: new History(),
+    mediamtx,
+    relays: new RelaySupervisor(RELAY_BINARY),
+    paths: [],
+    close: () => {
+      app.relays.closeAll()
+      mediamtx?.stop()
+      sqlite.close()
+    },
+  }
+  return app
 }
 
 export async function runtimeFor(app: App, channelId: string): Promise<ChannelRuntime | null> {
@@ -132,7 +171,13 @@ export async function runtimeFor(app: App, channelId: string): Promise<ChannelRu
   const channel = await getChannel(app.db, channelId)
   if (!channel) return null
 
-  const runtime = new ChannelRuntime(channel, app.db)
+  const path = app.paths.find((entry) => entry.channelId === channelId)
+  // Havendo servidor local, o engine publica nele por loopback e não fala com
+  // a rede: quem distribui é o servidor, não o encoder.
+  const outputs =
+    app.mediamtx && path ? [MediaMtx.loopback(path.program)] : [...ENGINE_OUTPUTS]
+
+  const runtime = new ChannelRuntime(channel, app.db, outputs)
   app.runtimes.set(channelId, runtime)
   return runtime
 }
@@ -158,4 +203,41 @@ export async function runtimeForItem(app: App, itemId: string): Promise<ChannelR
     .from(rundownItems)
     .where(eq(rundownItems.id, itemId))
   return row ? runtimeForRundown(app, row.rundownId) : null
+}
+
+/**
+ * Põe o servidor local e os relays de acordo com o banco.
+ *
+ * Chamado na subida e depois de toda mudança em chave de convidado ou destino.
+ * Reescrever a config não derruba quem está no ar: o MediaMTX observa o próprio
+ * arquivo e recarrega.
+ */
+export async function syncDistribution(app: App): Promise<void> {
+  const channels = await listChannels(app.db)
+  app.paths = channelPaths(channels)
+
+  if (!app.mediamtx) return
+
+  const guests = await app.db.select().from(guestKeys)
+  await app.mediamtx.apply(
+    app.paths,
+    guests
+      .filter((guest) => guest.enabled)
+      .map((guest) => ({ label: guest.label, streamKey: guest.streamKey })),
+  )
+  app.mediamtx.start()
+  if (!(await app.mediamtx.waitUntilReady())) {
+    console.error('[rplayout] o servidor de mídia local não respondeu; as saídas ficarão mudas.')
+  }
+
+  const targets = await app.db.select().from(destinations)
+  const first = app.paths[0]
+  if (first) {
+    app.relays.sync(
+      targets
+        .filter((target) => target.enabled)
+        .map((target) => ({ id: target.id, name: target.name, url: target.url })),
+      MediaMtx.internalRead(first.program),
+    )
+  }
 }

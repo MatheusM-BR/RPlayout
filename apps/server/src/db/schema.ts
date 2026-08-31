@@ -91,3 +91,26 @@ export const operatorDecisions = sqliteTable('operator_decisions', {
   payload: text('payload', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
   createdAt: text('created_at').notNull(),
 })
+
+/**
+ * Chave de convidado. O caminho no servidor local é a própria chave, então
+ * publicar sem ela é impossível: o caminho simplesmente não existe.
+ */
+export const guestKeys = sqliteTable('guest_keys', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id').notNull(),
+  label: text('label').notNull(),
+  streamKey: text('stream_key').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
+/** Destino externo. Cada um ganha o seu processo de relay. */
+export const destinations = sqliteTable('destinations', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id').notNull(),
+  name: text('name').notNull(),
+  url: text('url').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull(),
+  createdAt: text('created_at').notNull(),
+})

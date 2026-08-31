@@ -51,6 +51,26 @@ pnpm --filter @rplayout/server dev
 `RPLAYOUT_ENGINE_OUTPUT` aceita várias saídas separadas por vírgula: `null`,
 `file:<caminho>`, `rtmp://…`, `srt://…` e `snapshot:<padrão.jpg>`.
 
+### Com o servidor de mídia local
+
+```bash
+RPLAYOUT_MEDIAMTX=/caminho/para/mediamtx \
+RPLAYOUT_RELAY=apps/engine/target/release/rplayout-relay \
+RPLAYOUT_ENGINE=apps/engine/target/release/rplayout-engine \
+pnpm --filter @rplayout/server dev
+```
+
+Com `RPLAYOUT_MEDIAMTX` definido, o engine passa a publicar o programa no
+servidor local por loopback e a variável de saída é ignorada: quem distribui é o
+servidor, não o encoder. A config do MediaMTX é gerada a partir do banco e
+reescrita a cada mudança de chave ou destino -- ele observa o próprio arquivo e
+recarrega, então criar ou revogar chave não derruba quem está no ar.
+
+Portas: RTMP 1935, SRT 8890, HLS 8888, WebRTC 8889. A API de controle (9997) e
+o RTSP interno (8554) ficam em loopback e nunca são abertos no firewall.
+`RPLAYOUT_MEDIAMTX_BIND` escolhe a interface; o padrão vale para a rede local e
+`/api/distribution` informa quando o servidor está exposto a todas.
+
 Para exercitar sem acervo, semeie apontando para uma pasta de arquivos reais:
 `RPLAYOUT_MEDIA_DIR=/caminho/para/midia pnpm --filter @rplayout/server seed`.
 
@@ -86,6 +106,18 @@ Planejamento concluído. **F0** e **F1** entregues:
 - Servidor liga no engine: o take da interface move vídeo de verdade, a posição
   vem de quem está tocando o arquivo, o medidor do programa é medição real e a
   grade vira de item sozinha no fim de cada trecho.
-- Falta: MediaMTX local com os relays por destino, preview por WebRTC, e a
-  medição de loudness R128 no pipeline — hoje o medidor do programa reporta
-  RMS, que é aproximação e está marcado como tal no código.
+- Servidor de mídia local: config gerada do banco, chaves de convidado que
+  criam e revogam caminhos, e o programa publicado por loopback e legível de
+  volta pelo servidor.
+- Falta: **entrega do relay para destino externo** (ver abaixo), preview por
+  WebRTC, e a medição de loudness R128 no pipeline — hoje o medidor do programa
+  reporta RMS, que é aproximação e está marcado como tal no código.
+
+### Pendência conhecida: entrega do relay
+
+O relay conecta na origem e monta a saída com os dois fluxos (`assembled`
+informa `offered: 2, linked: 2`), mas nenhum dado chega ao `rtmp2sink`: o
+destino abre a conexão TCP, espera, e fecha por *i/o timeout* porque o
+publish nunca acontece. A supervisão em volta funciona -- processo por destino,
+estado, tentativas e backoff exponencial -- mas a entrega em si ainda não foi
+verificada de ponta a ponta.

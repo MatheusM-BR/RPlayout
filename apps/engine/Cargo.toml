@@ -15,5 +15,9 @@ anyhow = "1"
 name = "rplayout-engine"
 path = "src/main.rs"
 
+[[bin]]
+name = "rplayout-relay"
+path = "src/bin/relay.rs"
+
 [profile.release]
 opt-level = 2

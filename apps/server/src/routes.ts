@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
 import { trimDuration, type Frames, type MediaAsset, type PreviewTarget } from '@rplayout/protocol'
+import { networkInterfaces } from 'node:os'
 import {
   runtimeFor,
   runtimeForItem,
@@ -11,6 +12,9 @@ import {
   type ChannelRuntime,
 } from './app.js'
 import { listAssets, listChannels, listRundowns } from './db/repo.js'
+import { syncDistribution } from './app.js'
+import { PORTS } from './domain/mediamtx.js'
+import { destinations, guestKeys } from './db/schema.js'
 import { operatorDecisions, rundownItems } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { thumbnailSvg } from './domain/thumbnail.js'
@@ -393,6 +397,115 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { ...snapshot(app, runtime), result }
   })
 
+  // ---- distribuição ----------------------------------------------------
+
+  server.get('/api/distribution', async () => {
+    const host = lanAddress()
+    const [guests, targets, status] = await Promise.all([
+      app.db.select().from(guestKeys),
+      app.db.select().from(destinations),
+      app.mediamtx?.status() ?? Promise.resolve([]),
+    ])
+
+    return {
+      server: {
+        running: app.mediamtx?.running ?? false,
+        // Exposto a todas as interfaces é decisão consciente, e a interface
+        // precisa poder avisar em vermelho quando for o caso.
+        exposed: app.mediamtx?.exposed ?? false,
+        host,
+        ports: PORTS,
+      },
+      channels: app.paths.map((path) => ({
+        channelId: path.channelId,
+        program: path.program,
+        clean: path.clean,
+        urls: app.mediamtx?.urls(path.program, host) ?? null,
+      })),
+      guests: guests.map((guest) => ({
+        ...guest,
+        publishUrl: `rtmp://${host}:${PORTS.rtmp}/guest/${guest.streamKey}`,
+      })),
+      destinations: targets,
+      relays: app.relays.status(),
+      paths: status,
+    }
+  })
+
+  server.post('/api/channels/:id/guests', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z.object({ label: z.string().min(1) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Dê um nome ao convidado.' })
+
+    const streamKey = randomUUID().replace(/-/g, '').slice(0, 20)
+    await app.db.insert(guestKeys).values({
+      id: randomUUID(),
+      channelId: id,
+      label: body.data.label,
+      streamKey,
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    })
+
+    await syncDistribution(app)
+    return {
+      streamKey,
+      publishUrl: `rtmp://${lanAddress()}:${PORTS.rtmp}/guest/${streamKey}`,
+    }
+  })
+
+  server.delete('/api/guests/:id', async (request) => {
+    const { id } = request.params as { id: string }
+    // Revogar é sumir com o caminho: quem tinha a chave passa a publicar no
+    // vazio, sem derrubar quem está no ar.
+    await app.db.delete(guestKeys).where(eq(guestKeys.id, id))
+    await syncDistribution(app)
+    return { ok: true }
+  })
+
+  server.post('/api/channels/:id/destinations', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z
+      .object({ name: z.string().min(1), url: z.string().min(1) })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe nome e endereço.' })
+
+    await app.db.insert(destinations).values({
+      id: randomUUID(),
+      channelId: id,
+      name: body.data.name,
+      url: body.data.url,
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    })
+
+    await syncDistribution(app)
+    return { ok: true }
+  })
+
+  server.patch('/api/destinations/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z
+      .object({
+        name: z.string().min(1).optional(),
+        url: z.string().min(1).optional(),
+        enabled: z.boolean().optional(),
+      })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    await app.db.update(destinations).set(body.data).where(eq(destinations.id, id))
+    await syncDistribution(app)
+    return { ok: true }
+  })
+
+  server.delete('/api/destinations/:id', async (request) => {
+    const { id } = request.params as { id: string }
+    await app.db.delete(destinations).where(eq(destinations.id, id))
+    await syncDistribution(app)
+    return { ok: true }
+  })
+
   // ---- desfazer e refazer ----------------------------------------------
 
   const step = (kind: 'undo' | 'redo') =>
@@ -537,4 +650,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     onChange()
     return snapshot(app, runtime)
   })
+}
+
+/**
+ * Endereço da máquina na rede local, para os endereços que o operador copia.
+ * Sem uma interface externa, sobra o loopback -- que é honesto: se não há rede,
+ * não há como um convidado chegar.
+ */
+function lanAddress(): string {
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.family === 'IPv4' && !address.internal) return address.address
+    }
+  }
+  return '127.0.0.1'
 }

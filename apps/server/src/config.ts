@@ -17,3 +17,17 @@ export const ENGINE_OUTPUTS = (process.env.RPLAYOUT_ENGINE_OUTPUT ?? 'null')
   .filter((entry) => entry !== '')
 
 export const ENGINE_BITRATE_KBPS = Number(process.env.RPLAYOUT_ENGINE_BITRATE ?? 4000)
+
+/** Binário do MediaMTX. Vazio desliga o servidor local por completo. */
+export const MEDIAMTX_BINARY = process.env.RPLAYOUT_MEDIAMTX ?? ''
+
+/**
+ * Em qual interface o servidor local escuta.
+ *
+ * O padrão é a LAN. Abrir para todas as interfaces é decisão consciente, e a
+ * interface avisa quando está assim.
+ */
+export const MEDIAMTX_BIND = process.env.RPLAYOUT_MEDIAMTX_BIND ?? '0.0.0.0'
+
+/** Binário do relay, um processo por destino externo. */
+export const RELAY_BINARY = process.env.RPLAYOUT_RELAY ?? ''
