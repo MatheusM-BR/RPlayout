@@ -1,0 +1,95 @@
+//! Contrato entre o servidor e o engine.
+//!
+//! Uma linha JSON por mensagem, comandos entrando pelo stdin e eventos saindo
+//! pelo stdout. Log vai para o stderr, para nunca contaminar o canal de dados.
+
+use serde::{Deserialize, Serialize};
+
+/// Item que o engine coloca no ar. Tempos em frames, como no resto do sistema.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemSpec {
+    pub item_id: String,
+    pub path: String,
+    pub trim_in: i64,
+    pub trim_out: i64,
+    /// Ganho de nivelamento já resolvido pelo servidor.
+    pub gain_db: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "cmd", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Command {
+    /// Arma um item: abre, decodifica e para no primeiro frame do corte.
+    Load { item: ItemSpec },
+    /// Coloca no ar o que estiver armado.
+    Take,
+    /// Tira do ar e volta para o preto.
+    Stop,
+    /// Muda o ganho do item no ar sem interromper nada.
+    SetGain { gain_db: f64 },
+    Status,
+    Shutdown,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Envelope {
+    pub id: u64,
+    #[serde(flatten)]
+    pub command: Command,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "event", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Event {
+    Ready {
+        channel_id: String,
+        width: i32,
+        height: i32,
+        fps: f64,
+    },
+    Ack {
+        id: u64,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    State {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_air: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        armed: Option<String>,
+    },
+    /// Posição do item no ar, em frames desde o ponto de entrada.
+    Position {
+        item_id: String,
+        frames: i64,
+        duration: i64,
+    },
+    Eos {
+        item_id: String,
+    },
+    /// Medição do mix, em dBFS por canal.
+    Levels {
+        peak: Vec<f64>,
+        rms: Vec<f64>,
+    },
+    /// Quantos frames o compositor entregou. É a prova de que o PGM não parou.
+    Output {
+        frames: u64,
+    },
+    Error {
+        message: String,
+    },
+}
+
+impl Event {
+    /// Serializa numa linha. Falha de serialização vira log, nunca pânico: o
+    /// engine não pode morrer por causa de uma mensagem malformada.
+    pub fn emit(&self) {
+        match serde_json::to_string(self) {
+            Ok(line) => println!("{line}"),
+            Err(error) => eprintln!("[engine] evento não serializou: {error}"),
+        }
+    }
+}

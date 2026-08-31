@@ -1,0 +1,19 @@
+[package]
+name = "rplayout-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Engine de vídeo do RPlayout: um processo por canal, controlado por JSON-RPC no stdio."
+
+[dependencies]
+gstreamer = "0.23"
+gstreamer-audio = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[[bin]]
+name = "rplayout-engine"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2
