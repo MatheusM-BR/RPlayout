@@ -278,7 +278,22 @@ impl Channel {
     }
 
     /// Cadeia de codificação compartilhada. Um encode por perfil de saída.
-    fn encode_chain(&self) -> Result<(gst::Element, gst::Element, gst::Element, gst::Element)> {
+    ///
+    /// O formato do H.264 é do container, não do encoder: FLV quer `avc`, MPEG-TS
+    /// quer `byte-stream`. Deixar a negociação adivinhar produz um fluxo que o
+    /// servidor de destino recusa com "unexpected video packet" -- e como o erro
+    /// sobe pelo pipeline, o canal inteiro cai junto.
+    fn encode_chain(
+        &self,
+        stream_format: &str,
+    ) -> Result<(
+        gst::Element,
+        gst::Element,
+        gst::Element,
+        gst::Element,
+        gst::Element,
+        gst::Element,
+    )> {
         let venc = make("x264enc")?;
         venc.set_property("bitrate", self.config.bitrate_kbps);
         venc.set_property_from_str("tune", "zerolatency");
@@ -287,13 +302,33 @@ impl Channel {
             "key-int-max",
             (self.config.fps_n / self.config.fps_d) as u32 * 2,
         );
+
         let vparse = make("h264parse")?;
+        // Parâmetros do codec voltam de tempos em tempos: quem sintoniza no meio
+        // da transmissão não viu o começo.
+        vparse.set_property("config-interval", -1i32);
+        let vcaps = make("capsfilter")?;
+        vcaps.set_property(
+            "caps",
+            gst::Caps::builder("video/x-h264")
+                .field("stream-format", stream_format)
+                .field("alignment", "au")
+                .build(),
+        );
 
         let aenc = make("avenc_aac")?;
         aenc.set_property("bitrate", 128_000i32);
         let aparse = make("aacparse")?;
+        let acaps = make("capsfilter")?;
+        acaps.set_property(
+            "caps",
+            gst::Caps::builder("audio/mpeg")
+                .field("mpegversion", 4i32)
+                .field("stream-format", if stream_format == "avc" { "raw" } else { "adts" })
+                .build(),
+        );
 
-        Ok((venc, vparse, aenc, aparse))
+        Ok((venc, vparse, vcaps, aenc, aparse, acaps))
     }
 
     fn attach_output(
@@ -327,27 +362,27 @@ impl Channel {
                 gst::Element::link_many([&aqueue, &asink])?;
             }
             Output::File(path) => {
-                let (venc, vparse, aenc, aparse) = self.encode_chain()?;
+                let (venc, vparse, vcaps, aenc, aparse, acaps) = self.encode_chain("avc")?;
                 let mux = make("matroskamux")?;
                 let sink = make("filesink")?;
                 sink.set_property("location", path);
                 self.pipeline
-                    .add_many([&venc, &vparse, &aenc, &aparse, &mux, &sink])?;
-                gst::Element::link_many([&vqueue, &venc, &vparse, &mux, &sink])?;
-                gst::Element::link_many([&aqueue, &aenc, &aparse])?;
-                aparse.link(&mux)?;
+                    .add_many([&venc, &vparse, &vcaps, &aenc, &aparse, &acaps, &mux, &sink])?;
+                gst::Element::link_many([&vqueue, &venc, &vparse, &vcaps, &mux, &sink])?;
+                gst::Element::link_many([&aqueue, &aenc, &aparse, &acaps])?;
+                acaps.link(&mux)?;
             }
             Output::Rtmp(url) => {
-                let (venc, vparse, aenc, aparse) = self.encode_chain()?;
+                let (venc, vparse, vcaps, aenc, aparse, acaps) = self.encode_chain("avc")?;
                 let mux = make("flvmux")?;
                 mux.set_property("streamable", true);
                 let sink = make("rtmp2sink")?;
                 sink.set_property("location", url);
                 self.pipeline
-                    .add_many([&venc, &vparse, &aenc, &aparse, &mux, &sink])?;
-                gst::Element::link_many([&vqueue, &venc, &vparse, &mux, &sink])?;
-                gst::Element::link_many([&aqueue, &aenc, &aparse])?;
-                aparse.link(&mux)?;
+                    .add_many([&venc, &vparse, &vcaps, &aenc, &aparse, &acaps, &mux, &sink])?;
+                gst::Element::link_many([&vqueue, &venc, &vparse, &vcaps, &mux, &sink])?;
+                gst::Element::link_many([&aqueue, &aenc, &aparse, &acaps])?;
+                acaps.link(&mux)?;
             }
             Output::Snapshot(pattern) => {
                 let rate = make("videorate")?;
@@ -372,15 +407,16 @@ impl Channel {
                 gst::Element::link_many([&aqueue, &asink])?;
             }
             Output::Srt(uri) => {
-                let (venc, vparse, aenc, aparse) = self.encode_chain()?;
+                let (venc, vparse, vcaps, aenc, aparse, acaps) =
+                    self.encode_chain("byte-stream")?;
                 let mux = make("mpegtsmux")?;
                 let sink = make("srtsink")?;
                 sink.set_property("uri", uri);
                 self.pipeline
-                    .add_many([&venc, &vparse, &aenc, &aparse, &mux, &sink])?;
-                gst::Element::link_many([&vqueue, &venc, &vparse, &mux, &sink])?;
-                gst::Element::link_many([&aqueue, &aenc, &aparse])?;
-                aparse.link(&mux)?;
+                    .add_many([&venc, &vparse, &vcaps, &aenc, &aparse, &acaps, &mux, &sink])?;
+                gst::Element::link_many([&vqueue, &venc, &vparse, &vcaps, &mux, &sink])?;
+                gst::Element::link_many([&aqueue, &aenc, &aparse, &acaps])?;
+                acaps.link(&mux)?;
             }
         }
 

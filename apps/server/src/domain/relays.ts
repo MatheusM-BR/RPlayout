@@ -16,6 +16,10 @@ export interface RelayStatus {
   readonly state: RelayState
   readonly attempts: number
   readonly reason: string | null
+  /** Buffers entregues ao destino. Cresce enquanto o sinal está passando. */
+  readonly delivered: number
+  /** Fluxos que a origem ofereceu, como o relay os classificou. */
+  readonly streams: readonly string[]
 }
 
 interface Relay {
@@ -24,6 +28,8 @@ interface Relay {
   state: RelayState
   attempts: number
   reason: string | null
+  delivered: number
+  streams: string[]
 }
 
 /**
@@ -70,6 +76,8 @@ export class RelaySupervisor {
       state: 'CONECTANDO',
       attempts: 0,
       reason: null,
+      delivered: 0,
+      streams: [],
     }
     this.relays.set(target.id, relay)
 
@@ -82,15 +90,25 @@ export class RelaySupervisor {
             attempt?: number
             reason?: string
             message?: string
+            sink?: number
+            streams?: string[]
           }
           switch (event.event) {
             case 'connecting':
               relay.state = 'CONECTANDO'
               relay.attempts = event.attempt ?? relay.attempts
               break
+            case 'assembled':
+              relay.streams = event.streams ?? []
+              break
             case 'connected':
               relay.state = 'NO AR'
               relay.reason = null
+              break
+            case 'flow':
+              // Entregue de verdade, não "conectado": é o número que diz se o
+              // destino está recebendo alguma coisa.
+              relay.delivered = event.sink ?? relay.delivered
               break
             case 'disconnected':
               relay.state = 'CAIU'
@@ -125,6 +143,8 @@ export class RelaySupervisor {
       state: relay.state,
       attempts: relay.attempts,
       reason: relay.reason,
+      delivered: relay.delivered,
+      streams: relay.streams,
     }))
   }
 

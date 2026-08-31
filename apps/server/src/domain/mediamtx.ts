@@ -154,9 +154,15 @@ export class MediaMtx {
     this.child = spawn(this.options.binary, [this.options.configPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-    this.child.stderr?.on('data', (chunk: Buffer) => {
-      process.stderr.write(`[mediamtx] ${chunk.toString()}`)
-    })
+
+    // O MediaMTX loga no stdout. Um cano que ninguém lê enche, e aí o processo
+    // trava na hora de logar: a API continua respondendo e a publicação para de
+    // funcionar sem nenhum erro aparecer em lugar nenhum.
+    for (const stream of [this.child.stdout, this.child.stderr]) {
+      stream?.on('data', (chunk: Buffer) => {
+        process.stderr.write(`[mediamtx] ${chunk.toString()}`)
+      })
+    }
     this.child.on('exit', () => {
       this.child = null
     })

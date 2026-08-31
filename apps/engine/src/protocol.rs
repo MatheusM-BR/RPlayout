@@ -88,7 +88,12 @@ impl Event {
     /// engine não pode morrer por causa de uma mensagem malformada.
     pub fn emit(&self) {
         match serde_json::to_string(self) {
-            Ok(line) => println!("{line}"),
+            Ok(line) => {
+                // Quem lê isto é um supervisor, não um terminal: sem flush o
+                // stdout fica em bloco e o servidor passa minutos sem notícia.
+                println!("{line}");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
             Err(error) => eprintln!("[engine] evento não serializou: {error}"),
         }
     }
