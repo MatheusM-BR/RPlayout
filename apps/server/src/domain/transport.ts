@@ -1,13 +1,20 @@
-import { framesSinceMidnight, type Frames, type OnAirState } from '@rplayout/protocol'
+import {
+  framesSinceMidnight,
+  type Frames,
+  type OnAirState,
+  type PreviewTarget,
+} from '@rplayout/protocol'
 import type { RundownView } from './plan.js'
 
 export interface TransportState {
   readonly channelId: string
   readonly rundownId: string | null
   readonly onAir: OnAirState | null
-  /** Item aberto no preview. Independente do que está no ar. */
-  readonly previewItemId: string | null
+  /** O que está aberto no preview: item da grade ou arquivo do explorador. */
+  readonly preview: PreviewTarget | null
   readonly playing: boolean
+  /** Grade parada com um item armado, esperando o take. */
+  readonly standby: boolean
 }
 
 /**
@@ -21,7 +28,7 @@ export class SimulatedTransport {
   private rundownId: string | null = null
   private onAirItemId: string | null = null
   private startedAt: Frames = 0
-  private previewItemId: string | null = null
+  private preview: PreviewTarget | null = null
   private playing = false
 
   constructor(
@@ -35,8 +42,9 @@ export class SimulatedTransport {
       channelId: this.channelId,
       rundownId: this.rundownId,
       onAir: this.onAir(),
-      previewItemId: this.previewItemId,
+      preview: this.preview,
       playing: this.playing,
+      standby: !this.playing && this.preview?.kind === 'ITEM',
     }
   }
 
@@ -60,15 +68,28 @@ export class SimulatedTransport {
     this.onAirItemId = itemId
     this.startedAt = this.nowFrames()
     this.playing = true
+    this.preview = null
   }
 
-  cue(itemId: string | null): void {
-    this.previewItemId = itemId
+  cue(target: PreviewTarget | null): void {
+    this.preview = target
   }
 
+  /**
+   * Tira do ar e deixa armado onde parou. Parar não é perder o lugar: o
+   * operador quase sempre quer voltar do mesmo ponto.
+   */
   stop(): void {
+    if (this.onAirItemId) this.preview = { kind: 'ITEM', id: this.onAirItemId }
     this.playing = false
     this.onAirItemId = null
+  }
+
+  /** Arma a grade no primeiro item, parada, pronta para entrar no ar. */
+  park(itemId: string): void {
+    this.playing = false
+    this.onAirItemId = null
+    this.preview = { kind: 'ITEM', id: itemId }
   }
 
   /**
@@ -98,16 +119,21 @@ export class SimulatedTransport {
       return true
     }
 
-    const next = view.items
-      .slice(index + 1)
-      .find((v) => view.schedule.items.find((i) => i.id === v.item.id)?.state !== 'DROPPED')
+    const playable = (position: number): string | null => {
+      const candidate = view.items
+        .slice(position)
+        .find((v) => view.schedule.items.find((i) => i.id === v.item.id)?.state !== 'DROPPED')
+      return candidate?.item.id ?? null
+    }
 
+    // Programação não acaba: chegou no fim, volta para o topo.
+    const next = playable(index + 1) ?? (view.rundown.loop ? playable(0) : null)
     if (!next) {
       this.stop()
       return true
     }
 
-    this.onAirItemId = next.item.id
+    this.onAirItemId = next
     this.startedAt = this.startedAt + duration
     return true
   }

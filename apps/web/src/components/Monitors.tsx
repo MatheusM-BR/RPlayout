@@ -8,7 +8,8 @@ interface Props {
   live: Live
   onAirItem: ItemView | null
   onAirRemaining: number
-  previewItem: ItemView | null
+  /** O que está no preview: título e duração, venha de item ou de arquivo. */
+  preview: { title: string; duration: number; fromExplorer: boolean } | null
 }
 
 /**
@@ -16,7 +17,7 @@ interface Props {
  * está no ar — na F2 quem alimenta os dois são pipelines separados; aqui o
  * layout e o contrato já são os definitivos.
  */
-export function Monitors({ channel, live, onAirItem, onAirRemaining, previewItem }: Props) {
+export function Monitors({ channel, live, onAirItem, onAirRemaining, preview }: Props) {
   const ending = onAirRemaining > 0 && onAirRemaining <= 10 * (channel.rate.num / channel.rate.den)
 
   return (
@@ -47,12 +48,11 @@ export function Monitors({ channel, live, onAirItem, onAirRemaining, previewItem
           <span>preview</span>
         </div>
         <div className="screen">
-          {previewItem ? (
+          {preview ? (
             <>
-              <div className="what">{previewItem.item.title}</div>
-              <div className="tc">
-                {dur(previewItem.trim.out - previewItem.trim.in, channel.rate)}
-              </div>
+              <div className="what">{preview.title}</div>
+              <div className="tc">{dur(preview.duration, channel.rate)}</div>
+              {preview.fromExplorer && <div className="idle">arquivo · fora da grade</div>}
             </>
           ) : (
             <div className="idle">NADA ARMADO</div>

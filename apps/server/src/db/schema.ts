@@ -48,6 +48,7 @@ export const rundowns = sqliteTable('rundowns', {
   name: text('name').notNull(),
   /** Início da grade, em frames desde a meia-noite. */
   plannedStart: integer('planned_start').notNull(),
+  loop: integer('loop', { mode: 'boolean' }).notNull(),
   date: text('date').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),

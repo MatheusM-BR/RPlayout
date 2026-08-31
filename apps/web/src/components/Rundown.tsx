@@ -1,5 +1,5 @@
-import type { Rate, ResolvedItem } from '@rplayout/protocol'
-import { describeAdjustment } from '@rplayout/scheduler'
+import { useEffect, useRef, useState } from 'react'
+import type { ItemType, Rate, ResolvedItem } from '@rplayout/protocol'
 import type { ItemView } from '../types.js'
 import { clock, db, deviation, dur } from '../format.js'
 
@@ -15,49 +15,78 @@ interface Props {
   onSelect: (id: string) => void
   onOpenTrim: (view: ItemView) => void
   onOpenAudio: (view: ItemView) => void
+  onNotes: (id: string, notes: string) => void
 }
 
-function anchorChip(view: ItemView, rate: Rate) {
-  const anchor = view.item.anchor
-  switch (anchor.kind) {
-    case 'FLOW':
-      return <span className="chip flow">FLOW</span>
-    case 'FIXED':
-      return <span className="chip fixed">FIXO {clock(anchor.at, rate)}</span>
-    case 'SOFT':
-      return (
-        <span className="chip soft">
-          {clock(anchor.at, rate)} ±{dur(anchor.tolerance, rate)}
-        </span>
-      )
-    case 'WINDOW':
-      return (
-        <span className="chip window">
-          {clock(anchor.from, rate)}–{clock(anchor.to, rate)}
-        </span>
-      )
-  }
+const TYPE_LABEL: Record<ItemType, string> = {
+  VT: 'VT',
+  LIVE: 'AO VIVO',
+  GFX: 'GC',
+  SLATE: 'SLATE',
+  COMMERCIAL: 'COMERCIAL',
+  FILLER: 'FILLER',
+}
+
+/** Campo de observação da linha. Salva ao sair, não a cada tecla. */
+function Notes({ value, onSave }: { value: string; onSave: (text: string) => void }) {
+  const [text, setText] = useState(value)
+  useEffect(() => setText(value), [value])
+
+  return (
+    <input
+      className="obs"
+      type="text"
+      value={text}
+      title={text || 'Observação da linha'}
+      placeholder="—"
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={() => text !== value && onSave(text)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') event.currentTarget.blur()
+        if (event.key === 'Escape') setText(value)
+      }}
+    />
+  )
 }
 
 export function Rundown(props: Props) {
   const { rate } = props
+  const liveRow = useRef<HTMLTableRowElement | null>(null)
+
+  // A linha no ar não pode sumir da tela numa grade de duzentos itens.
+  useEffect(() => {
+    liveRow.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [props.onAirId])
+
+  const airIndex = props.items.findIndex((view) => view.item.id === props.onAirId)
+  // O que entra depois do atual, pulando o que o scheduler descartou.
+  const nextId =
+    airIndex >= 0
+      ? (props.items
+          .slice(airIndex + 1)
+          .find((view) => props.schedule.get(view.item.id)?.state !== 'DROPPED')?.item.id ?? null)
+      : null
 
   return (
     <table className="rd">
       <thead>
         <tr>
-          <th style={{ width: 34 }}>#</th>
-          <th style={{ width: 56 }}>estado</th>
+          <th style={{ width: 30 }}>#</th>
+          <th style={{ width: 46 }} />
           <th>item</th>
-          <th style={{ width: 82 }}>entrada</th>
-          <th style={{ width: 66 }}>duração</th>
-          <th style={{ width: 82 }}>saída</th>
-          <th style={{ width: 78 }}>restante</th>
-          <th style={{ width: 140 }}>âncora</th>
-          <th style={{ width: 62 }} className="right">
+          <th style={{ width: 150 }}>obs</th>
+          <th style={{ width: 74 }}>entrada</th>
+          <th style={{ width: 62 }}>duração</th>
+          <th style={{ width: 74 }}>saída</th>
+          <th style={{ width: 66 }} className="right">
+            restante
+          </th>
+          <th style={{ width: 118 }}>âncora</th>
+          <th style={{ width: 54 }} className="right">
             ganho
           </th>
-          <th style={{ width: 92 }} />
+          <th style={{ width: 84 }} />
         </tr>
       </thead>
       <tbody>
@@ -67,11 +96,14 @@ export function Rundown(props: Props) {
           if (!scheduled) return null
 
           const live = id === props.onAirId
+          const armed = id === props.selectedId
+          const shortened = scheduled.duration < scheduled.plannedDuration
+          const anchor = view.item.anchor
+
           const classes = [
             live ? 'live' : '',
-            scheduled.state === 'DONE' ? 'done' : '',
             scheduled.state === 'DROPPED' ? 'dropped' : '',
-            props.selectedId === id ? 'sel' : '',
+            armed ? 'sel' : '',
             props.errorIds.has(id) ? 'err' : '',
           ]
             .filter(Boolean)
@@ -82,73 +114,89 @@ export function Rundown(props: Props) {
               ? Math.min(1, Math.max(0, 1 - props.remainingOnAir / scheduled.duration))
               : 0
 
-          const trimmed = view.item.trim !== null
-          const levelled = Math.abs(view.gainDb) >= 0.05
-
           return (
-            <tr key={id} className={classes} onClick={() => props.onSelect(id)}>
+            <tr
+              key={id}
+              ref={live ? liveRow : null}
+              className={classes}
+              onClick={() => props.onSelect(id)}
+            >
               <td className="num">{String(index + 1).padStart(2, '0')}</td>
               <td>
                 {live ? (
                   <span className="state air">NO AR</span>
-                ) : scheduled.state === 'DONE' ? (
-                  <span className="state done">FEITO</span>
-                ) : props.selectedId === id ? (
+                ) : armed ? (
                   <span className="state nxt">CUE</span>
-                ) : (
-                  <span className="num">—</span>
-                )}
+                ) : id === nextId ? (
+                  <span className="state next">PRÓX</span>
+                ) : null}
               </td>
               <td className="title">
                 {view.item.title}
-                <div style={{ marginTop: 3 }}>
-                  <span className="chip src">{view.item.type}</span>
+                <div className="tags">
+                  <span className="chip src">{TYPE_LABEL[view.item.type]}</span>
                   {view.item.sourceRef && <span className="chip src">{view.item.sourceRef}</span>}
                   {view.item.locked && <span className="chip lock">TRAVADO</span>}
-                  {trimmed && <span className="chip">CORTE PRÓPRIO</span>}
-                  {view.trimSource === 'ASSET' && <span className="chip">CORTE DO ACERVO</span>}
-                  {scheduled.adjustments.map((adjustment, position) => (
-                    <span
-                      key={position}
-                      className={`chip ${adjustment.kind === 'GAP_BEFORE' ? 'warn' : 'adj'}`}
-                      title={adjustment.reason}
-                    >
-                      {describeAdjustment(adjustment)} {dur(adjustment.frames, rate)}
-                    </span>
-                  ))}
                 </div>
               </td>
-              <td>{clock(scheduled.start, rate)}</td>
               <td>
+                <Notes
+                  value={view.item.notes ?? ''}
+                  onSave={(text) => props.onNotes(id, text)}
+                />
+              </td>
+              <td>{clock(scheduled.start, rate)}</td>
+              <td
+                className={shortened ? 'shortened' : ''}
+                title={
+                  shortened
+                    ? `Planejado ${dur(scheduled.plannedDuration, rate)}. ${scheduled.adjustments
+                        .map((adjustment) => adjustment.reason)
+                        .join(' ')}`
+                    : undefined
+                }
+              >
                 {dur(scheduled.duration, rate)}
-                {scheduled.duration !== scheduled.plannedDuration && (
-                  <span className="num"> / {dur(scheduled.plannedDuration, rate)}</span>
-                )}
               </td>
               <td>{clock(scheduled.end, rate)}</td>
-              <td>
+              <td className="right">
                 {live ? (
-                  <div className="bar">
-                    <i style={{ width: `${progress * 100}%` }} />
-                  </div>
-                ) : (
-                  <span className="num">—</span>
-                )}
+                  <>
+                    <span className="remain">{dur(props.remainingOnAir, rate)}</span>
+                    <div className="bar">
+                      <i style={{ width: `${progress * 100}%` }} />
+                    </div>
+                  </>
+                ) : null}
               </td>
               <td>
-                {anchorChip(view, rate)}
-                {view.item.anchor.kind !== 'FLOW' && (
-                  <div className="num" style={{ fontSize: 10, marginTop: 2 }}>
+                {anchor.kind === 'FIXED' && (
+                  <span className="chip fixed">FIXO {clock(anchor.at, rate)}</span>
+                )}
+                {anchor.kind === 'SOFT' && (
+                  <span className="chip soft">
+                    {clock(anchor.at, rate)} ±{dur(anchor.tolerance, rate)}
+                  </span>
+                )}
+                {anchor.kind === 'WINDOW' && (
+                  <span className="chip window">
+                    {clock(anchor.from, rate)}–{clock(anchor.to, rate)}
+                  </span>
+                )}
+                {anchor.kind !== 'FLOW' && (
+                  <div className={`devi${scheduled.anchorHit ? '' : ' bad'}`}>
                     {scheduled.anchorHit ? deviation(scheduled.deviation, rate) : 'fora da janela'}
                   </div>
                 )}
               </td>
               <td className="right">
                 <span
-                  className={`gain ${levelled ? (view.gainDb > 0 ? 'up' : 'down') : 'zero'}`}
+                  className={`gain ${
+                    Math.abs(view.gainDb) >= 0.05 ? (view.gainDb > 0 ? 'up' : 'down') : 'zero'
+                  }`}
                   title={`Nível ${view.audio.mode}, origem ${view.audioSource}`}
                 >
-                  {levelled ? db(view.gainDb) : '—'}
+                  {Math.abs(view.gainDb) >= 0.05 ? db(view.gainDb) : ''}
                 </span>
               </td>
               <td>

@@ -20,6 +20,14 @@ export interface PlanItem {
   readonly locked: boolean
 }
 
+/**
+ * O que está aberto no preview. Pode ser um item da grade ou um arquivo do
+ * explorador — abrir um arquivo para conferir não obriga a colocá-lo na grade.
+ */
+export type PreviewTarget =
+  | { readonly kind: 'ITEM'; readonly id: string }
+  | { readonly kind: 'ASSET'; readonly id: string }
+
 /** Estado do item que está no ar agora, vindo do engine. */
 export interface OnAirState {
   readonly itemId: string

@@ -95,6 +95,7 @@ beforeEach(async () => {
       channelId,
       name,
       plannedStart: 0,
+      loop: true,
       date: '2026-08-31',
       createdAt: now,
       updatedAt: now,

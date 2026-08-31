@@ -62,6 +62,26 @@ describe('encadeamento simples', () => {
     expect(result.conflicts).toHaveLength(0)
   })
 
+  it('com o início já vencido e nada no ar, projeta a partir de agora', () => {
+    order = 0
+    const result = resolve({
+      rate,
+      items: [item({ id: 'a', duration: s(60) }), item({ id: 'b', duration: s(60) })],
+      now: at(12, 0),
+      onAir: null,
+      plannedStart: at(4, 30),
+    })
+
+    expect(clock(byId(result, 'a').start)).toBe('12:00:00')
+    expect(clock(byId(result, 'b').start)).toBe('12:01:00')
+  })
+
+  it('planejamento offline respeita o início planejado', () => {
+    order = 0
+    const result = plan([item({ id: 'a', duration: s(60) })], at(4, 30))
+    expect(clock(byId(result, 'a').start)).toBe('04:30:00')
+  })
+
   it('grade vazia devolve o início planejado', () => {
     const result = plan([], at(6, 0))
     expect(result.items).toHaveLength(0)
@@ -330,11 +350,12 @@ describe('com item no ar', () => {
     expect(clock(byId(result, 'depois').start)).toBe('19:02:30')
   })
 
-  it('avisa quando a âncora já passou', () => {
+  it('âncora vencida é reportada e o item entra no fluxo, sem rebobinar a grade', () => {
     order = 0
     const items = [
       item({ id: 'vt', duration: s(60) }),
       item({ id: 'perdido', duration: s(60), anchor: { kind: 'FIXED', at: at(18, 0) } }),
+      item({ id: 'depois', duration: s(30) }),
     ]
 
     const result = resolve({
@@ -346,6 +367,41 @@ describe('com item no ar', () => {
     })
 
     expect(result.conflicts.some((c) => c.kind === 'ANCHOR_PAST')).toBe(true)
+    expect(result.suggestions.some((sg) => sg.action === 'MOVE_ANCHOR')).toBe(true)
+
+    // O item não volta para as 18:00: entra logo depois do anterior.
+    expect(clock(byId(result, 'perdido').start)).toBe('19:01:00')
+    expect(clock(byId(result, 'depois').start)).toBe('19:02:00')
+  })
+
+  it('nenhum item entra antes do anterior sair, em nenhum cenário', () => {
+    order = 0
+    // Mistura tudo: âncora vencida, âncora fixa apertada e item no ar.
+    const items = [
+      item({ id: 'ar', duration: s(300), minDuration: s(60), onOverrun: 'TRIM_PREV' }),
+      item({ id: 'vencida', duration: s(60), anchor: { kind: 'FIXED', at: at(4, 0) } }),
+      item({ id: 'apertada', duration: s(120), anchor: { kind: 'FIXED', at: at(12, 1) } }),
+      item({ id: 'solta', duration: s(45) }),
+      item({ id: 'flexivel', duration: s(30), anchor: soft(at(3, 0), s(30)) }),
+    ]
+
+    const result = resolve({
+      rate,
+      items,
+      now: at(12, 2),
+      onAir: { itemId: 'ar', startedAt: at(12, 0), elapsed: s(120) },
+      plannedStart: at(12, 0),
+    })
+
+    for (const current of result.items) {
+      expect(current.end).toBeGreaterThanOrEqual(current.start)
+    }
+    const live = result.items.filter((current) => current.state !== 'DROPPED')
+    for (let index = 1; index < live.length; index++) {
+      const previous = live[index - 1]!
+      const next = live[index]!
+      expect(next.start).toBeGreaterThanOrEqual(previous.end)
+    }
   })
 })
 

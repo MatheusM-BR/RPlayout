@@ -1,5 +1,6 @@
 import type {
   AudioLevel,
+  PreviewTarget,
   Channel,
   Frames,
   MediaAsset,
@@ -43,11 +44,23 @@ export interface Live {
     channelId: string
     rundownId: string | null
     onAir: { itemId: string; startedAt: Frames; elapsed: Frames } | null
-    previewItemId: string | null
+    preview: PreviewTarget | null
     playing: boolean
+    standby: boolean
   }
   now: Frames
   meters: { program: MeterReading; preview: MeterReading }
+}
+
+/** Arquivo do explorador, com o caminho já quebrado para exibição. */
+export interface LibraryAsset extends MediaAsset {
+  fileName: string
+  thumbnailUrl: string
+}
+
+export interface LibraryFolder {
+  name: string
+  assets: LibraryAsset[]
 }
 
 export interface Snapshot {

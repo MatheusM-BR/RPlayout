@@ -37,6 +37,17 @@ const loudness = (
 
 const AUTO: AudioLevel = { mode: 'AUTO', gainDb: 0, measured: null }
 
+/** O explorador monta a árvore a partir do caminho, então o caminho importa. */
+const FOLDER: Record<string, string> = {
+  vinheta: 'Vinhetas',
+  comercial: 'Comerciais',
+  reportagem: 'Reportagens',
+  programa: 'Programas',
+  quadro: 'Quadros',
+  chamada: 'Chamadas',
+  filler: 'Fillers',
+}
+
 interface AssetSeed {
   key: string
   title: string
@@ -167,16 +178,18 @@ const ITEMS: ItemSeed[] = [
   { asset: 'com-supermercado', type: 'COMMERCIAL', locked: true },
   { asset: 'com-concessionaria', type: 'COMMERCIAL', locked: true },
   { asset: 'porto-seco', type: 'VT', minSeconds: 140, onOverrun: 'TRIM_PREV' },
-  {
-    asset: 'vinheta-bloco',
-    type: 'VT',
-    anchor: { kind: 'SOFT', at: after(9 * 60 + 28), tolerance: s(90), priority: 3 },
-  },
+  // O filler vem antes da âncora: elástico só cobre folga do que está à frente
+  // dele, então colocá-lo depois seria deixá-lo sem serventia.
   {
     asset: 'institucional',
     type: 'FILLER',
     onOverrun: 'DROP_FILLER',
-    elastic: { min: s(10), max: s(90) },
+    elastic: { min: s(10), max: s(300) },
+  },
+  {
+    asset: 'vinheta-bloco',
+    type: 'VT',
+    anchor: { kind: 'SOFT', at: after(9 * 60 + 28), tolerance: s(90), priority: 3 },
   },
   {
     title: 'Estúdio ao vivo — SDI 1 (Quad 2)',
@@ -236,7 +249,7 @@ async function seed(): Promise<void> {
     await db.insert(mediaAssets).values({
       id,
       contentHash: hash(asset.key),
-      path: `D:/media/${asset.key}.mxf`,
+      path: `D:/Media/${FOLDER[asset.category] ?? 'Diversos'}/${asset.key}.mxf`,
       title: asset.title,
       kind: 'VIDEO',
       durationFrames: s(asset.seconds),
@@ -255,6 +268,7 @@ async function seed(): Promise<void> {
     channelId,
     name: 'Grade — noite',
     plannedStart: START,
+    loop: true,
     date: new Date().toISOString().slice(0, 10),
     createdAt: now,
     updatedAt: now,

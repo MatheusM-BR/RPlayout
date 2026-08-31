@@ -132,6 +132,11 @@ export interface Rundown {
   readonly name: string
   /** Início planejado da grade, em frames desde a meia-noite. */
   readonly plannedStart: Frames
+  /**
+   * Programação não acaba: ao terminar o último item, volta para o primeiro.
+   * Desligue só para uma grade de evento, que tem fim de verdade.
+   */
+  readonly loop: boolean
   readonly date: string
   readonly createdAt: string
   readonly updatedAt: string

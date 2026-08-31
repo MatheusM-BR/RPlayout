@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { anchorTarget } from '@rplayout/protocol'
-import type { AudioLevel, Anchor, EditScope, MediaAsset, Trim } from '@rplayout/protocol'
+import type { AudioLevel, Anchor, EditScope, Trim } from '@rplayout/protocol'
 import { api } from './api.js'
-import { clock, dur, lufs } from './format.js'
-import type { ItemView, Live, RundownView, Snapshot } from './types.js'
+import { clock, dur } from './format.js'
+import type { ItemView, LibraryAsset, LibraryFolder, Live, RundownView, Snapshot } from './types.js'
 import { AddItemDialog } from './components/AddItemDialog.js'
 import { AudioDialog } from './components/AudioDialog.js'
+import { Explorer } from './components/Explorer.js'
 import { Monitors } from './components/Monitors.js'
 import { Rundown } from './components/Rundown.js'
 import { TrimDialog } from './components/TrimDialog.js'
@@ -19,11 +20,16 @@ type Dialog =
 export function App() {
   const [view, setView] = useState<RundownView | null>(null)
   const [live, setLive] = useState<Live | null>(null)
-  const [assets, setAssets] = useState<MediaAsset[]>([])
+  const [folders, setFolders] = useState<LibraryFolder[]>([])
   const [dialog, setDialog] = useState<Dialog>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
+
+  const assets = useMemo<LibraryAsset[]>(
+    () => folders.flatMap((folder) => folder.assets),
+    [folders],
+  )
 
   const say = useCallback((message: string) => {
     setToast(message)
@@ -36,24 +42,20 @@ export function App() {
     setLive(snapshot.live)
   }, [])
 
-  const guard = useCallback(
-    async (action: () => Promise<void>) => {
-      try {
-        await action()
-        setError(null)
-      } catch (failure) {
-        setError(failure instanceof Error ? failure.message : 'Falha inesperada.')
-      }
-    },
-    [],
-  )
+  const guard = useCallback(async (action: () => Promise<void>) => {
+    try {
+      await action()
+      setError(null)
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Falha inesperada.')
+    }
+  }, [])
 
-  // Carga inicial: primeira grade do primeiro canal.
   useEffect(() => {
     void (async () => {
       try {
-        const [state, catalogue] = await Promise.all([api.state(), api.assets()])
-        setAssets(catalogue.assets)
+        const [state, library] = await Promise.all([api.state(), api.library()])
+        setFolders(library.folders)
         const first = state.rundowns[0]
         if (first) absorb(await api.rundown(first.id))
       } catch (failure) {
@@ -62,8 +64,6 @@ export function App() {
     })()
   }, [absorb])
 
-  // Estado ao vivo. A grade chega inteira quando muda de forma; o resto é o
-  // relógio, o transporte e os medidores.
   useEffect(() => {
     const socket = new WebSocket(`ws://${window.location.host}/ws`)
     socket.addEventListener('message', (event: MessageEvent<string>) => {
@@ -94,10 +94,11 @@ export function App() {
     [view],
   )
 
-  // Selecionar uma linha é armar o preview: quem manda é o estado do canal, não
-  // um destaque só de tela. Assim o medidor de preview mostra o que está armado.
-  const selectedId = live?.transport.previewItemId ?? null
+  const target = live?.transport.preview ?? null
+  const selectedId = target?.kind === 'ITEM' ? target.id : null
+  const openAssetId = target?.kind === 'ASSET' ? target.id : null
   const onAirId = live?.transport.onAir?.itemId ?? null
+
   const onAirItem = view?.items.find((item) => item.item.id === onAirId) ?? null
   const selected = view?.items.find((item) => item.item.id === selectedId) ?? null
 
@@ -107,38 +108,61 @@ export function App() {
     return Math.max(0, (scheduled?.duration ?? 0) - live.transport.onAir.elapsed)
   }, [live, onAirId, schedule])
 
-  const cue = useCallback(
-    (itemId: string | null) =>
-      guard(async () => {
-        if (!view) return
-        absorb(await api.transport(view.channel.id, 'cue', itemId))
-      }),
-    [view, guard, absorb],
-  )
+  /** O que a interface desenha no monitor de preview, venha de onde vier. */
+  const previewCard = useMemo(() => {
+    if (target?.kind === 'ITEM' && selected) {
+      return {
+        title: selected.item.title,
+        duration: schedule.get(selected.item.id)?.duration ?? 0,
+        fromExplorer: false,
+      }
+    }
+    if (target?.kind === 'ASSET') {
+      const asset = assets.find((candidate) => candidate.id === target.id)
+      if (asset) {
+        return { title: asset.title, duration: asset.durationFrames, fromExplorer: true }
+      }
+    }
+    return null
+  }, [target, selected, schedule, assets])
 
-  const take = useCallback(
-    (itemId: string | null) =>
-      guard(async () => {
-        if (!view || !itemId) return
-        absorb(await api.transport(view.channel.id, 'take', itemId))
-      }),
-    [view, guard, absorb],
-  )
+  /**
+   * Próximo item com hora marcada. É a informação que o operador realmente
+   * precisa no alto da tela: quanto falta para o compromisso seguinte.
+   */
+  const commitment = useMemo(() => {
+    if (!view || !live) return null
+    for (const item of view.items) {
+      if (item.item.anchor.kind === 'FLOW') continue
+      const scheduled = schedule.get(item.item.id)
+      if (!scheduled || scheduled.state === 'DROPPED') continue
+      if (scheduled.start <= live.now) continue
+      return { title: item.item.title, at: scheduled.start, left: scheduled.start - live.now }
+    }
+    return null
+  }, [view, live, schedule])
 
-  const stop = useCallback(
+  const totalDuration = useMemo(
     () =>
+      (view?.schedule.items ?? [])
+        .filter((item) => item.state !== 'DROPPED')
+        .reduce((sum, item) => sum + item.duration, 0),
+    [view],
+  )
+
+  const command = useCallback(
+    (action: 'take' | 'cue' | 'stop' | 'park', body?: { itemId?: string; assetId?: string }) =>
       guard(async () => {
         if (!view) return
-        absorb(await api.transport(view.channel.id, 'stop'))
+        absorb(await api.transport(view.channel.id, action, body))
       }),
     [view, guard, absorb],
   )
 
-  // Atalhos de estúdio. Espaço só vale fora dos campos de texto.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      const target = event.target as HTMLElement | null
-      const typing = target?.tagName === 'INPUT' || target?.tagName === 'SELECT'
+      const element = event.target as HTMLElement | null
+      const typing = element?.tagName === 'INPUT' || element?.tagName === 'SELECT'
 
       if (event.key === 'Escape') {
         setDialog(null)
@@ -148,32 +172,44 @@ export function App() {
 
       if (event.code === 'Space') {
         event.preventDefault()
-        void take(selectedId)
+        if (selectedId) void command('take', { itemId: selectedId })
       }
       if (event.key === 'i' && selected?.asset) setDialog({ kind: 'trim', view: selected })
       if (event.key === 'n' && selected?.asset) setDialog({ kind: 'audio', view: selected })
+
+      // Setas andam pela grade armando linha a linha, sem tirar a mão do teclado.
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        const items = view?.items ?? []
+        if (items.length === 0) return
+        const current = items.findIndex((item) => item.item.id === selectedId)
+        const step = event.key === 'ArrowDown' ? 1 : -1
+        const nextIndex = current < 0 ? 0 : Math.min(items.length - 1, Math.max(0, current + step))
+        const nextItem = items[nextIndex]
+        if (nextItem) void command('cue', { itemId: nextItem.item.id })
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [dialog, selected, selectedId, take])
+  }, [dialog, selected, selectedId, command, view])
 
   const applyTrim = (trim: Trim, scope: EditScope): void => {
-    const target = dialog?.kind === 'trim' ? dialog.view : null
-    if (!target) return
+    const item = dialog?.kind === 'trim' ? dialog.view : null
+    if (!item) return
     setDialog(null)
     void guard(async () => {
-      const result = await api.setTrim(target.item.id, trim, scope)
+      const result = await api.setTrim(item.item.id, trim, scope)
       absorb(result)
       say(result.result.message)
     })
   }
 
   const applyAudio = (audio: AudioLevel, scope: EditScope): void => {
-    const target = dialog?.kind === 'audio' ? dialog.view : null
-    if (!target) return
+    const item = dialog?.kind === 'audio' ? dialog.view : null
+    if (!item) return
     setDialog(null)
     void guard(async () => {
-      const result = await api.setAudio(target.item.id, audio, scope)
+      const result = await api.setAudio(item.item.id, audio, scope)
       absorb(result)
       say(result.result.message)
     })
@@ -184,12 +220,18 @@ export function App() {
     setDialog(null)
     void guard(async () => {
       absorb(await api.addItem(view.rundown.id, { mediaId, type: 'VT', title, anchor }))
-      const target = anchorTarget(anchor)
+      const at = anchorTarget(anchor)
       say(
-        target === null
+        at === null
           ? 'Item inserido no fim da grade.'
-          : `Item inserido em ${clock(target, view.channel.rate)}; a grade foi remanejada.`,
+          : `Item inserido em ${clock(at, view.channel.rate)}; a grade foi remanejada.`,
       )
+    })
+  }
+
+  const saveNotes = (id: string, notes: string): void => {
+    void guard(async () => {
+      absorb(await api.patchItem(id, { notes: notes.trim() === '' ? null : notes }))
     })
   }
 
@@ -204,9 +246,7 @@ export function App() {
   }
 
   const rate = view.channel.rate
-  const drift = live.transport.onAir
-    ? live.transport.onAir.startedAt - (schedule.get(live.transport.onAir.itemId)?.start ?? 0)
-    : 0
+  const near = commitment !== null && commitment.left <= 60 * (rate.num / rate.den)
 
   return (
     <div className="app">
@@ -216,24 +256,23 @@ export function App() {
         </div>
         <div className={`tally${onAirId ? ' live' : ''}`}>
           <span className="dot" />
-          {onAirId ? 'NO AR' : 'PARADO'}
+          {onAirId ? 'NO AR' : 'FORA DO AR'}
         </div>
+        {live.transport.standby && <div className="standby">ARMADO</div>}
         <div className="meta">
-          <b>{view.channel.name}</b> · {view.channel.width}×{view.channel.height} ·{' '}
-          {Math.round(rate.num / rate.den)}p
+          <b>{view.channel.name}</b>
         </div>
-        <div className="meta">
-          alvo <b>{view.channel.targetLufs} LUFS</b> · teto <b>{view.channel.ceilingDbtp} dBTP</b>
-        </div>
-        <div className="meta">
-          clock <b>{view.channel.programSdiDeviceId ? 'DECKLINK' : 'SISTEMA'}</b>
-        </div>
-        <div className="meta">
-          drift{' '}
-          <b style={{ color: Math.abs(drift) > rate.num ? 'var(--next)' : 'var(--ok)' }}>
-            {drift === 0 ? '00:00' : `${drift > 0 ? '+' : '−'}${dur(Math.abs(drift), rate)}`}
-          </b>
-        </div>
+
+        {commitment && (
+          <div className={`commitment${near ? ' near' : ''}`}>
+            <div>
+              <div className="lbl">entra às {clock(commitment.at, rate)}</div>
+              <div className="who">{commitment.title}</div>
+            </div>
+            <div className="cd">{dur(commitment.left, rate)}</div>
+          </div>
+        )}
+
         <div className="spacer" />
         <div className="bigclock">{clock(live.now, rate)}</div>
       </header>
@@ -241,35 +280,23 @@ export function App() {
       <div className="main">
         <aside className="pane">
           <div className="pane-title">
-            acervo<span className="count">{assets.length}</span>
+            arquivos<span className="count">{assets.length}</span>
           </div>
-          <div className="pane-body">
-            {assets.map((asset) => (
-              <div
-                key={asset.id}
-                className="asset"
-                onClick={() => setDialog({ kind: 'add', assetId: asset.id })}
-                title="Inserir na grade"
-              >
-                <div className="name">{asset.title}</div>
-                <div className="dur">{dur(asset.durationFrames, rate)}</div>
-                <div className="sub">
-                  {asset.loudnessFile
-                    ? `${lufs(asset.loudnessFile.integratedLufs)} LUFS · pico ${asset.loudnessFile.truePeakDbtp.toFixed(1)}`
-                    : 'sem medição'}
-                  {asset.defaultTrim ? ' · corte padrão' : ''}
-                  {asset.defaultAudio ? ' · nível padrão' : ''}
-                </div>
-              </div>
-            ))}
-          </div>
+          <Explorer
+            folders={folders}
+            rate={rate}
+            openAssetId={openAssetId}
+            onPreview={(assetId) => void command('cue', { assetId })}
+            onInsert={(assetId) => setDialog({ kind: 'add', assetId })}
+          />
         </aside>
 
         <section className="pane" style={{ background: 'var(--bg)' }}>
           <div className="pane-title">
             {view.rundown.name}
             <span className="count">
-              termina {clock(view.schedule.endsAt, rate)}
+              {view.items.length} itens · {dur(totalDuration, rate)}
+              {view.rundown.loop && ' · em loop'}
             </span>
           </div>
           <div className="pane-body">
@@ -281,9 +308,10 @@ export function App() {
               onAirId={onAirId}
               remainingOnAir={remainingOnAir}
               errorIds={errorIds}
-              onSelect={(id) => void cue(id)}
-              onOpenTrim={(target) => setDialog({ kind: 'trim', view: target })}
-              onOpenAudio={(target) => setDialog({ kind: 'audio', view: target })}
+              onSelect={(id) => void command('cue', { itemId: id })}
+              onOpenTrim={(item) => setDialog({ kind: 'trim', view: item })}
+              onOpenAudio={(item) => setDialog({ kind: 'audio', view: item })}
+              onNotes={saveNotes}
             />
           </div>
         </section>
@@ -294,7 +322,7 @@ export function App() {
             live={live}
             onAirItem={onAirItem}
             onAirRemaining={remainingOnAir}
-            previewItem={selected}
+            preview={previewCard}
           />
           <div className="pane-title">
             conflitos
@@ -313,7 +341,7 @@ export function App() {
                   <div
                     key={index}
                     className={`conflict${conflict.severity === 'ERROR' ? ' err' : ''}`}
-                    onClick={() => void cue(conflict.itemId)}
+                    onClick={() => void command('cue', { itemId: conflict.itemId })}
                   >
                     <div className="who">{owner?.item.title ?? conflict.itemId}</div>
                     <div>{conflict.message}</div>
@@ -327,11 +355,18 @@ export function App() {
       </div>
 
       <footer className="transport">
-        <button className="btn take" disabled={!selectedId} onClick={() => void take(selectedId)}>
+        <button
+          className="btn take"
+          disabled={!selectedId}
+          onClick={() => selectedId && void command('take', { itemId: selectedId })}
+        >
           take<kbd>espaço</kbd>
         </button>
-        <button className="btn stop" disabled={!onAirId} onClick={() => void stop()}>
+        <button className="btn stop" disabled={!onAirId} onClick={() => void command('stop')}>
           parar
+        </button>
+        <button className="btn" onClick={() => void command('park')} title="Arma o primeiro item, parado, pronto para entrar">
+          armar no topo
         </button>
         <button
           className="btn"
@@ -351,14 +386,19 @@ export function App() {
           inserir item
         </button>
         <div className="spacer" />
-        {error && <div className="meta" style={{ color: 'var(--onair)' }}>{error}</div>}
+        {error && (
+          <div className="meta" style={{ color: 'var(--onair)' }}>
+            {error}
+          </div>
+        )}
         <div className="meta">
-          {selected ? (
+          {previewCard ? (
             <>
-              armado: <b>{selected.item.title}</b>
+              {previewCard.fromExplorer ? 'no preview: ' : 'armado: '}
+              <b>{previewCard.title}</b>
             </>
           ) : (
-            'nada armado — clique numa linha'
+            'nada armado — clique numa linha ou num arquivo'
           )}
         </div>
       </footer>

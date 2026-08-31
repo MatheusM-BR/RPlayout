@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm'
-import { framesSinceMidnight, type Channel } from '@rplayout/protocol'
+import { framesSinceMidnight, type Channel, type MediaAsset, type PreviewTarget } from '@rplayout/protocol'
 import { openDatabase, type Db } from './db/client.js'
 import { assetMap, getChannel, getRundown, listItems } from './db/repo.js'
 import { rundownItems } from './db/schema.js'
@@ -15,6 +15,8 @@ import { SimulatedTransport } from './domain/transport.js'
 export class ChannelRuntime {
   view: RundownView | null = null
   readonly transport: SimulatedTransport
+  /** Acervo em memória: o medidor do preview precisa dele a cada tick. */
+  private assets: Map<string, MediaAsset> = new Map()
   private phase = 0
 
   constructor(
@@ -32,6 +34,7 @@ export class ChannelRuntime {
       listItems(this.db, rundownId),
       assetMap(this.db),
     ])
+    this.assets = assets
 
     this.view = buildView(
       rundown,
@@ -50,7 +53,7 @@ export class ChannelRuntime {
     return id ? this.load(id) : null
   }
 
-  private meterFor(itemId: string | null): MeterReading {
+  private meterForItem(itemId: string | null): MeterReading {
     if (!itemId || !this.view) return SILENCE
     const item = this.view.items.find((v) => v.item.id === itemId)
     if (!item) return SILENCE
@@ -63,6 +66,24 @@ export class ChannelRuntime {
     )
   }
 
+  /** Arquivo aberto direto do explorador: sem nivelamento, como ele veio. */
+  private meterForAsset(assetId: string): MeterReading {
+    const asset = this.assets.get(assetId)
+    if (!asset?.loudnessFile) return SILENCE
+    return simulateMeter(
+      this.channel,
+      asset.loudnessFile.integratedLufs,
+      asset.loudnessFile.truePeakDbtp,
+      0,
+      this.phase,
+    )
+  }
+
+  private meterForPreview(target: PreviewTarget | null): MeterReading {
+    if (!target) return SILENCE
+    return target.kind === 'ITEM' ? this.meterForItem(target.id) : this.meterForAsset(target.id)
+  }
+
   /** Estado que vai para a interface a cada frame de atualização. */
   live() {
     this.phase += 0.12
@@ -71,8 +92,8 @@ export class ChannelRuntime {
       transport: state,
       now: framesSinceMidnight(new Date(), this.channel.rate),
       meters: {
-        program: this.meterFor(state.onAir?.itemId ?? null),
-        preview: this.meterFor(state.previewItemId),
+        program: this.meterForItem(state.onAir?.itemId ?? null),
+        preview: this.meterForPreview(state.preview),
       },
     }
   }

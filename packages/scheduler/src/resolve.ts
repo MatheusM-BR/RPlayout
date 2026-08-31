@@ -196,7 +196,11 @@ export function resolve(input: ResolveInput): ResolveResult {
     cursor = w.end
     segmentStart = onAirIndex
   } else {
-    cursor = input.plannedStart
+    // Nada no ar e início da grade já vencido: projeta a partir de agora. O
+    // operador precisa ver a que horas cada item entraria se ele desse take
+    // agora, não a que horas entrariam se a grade tivesse começado na hora.
+    cursor =
+      input.now === null ? input.plannedStart : Math.max(input.plannedStart, input.now)
     segmentStart = 0
   }
 
@@ -219,16 +223,32 @@ export function resolve(input: ResolveInput): ResolveResult {
       continue
     }
 
+    // Âncora vencida não puxa a grade para trás. Nada do que já foi ao ar pode
+    // ser desfeito, então o item perde o compromisso e entra assim que der --
+    // rebobinar o relógio produziria uma grade em que a saída de um item vem
+    // depois da entrada do seguinte.
     if (input.now !== null && window.to < input.now) {
+      const late = input.now - window.to
       conflicts.push({
         kind: 'ANCHOR_PAST',
         itemId: item.id,
-        frames: input.now - window.to,
+        frames: late,
         severity: 'ERROR',
         message:
           `A âncora de ${formatClock(window.to, rate)} já passou ` +
-          `(agora são ${formatClock(input.now, rate)}).`,
+          `(agora são ${formatClock(input.now, rate)}). O item entra no fluxo.`,
       })
+      suggestions.push({
+        itemId: item.id,
+        action: 'MOVE_ANCHOR',
+        frames: late,
+        message: 'Marcar outra hora para este item, ou soltá-lo na sequência.',
+      })
+
+      w.start = cursor
+      w.end = w.start + w.duration
+      cursor = w.end
+      continue
     }
 
     if (cursor < window.from) {
@@ -456,7 +476,9 @@ function recoverTime(
       message: `Encurtar ${formatDuration(remaining, rate)} nos itens anteriores.`,
     })
     // Âncora fixa manda: entra na hora dela, custe o que custar ao anterior.
-    return windowTo
+    // Só não manda no impossível -- se nem o corte forçado alcança, por esbarrar
+    // no que já foi ao ar, ela entra no primeiro instante que existe de fato.
+    return Math.max(windowTo, newCursor)
   }
 
   anchored.anchorHit = false

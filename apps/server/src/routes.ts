@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
-import { trimDuration, type Frames } from '@rplayout/protocol'
+import { trimDuration, type Frames, type MediaAsset, type PreviewTarget } from '@rplayout/protocol'
 import {
   runtimeFor,
   runtimeForItem,
@@ -13,6 +13,7 @@ import {
 import { listAssets, listChannels, listRundowns } from './db/repo.js'
 import { operatorDecisions, rundownItems } from './db/schema.js'
 import { applyAudio, applyTrim } from './domain/scopes.js'
+import { thumbnailSvg } from './domain/thumbnail.js'
 import type { RundownView } from './domain/plan.js'
 
 const trimSchema = z.object({ in: z.number().int().min(0), out: z.number().int().min(0) })
@@ -102,6 +103,50 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   server.get('/api/assets', async () => ({ assets: await listAssets(app.db) }))
+
+  /**
+   * Explorador de arquivos. A árvore sai do próprio caminho do arquivo, então
+   * a organização em disco é a organização que o operador vê.
+   */
+  server.get('/api/library', async () => {
+    const assets = await listAssets(app.db)
+    const folders = new Map<string, MediaAsset[]>()
+
+    for (const asset of assets) {
+      const parts = asset.path.replace(/\\/g, '/').split('/')
+      const folder = parts.slice(0, -1).slice(-1)[0] ?? 'Raiz'
+      const bucket = folders.get(folder)
+      if (bucket) bucket.push(asset)
+      else folders.set(folder, [asset])
+    }
+
+    return {
+      folders: [...folders.entries()]
+        .sort(([a], [b]) => a.localeCompare(b, 'pt-BR'))
+        .map(([name, items]) => ({
+          name,
+          assets: items.map((asset) => ({
+            ...asset,
+            fileName: asset.path.replace(/\\/g, '/').split('/').pop() ?? asset.path,
+            thumbnailUrl: `/api/assets/${asset.id}/thumbnail.svg`,
+          })),
+        })),
+    }
+  })
+
+  server.get('/api/assets/:id/thumbnail.svg', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const assets = await listAssets(app.db)
+    const asset = assets.find((candidate) => candidate.id === id)
+    if (!asset) return reply.code(404).send({ error: 'Arquivo não encontrado.' })
+
+    const [channel] = await listChannels(app.db)
+    const rate = channel?.rate ?? { num: 50, den: 1 }
+    return reply
+      .type('image/svg+xml')
+      .header('cache-control', 'public, max-age=3600')
+      .send(thumbnailSvg(asset, rate))
+  })
 
   server.get('/api/rundowns/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
@@ -310,8 +355,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const { id } = request.params as { id: string }
     const body = z
       .object({
-        action: z.enum(['take', 'cue', 'stop']),
+        action: z.enum(['take', 'cue', 'stop', 'park']),
         itemId: z.string().nullable().optional(),
+        /** Arquivo aberto direto do explorador, sem entrar na grade. */
+        assetId: z.string().nullable().optional(),
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
@@ -321,14 +368,27 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     switch (body.data.action) {
       case 'take': {
-        const itemId = body.data.itemId ?? runtime.transport.state().previewItemId
+        const armed = runtime.transport.state().preview
+        const itemId = body.data.itemId ?? (armed?.kind === 'ITEM' ? armed.id : null)
         if (!itemId) return reply.code(400).send({ error: 'Nada armado para entrar no ar.' })
         runtime.transport.take(runtime.view.rundown.id, itemId)
         break
       }
-      case 'cue':
-        runtime.transport.cue(body.data.itemId ?? null)
+      case 'cue': {
+        const target: PreviewTarget | null = body.data.assetId
+          ? { kind: 'ASSET', id: body.data.assetId }
+          : body.data.itemId
+            ? { kind: 'ITEM', id: body.data.itemId }
+            : null
+        runtime.transport.cue(target)
         break
+      }
+      case 'park': {
+        const first = runtime.view.items[0]
+        if (!first) return reply.code(400).send({ error: 'Grade vazia.' })
+        runtime.transport.park(first.item.id)
+        break
+      }
       case 'stop':
         runtime.transport.stop()
         break

@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS rundowns (
   channel_id TEXT NOT NULL REFERENCES channels (id),
   name TEXT NOT NULL,
   planned_start INTEGER NOT NULL,
+  loop INTEGER NOT NULL DEFAULT 1,
   date TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -87,5 +88,14 @@ export function openDatabase(file: string) {
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
   sqlite.exec(DDL)
+  // Colunas acrescentadas depois. Um banco de playout não pode ser recriado do
+  // zero a cada versão, então a adição é tentada e ignorada se já existir.
+  for (const alter of ['ALTER TABLE rundowns ADD COLUMN loop INTEGER NOT NULL DEFAULT 1']) {
+    try {
+      sqlite.exec(alter)
+    } catch {
+      // Coluna já existe.
+    }
+  }
   return { sqlite, db: drizzle(sqlite, { schema }) }
 }

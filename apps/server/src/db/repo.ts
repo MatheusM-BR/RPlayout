@@ -41,6 +41,7 @@ export const toRundown = (row: RundownRow): Rundown => ({
   channelId: row.channelId,
   name: row.name,
   plannedStart: row.plannedStart,
+  loop: row.loop,
   date: row.date,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,

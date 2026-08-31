@@ -53,6 +53,8 @@ export function ScopePicker({ value, onChange, siblingCount, hasAsset, what }: P
     },
   ]
 
+  const wide = value === 'ALL_RUNDOWNS' || value === 'ASSET_DEFAULT'
+
   return (
     <div className="field">
       <label>Aplicar em</label>
@@ -76,6 +78,11 @@ export function ScopePicker({ value, onChange, siblingCount, hasAsset, what }: P
           </label>
         ))}
       </div>
+      {wide && (
+        <div className="note warn">
+          Este escopo sai desta grade. Confira antes de aplicar: não há desfazer ainda.
+        </div>
+      )}
     </div>
   )
 }
