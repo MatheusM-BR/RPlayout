@@ -75,3 +75,60 @@ export interface Snapshot {
   live: Live
   history: HistoryState
 }
+
+export interface PathStatus {
+  name: string
+  ready: boolean
+  source: string | null
+  readers: number
+  bytesReceived: number
+}
+
+export interface GuestKey {
+  id: string
+  channelId: string
+  label: string
+  streamKey: string
+  enabled: boolean
+  createdAt: string
+  publishUrl: string
+}
+
+export interface Destination {
+  id: string
+  channelId: string
+  name: string
+  url: string
+  enabled: boolean
+  createdAt: string
+}
+
+export interface RelayStatus {
+  id: string
+  name: string
+  url: string
+  state: 'CONECTANDO' | 'NO AR' | 'CAIU' | 'FALHOU'
+  attempts: number
+  reason: string | null
+  delivered: number
+  streams: string[]
+}
+
+export interface Distribution {
+  server: {
+    running: boolean
+    exposed: boolean
+    host: string
+    ports: Record<string, number>
+  }
+  channels: {
+    channelId: string
+    program: string
+    clean: string
+    urls: Record<string, string> | null
+  }[]
+  guests: GuestKey[]
+  destinations: Destination[]
+  relays: RelayStatus[]
+  paths: PathStatus[]
+}

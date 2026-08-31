@@ -1,6 +1,6 @@
 import type { AudioLevel, Anchor, EditScope, Trim } from '@rplayout/protocol'
 import type { MediaAsset, Rundown } from '@rplayout/protocol'
-import type { LibraryFolder, Snapshot } from './types.js'
+import type { Distribution, LibraryFolder, Snapshot } from './types.js'
 
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -52,6 +52,19 @@ export const api = {
 
   setAudio: (id: string, audio: AudioLevel, scope: EditScope) =>
     post<Snapshot & { result: { message: string } }>(`/api/items/${id}/audio`, { audio, scope }),
+
+  distribution: () => send<Distribution>('/api/distribution'),
+
+  addGuest: (channelId: string, label: string) =>
+    post<{ streamKey: string; publishUrl: string }>(`/api/channels/${channelId}/guests`, { label }),
+  removeGuest: (id: string) => send<{ ok: true }>(`/api/guests/${id}`, { method: 'DELETE' }),
+
+  addDestination: (channelId: string, name: string, url: string) =>
+    post<{ ok: true }>(`/api/channels/${channelId}/destinations`, { name, url }),
+  setDestination: (id: string, body: { enabled?: boolean }) =>
+    send<{ ok: true }>(`/api/destinations/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  removeDestination: (id: string) =>
+    send<{ ok: true }>(`/api/destinations/${id}`, { method: 'DELETE' }),
 
   undo: (rundownId: string) => post<Snapshot & { label: string }>(`/api/rundowns/${rundownId}/undo`, {}),
   redo: (rundownId: string) => post<Snapshot & { label: string }>(`/api/rundowns/${rundownId}/redo`, {}),

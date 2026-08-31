@@ -592,3 +592,79 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
   letter-spacing: -1px;
 }
 .rd tr:hover .grip { color: var(--muted); }
+
+/* ---------- distribuição ---------- */
+
+.dialog.wide { width: min(760px, 100%); }
+
+.addresses { display: grid; gap: 6px; }
+.address {
+  display: grid;
+  grid-template-columns: 68px 1fr;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: var(--raised);
+  border-radius: 2px;
+  padding: 7px 10px;
+}
+.address:hover { border-color: var(--accent); background: rgba(27, 58, 143, 0.3); }
+.address b {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  font-weight: 500;
+}
+.address span {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rows { display: grid; gap: 6px; }
+.row-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  background: var(--raised);
+  padding: 8px 11px;
+}
+.row-item .t { font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+.row-item .d { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.row-item .d.mono, .row-item .t.mono { font-family: var(--mono); font-size: 11px; }
+.row-item .actions { white-space: nowrap; }
+
+.mono-link {
+  border: 0;
+  background: none;
+  padding: 3px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  text-align: left;
+}
+.mono-link:hover { text-decoration: underline; }
+
+.pill {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding: 2px 7px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+.pill.ok { border-color: rgba(46, 204, 143, 0.45); color: var(--ok); }
+.pill.warn { border-color: rgba(240, 160, 32, 0.45); color: var(--next); }
+.pill.bad { border-color: rgba(255, 59, 59, 0.45); color: var(--onair); }
+
+.inline { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.inline input { flex: 1; }

@@ -1,5 +1,8 @@
 logLevel: warn
-readTimeout: 10s
+# Generoso de propósito: o primeiro frame de um canal em 1080p50 pode
+# demorar quando a máquina está subindo tudo ao mesmo tempo, e fechar a
+# conexão do engine por impaciência derruba o canal inteiro.
+readTimeout: 30s
 writeQueueSize: 1024
 
 # A API de controle fica em loopback e nunca é aberta no firewall.

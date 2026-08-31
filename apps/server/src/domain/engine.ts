@@ -124,14 +124,23 @@ export class EngineTransport implements Transport {
         this.meter = toMeter(event.peak, event.rms)
         break
       case 'ack':
-        if (!event.ok && event.error) this.lastError = event.error
+        if (!event.ok && event.error) this.fail(event.error)
         break
       case 'error':
-        this.lastError = event.message
+        this.fail(event.message)
         break
       default:
         break
     }
+  }
+
+  /**
+   * Guarda e mostra. Erro de engine que só vive num campo é erro invisível: o
+   * canal pode estar sem sair para lugar nenhum e o log não dizer nada.
+   */
+  private fail(message: string): void {
+    this.lastError = message
+    process.stderr.write(`[engine ${this.channel.name}] ERRO ${message}\n`)
   }
 
   private send(command: Record<string, unknown>): void {

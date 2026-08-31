@@ -14,6 +14,7 @@ import type {
 } from './types.js'
 import { AddItemDialog } from './components/AddItemDialog.js'
 import { AudioDialog } from './components/AudioDialog.js'
+import { Distribution } from './components/Distribution.js'
 import { Explorer } from './components/Explorer.js'
 import { Monitors } from './components/Monitors.js'
 import { Rundown } from './components/Rundown.js'
@@ -23,6 +24,7 @@ type Dialog =
   | { kind: 'trim'; view: ItemView }
   | { kind: 'audio'; view: ItemView }
   | { kind: 'add'; assetId?: string }
+  | { kind: 'distribution' }
   | null
 
 export function App() {
@@ -81,6 +83,17 @@ export function App() {
       }
     })()
   }, [absorb])
+
+  // O painel de distribuição tem endereço próprio: dá para deixar aberto numa
+  // segunda tela ou mandar o link para quem cuida da entrega.
+  useEffect(() => {
+    const sync = (): void => {
+      if (window.location.hash === '#distribuicao') setDialog({ kind: 'distribution' })
+    }
+    sync()
+    window.addEventListener('hashchange', sync)
+    return () => window.removeEventListener('hashchange', sync)
+  }, [])
 
   useEffect(() => {
     const socket = new WebSocket(`ws://${window.location.host}/ws`)
@@ -481,6 +494,15 @@ export function App() {
         <button className="btn" onClick={() => setDialog({ kind: 'add' })}>
           inserir item
         </button>
+        <button
+          className="btn"
+          onClick={() => {
+            window.location.hash = 'distribuicao'
+            setDialog({ kind: 'distribution' })
+          }}
+        >
+          distribuição
+        </button>
         {marked.size >= 2 && (
           <button className="btn take" onClick={group}>
             agrupar {marked.size} itens
@@ -544,6 +566,17 @@ export function App() {
           suggestedAt={view.schedule.endsAt}
           onCancel={() => setDialog(null)}
           onAdd={addItem}
+        />
+      )}
+
+      {dialog?.kind === 'distribution' && (
+        <Distribution
+          channelId={view.channel.id}
+          onClose={() => {
+            if (window.location.hash === '#distribuicao') window.location.hash = ''
+            setDialog(null)
+          }}
+          onMessage={say}
         />
       )}
 

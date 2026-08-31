@@ -111,8 +111,10 @@ Planejamento concluído. **F0** e **F1** entregues:
   volta pelo servidor.
 - Relays entregando a destinos externos, com estado e contagem do que foi
   efetivamente entregue.
-- Falta: preview por WebRTC, painel de distribuição na interface, e a medição de
-  loudness R128 no pipeline — hoje o medidor do programa
+- Painel de distribuição na interface, em `#distribuicao`: endereços do programa
+  para copiar, chaves de convidado com quem está conectado, destinos com o
+  estado do relay e o que foi efetivamente entregue.
+- Falta: preview por WebRTC e a medição de loudness R128 no pipeline — hoje o medidor do programa
   reporta RMS, que é aproximação e está marcado como tal no código.
 
 ### Como o relay entrega
