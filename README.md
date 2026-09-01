@@ -118,11 +118,27 @@ Planejamento concluído. **F0** e **F1** entregues:
 - Painel de distribuição na interface, em `#distribuicao`: endereços do programa
   para copiar, chaves de convidado com quem está conectado, a saída do canal com
   o que já foi entregue, e destinos com o estado do relay.
-- Monitor de PGM com imagem de verdade, por WHEP direto do servidor de mídia.
-- Falta: o barramento de preview no engine (o monitor PVW já está ligado, só não
-  tem o que mostrar), som nos monitores e a medição de loudness R128 no pipeline
-  — hoje o medidor do programa reporta RMS, que é aproximação e está marcado
-  como tal no código.
+- Monitores de PGM e preview com imagem de verdade, por WHEP direto do servidor
+  de mídia.
+- Barramento de preview no engine: armar um item ou abrir um arquivo do
+  explorador toca no preview sem encostar no que está no ar.
+- Falta: som nos monitores e a medição de loudness R128 no pipeline — hoje o
+  medidor do programa reporta RMS, que é aproximação e está marcado como tal no
+  código.
+
+### O preview é um tocador à parte
+
+O item armado não vira preview com outro destino: o `inter` do GStreamer fixa a
+superfície ao entrar em PAUSED, então um item não muda de barramento depois de
+aberto -- e um item que publicasse nos dois vazaria para o programa no take.
+
+Então o preview abre o arquivo de novo, no barramento dele, e toca. Custa abrir
+o arquivo duas vezes e ganha o que o operador precisa: olhar um arquivo que nem
+está na grade sem tocar no que vai ao ar, e o item armado continuar parado no
+ponto de entrada, pronto para o take imediato.
+
+O preview sai em metade do tamanho e um terço do bitrate do canal. É um monitor,
+não uma saída: codificá-lo em 1080p50 dobraria o custo do canal para nada.
 
 ### Monitores por WHEP
 
