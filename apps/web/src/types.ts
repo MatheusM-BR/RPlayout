@@ -34,6 +34,8 @@ export interface MeterReading {
   momentaryLufs: number
   shortTermLufs: number
   integratedLufs: number
+  /** Faixa de loudness (EBU Tech 3342), em LU. */
+  rangeLu: number
   truePeakDbtp: number
   gainReductionDb: number
   correlation: number

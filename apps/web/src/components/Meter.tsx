@@ -24,12 +24,16 @@ function Bar({ dbfs }: { dbfs: number }) {
 
 /**
  * Medidor de PGM e de preview. Não é VU: é pico verdadeiro somado a loudness em
- * três janelas, mais a redução de ganho do limiter — que é a leitura que diz se
- * o nivelamento está fazendo o trabalho ou se o limiter está tapando buraco.
+ * três janelas e à faixa de loudness, tudo medido pela BS.1770-4 no engine.
+ *
+ * A integrada é a do item no ar, não a do canal desde que ligou: reinicia a
+ * cada take. É a leitura que responde "este VT saiu no alvo?", que é a pergunta
+ * que o operador faz.
  */
 export function Meter({ reading, channel }: { reading: MeterReading; channel: Channel }) {
   const onTarget = Math.abs(reading.integratedLufs - channel.targetLufs) <= 1
-  const working = reading.gainReductionDb > 0.2
+  // Acima do teto de pico verdadeiro é o que o destino vai distorcer.
+  const clipping = reading.truePeakDbtp > channel.ceilingDbtp
 
   return (
     <div className="meter">
@@ -52,20 +56,23 @@ export function Meter({ reading, channel }: { reading: MeterReading; channel: Ch
         </div>
         <div className="ro">
           <b>PICO</b>
-          <span>{db(reading.truePeakDbtp)}</span>
+          <span className={clipping ? 'bad' : ''}>{db(reading.truePeakDbtp)}</span>
         </div>
         <div className="ro">
           <b>SHORT</b>
           <span>{lufs(reading.shortTermLufs)}</span>
         </div>
+        {/* A redução de ganho entra aqui quando houver limiter. Enquanto não
+            há, mostrar zero fixo pareceria "está tudo sob controle"; a faixa
+            de loudness é medida de verdade e diz se o programa respira. */}
         <div className="ro">
-          <b>GR</b>
-          <span className={working ? 'bad' : 'ok'}>{reading.gainReductionDb.toFixed(1)}</span>
+          <b>FAIXA</b>
+          <span>{reading.rangeLu.toFixed(1)}</span>
         </div>
         <div className="ro">
           <b>FASE</b>
           <span className={reading.correlation < 0 ? 'bad' : ''}>
-            {db(reading.correlation, 2)}
+            {reading.correlation.toFixed(2)}
           </span>
         </div>
       </div>

@@ -5,6 +5,7 @@
 //! inteligência de tempo continua no `packages/scheduler`.
 
 mod channel;
+mod loudness;
 mod output;
 mod protocol;
 
@@ -18,6 +19,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const POSITION_EVERY: Duration = Duration::from_millis(100);
+/// O medidor entrega dez vezes por segundo, que é a cadência do bloco de
+/// 100 ms da R128 e o mínimo para um VU não parecer travado.
+const METER_EVERY: Duration = Duration::from_millis(100);
 const OUTPUT_EVERY: Duration = Duration::from_secs(1);
 
 fn parse_args() -> Result<Config> {
@@ -69,6 +73,20 @@ fn parse_args() -> Result<Config> {
         outputs,
         preview,
     })
+}
+
+/// Empacota uma leitura do medidor para o protocolo.
+fn levels(bus: &'static str, reading: &channel::Reading) -> Event {
+    Event::Levels {
+        bus,
+        peak: reading.peak_dbfs.to_vec(),
+        momentary: reading.momentary_lufs,
+        short_term: reading.short_term_lufs,
+        integrated: reading.integrated_lufs,
+        range: reading.range_lu,
+        true_peak: reading.true_peak_dbtp,
+        correlation: reading.correlation,
+    }
 }
 
 /// Estado atual do canal, emitido depois de toda ordem que o altera.
@@ -154,35 +172,6 @@ fn handle_message(message: &gst::Message) -> Option<Event> {
                 item_id: structure.get::<String>("item-id").ok()?,
             })
         }
-        MessageView::Element(element) => {
-            let structure = element.structure()?;
-            if structure.name() != "level" {
-                return None;
-            }
-            // O `level` publica GValueArray -- nem GstArray nem GstList. Ler
-            // com o tipo errado devolve vazio e o medidor fica mudo sem dizer
-            // por quê, que foi exatamente o que aconteceu aqui.
-            let numbers = |field: &str| -> Vec<f64> {
-                structure
-                    .get::<gst::glib::ValueArray>(field)
-                    .map(|array| {
-                        array
-                            .iter()
-                            .filter_map(|value| value.get::<f64>().ok())
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-
-            let peak = numbers("peak");
-            if peak.is_empty() {
-                return None;
-            }
-            Some(Event::Levels {
-                peak,
-                rms: numbers("rms"),
-            })
-        }
         _ => None,
     }
 }
@@ -237,6 +226,7 @@ fn main() -> Result<()> {
     let bus = channel.bus();
     let mut last_position = Instant::now();
     let mut last_output = Instant::now();
+    let mut last_meter = Instant::now();
     let mut running = true;
 
     while running {
@@ -296,6 +286,13 @@ fn main() -> Result<()> {
                     .emit();
                 }
             }
+        }
+
+        if last_meter.elapsed() >= METER_EVERY {
+            last_meter = Instant::now();
+            let (program, preview) = channel.measure();
+            levels("pgm", &program).emit();
+            levels("pvw", &preview).emit();
         }
 
         if last_position.elapsed() >= POSITION_EVERY {

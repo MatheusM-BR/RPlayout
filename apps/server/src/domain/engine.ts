@@ -28,7 +28,17 @@ type EngineEvent =
   | { event: 'state'; onAir?: string; armed?: string; preview?: string }
   | { event: 'position'; itemId: string; frames: number; duration: number }
   | { event: 'eos'; itemId: string }
-  | { event: 'levels'; peak: number[]; rms: number[] }
+  | {
+      event: 'levels'
+      bus: 'pgm' | 'pvw'
+      peak: number[]
+      momentary: number
+      shortTerm: number
+      integrated: number
+      range: number
+      truePeak: number
+      correlation: number
+    }
   | { event: 'output'; frames: number }
   | ({ event: 'publisher' } & PublisherState)
   | { event: 'error'; message: string }
@@ -59,6 +69,7 @@ export class EngineTransport implements Transport {
   private elapsed: Frames = 0
   private preview: PreviewTarget | null = null
   private meter: MeterReading | null = null
+  private previewReading: MeterReading | null = null
   /** Uma entrada por saída de rede, chaveada pela URL de destino. */
   private readonly publisherStates = new Map<string, PublisherState>()
   private dirty = false
@@ -130,7 +141,8 @@ export class EngineTransport implements Transport {
         this.advanceAfter(event.itemId)
         break
       case 'levels':
-        this.meter = toMeter(event.peak, event.rms)
+        if (event.bus === 'pgm') this.meter = toMeter(event)
+        else this.previewReading = toMeter(event)
         break
       case 'publisher':
         this.publisherStates.set(event.url, {
@@ -339,6 +351,11 @@ export class EngineTransport implements Transport {
     return this.meter
   }
 
+  /** Medição do barramento de preview, quando há algo aberto nele. */
+  previewMeter(): MeterReading | null {
+    return this.previewReading
+  }
+
   /**
    * Situação das saídas de rede do canal.
    *
@@ -360,25 +377,29 @@ export class EngineTransport implements Transport {
 /**
  * Converte a medição do engine para o formato do medidor.
  *
- * O `level` do GStreamer entrega pico e RMS em dBFS, não loudness. Enquanto a
- * medição R128 em tempo real não existe no pipeline, o campo de loudness leva o
- * RMS — que é uma aproximação, e está marcado como tal para ninguém tomar por
- * conformidade.
+ * Aqui não há aproximação: o engine mede pela BS.1770-4, com ponderação K,
+ * gate e pico verdadeiro sobreamostrado. O que chega já é LUFS de verdade.
  */
-function toMeter(peak: number[], rms: number[]): MeterReading {
-  if (peak.length === 0) return SILENCE
-
-  const loudest = Math.max(...peak)
-  const average = rms.length > 0 ? Math.max(...rms) : loudest
+function toMeter(event: {
+  peak: number[]
+  momentary: number
+  shortTerm: number
+  integrated: number
+  range: number
+  truePeak: number
+  correlation: number
+}): MeterReading {
+  if (event.peak.length === 0) return SILENCE
 
   return {
-    peakDbfs: peak,
-    momentaryLufs: average,
-    shortTermLufs: average,
-    integratedLufs: average,
-    truePeakDbtp: loudest,
+    peakDbfs: event.peak,
+    momentaryLufs: event.momentary,
+    shortTermLufs: event.shortTerm,
+    integratedLufs: event.integrated,
+    rangeLu: event.range,
+    truePeakDbtp: event.truePeak,
     // Ainda não há limiter no pipeline, então não há redução de ganho a medir.
     gainReductionDb: 0,
-    correlation: 1,
+    correlation: event.correlation,
   }
 }

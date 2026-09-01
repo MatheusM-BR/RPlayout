@@ -12,9 +12,12 @@
 use anyhow::{anyhow, Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::*;
+use gstreamer_app as gst_app;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+pub use crate::loudness::Reading;
+use crate::loudness::Meter;
 use crate::output::{encode_chain, Kind, Publisher, PublisherSpec, Report};
 use crate::protocol::ItemSpec;
 
@@ -65,6 +68,9 @@ struct Item {
     pipeline: gst::Pipeline,
     volume: gst::Element,
     on_air: bool,
+    /// Só o item do preview tem: o programa é medido depois do mix, que é onde
+    /// a medição vale. No preview não há mix, então mede-se o próprio item.
+    meter_sink: Option<gst_app::AppSink>,
 }
 
 pub struct Channel {
@@ -80,6 +86,14 @@ pub struct Channel {
     /// Barramento de preview: nomes do par `inter` e o que estiver aberto nele.
     preview_channels: Option<(String, String)>,
     previewing: Option<Item>,
+    /// Medidor de loudness do programa e a torneira de onde ele bebe.
+    meter: Meter,
+    meter_sink: gst_app::AppSink,
+    /// Medidor do preview. Vive à parte porque mede outro barramento.
+    preview_meter: Meter,
+    /// Buffer reaproveitado da conversão de bytes para amostras. Alocar a cada
+    /// volta do laço num processo que fica meses no ar não é opção.
+    meter_scratch: Vec<f32>,
 }
 
 pub(crate) fn make(factory: &str) -> Result<gst::Element> {
@@ -93,6 +107,55 @@ fn make_named(factory: &str, name: &str) -> Result<gst::Element> {
         .name(name)
         .build()
         .with_context(|| format!("elemento {factory} não existe nesta instalação do GStreamer"))
+}
+
+/// Consome o que houver no `appsink` e entrega ao medidor.
+///
+/// O buffer de conversão é emprestado: alocar a cada volta do laço num
+/// processo que fica meses no ar não é opção.
+fn drain(sink: &gst_app::AppSink, scratch: &mut Vec<f32>, meter: &mut Meter) {
+    while let Some(sample) = sink.try_pull_sample(gst::ClockTime::ZERO) {
+        let Some(buffer) = sample.buffer() else { continue };
+        let Ok(map) = buffer.map_readable() else { continue };
+        // F32LE intercalado, garantido pelo capsfilter do ramo. Ler byte a
+        // byte evita depender do alinhamento do buffer do GStreamer.
+        scratch.clear();
+        scratch.extend(
+            map.as_slice()
+                .chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+        );
+        meter.push(scratch);
+    }
+}
+
+/// Ramo de medição: fila que descarta, conversão para F32 e um `appsink`.
+///
+/// A fila descarta de propósito. Medidor que segura o `tee` para o programa,
+/// e perder uma medição é irrelevante perto disso.
+fn meter_branch() -> Result<(gst::Element, gst::Element, gst::Element, gst::Element)> {
+    let queue = make("queue")?;
+    queue.set_property("max-size-time", 500_000_000u64);
+    queue.set_property_from_str("leaky", "downstream");
+
+    let convert = make("audioconvert")?;
+    let caps = make("capsfilter")?;
+    caps.set_property(
+        "caps",
+        gst::Caps::builder("audio/x-raw")
+            .field("format", "F32LE")
+            .field("layout", "interleaved")
+            .field("rate", 48_000i32)
+            .field("channels", 2i32)
+            .build(),
+    );
+
+    let sink = make("appsink")?;
+    sink.set_property("sync", false);
+    sink.set_property("max-buffers", 32u32);
+    sink.set_property("drop", true);
+
+    Ok((queue, convert, caps, sink))
 }
 
 /// dB para o fator linear que o elemento `volume` espera.
@@ -173,10 +236,13 @@ impl Channel {
         let ares = make("audioresample")?;
         let aout_caps = make("capsfilter")?;
         aout_caps.set_property("caps", &audio_caps);
-        let level = make_named("level", "level")?;
-        level.set_property("interval", 100_000_000u64);
-        level.set_property("post-messages", true);
         let tee_audio = make_named("tee", "tee-audio")?;
+
+        // Ramo de medição: o mix cru sai por aqui e a conta de loudness é
+        // feita em Rust. O `level` do GStreamer entrega RMS, e RMS não é
+        // loudness -- sem ponderação K e sem gate, dois programas com o mesmo
+        // RMS soam com volumes diferentes.
+        let (meter_queue, meter_convert, meter_caps, meter_sink) = meter_branch()?;
 
         pipeline.add_many([
             &black,
@@ -200,8 +266,11 @@ impl Channel {
             &aconv,
             &ares,
             &aout_caps,
-            &level,
             &tee_audio,
+            &meter_queue,
+            &meter_convert,
+            &meter_caps,
+            &meter_sink,
         ])?;
 
         gst::Element::link_many([&black, &black_caps])?;
@@ -220,7 +289,16 @@ impl Channel {
             &program_audio_caps,
         ])?;
         gst::Element::link_many([&compositor, &vconv, &vout_caps, &tee_video])?;
-        gst::Element::link_many([&mixer, &aconv, &ares, &aout_caps, &level, &tee_audio])?;
+        gst::Element::link_many([&mixer, &aconv, &ares, &aout_caps, &tee_audio])?;
+        gst::Element::link_many([&meter_queue, &meter_convert, &meter_caps, &meter_sink])?;
+        tee_audio
+            .request_pad_simple("src_%u")
+            .ok_or_else(|| anyhow!("tee de áudio recusou o medidor"))?
+            .link(
+                &meter_queue
+                    .static_pad("sink")
+                    .ok_or_else(|| anyhow!("queue do medidor sem sink"))?,
+            )?;
 
         let background_pad = compositor
             .request_pad_simple("sink_%u")
@@ -279,6 +357,12 @@ impl Channel {
             publishers: Vec::new(),
             preview_channels: None,
             previewing: None,
+            meter: Meter::new(48_000, 2),
+            meter_sink: meter_sink
+                .dynamic_cast::<gst_app::AppSink>()
+                .map_err(|_| anyhow!("appsink do medidor não é appsink"))?,
+            preview_meter: Meter::new(48_000, 2),
+            meter_scratch: Vec::with_capacity(16_384),
         };
 
         for (index, output) in channel.config.outputs.clone().iter().enumerate() {
@@ -494,8 +578,11 @@ impl Channel {
         let Some((video_channel, audio_channel)) = self.preview_channels.clone() else {
             return Err(anyhow!("este canal não tem barramento de preview"));
         };
+        // Arquivo novo no preview, medida nova.
+        self.preview_meter.reset();
 
-        let mut item = self.build_item(&spec, &video_channel, &audio_channel, &self.preview_caps())?;
+        let mut item =
+            self.build_item(&spec, &video_channel, &audio_channel, &self.preview_caps(), true)?;
         item.pipeline.set_state(gst::State::Paused)?;
         let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
         result.with_context(|| format!("não consegui abrir {} no preview", spec.path))?;
@@ -524,6 +611,27 @@ impl Channel {
 
     pub fn preview_id(&self) -> Option<String> {
         self.previewing.as_ref().map(|item| item.spec.item_id.clone())
+    }
+
+    /// Consome o áudio que chegou desde a última volta e devolve a medição.
+    ///
+    /// Roda no laço principal, sem thread nem trava: o `appsink` descarta
+    /// quando enche, então uma volta lenta custa uma medição, nunca o programa.
+    pub fn measure(&mut self) -> (Reading, Reading) {
+        let program = self.meter_sink.clone();
+        drain(&program, &mut self.meter_scratch, &mut self.meter);
+
+        // Sem nada aberto no preview não há o que medir, e mostrar a última
+        // leitura seria o medidor falando de um arquivo que já fechou.
+        let preview = match self.previewing.as_ref().and_then(|item| item.meter_sink.clone()) {
+            Some(sink) => {
+                drain(&sink, &mut self.meter_scratch, &mut self.preview_meter);
+                self.preview_meter.read()
+            }
+            None => Reading::SILENT,
+        };
+
+        (self.meter.read(), preview)
     }
 
     /// Sobe o canal e só volta quando ele está de fato no ar.
@@ -600,6 +708,7 @@ impl Channel {
             &self.video_channel.clone(),
             &self.audio_channel.clone(),
             &self.video_caps(),
+            false,
         )?;
 
         item.pipeline.set_state(gst::State::Paused)?;
@@ -638,6 +747,7 @@ impl Channel {
         video_channel: &str,
         audio_channel: &str,
         caps: &gst::Caps,
+        metered: bool,
     ) -> Result<Item> {
         let pipeline = gst::Pipeline::with_name(&format!("item-{}", spec.item_id));
 
@@ -690,7 +800,32 @@ impl Channel {
             &audio_sink,
         ])?;
         gst::Element::link_many([&vconv, &vscale, &vrate, &vcaps, &vqueue, &video_sink])?;
-        gst::Element::link_many([&aconv, &ares, &volume, &acaps, &aqueue, &audio_sink])?;
+        gst::Element::link_many([&aconv, &ares, &volume, &acaps])?;
+
+        // O áudio do item sai do `acaps` já nivelado. Sem medição, vai direto
+        // para o `inter`; com medição, um `tee` abre a segunda saída.
+        let meter_sink = if metered {
+            let tee = make("tee")?;
+            let (queue, convert, caps_filter, sink) = meter_branch()?;
+            pipeline.add_many([&tee, &queue, &convert, &caps_filter, &sink])?;
+            gst::Element::link_many([&acaps, &tee])?;
+            gst::Element::link_many([&tee, &aqueue, &audio_sink])?;
+            gst::Element::link_many([&queue, &convert, &caps_filter, &sink])?;
+            tee.request_pad_simple("src_%u")
+                .ok_or_else(|| anyhow!("tee do item recusou o medidor"))?
+                .link(
+                    &queue
+                        .static_pad("sink")
+                        .ok_or_else(|| anyhow!("queue do medidor sem sink"))?,
+                )?;
+            Some(
+                sink.dynamic_cast::<gst_app::AppSink>()
+                    .map_err(|_| anyhow!("appsink do medidor não é appsink"))?,
+            )
+        } else {
+            gst::Element::link_many([&acaps, &aqueue, &audio_sink])?;
+            None
+        };
 
         let video_target = vconv
             .static_pad("sink")
@@ -728,6 +863,7 @@ impl Channel {
             pipeline,
             volume,
             on_air: false,
+            meter_sink,
         })
     }
 
@@ -746,6 +882,10 @@ impl Channel {
         item.pipeline.set_state(gst::State::Playing)?;
         item.on_air = true;
 
+        // Item novo no ar, medida nova: a integrada do item anterior não diz
+        // nada sobre este.
+        self.meter.reset();
+
         let item_id = item.spec.item_id.clone();
         self.on_air = Some(item);
         Ok(item_id)
@@ -755,6 +895,9 @@ impl Channel {
         if let Some(item) = self.on_air.take() {
             discard(item);
         }
+        // Nada no ar, nada a integrar: continuar mostrando a medida do item
+        // que saiu seria o medidor mentindo sobre o que está saindo agora.
+        self.meter.reset();
         Ok(())
     }
 

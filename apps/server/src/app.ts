@@ -120,10 +120,10 @@ export class ChannelRuntime {
       transport: state,
       now: framesSinceMidnight(new Date(), this.channel.rate),
       meters: {
-        // Havendo engine, o medidor do programa é medição de verdade; o do
-        // preview segue simulado até o pipeline de preview existir.
+        // Havendo engine, os dois medidores são medição de verdade, pela
+        // BS.1770-4 sobre as amostras de cada barramento.
         program: this.transport.programMeter() ?? this.meterForItem(state.onAir?.itemId ?? null),
-        preview: this.meterForPreview(state.preview),
+        preview: this.transport.previewMeter() ?? this.meterForPreview(state.preview),
       },
     }
   }

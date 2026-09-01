@@ -75,10 +75,18 @@ pub enum Event {
     Eos {
         item_id: String,
     },
-    /// Medição do mix, em dBFS por canal.
+    /// Medição pela BS.1770-4. Pico em dBFS, loudness em LUFS, faixa em LU.
+    /// Não é RMS: tem ponderação K e gate.
     Levels {
+        /// Qual barramento: `pgm` ou `pvw`.
+        bus: &'static str,
         peak: Vec<f64>,
-        rms: Vec<f64>,
+        momentary: f64,
+        short_term: f64,
+        integrated: f64,
+        range: f64,
+        true_peak: f64,
+        correlation: f64,
     },
     /// Quantos frames o compositor entregou. É a prova de que o PGM não parou.
     Output {

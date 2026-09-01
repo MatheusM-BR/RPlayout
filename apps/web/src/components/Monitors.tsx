@@ -37,6 +37,9 @@ export function Monitors({
           <span className="tag pgm">PGM</span>
           <span>no ar</span>
         </div>
+        {/* A imagem e a legenda dividem a mesma célula. O centro é do vídeo e
+            do que o impede de aparecer; a tarja de baixo diz o que está no ar.
+            Um texto de cada, senão os dois se escrevem por cima. */}
         <div className="screen">
           {monitors && <Whep path={monitors.program} port={monitors.port} />}
           {onAirItem ? (
@@ -46,8 +49,12 @@ export function Monitors({
                 {dur(Math.max(0, onAirRemaining), channel.rate)}
               </div>
             </div>
+          ) : monitors ? (
+            <div className="over">
+              <div className="what dim">nada no ar</div>
+            </div>
           ) : (
-            !monitors && <div className="idle">SEM SINAL</div>
+            <div className="idle">SEM SINAL</div>
           )}
         </div>
         <Meter reading={live.meters.program} channel={channel} />
@@ -64,7 +71,11 @@ export function Monitors({
             <div className="over">
               <div className="what">{preview.title}</div>
               <div className="tc">{dur(preview.duration, channel.rate)}</div>
-              {preview.fromExplorer && <div className="idle">arquivo · fora da grade</div>}
+              {preview.fromExplorer && <div className="tag-note">arquivo · fora da grade</div>}
+            </div>
+          ) : monitors?.preview ? (
+            <div className="over">
+              <div className="what dim">nada armado</div>
             </div>
           ) : (
             <div className="idle">NADA ARMADO</div>

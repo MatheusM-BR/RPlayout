@@ -122,14 +122,49 @@ Planejamento concluído. **F0** e **F1** entregues:
   de mídia.
 - Barramento de preview no engine: armar um item ou abrir um arquivo do
   explorador toca no preview sem encostar no que está no ar.
-- Falta: som nos monitores e a medição de loudness R128 no pipeline — hoje o
-  medidor do programa reporta RMS, que é aproximação e está marcado como tal no
-  código.
+- Medição EBU R128 de verdade, no programa e no preview: loudness momentânea,
+  de curto prazo e integrada gateada, faixa de loudness, pico verdadeiro
+  sobreamostrado e correlação de fase.
+- Falta: som nos monitores e o limiter de pico verdadeiro na saída — enquanto
+  não existe, o medidor mostra a faixa de loudness no lugar da redução de ganho,
+  porque um GR fixo em zero pareceria "está tudo sob controle".
 
 Anotado para depois, com o levantamento pronto na seção 13 do
 [plano](docs/PLANO.md): **ingest de arquivo de verdade** (hoje o acervo vem do
 seed; não há varredura de pasta) e **perfil de saída por destino**, com varredura
 entrelaçada para 1080i5994.
+
+### A medição de loudness é nossa
+
+Não existe elemento de EBU R128 nesta instalação do GStreamer -- só o `level`,
+que entrega RMS. RMS não é loudness: não tem a ponderação K nem o gate, então
+dois programas com o mesmo RMS soam com volumes bem diferentes. Como o
+nivelamento inteiro do RPlayout é em LUFS, medir com RMS contaminaria a única
+métrica que diz se o nivelamento está certo.
+
+Então a medição é feita em Rust, sobre as amostras do mix, seguindo a
+ITU-R BS.1770-4: ponderação K em dois biquads, blocos de 400 ms com 75% de
+sobreposição, gate absoluto de -70 LUFS e gate relativo de -10 LU para a
+integrada, e de -20 LU com percentis 10/95 para a faixa. O pico verdadeiro sai
+de um sobreamostrador polifásico de 4x, porque pico de amostra não é pico
+verdadeiro -- o sinal reconstruído passa por cima das amostras, e é o valor
+reconstruído que estoura no conversor do destino.
+
+O acumulado usa histograma de 0,1 LU em vez de guardar um valor por bloco: um
+canal de playout fica meses no ar, e uma lista de blocos de 100 ms viraria
+gigabytes. A memória fica fixa e o erro de quantização, abaixo do que qualquer
+medidor mostra.
+
+A integrada reinicia a cada take. O que o operador precisa saber é se **este VT**
+saiu no alvo, não a média do canal desde que ligou. A janela deslizante é
+esvaziada junto: sem isso, três décimos de segundo do item anterior sobrevivem
+ao gate relativo e mascaram o item inteiro que veio depois -- medido, um item
+20 dB mais baixo lia 12 LU de diferença em vez de 20.
+
+Conferido contra um tom de 1 kHz a -20 dBFS: o medidor lê -20,00 LUFS
+momentânea e -20,07 integrada, contra -19,99 calculado da resposta do filtro K.
+Os nove testes do medidor não usam número decorado -- o esperado sai dos
+próprios coeficientes.
 
 ### O preview é um tocador à parte
 

@@ -44,6 +44,8 @@ export interface Transport {
   tick(): boolean
   /** Medição real do programa, quando o transporte tem uma. */
   programMeter(): MeterReading | null
+  /** Medição real do preview, quando o transporte tem uma. */
+  previewMeter(): MeterReading | null
   /** Saídas de rede do canal. Vazio no simulado, que não sai para lugar nenhum. */
   publishers(): readonly PublisherState[]
   close(): void
@@ -176,6 +178,10 @@ export class SimulatedTransport implements Transport {
 
   /** O simulado não mede nada: quem mede é o engine. */
   programMeter(): MeterReading | null {
+    return null
+  }
+
+  previewMeter(): MeterReading | null {
     return null
   }
 

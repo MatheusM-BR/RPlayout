@@ -10,6 +10,8 @@ export interface MeterReading {
   readonly momentaryLufs: number
   readonly shortTermLufs: number
   readonly integratedLufs: number
+  /** Faixa de loudness (EBU Tech 3342), em LU. Diz se o programa respira. */
+  readonly rangeLu: number
   readonly truePeakDbtp: number
   /** Redução de ganho do limiter, em dB. Zero é o estado saudável. */
   readonly gainReductionDb: number
@@ -22,6 +24,7 @@ export const SILENCE: MeterReading = {
   momentaryLufs: -70,
   shortTermLufs: -70,
   integratedLufs: -70,
+  rangeLu: 0,
   truePeakDbtp: -90,
   gainReductionDb: 0,
   correlation: 1,
@@ -65,6 +68,7 @@ export function simulateMeter(
     momentaryLufs: momentary,
     shortTermLufs: shortTerm,
     integratedLufs: levelled,
+    rangeLu: 0,
     truePeakDbtp: Math.min(truePeak, channel.ceilingDbtp),
     gainReductionDb: gainReduction,
     correlation: 0.82 + Math.sin(phase * 0.31) * 0.14,
