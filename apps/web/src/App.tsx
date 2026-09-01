@@ -9,6 +9,7 @@ import type {
   LibraryAsset,
   LibraryFolder,
   Live,
+  Monitors as MonitorFeeds,
   RundownView,
   Snapshot,
 } from './types.js'
@@ -40,6 +41,8 @@ export function App() {
     undoLabel: null,
     redoLabel: null,
   })
+  /** Onde buscar a imagem dos monitores. Nulo enquanto não há servidor de mídia. */
+  const [monitors, setMonitors] = useState<MonitorFeeds | null>(null)
   /** Linhas marcadas para agrupar. Marcar não é armar: o PGM não muda. */
   const [marked, setMarked] = useState<Set<string>>(new Set())
   const lastClicked = useRef<string | null>(null)
@@ -60,6 +63,7 @@ export function App() {
     if (snapshot.view) setView(snapshot.view)
     setLive(snapshot.live)
     setHistory(snapshot.history)
+    setMonitors(snapshot.monitors)
   }, [])
 
   const guard = useCallback(async (action: () => Promise<void>) => {
@@ -432,6 +436,7 @@ export function App() {
             onAirItem={onAirItem}
             onAirRemaining={remainingOnAir}
             preview={previewCard}
+            monitors={monitors}
           />
           <div className="pane-title">
             conflitos

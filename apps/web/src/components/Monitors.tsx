@@ -1,6 +1,7 @@
 import type { Channel } from '@rplayout/protocol'
-import type { ItemView, Live } from '../types.js'
+import type { ItemView, Live, Monitors as MonitorFeeds } from '../types.js'
 import { Meter } from './Meter.js'
+import { Whep } from './Whep.js'
 import { dur } from '../format.js'
 
 interface Props {
@@ -10,6 +11,8 @@ interface Props {
   onAirRemaining: number
   /** O que está no preview: título e duração, venha de item ou de arquivo. */
   preview: { title: string; duration: number; fromExplorer: boolean } | null
+  /** De onde vem a imagem. Nulo mantém os monitores no modo texto. */
+  monitors: MonitorFeeds | null
 }
 
 /**
@@ -17,7 +20,14 @@ interface Props {
  * está no ar — na F2 quem alimenta os dois são pipelines separados; aqui o
  * layout e o contrato já são os definitivos.
  */
-export function Monitors({ channel, live, onAirItem, onAirRemaining, preview }: Props) {
+export function Monitors({
+  channel,
+  live,
+  onAirItem,
+  onAirRemaining,
+  preview,
+  monitors,
+}: Props) {
   const ending = onAirRemaining > 0 && onAirRemaining <= 10 * (channel.rate.num / channel.rate.den)
 
   return (
@@ -28,15 +38,16 @@ export function Monitors({ channel, live, onAirItem, onAirRemaining, preview }: 
           <span>no ar</span>
         </div>
         <div className="screen">
+          {monitors && <Whep path={monitors.program} port={monitors.port} />}
           {onAirItem ? (
-            <>
+            <div className="over">
               <div className="what">{onAirItem.item.title}</div>
               <div className={`tc${ending ? ' warn' : ''}`}>
                 {dur(Math.max(0, onAirRemaining), channel.rate)}
               </div>
-            </>
+            </div>
           ) : (
-            <div className="idle">SEM SINAL</div>
+            !monitors && <div className="idle">SEM SINAL</div>
           )}
         </div>
         <Meter reading={live.meters.program} channel={channel} />
@@ -48,12 +59,13 @@ export function Monitors({ channel, live, onAirItem, onAirRemaining, preview }: 
           <span>preview</span>
         </div>
         <div className="screen">
+          {monitors?.preview && <Whep path={monitors.preview} port={monitors.port} />}
           {preview ? (
-            <>
+            <div className="over">
               <div className="what">{preview.title}</div>
               <div className="tc">{dur(preview.duration, channel.rate)}</div>
               {preview.fromExplorer && <div className="idle">arquivo · fora da grade</div>}
-            </>
+            </div>
           ) : (
             <div className="idle">NADA ARMADO</div>
           )}

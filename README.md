@@ -118,8 +118,34 @@ Planejamento concluído. **F0** e **F1** entregues:
 - Painel de distribuição na interface, em `#distribuicao`: endereços do programa
   para copiar, chaves de convidado com quem está conectado, a saída do canal com
   o que já foi entregue, e destinos com o estado do relay.
-- Falta: preview por WebRTC e a medição de loudness R128 no pipeline — hoje o medidor do programa
-  reporta RMS, que é aproximação e está marcado como tal no código.
+- Monitor de PGM com imagem de verdade, por WHEP direto do servidor de mídia.
+- Falta: o barramento de preview no engine (o monitor PVW já está ligado, só não
+  tem o que mostrar), som nos monitores e a medição de loudness R128 no pipeline
+  — hoje o medidor do programa reporta RMS, que é aproximação e está marcado
+  como tal no código.
+
+### Monitores por WHEP
+
+O MediaMTX já fala WHEP, então o monitor não precisa de sinalização nossa: a
+interface oferece, recebe a resposta e mostra. A imagem não passa pelo servidor
+de aplicação.
+
+O endereço é montado com o nome de máquina pelo qual a interface foi aberta --
+o servidor manda só a porta e o caminho. Deduzir o IP no servidor é exatamente
+como o monitor fica preto para quem acessa por outro nome.
+
+O monitor pede **só vídeo**. O WebRTC não fala AAC e o canal sai em AAC: pedir
+áudio faz o servidor recusar a sessão inteira em vez de mandar só a imagem.
+Quem responde pelo som na interface são os medidores, que vêm do próprio mix.
+Som nos monitores depende de um caminho em Opus, e nenhum dos dois jeitos de
+publicar Opus no MediaMTX existe nesta instalação do GStreamer
+(`whipclientsink` e `rtspclientsink` ausentes; RTMP e o `mpegtsmux` daqui não
+carregam Opus).
+
+Um navegador sem H.264 -- o Chromium de codecs abertos, por exemplo -- recebe
+`codecs not supported by client` do servidor. O monitor mostra isso como
+`NAVEGADOR SEM H.264` em vez de `SEM SINAL`, porque as duas coisas pedem
+providências opostas.
 
 ### Como o relay entrega
 

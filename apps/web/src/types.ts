@@ -70,10 +70,18 @@ export interface HistoryState {
   redoLabel: string | null
 }
 
+/** Onde a interface busca a imagem dos monitores. Nulo = sem servidor de mídia. */
+export interface Monitors {
+  port: number
+  program: string
+  preview: string | null
+}
+
 export interface Snapshot {
   view: RundownView | null
   live: Live
   history: HistoryState
+  monitors: Monitors | null
 }
 
 export interface PathStatus {

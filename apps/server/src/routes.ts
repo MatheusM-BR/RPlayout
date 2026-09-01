@@ -96,7 +96,21 @@ const snapshot = (app: App, runtime: ChannelRuntime) => ({
   view: runtime.view,
   live: runtime.live(),
   history: app.history.state(runtime.view?.rundown.id ?? ''),
+  monitors: monitors(app, runtime.channel.id),
 })
+
+/**
+ * Onde a interface vai buscar a imagem dos monitores.
+ *
+ * Vai só a porta e o caminho, nunca a máquina: quem abre a interface sabe por
+ * qual endereço chegou até aqui, e o servidor não sabe. Deduzir o IP daqui é
+ * como o monitor fica preto quando alguém acessa por outro nome.
+ */
+function monitors(app: App, channelId: string) {
+  const path = app.paths.find((entry) => entry.channelId === channelId)
+  if (!app.mediamtx?.running || !path) return null
+  return { port: PORTS.webrtc, program: path.program, preview: null as string | null }
+}
 
 /**
  * Itens que andam junto com este. Um item de bloco nunca se move sozinho: o
