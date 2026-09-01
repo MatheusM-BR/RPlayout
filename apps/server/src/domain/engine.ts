@@ -104,6 +104,12 @@ export class EngineTransport implements Transport {
       // O teto do limiter é do canal: é a promessa que o canal faz ao destino.
       '--ceiling',
       String(channel.ceilingDbtp),
+      // A varredura muda a cadência de composição dentro do engine, nunca a da
+      // grade: 1080i5994 são 29,97 quadros aqui e 59,94 campos lá dentro.
+      '--scan',
+      channel.scan === 'INTERLACED' ? 'interlaced' : 'progressive',
+      '--field-order',
+      channel.fieldOrder === 'BFF' ? 'bff' : 'tff',
     ]
     for (const output of options.outputs) args.push('--output', output)
     if (options.preview) args.push('--preview', options.preview)

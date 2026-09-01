@@ -12,7 +12,7 @@ mod output;
 mod protocol;
 
 use anyhow::{anyhow, Context, Result};
-use channel::{Channel, Config, Output};
+use channel::{Channel, Config, Output, Scan};
 use gstreamer as gst;
 use gstreamer::prelude::GstObjectExt;
 use protocol::{Command, Envelope, Event};
@@ -34,6 +34,8 @@ fn parse_args() -> Result<Config> {
     let mut fps_d = 1;
     let mut bitrate_kbps = 4000;
     let mut ceiling_dbtp = -1.0;
+    let mut scan = Scan::Progressive;
+    let mut top_field_first = true;
     let mut outputs = Vec::new();
     let mut preview = None;
 
@@ -56,6 +58,8 @@ fn parse_args() -> Result<Config> {
             "--fps-den" => fps_d = value()?.parse().context("--fps-den")?,
             "--bitrate" => bitrate_kbps = value()?.parse().context("--bitrate")?,
             "--ceiling" => ceiling_dbtp = value()?.parse().context("--ceiling")?,
+            "--scan" => scan = Scan::parse(&value()?)?,
+            "--field-order" => top_field_first = value()? != "bff",
             "--output" => outputs.push(Output::parse(&value()?)?),
             "--preview" => preview = Some(Output::parse(&value()?)?),
             other => return Err(anyhow!("argumento desconhecido: {other}")),
@@ -75,6 +79,8 @@ fn parse_args() -> Result<Config> {
         fps_d,
         bitrate_kbps,
         ceiling_dbtp,
+        scan,
+        top_field_first,
         outputs,
         preview,
     })

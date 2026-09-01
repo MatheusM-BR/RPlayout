@@ -98,6 +98,19 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
             </div>
           )}
 
+          {channel?.format && (
+            <div className="note">
+              Canal em <b>{channel.format.channel}</b>
+              {channel.format.channel !== channel.format.network && (
+                <>
+                  {' '}
+                  · a saída de rede vai em <b>{channel.format.network}</b>, porque o RTMP não
+                  declara entrelaçamento e a maior parte dos destinos assume progressivo
+                </>
+              )}
+            </div>
+          )}
+
           {channel?.urls && (
             <div className="field">
               <label>Endereços do programa</label>

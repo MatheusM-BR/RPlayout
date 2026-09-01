@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS channels (
   rate_den INTEGER NOT NULL,
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
+  scan TEXT NOT NULL DEFAULT 'PROGRESSIVE',
+  field_order TEXT NOT NULL DEFAULT 'TFF',
   target_lufs REAL NOT NULL,
   ceiling_dbtp REAL NOT NULL,
   limiter_lookahead_ms INTEGER NOT NULL,
@@ -123,6 +125,8 @@ export function openDatabase(file: string) {
     'ALTER TABLE media_assets ADD COLUMN has_audio INTEGER',
     'ALTER TABLE media_assets ADD COLUMN audio_channels INTEGER',
     'ALTER TABLE media_assets ADD COLUMN probe_error TEXT',
+    "ALTER TABLE channels ADD COLUMN scan TEXT NOT NULL DEFAULT 'PROGRESSIVE'",
+    "ALTER TABLE channels ADD COLUMN field_order TEXT NOT NULL DEFAULT 'TFF'",
     'CREATE UNIQUE INDEX IF NOT EXISTS media_assets_path ON media_assets (path)',
   ]) {
     try {

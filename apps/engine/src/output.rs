@@ -219,11 +219,18 @@ impl Publisher {
         let spec = &self.spec;
         let pipeline = gst::Pipeline::new();
 
+        // Mesma fixação de colorimetria do canal, e pelo mesmo motivo: o
+        // encoder não pode ver a colorimetria mudar no meio.
         let video_caps = gst::Caps::builder("video/x-raw")
             .field("format", "I420")
             .field("width", spec.width)
             .field("height", spec.height)
             .field("framerate", gst::Fraction::new(spec.fps_n, spec.fps_d))
+            .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+            .field(
+                "colorimetry",
+                if spec.height >= 720 { "bt709" } else { "bt601" },
+            )
             .build();
         let audio_caps = gst::Caps::builder("audio/x-raw")
             .field("rate", 48_000i32)

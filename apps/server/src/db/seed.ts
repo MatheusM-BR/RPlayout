@@ -249,6 +249,8 @@ async function seed(): Promise<void> {
     rateDen: 1,
     width: 1920,
     height: 1080,
+    scan: 'PROGRESSIVE',
+    fieldOrder: 'TFF',
     targetLufs: -23,
     ceilingDbtp: -1,
     limiterLookaheadMs: 5,

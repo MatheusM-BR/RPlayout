@@ -22,6 +22,12 @@ export function parseSourceRef(value: string): { kind: SourceKind; ref: string }
 
 export type EncoderKind = 'NVENC' | 'X264' | 'NONE'
 
+/** Como a imagem é varrida. */
+export type Scan = 'PROGRESSIVE' | 'INTERLACED'
+
+/** Ordem dos campos. 1080i é TFF; só formatos SD antigos são BFF. */
+export type FieldOrder = 'TFF' | 'BFF'
+
 export interface OutputProfile {
   readonly id: string
   readonly channelId: string
@@ -31,6 +37,9 @@ export interface OutputProfile {
   readonly target: string
   readonly width: number
   readonly height: number
+  /** Varredura desta saída. Pode diferir da do canal. */
+  readonly scan: Scan
+  readonly fieldOrder: FieldOrder
   readonly bitrateKbps: number
   readonly encoder: EncoderKind
   readonly gopFrames: number
@@ -48,6 +57,15 @@ export interface Channel {
   readonly rate: Rate
   readonly width: number
   readonly height: number
+  /**
+   * Varredura da saída.
+   *
+   * Num canal entrelaçado, `rate` continua sendo a cadência de **quadros** --
+   * 1080i5994 é 29,97 quadros e 59,94 campos --, e é essa que a grade conta. A
+   * composição roda no dobro, dentro do engine, e esse número não sai de lá.
+   */
+  readonly scan: Scan
+  readonly fieldOrder: FieldOrder
 
   /** Alvo de loudness: -23 LUFS para TV, -14 para plataformas. */
   readonly targetLufs: number
@@ -69,3 +87,27 @@ export type ClockSource = 'DECKLINK' | 'SYSTEM'
 
 export const clockSource = (channel: Pick<Channel, 'programSdiDeviceId'>): ClockSource =>
   channel.programSdiDeviceId ? 'DECKLINK' : 'SYSTEM'
+
+/**
+ * Nome do formato como se fala em broadcast: `1080i5994`, `1080p50`, `720p2997`.
+ *
+ * A armadilha está no `i`: o número que acompanha é a cadência de **campos**,
+ * não de quadros. 1080i5994 são 29,97 quadros por segundo -- que é o que o
+ * canal guarda em `rate` e o que a grade conta -- e 59,94 campos. Escrever
+ * "1080i2997" seria tecnicamente coerente e ninguém do mercado entenderia.
+ */
+export function formatVideoFormat(
+  channel: Pick<Channel, 'height' | 'rate' | 'scan'>,
+): string {
+  const interlaced = channel.scan === 'INTERLACED'
+  const num = interlaced ? channel.rate.num * 2 : channel.rate.num
+  const fps = num / channel.rate.den
+
+  // NTSC fracionário vira o número sem vírgula, como o mercado escreve.
+  const label =
+    channel.rate.den === 1001
+      ? String(Math.round(fps * 100))
+      : String(Math.round(fps))
+
+  return `${channel.height}${interlaced ? 'i' : 'p'}${label}`
+}

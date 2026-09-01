@@ -158,6 +158,8 @@ export interface Distribution {
   }
   channels: {
     channelId: string
+    /** Nome do formato do canal e o da saída de rede, que pode diferir. */
+    format: { channel: string; network: string } | null
     program: string
     clean: string
     preview: string

@@ -51,6 +51,26 @@ impl Output {
     }
 }
 
+/// Como o canal varre a imagem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scan {
+    Progressive,
+    /// Entrelaçado. A cadência do canal continua sendo a de **quadros**
+    /// -- 1080i5994 é 29,97 quadros, 59,94 campos --, e é essa que a grade
+    /// conta. A composição é que roda no dobro.
+    Interlaced,
+}
+
+impl Scan {
+    pub fn parse(text: &str) -> Result<Self> {
+        match text {
+            "progressive" | "p" => Ok(Scan::Progressive),
+            "interlaced" | "i" => Ok(Scan::Interlaced),
+            other => Err(anyhow!("varredura desconhecida: {other}")),
+        }
+    }
+}
+
 pub struct Config {
     pub channel_id: String,
     pub width: i32,
@@ -60,6 +80,9 @@ pub struct Config {
     pub bitrate_kbps: u32,
     /// Teto de pico verdadeiro da saída, em dBTP. É o teto do limiter.
     pub ceiling_dbtp: f64,
+    pub scan: Scan,
+    /// Campo de cima primeiro. 1080i é TFF; só formatos SD antigos são BFF.
+    pub top_field_first: bool,
     pub outputs: Vec<Output>,
     /// Para onde o preview sai. Vazio deixa o canal sem barramento de preview.
     pub preview: Option<Output>,
@@ -162,22 +185,54 @@ fn meter_branch() -> Result<(gst::Element, gst::Element, gst::Element, gst::Elem
     Ok((queue, convert, caps, sink))
 }
 
+/// Caps de vídeo do canal.
+///
+/// Colorimetria e proporção de pixel ficam **fixas**. Sem isso elas seguem a
+/// fonte: o preto de fundo entra em bt709 e um VT em bt601 troca a colorimetria
+/// do programa no meio da transmissão. O `flvmux` engole a troca; o Matroska
+/// não, e a gravação as-run morre com "caps changes are not supported" -- que
+/// foi exatamente o que aconteceu aqui, e só apareceu quando a gravação passou
+/// a ser exercitada.
+///
+/// HD é bt709 e SD é bt601, que é a convenção de broadcast.
+fn channel_video_caps(width: i32, height: i32, framerate: gst::Fraction) -> gst::Caps {
+    gst::Caps::builder("video/x-raw")
+        .field("format", "I420")
+        .field("width", width)
+        .field("height", height)
+        .field("framerate", framerate)
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+        .field("colorimetry", if height >= 720 { "bt709" } else { "bt601" })
+        .build()
+}
+
 /// dB para o fator linear que o elemento `volume` espera.
 fn linear_gain(db: f64) -> f64 {
     10f64.powf(db / 20.0)
 }
 
 impl Channel {
+    /// Cadência em que o programa é composto.
+    ///
+    /// Num canal entrelaçado a composição roda no **dobro** da cadência da
+    /// grade: cada quadro composto vira um campo. É isso que dá o movimento
+    /// certo de 1080i -- compor a 29,97 e repetir o quadro nos dois campos
+    /// custa metade, mas o grafismo em movimento denuncia.
+    ///
+    /// Este número não pode sair do engine. A grade conta 29,97; confundir uma
+    /// coisa com a outra é erro de fator dois na duração de item.
+    fn composition_rate(&self) -> gst::Fraction {
+        let factor = match self.config.scan {
+            Scan::Progressive => 1,
+            Scan::Interlaced => 2,
+        };
+        gst::Fraction::new(self.config.fps_n * factor, self.config.fps_d)
+    }
+
+    /// Caps do programa dentro do canal: sempre progressivo, na cadência de
+    /// composição. O entrelaçamento acontece só na saída que o pede.
     pub fn video_caps(&self) -> gst::Caps {
-        gst::Caps::builder("video/x-raw")
-            .field("format", "I420")
-            .field("width", self.config.width)
-            .field("height", self.config.height)
-            .field(
-                "framerate",
-                gst::Fraction::new(self.config.fps_n, self.config.fps_d),
-            )
-            .build()
+        channel_video_caps(self.config.width, self.config.height, self.composition_rate())
     }
 
     pub fn new(config: Config) -> Result<Self> {
@@ -185,12 +240,11 @@ impl Channel {
         let video_channel = format!("{}-video", config.channel_id);
         let audio_channel = format!("{}-audio", config.channel_id);
 
-        let video_caps = gst::Caps::builder("video/x-raw")
-            .field("format", "I420")
-            .field("width", config.width)
-            .field("height", config.height)
-            .field("framerate", gst::Fraction::new(config.fps_n, config.fps_d))
-            .build();
+        let composition = match config.scan {
+            Scan::Progressive => gst::Fraction::new(config.fps_n, config.fps_d),
+            Scan::Interlaced => gst::Fraction::new(config.fps_n * 2, config.fps_d),
+        };
+        let video_caps = channel_video_caps(config.width, config.height, composition);
         let audio_caps = gst::Caps::builder("audio/x-raw")
             .field("rate", 48_000i32)
             .field("channels", 2i32)
@@ -441,7 +495,19 @@ impl Channel {
                 sink.set_property("location", path);
                 self.pipeline
                     .add_many([&venc, &vparse, &vcaps, &aenc, &aparse, &acaps, &mux, &sink])?;
-                gst::Element::link_many([&vqueue, &venc, &vparse, &vcaps, &mux, &sink])?;
+
+                // A gravação as-run tem que ser o que foi ao ar, então ela sai
+                // na varredura do canal. É a única saída em arquivo que existe
+                // hoje; a SDI vai pelo mesmo caminho quando existir.
+                match self.weave()? {
+                    Some((interlace, caps)) => {
+                        venc.set_property("interlaced", true);
+                        self.pipeline.add_many([&interlace, &caps])?;
+                        gst::Element::link_many([&vqueue, &interlace, &caps, &venc])?;
+                    }
+                    None => gst::Element::link_many([&vqueue, &venc])?,
+                }
+                gst::Element::link_many([&venc, &vparse, &vcaps, &mux, &sink])?;
                 gst::Element::link_many([&aqueue, &aenc, &aparse, &acaps])?;
                 acaps.link(&mux)?;
             }
@@ -493,6 +559,35 @@ impl Channel {
             )?;
 
         Ok(())
+    }
+
+    /// Tece os quadros compostos em campos, quando o canal é entrelaçado.
+    ///
+    /// `field-pattern=1:1` é o que faz cada quadro composto virar um campo, e
+    /// é por isso que a composição roda no dobro da cadência da grade. O padrão
+    /// `2:2` custaria metade e repetiria o mesmo instante nos dois campos --
+    /// sem pente, mas com o movimento de 29,97, que o grafismo denuncia.
+    fn weave(&self) -> Result<Option<(gst::Element, gst::Element)>> {
+        if self.config.scan == Scan::Progressive {
+            return Ok(None);
+        }
+
+        let interlace = make("interlace")?;
+        interlace.set_property_from_str("field-pattern", "1:1");
+        interlace.set_property("top-field-first", self.config.top_field_first);
+
+        let caps = make("capsfilter")?;
+        caps.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("interlace-mode", "interleaved")
+                .field(
+                    "framerate",
+                    gst::Fraction::new(self.config.fps_n, self.config.fps_d),
+                )
+                .build(),
+        );
+        Ok(Some((interlace, caps)))
     }
 
     /// Saída de rede: o canal só entrega o sinal cru num par `inter` e quem
@@ -787,6 +882,12 @@ impl Channel {
         src.set_property("uri", &uri);
 
         let vconv = make("videoconvert")?;
+        // Fonte entrelaçada vira progressiva aqui. O compositor não trabalha em
+        // campos -- e sem compositor não há grafismo nem escala --, então o
+        // caminho é desentrelaçar na entrada e entrelaçar de novo na saída que
+        // pedir. Em `auto` o elemento deixa material progressivo passar.
+        let vdeint = make("deinterlace")?;
+        vdeint.set_property_from_str("mode", "auto");
         let vscale = make("videoscale")?;
         let vrate = make("videorate")?;
         let vcaps = make("capsfilter")?;
@@ -814,6 +915,7 @@ impl Channel {
         pipeline.add_many([
             &src,
             &vconv,
+            &vdeint,
             &vscale,
             &vrate,
             &vcaps,
@@ -826,7 +928,7 @@ impl Channel {
             &aqueue,
             &audio_sink,
         ])?;
-        gst::Element::link_many([&vconv, &vscale, &vrate, &vcaps, &vqueue, &video_sink])?;
+        gst::Element::link_many([&vconv, &vdeint, &vscale, &vrate, &vcaps, &vqueue, &video_sink])?;
         gst::Element::link_many([&aconv, &ares, &volume, &acaps])?;
 
         // O áudio do item sai do `acaps` já nivelado. Sem medição, vai direto

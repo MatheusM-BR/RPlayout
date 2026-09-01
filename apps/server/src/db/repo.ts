@@ -14,6 +14,8 @@ export const toChannel = (row: ChannelRow): Channel => ({
   rate: { num: row.rateNum, den: row.rateDen },
   width: row.width,
   height: row.height,
+  scan: row.scan,
+  fieldOrder: row.fieldOrder,
   targetLufs: row.targetLufs,
   ceilingDbtp: row.ceilingDbtp,
   limiterLookaheadMs: row.limiterLookaheadMs,

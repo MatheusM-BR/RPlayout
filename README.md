@@ -134,8 +134,35 @@ Planejamento concluído. **F0** e **F1** entregues:
 - **Ingest de arquivo de verdade**: varredura de pasta, identificação por
   SHA-256, sonda que abre o arquivo com o mesmo GStreamer que vai tocá-lo,
   medição EBU R128 do arquivo inteiro e miniatura tirada do próprio vídeo.
-- Falta: perfil de saída por destino, com varredura entrelaçada e 1080i5994 —
-  seção 13.2 do [plano](docs/PLANO.md).
+- **Varredura entrelaçada**: canal em 1080i5994 com a gravação as-run em campos
+  e a saída de rede em 1080p2997, ao mesmo tempo.
+- Falta: persistir e editar o perfil de saída por destino (hoje ele é derivado
+  do canal) e isolar a saída em arquivo num pipeline próprio — seção 13.2 do
+  [plano](docs/PLANO.md).
+
+### 1080i5994: a grade conta quadros, o pipeline compõe campos
+
+Num canal entrelaçado a composição roda no **dobro** da cadência da grade e o
+`interlace` com `field-pattern=1:1` faz cada quadro composto virar um campo. É o
+movimento correto de 1080i; compor a 29,97 e repetir o quadro nos dois campos
+custaria metade e o grafismo em movimento denunciaria. Medido: a gravação
+entrelaçada tem dezenove vezes mais diferença entre linhas vizinhas que o mesmo
+sinal progressivo -- que é o pente, ou seja, os dois instantes tecidos juntos.
+
+Esse dobro **não sai do engine**. A grade conta 29,97; confundir uma coisa com a
+outra é erro de fator dois na duração de item.
+
+A saída de rede continua progressiva: o RTMP não declara entrelaçamento e a
+maior parte dos destinos assume progressivo. Então o mesmo canal entrega
+`1080i5994` na gravação e `1080p2997` na rede, e o painel de distribuição diz os
+dois nomes. O `i` acompanha a cadência de **campos** por convenção do mercado --
+1080i5994 são 29,97 quadros --, e é isso que o teste do nome do formato trava.
+
+**Um defeito antigo que só apareceu aqui:** a colorimetria do canal não estava
+fixada, então ela seguia a fonte -- o preto de fundo entra em bt709 e um VT em
+bt601 trocava a colorimetria no meio da transmissão. O `flvmux` engole a troca;
+o Matroska não, e a gravação as-run morria com "caps changes are not supported".
+Estava lá desde sempre e só apareceu quando a gravação passou a ser exercitada.
 
 ### O acervo é lido, não declarado
 

@@ -20,6 +20,13 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+// O medidor é compartilhado com o engine por inclusão de caminho: são dois
+// binários do mesmo crate, e o mesmo código medindo em ingest e no ar é o que
+// garante que o número do acervo e o número do medidor sejam comparáveis.
+//
+// A sonda usa só parte dele -- não há janela momentânea nem redução de ganho
+// para reportar num arquivo parado --, então o resto fica sem uso aqui.
+#[allow(dead_code)]
 #[path = "../loudness.rs"]
 mod loudness;
 

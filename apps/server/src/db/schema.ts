@@ -5,8 +5,10 @@ import type {
   Elastic,
   ItemType,
   LoudnessMeasurement,
+  FieldOrder,
   MediaKind,
   OverrunPolicy,
+  Scan,
   Trim,
 } from '@rplayout/protocol'
 
@@ -18,6 +20,8 @@ export const channels = sqliteTable('channels', {
   rateDen: integer('rate_den').notNull(),
   width: integer('width').notNull(),
   height: integer('height').notNull(),
+  scan: text('scan').$type<Scan>().notNull().default('PROGRESSIVE'),
+  fieldOrder: text('field_order').$type<FieldOrder>().notNull().default('TFF'),
   targetLufs: real('target_lufs').notNull(),
   ceilingDbtp: real('ceiling_dbtp').notNull(),
   limiterLookaheadMs: integer('limiter_lookahead_ms').notNull(),

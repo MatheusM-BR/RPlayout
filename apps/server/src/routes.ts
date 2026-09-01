@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
 import {
   durationIn,
+  formatVideoFormat,
   trimDuration,
   type Frames,
   type MediaAsset,
@@ -461,6 +462,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.get('/api/distribution', async () => {
     const host = lanAddress()
+    const channelsByPath = new Map((await listChannels(app.db)).map((row) => [row.id, row]))
     const [guests, targets, status] = await Promise.all([
       app.db.select().from(guestKeys),
       app.db.select().from(destinations),
@@ -478,6 +480,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       },
       channels: app.paths.map((path) => ({
         channelId: path.channelId,
+        // O formato que o canal promete ao destino. Num canal entrelaçado a
+        // saída de rede continua progressiva -- o FLV não declara
+        // entrelaçamento e a maior parte dos destinos assume progressivo --,
+        // então os dois nomes aparecem.
+        format: (() => {
+          const channel = channelsByPath.get(path.channelId)
+          if (!channel) return null
+          return {
+            channel: formatVideoFormat(channel),
+            network: formatVideoFormat({ ...channel, scan: 'PROGRESSIVE' }),
+          }
+        })(),
         program: path.program,
         clean: path.clean,
         preview: path.preview,

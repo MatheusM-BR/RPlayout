@@ -614,7 +614,23 @@ explicação — inclusive quando o motivo é plugin que falta (ProRes, DNxHD, H
 | Arquivo ainda em cópia | abriria pela metade | não ingerir enquanto o tamanho estiver mudando |
 | Imagem parada e áudio-só | não previsto | duração vem da grade, não do arquivo |
 
-### 13.2 Perfil de saída definível, incluindo 1080i59.94
+### 13.2 Perfil de saída definível, incluindo 1080i59.94 — **parcialmente feito**
+
+Feito: o canal tem varredura e ordem de campo no banco, a composição roda no
+dobro da cadência quando entrelaçado, o `interlace` com `field-pattern=1:1` tece
+os campos na gravação as-run, o `x264enc` sai com `interlaced=true`, e a entrada
+ganhou `deinterlace` em `auto`. Verificado com o canal em 1080i5994: a gravação
+sai `interlace-mode=interleaved` a 30000/1001 e a saída de rede sai progressiva
+a 30000/1001, ao mesmo tempo e do mesmo canal.
+
+Falta: persistir e editar o `OutputProfile` -- ele existe no protocolo desde a
+F0 e nunca foi gravado, então hoje os perfis são derivados do canal em vez de
+escolhidos. E isolar a saída em arquivo num pipeline próprio, como já é o caso
+das saídas de rede: hoje um erro de multiplexação nela ainda derruba o canal
+(foi o que aconteceu ao exercitar a gravação pela primeira vez).
+
+O levantamento original, que continua valendo:
+
 
 **Nomenclatura.** "1080i59" na prática é **1080i59.94**: 29.97 quadros por
 segundo, 59.94 campos. Fica a nomenclatura da Decklink, `1080i5994`. O quadro
