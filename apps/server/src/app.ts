@@ -14,6 +14,7 @@ import {
   ENGINE_OUTPUTS,
   MEDIAMTX_BINARY,
   MEDIAMTX_BIND,
+  DEVICES_BINARY,
   MEDIAMTX_LOGLEVEL,
   MEDIA_ROOT,
   PROBE_BINARY,
@@ -22,6 +23,7 @@ import {
 } from './config.js'
 import { MediaMtx, channelPaths, type ChannelPaths } from './domain/mediamtx.js'
 import { Ingest } from './domain/ingest.js'
+import { Sources } from './domain/sources.js'
 import {
   encodeProfile,
   ensureManagedOutputs,
@@ -147,6 +149,7 @@ export interface App {
   readonly mediamtx: MediaMtx | null
   readonly relays: RelaySupervisor
   readonly ingest: Ingest
+  readonly sources: Sources
   readonly mediaRoot: string
   readonly thumbnailDir: string
   /** Caminho de cada canal no servidor local. */
@@ -173,6 +176,7 @@ export async function createApp(file: string): Promise<App> {
     mediamtx,
     relays: new RelaySupervisor(RELAY_BINARY),
     ingest: new Ingest(db, PROBE_BINARY, THUMBNAIL_DIR),
+    sources: new Sources(db, DEVICES_BINARY),
     mediaRoot: MEDIA_ROOT,
     thumbnailDir: THUMBNAIL_DIR,
     paths: [],

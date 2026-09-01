@@ -6,6 +6,7 @@ import type {
   OutputProfile,
   ScanStatus,
   Snapshot,
+  SourceList,
 } from './types.js'
 
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
@@ -43,6 +44,8 @@ export const api = {
     }),
   removeOutput: (id: string) => send<{ ok: boolean }>(`/api/outputs/${id}`, { method: 'DELETE' }),
   scan: () => send<ScanStatus>('/api/library/scan', { method: 'POST', body: '{}' }),
+  /** `refresh` força uma varredura nova em vez de usar o resultado guardado. */
+  sources: (refresh = false) => send<SourceList>(`/api/sources${refresh ? '?refresh=1' : ''}`),
   rundown: (id: string) => send<Snapshot>(`/api/rundowns/${id}`),
 
   addItem: (

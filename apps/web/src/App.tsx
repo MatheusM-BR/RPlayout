@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { anchorTarget, durationIn } from '@rplayout/protocol'
-import type { AudioLevel, Anchor, EditScope, Trim } from '@rplayout/protocol'
+import type { AudioLevel, EditScope, Trim } from '@rplayout/protocol'
 import { api } from './api.js'
 import { clock, dur } from './format.js'
 import type {
@@ -14,7 +14,7 @@ import type {
   RundownView,
   Snapshot,
 } from './types.js'
-import { AddItemDialog } from './components/AddItemDialog.js'
+import { AddItemDialog, type NewItem } from './components/AddItemDialog.js'
 import { AudioDialog } from './components/AudioDialog.js'
 import { Distribution } from './components/Distribution.js'
 import { Explorer } from './components/Explorer.js'
@@ -365,12 +365,12 @@ export function App() {
     })
   }
 
-  const addItem = (mediaId: string, anchor: Anchor, title: string): void => {
+  const addItem = (request: NewItem): void => {
     if (!view) return
     setDialog(null)
     void guard(async () => {
-      absorb(await api.addItem(view.rundown.id, { mediaId, type: 'VT', title, anchor }))
-      const at = anchorTarget(anchor)
+      absorb(await api.addItem(view.rundown.id, request))
+      const at = anchorTarget(request.anchor)
       say(
         at === null
           ? 'Item inserido no fim da grade.'

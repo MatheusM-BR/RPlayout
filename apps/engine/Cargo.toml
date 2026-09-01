@@ -27,3 +27,7 @@ opt-level = 2
 [[bin]]
 name = "rplayout-probe"
 path = "src/bin/probe.rs"
+
+[[bin]]
+name = "rplayout-devices"
+path = "src/bin/devices.rs"

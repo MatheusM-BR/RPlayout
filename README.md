@@ -190,6 +190,29 @@ está instalada, se o sub-dispositivo existe e se há sinal nele"*, e `ndi:` diz
 qual plugin falta. "Element failed to change its state" é a verdade e não serve
 para nada.
 
+### Quem enumera as fontes é o GStreamer, não a interface
+
+A interface não adivinha quantos sub-dispositivos uma placa expõe nem quem está
+anunciando NDI na rede: quem responde é `rplayout-devices`, um binário que usa o
+mesmo GStreamer que vai abrir a entrada. Ele distingue três coisas que uma lista
+vazia confunde -- **sem driver**, **driver presente e nenhuma placa**, **plugin
+ausente** -- e o diálogo de inserir item mostra o motivo em vez de um seletor
+mudo.
+
+A descoberta só roda quando o operador pede o vivo, e o resultado vale por
+quinze segundos: varrer NDI vasculha a rede, e quem só quer pôr um VT na grade
+não deve pagar por isso. Convidados ativos no servidor local entram na mesma
+lista como `guest:<chave>`.
+
+```bash
+RPLAYOUT_DEVICES=apps/engine/target/release/rplayout-devices \
+RPLAYOUT_PROBE=apps/engine/target/release/rplayout-probe \
+pnpm --filter @rplayout/server dev
+```
+
+Sem `RPLAYOUT_DEVICES` a lista fica só com os convidados, e o diálogo diz que a
+descoberta não está configurada -- não finge que a máquina não tem placa.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino

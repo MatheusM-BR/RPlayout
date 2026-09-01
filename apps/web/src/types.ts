@@ -189,3 +189,23 @@ export interface Distribution {
   relays: RelayStatus[]
   paths: PathStatus[]
 }
+
+/** Uma fonte ao vivo que a máquina descobriu, ou que já existe como convidado. */
+export interface LiveSource {
+  reference: string
+  label: string
+  family: 'SDI' | 'NDI' | 'GUEST'
+}
+
+export interface SourceFamily {
+  available: boolean
+  /** Por que a família está vazia: sem placa, sem plugin, sem convidado. */
+  reason: string | null
+  sources: LiveSource[]
+}
+
+export interface SourceList {
+  sdi: SourceFamily
+  ndi: SourceFamily
+  guests: SourceFamily
+}

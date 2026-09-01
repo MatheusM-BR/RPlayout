@@ -517,6 +517,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
+  /**
+   * Fontes ao vivo que dá para pôr na grade.
+   *
+   * Família sem nada traz o motivo: placa sem driver e NDI sem plugin são
+   * situações diferentes, e dizer qual é poupa o operador de procurar no lugar
+   * errado.
+   */
+  server.get('/api/sources', async (request) => {
+    const { refresh } = request.query as { refresh?: string }
+    return app.sources.list(refresh === '1')
+  })
+
   // ---- perfis de saída ---------------------------------------------------
 
   server.get('/api/channels/:id/outputs', async (request) => {

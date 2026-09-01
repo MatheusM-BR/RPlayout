@@ -560,7 +560,7 @@ Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 | F1 | **Rundown e scheduler**: modelo, âncoras, trim e **nivelamento de áudio** com escopos, UI completa com mídia simulada | Primeira entrega |
 | F2 | Engine: binário Rust/GStreamer, VT com A/B, PGM, **MediaMTX local** com o PGM em `rtmp://127.0.0.1:1935/ch1`, relays supervisionados para destinos externos, preview WebRTC, **cadeia de áudio com medidores e limiter** | No ar |
 | F2.5 | **Ingest de arquivo de verdade** (varredura, SHA-256, sonda, sem lista de extensões) e **perfil de saída por destino**, com varredura entrelaçada e 1080i5994 — seção 13 | Formatos |
-| F3a | **Fonte ao vivo como item da grade**: SRT, RTMP e convidado do servidor local. Fonte que cai não anda com a grade; quem marca a hora de sair é a grade | Ao vivo |
+| F3a | **Fonte ao vivo como item da grade**: SRT, RTMP e convidado do servidor local. Fonte que cai não anda com a grade; quem marca a hora de sair é a grade. **Descoberta de fontes** (`rplayout-devices`) e seletor no diálogo de inserir item, com o motivo de cada família vazia | Ao vivo |
 | F3 | Ao vivo: **Decklink entrada e saída** com alocação de sub-dispositivos, clock da placa e detecção de sinal; NDI discovery; SRT in/out; chaves e painel de convidados | Ao vivo |
 | F4 | Grafismo: camada CEF, templates + manifest, editor, rundown de GC | Grafismo |
 | F5 | Multicanal e perfis de saída, monitoramento e alertas | Escala |

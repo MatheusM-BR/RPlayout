@@ -43,3 +43,6 @@ export const MEDIA_ROOT = process.env.RPLAYOUT_MEDIA ?? resolve(process.cwd(), '
 
 /** Onde as miniaturas geradas ficam. Cache: pode ser apagada a qualquer hora. */
 export const THUMBNAIL_DIR = process.env.RPLAYOUT_THUMBS ?? resolve(process.cwd(), '.thumbs')
+
+/** Binário de descoberta de fontes ao vivo. Vazio deixa só os convidados. */
+export const DEVICES_BINARY = process.env.RPLAYOUT_DEVICES ?? ''
