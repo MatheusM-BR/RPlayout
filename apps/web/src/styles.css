@@ -319,6 +319,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .btn.take:hover:not(:disabled) { background: #2450b8; }
 .btn.stop:hover:not(:disabled) { border-color: var(--onair); background: rgba(255, 59, 59, 0.16); }
 .btn.small { padding: 5px 9px; font-size: 10px; letter-spacing: 0.08em; }
+/* Botão de proporção ligado: o item enche a tela em vez de entrar inteiro. */
+.btn.small.on { background: var(--deep); border-color: var(--accent); color: var(--text); }
 .btn kbd { font-family: var(--mono); font-size: 9px; color: var(--dim); margin-left: 7px; }
 
 /* ---------- diálogos ---------- */

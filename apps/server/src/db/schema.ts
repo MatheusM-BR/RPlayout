@@ -3,6 +3,7 @@ import type {
   Anchor,
   AudioLevel,
   Elastic,
+  Fit,
   ItemType,
   LoudnessMeasurement,
   FieldOrder,
@@ -116,6 +117,8 @@ export const rundownItems = sqliteTable('rundown_items', {
   elastic: text('elastic', { mode: 'json' }).$type<Elastic | null>(),
   /** Itens do mesmo bloco andam juntos na grade. */
   blockId: text('block_id'),
+  /** Proporção diferente da do canal. Nulo é pillarbox. */
+  fit: text('fit').$type<Fit>(),
   locked: integer('locked', { mode: 'boolean' }).notNull(),
   autoNext: integer('auto_next', { mode: 'boolean' }).notNull(),
   loop: integer('loop', { mode: 'boolean' }).notNull(),

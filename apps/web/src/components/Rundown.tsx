@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import type { ItemType, Rate, ResolvedItem } from '@rplayout/protocol'
+import type { Channel, Fit, ItemType, Rate, ResolvedItem } from '@rplayout/protocol'
 import type { ItemView } from '../types.js'
 import { clock, db, deviation, dur } from '../format.js'
 
@@ -7,6 +7,8 @@ interface Props {
   items: ItemView[]
   schedule: Map<string, ResolvedItem>
   rate: Rate
+  /** Geometria do canal: é contra ela que a proporção do arquivo é comparada. */
+  channel: Channel
   selectedId: string | null
   onAirId: string | null
   /** Frames que faltam do item no ar. */
@@ -19,8 +21,28 @@ interface Props {
   onUngroup: (blockId: string) => void
   onOpenTrim: (view: ItemView) => void
   onOpenAudio: (view: ItemView) => void
+  onSetFit: (id: string, fit: Fit) => void
   onNotes: (id: string, notes: string) => void
 }
+
+/**
+ * Proporção do arquivo em forma legível, quando ela não é a do canal.
+ *
+ * Só aparece quando há diferença de verdade: um arquivo 1918x1080 é 16:9 para
+ * qualquer efeito prático, e um aviso nesse caso seria ruído.
+ */
+function aspectLabel(view: ItemView, channel: Channel): string | null {
+  const probe = view.asset?.probe
+  if (!probe || probe.width <= 0 || probe.height <= 0) return null
+  const source = probe.width / probe.height
+  const target = channel.width / channel.height
+  if (Math.abs(source - target) / target < 0.01) return null
+
+  const divisor = gcd(probe.width, probe.height)
+  return `${probe.width / divisor}:${probe.height / divisor}`
+}
+
+const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
 
 const TYPE_LABEL: Record<ItemType, string> = {
   VT: 'VT',
@@ -112,6 +134,7 @@ export function Rundown(props: Props) {
           const armed = id === props.selectedId
           const shortened = scheduled.duration < scheduled.plannedDuration
           const anchor = view.item.anchor
+          const aspect = aspectLabel(view, props.channel)
           const blockId = view.item.blockId
           const opensBlock = blockId !== null && props.items[index - 1]?.item.blockId !== blockId
 
@@ -285,6 +308,30 @@ export function Rundown(props: Props) {
                   >
                     dB
                   </button>
+                  {/* Só existe quando a proporção do arquivo não é a do canal:
+                      o operador escolhe entre ver tudo e encher a tela. */}
+                  {aspect && (
+                    <>
+                      {' '}
+                      <button
+                        className={`btn small${view.item.fit === 'CROP' ? ' on' : ''}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          props.onSetFit(
+                            view.item.id,
+                            view.item.fit === 'CROP' ? 'PILLARBOX' : 'CROP',
+                          )
+                        }}
+                        title={
+                          view.item.fit === 'CROP'
+                            ? `${aspect} enchendo a tela: sobra cortada`
+                            : `${aspect} inteiro: barra preta na sobra`
+                        }
+                      >
+                        {aspect}
+                      </button>
+                    </>
+                  )}
                 </td>
               </tr>
             </Fragment>

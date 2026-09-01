@@ -331,6 +331,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .object({ min: z.number().int().min(0), max: z.number().int().min(0) })
       .nullable()
       .optional(),
+    fit: z.enum(['PILLARBOX', 'CROP']).optional(),
     locked: z.boolean().optional(),
     autoNext: z.boolean().optional(),
     loop: z.boolean().optional(),

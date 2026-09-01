@@ -21,7 +21,7 @@ pub use crate::loudness::Reading;
 use crate::limiter_element;
 use crate::loudness::Meter;
 use crate::output::{Kind, Publisher, PublisherSpec, Report};
-use crate::protocol::ItemSpec;
+use crate::protocol::{Fit, ItemSpec};
 
 /// Para onde o programa sai. Todas as saídas penduram no mesmo par de tees,
 /// então o canal codifica uma vez, não uma vez por destino.
@@ -146,6 +146,64 @@ struct Item {
     /// Só o item do preview tem: o programa é medido depois do mix, que é onde
     /// a medição vale. No preview não há mix, então mede-se o próprio item.
     meter_sink: Option<gst_app::AppSink>,
+}
+
+/// A cadeia de áudio do item, montada mas ainda fora do pipeline.
+///
+/// Ela só entra quando aparece uma trilha de áudio de verdade. Um sink de
+/// áudio esperando um fluxo que nunca vem não deixa o pipeline chegar a
+/// PAUSED, e o item não carrega -- é por isso que arquivo mudo não entrava no
+/// ar.
+struct AudioChain {
+    /// Do `audioconvert` até o `interaudiosink`, na ordem.
+    main: Vec<gst::Element>,
+    /// Ramo do medidor, vazio quando o item não é medido.
+    meter: Vec<gst::Element>,
+    tee: Option<gst::Element>,
+}
+
+impl AudioChain {
+    /// Põe a cadeia no pipeline que já está rodando e liga o pad recebido.
+    fn attach(self, pipeline: &gst::Pipeline, pad: &gst::Pad) -> Result<()> {
+        let all: Vec<&gst::Element> = self.main.iter().chain(self.meter.iter()).collect();
+        for element in &all {
+            pipeline.add(*element)?;
+        }
+
+        let main: Vec<&gst::Element> = self.main.iter().collect();
+        gst::Element::link_many(main)?;
+        if let Some(tee) = &self.tee {
+            let meter: Vec<&gst::Element> = self.meter.iter().collect();
+            gst::Element::link_many(meter)?;
+            let head = self
+                .meter
+                .first()
+                .ok_or_else(|| anyhow!("ramo do medidor vazio"))?;
+            tee.request_pad_simple("src_%u")
+                .ok_or_else(|| anyhow!("tee do item recusou o medidor"))?
+                .link(
+                    &head
+                        .static_pad("sink")
+                        .ok_or_else(|| anyhow!("queue do medidor sem sink"))?,
+                )?;
+        }
+
+        // Elementos acrescentados a um pipeline que já anda nascem parados.
+        for element in &all {
+            element.sync_state_with_parent()?;
+        }
+
+        let head = self
+            .main
+            .first()
+            .ok_or_else(|| anyhow!("cadeia de áudio vazia"))?;
+        pad.link(
+            &head
+                .static_pad("sink")
+                .ok_or_else(|| anyhow!("audioconvert sem sink"))?,
+        )?;
+        Ok(())
+    }
 }
 
 pub struct Channel {
@@ -309,6 +367,22 @@ fn meter_branch() -> Result<(gst::Element, gst::Element, gst::Element, gst::Elem
 /// a ser exercitada.
 ///
 /// HD é bt709 e SD é bt601, que é a convenção de broadcast.
+/// Proporção de exibição do canal, tirada das caps de destino.
+///
+/// É o alvo do corte: aparar o material até esta proporção e só então escalar
+/// enche a tela sem deformar. Sem caps fixas, 16:9 -- o único palpite que não
+/// piora um canal HD.
+fn channel_aspect(caps: &gst::Caps) -> gst::Fraction {
+    let fallback = gst::Fraction::new(16, 9);
+    let Some(structure) = caps.structure(0) else {
+        return fallback;
+    };
+    match (structure.get::<i32>("width"), structure.get::<i32>("height")) {
+        (Ok(width), Ok(height)) if width > 0 && height > 0 => gst::Fraction::new(width, height),
+        _ => fallback,
+    }
+}
+
 fn channel_video_caps(width: i32, height: i32, framerate: gst::Fraction) -> gst::Caps {
     gst::Caps::builder("video/x-raw")
         .field("format", "I420")
@@ -991,6 +1065,19 @@ impl Channel {
         let vdeint = make("deinterlace")?;
         vdeint.set_property_from_str("mode", "auto");
         let vscale = make("videoscale")?;
+        // Proporção diferente da do canal não pode virar deformação. Em
+        // `Pillarbox` o `videoscale` põe a barra preta sozinho -- é o padrão
+        // dele, mas fica escrito porque é decisão, não sorte. Em `Crop` a
+        // borda é aparada antes da escala, e aí a imagem enche a tela.
+        vscale.set_property("add-borders", spec.fit == Fit::Pillarbox);
+        let vcrop = match spec.fit {
+            Fit::Pillarbox => None,
+            Fit::Crop => {
+                let crop = make("aspectratiocrop")?;
+                crop.set_property("aspect-ratio", channel_aspect(caps));
+                Some(crop)
+            }
+        };
         let vrate = make("videorate")?;
         let vcaps = make("capsfilter")?;
         vcaps.set_property("caps", caps);
@@ -1023,47 +1110,56 @@ impl Channel {
             &vcaps,
             &vqueue,
             &video_sink,
-            &aconv,
-            &ares,
-            &volume,
-            &acaps,
-            &aqueue,
-            &audio_sink,
         ])?;
-        gst::Element::link_many([&vconv, &vdeint, &vscale, &vrate, &vcaps, &vqueue, &video_sink])?;
-        gst::Element::link_many([&aconv, &ares, &volume, &acaps])?;
+        if let Some(crop) = &vcrop {
+            pipeline.add(crop)?;
+            gst::Element::link_many([&vconv, &vdeint, crop, &vscale, &vrate, &vcaps])?;
+        } else {
+            gst::Element::link_many([&vconv, &vdeint, &vscale, &vrate, &vcaps])?;
+        }
+        gst::Element::link_many([&vcaps, &vqueue, &video_sink])?;
 
         // O áudio do item sai do `acaps` já nivelado. Sem medição, vai direto
         // para o `inter`; com medição, um `tee` abre a segunda saída.
-        let meter_sink = if metered {
+        let (chain, meter_sink) = if metered {
             let tee = make("tee")?;
             let (queue, convert, caps_filter, sink) = meter_branch()?;
-            pipeline.add_many([&tee, &queue, &convert, &caps_filter, &sink])?;
-            gst::Element::link_many([&acaps, &tee])?;
-            gst::Element::link_many([&tee, &aqueue, &audio_sink])?;
-            gst::Element::link_many([&queue, &convert, &caps_filter, &sink])?;
-            tee.request_pad_simple("src_%u")
-                .ok_or_else(|| anyhow!("tee do item recusou o medidor"))?
-                .link(
-                    &queue
-                        .static_pad("sink")
-                        .ok_or_else(|| anyhow!("queue do medidor sem sink"))?,
-                )?;
-            Some(
-                sink.dynamic_cast::<gst_app::AppSink>()
-                    .map_err(|_| anyhow!("appsink do medidor não é appsink"))?,
+            let appsink = sink
+                .clone()
+                .dynamic_cast::<gst_app::AppSink>()
+                .map_err(|_| anyhow!("appsink do medidor não é appsink"))?;
+            (
+                AudioChain {
+                    main: vec![aconv, ares, volume.clone(), acaps, tee.clone(), aqueue, audio_sink],
+                    meter: vec![queue, convert, caps_filter, sink],
+                    tee: Some(tee),
+                },
+                Some(appsink),
             )
         } else {
-            gst::Element::link_many([&acaps, &aqueue, &audio_sink])?;
-            None
+            (
+                AudioChain {
+                    main: vec![aconv, ares, volume.clone(), acaps, aqueue, audio_sink],
+                    meter: Vec::new(),
+                    tee: None,
+                },
+                None,
+            )
         };
 
         let video_target = vconv
             .static_pad("sink")
             .ok_or_else(|| anyhow!("videoconvert sem sink"))?;
-        let audio_target = aconv
-            .static_pad("sink")
-            .ok_or_else(|| anyhow!("audioconvert sem sink"))?;
+        // O áudio só entra no pipeline se o arquivo tiver áudio.
+        //
+        // Montar a cadeia de áudio à toa parece inofensivo e não é: o sink
+        // fica esperando um fluxo que nunca chega, o pipeline não chega a
+        // PAUSED e o item nunca carrega. Vinheta muda, slate e exportação de
+        // grafismo são material corriqueiro -- e antes disto nenhum deles
+        // entrava no ar. Sem áudio, quem segura o canal é o silêncio do
+        // `interaudiosrc`, que já existe.
+        let pending = std::sync::Mutex::new(Some(chain));
+        let audio_pipeline = pipeline.clone();
         src.connect_pad_added(move |_, pad| {
             // Pad recém-nascido nem sempre traz caps prontas; perguntar ao pad
             // evita descartar o fluxo em silêncio e deixar o item sem áudio.
@@ -1073,19 +1169,30 @@ impl Channel {
             };
             let name = structure.name();
 
-            let target = if name.starts_with("video/") {
-                &video_target
-            } else if name.starts_with("audio/") {
-                &audio_target
-            } else {
-                return;
-            };
-
-            if target.is_linked() {
+            if name.starts_with("video/") {
+                if video_target.is_linked() {
+                    return;
+                }
+                if let Err(error) = pad.link(&video_target) {
+                    eprintln!("[engine] não liguei o pad {name}: {error}");
+                }
                 return;
             }
-            if let Err(error) = pad.link(target) {
-                eprintln!("[engine] não liguei o pad {name}: {error}");
+
+            if !name.starts_with("audio/") {
+                return;
+            }
+
+            // Só a primeira trilha entra. Escolher entre várias ainda não é
+            // decisão do operador, e ligar todas somaria os idiomas.
+            let Ok(mut slot) = pending.lock() else {
+                return;
+            };
+            let Some(chain) = slot.take() else {
+                return;
+            };
+            if let Err(error) = chain.attach(&audio_pipeline, pad) {
+                eprintln!("[engine] não montei o áudio do item: {error}");
             }
         });
 

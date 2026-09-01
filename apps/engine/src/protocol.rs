@@ -25,6 +25,20 @@ pub struct ItemSpec {
     pub trim_out: i64,
     /// Ganho de nivelamento já resolvido pelo servidor.
     pub gain_db: f64,
+    /// O que fazer quando a proporção do material não é a do canal.
+    #[serde(default)]
+    pub fit: Fit,
+}
+
+/// Proporção diferente da do canal. Deformar não é opção.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Fit {
+    /// Mostra o quadro inteiro e preenche a sobra com preto.
+    #[default]
+    Pillarbox,
+    /// Enche a tela e corta o que passa da borda.
+    Crop,
 }
 
 impl ItemSpec {

@@ -213,6 +213,32 @@ pnpm --filter @rplayout/server dev
 Sem `RPLAYOUT_DEVICES` a lista fica só com os convidados, e o diálogo diz que a
 descoberta não está configurada -- não finge que a máquina não tem placa.
 
+### Arquivo mudo não pode travar o item
+
+A cadeia de áudio do item só entra no pipeline quando aparece uma trilha de
+áudio de verdade. Montá-la à toa parece inofensivo e não é: o sink fica
+esperando um fluxo que nunca chega, o pipeline não chega a PAUSED e o item
+**não carrega** -- respondendo "o item não aceitou o ponto de entrada", que não
+diz nada sobre a causa. Vinheta muda, slate e exportação de grafismo são
+material corriqueiro, e nenhum deles entrava no ar. Sem trilha, quem segura o
+canal é o silêncio do `interaudiosrc`, que já existe.
+
+Verificado com o mesmo arquivo em duas versões, com e sem trilha: os dois
+carregam, entram no ar e terminam com EOS; o que tem áudio continua sendo
+medido no preview e no programa.
+
+### Proporção diferente: mostrar inteiro ou encher a tela
+
+Deformar não é opção, então sobram duas -- e a escolha é do operador, por item.
+`PILLARBOX` mostra o quadro inteiro e põe preto na sobra; `CROP` enche a tela e
+apara o que passa da borda, com o `aspectratiocrop` antes da escala. O botão com
+a proporção (`4:3`) só aparece na linha quando o arquivo difere do canal em mais
+de 1% -- um 1918x1080 é 16:9 para qualquer efeito prático, e avisar disso seria
+ruído.
+
+Verificado quadro a quadro com um 4:3 num canal 16:9: barras laterais num modo,
+tela cheia sem distorção no outro.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { anchorTarget, durationIn } from '@rplayout/protocol'
-import type { AudioLevel, EditScope, Trim } from '@rplayout/protocol'
+import type { AudioLevel, EditScope, Fit, Trim } from '@rplayout/protocol'
 import { api } from './api.js'
 import { clock, dur } from './format.js'
 import type {
@@ -379,6 +379,17 @@ export function App() {
     })
   }
 
+  const setFit = (id: string, fit: Fit): void => {
+    void guard(async () => {
+      absorb(await api.patchItem(id, { fit }))
+      say(
+        fit === 'CROP'
+          ? 'Item enche a tela; a sobra da proporção é cortada.'
+          : 'Item entra inteiro, com barra preta na sobra.',
+      )
+    })
+  }
+
   const saveNotes = (id: string, notes: string): void => {
     void guard(async () => {
       absorb(await api.patchItem(id, { notes: notes.trim() === '' ? null : notes }))
@@ -456,6 +467,7 @@ export function App() {
               items={view.items}
               schedule={schedule}
               rate={rate}
+              channel={view.channel}
               selectedId={selectedId}
               onAirId={onAirId}
               remainingOnAir={remainingOnAir}
@@ -466,6 +478,7 @@ export function App() {
               onUngroup={ungroup}
               onOpenTrim={(item) => setDialog({ kind: 'trim', view: item })}
               onOpenAudio={(item) => setDialog({ kind: 'audio', view: item })}
+              onSetFit={setFit}
               onNotes={saveNotes}
             />
           </div>

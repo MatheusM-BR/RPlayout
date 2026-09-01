@@ -580,9 +580,13 @@ varredura percorre a pasta, identifica por SHA-256, pula o que não mudou pelo
 par tamanho+data e grava geometria, cadência, varredura e trilhas de áudio.
 Arquivo que não abre entra no acervo com o motivo do GStreamer à vista.
 
-Fica de fora, por enquanto: escolher entre várias trilhas de áudio, `deinterlace`
-no item para fonte entrelaçada, e a decisão de pillarbox contra corte para
-proporção diferente. O resto do levantamento abaixo continua valendo.
+Depois disso: arquivo sem trilha de áudio carrega (a cadeia de áudio do item só
+entra no pipeline quando aparece trilha -- antes, um arquivo mudo simplesmente
+não abria), e proporção diferente da do canal virou escolha por item, entre
+mostrar inteiro com barra preta e encher a tela cortando a sobra.
+
+Fica de fora, por enquanto: escolher entre várias trilhas de áudio. O resto do
+levantamento abaixo continua valendo.
 
 **O que já funcionava antes disso.** O item roda no pipeline dele com `uridecodebin` seguido de
 `videoconvert → videoscale → videorate → caps do canal` e
@@ -608,10 +612,10 @@ explicação — inclusive quando o motivo é plugin que falta (ProRes, DNxHD, H
 | Caso | Hoje | O que fazer |
 |---|---|---|
 | Fonte entrelaçada | entra como quadro entrelaçado e é escalado com combing | `deinterlace` no pipeline do item (existe na instalação) |
-| Arquivo sem trilha de áudio | o pad de áudio nunca aparece; o mixer do canal segura com o silêncio de fundo | confirmar que não trava e marcar o item como mudo na grade |
+| Arquivo sem trilha de áudio | **resolvido**: a cadeia de áudio só entra no pipeline quando aparece trilha | falta só marcar o item como mudo na grade |
 | Mais de uma trilha de áudio | pega a primeira que aparecer | escolher a trilha, por item e por padrão do acervo |
 | Cadência variável (VFR) | o `videorate` já força a cadência do canal | confirmar com material real |
-| Proporção diferente (4:3 em canal 16:9) | o `videoscale` deforma | decidir pillarbox contra corte, por item |
+| Proporção diferente (4:3 em canal 16:9) | **resolvido**: pillarbox por padrão, corte por item, no botão da proporção | — |
 | Arquivo ainda em cópia | abriria pela metade | não ingerir enquanto o tamanho estiver mudando |
 | Imagem parada e áudio-só | não previsto | duração vem da grade, não do arquivo |
 

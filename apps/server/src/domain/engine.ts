@@ -4,6 +4,7 @@ import {
   durationIn,
   framesSinceMidnight,
   type Channel,
+  type Fit,
   type MediaAsset,
   type Frames,
   type OnAirState,
@@ -24,6 +25,8 @@ interface EngineItem {
   trimIn: Frames
   trimOut: Frames
   gainDb: number
+  /** Proporção diferente da do canal: barra preta ou corte. */
+  fit?: Fit
 }
 
 type EngineEvent =
@@ -220,7 +223,15 @@ export class EngineTransport implements Transport {
     if (entry.item.sourceRef) {
       const source = resolveSource(entry.item.sourceRef)
       if (!source) return null
-      return { itemId, path: '', source, trimIn: 0, trimOut: 0, gainDb: entry.gainDb }
+      return {
+        itemId,
+        path: '',
+        source,
+        trimIn: 0,
+        trimOut: 0,
+        gainDb: entry.gainDb,
+        fit: entry.item.fit,
+      }
     }
 
     if (!entry.asset) return null
@@ -230,6 +241,7 @@ export class EngineTransport implements Transport {
       trimIn: entry.trim.in,
       trimOut: entry.trim.out,
       gainDb: entry.gainDb,
+      fit: entry.item.fit,
     }
   }
 

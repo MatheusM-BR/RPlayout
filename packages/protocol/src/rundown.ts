@@ -85,6 +85,17 @@ export type OverrunPolicy =
 
 export type ItemType = 'VT' | 'LIVE' | 'GFX' | 'SLATE' | 'COMMERCIAL' | 'FILLER'
 
+/**
+ * O que fazer quando a proporção do material não é a do canal.
+ *
+ * `PILLARBOX` mostra o quadro inteiro e preenche a sobra com preto; `CROP`
+ * enche a tela e corta o que passa da borda. Nenhum dos dois deforma -- essa
+ * terceira opção não existe de propósito.
+ */
+export type Fit = 'PILLARBOX' | 'CROP'
+
+export const DEFAULT_FIT: Fit = 'PILLARBOX'
+
 /** Item elástico: estica ou encolhe para absorver folga e sobra. */
 export interface Elastic {
   readonly min: Frames
@@ -122,6 +133,9 @@ export interface RundownItem {
    * um arrasta todos, e o bloco entra e sai inteiro.
    */
   readonly blockId: string | null
+
+  /** Proporção diferente da do canal: mostrar inteiro ou encher cortando. */
+  readonly fit: Fit
 
   /** Item travado não é cortado, removido nem reordenado pelo scheduler. */
   readonly locked: boolean

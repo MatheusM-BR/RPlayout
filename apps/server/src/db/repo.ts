@@ -1,4 +1,5 @@
 import { asc, eq } from 'drizzle-orm'
+import { DEFAULT_FIT } from '@rplayout/protocol'
 import type { Channel, MediaAsset, MediaProbe, Rundown, RundownItem } from '@rplayout/protocol'
 import type { Db } from './client.js'
 import { channels, mediaAssets, rundownItems, rundowns } from './schema.js'
@@ -80,6 +81,8 @@ export const toItem = (row: ItemRow): RundownItem => ({
   onOverrun: row.onOverrun,
   elastic: row.elastic ?? null,
   blockId: row.blockId,
+  // Coluna acrescentada depois: item antigo é pillarbox, como sempre foi.
+  fit: row.fit ?? DEFAULT_FIT,
   locked: row.locked,
   autoNext: row.autoNext,
   loop: row.loop,
