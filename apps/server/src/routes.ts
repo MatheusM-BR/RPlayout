@@ -421,6 +421,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         program: path.program,
         clean: path.clean,
         urls: app.mediamtx?.urls(path.program, host) ?? null,
+        // Saídas do engine deste canal. Caminho declarado no servidor não é
+        // prova de nada: só a entrega do engine diz que o canal está saindo.
+        publishers: app.runtimes.get(path.channelId)?.transport.publishers() ?? [],
       })),
       guests: guests.map((guest) => ({
         ...guest,

@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::output::Report;
+
 /// Item que o engine coloca no ar. Tempos em frames, como no resto do sistema.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +79,12 @@ pub enum Event {
     /// Quantos frames o compositor entregou. É a prova de que o PGM não parou.
     Output {
         frames: u64,
+    },
+    /// Situação de uma saída de rede. Emitido quando muda e no `status`, para
+    /// a interface saber se o canal está de fato chegando ao destino.
+    Publisher {
+        #[serde(flatten)]
+        report: Report,
     },
     Error {
         message: String,

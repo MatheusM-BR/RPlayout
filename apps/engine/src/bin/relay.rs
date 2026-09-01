@@ -27,6 +27,8 @@ const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// Acima disso, a conexão é considerada boa e o backoff é perdoado.
 const STABLE_AFTER: Duration = Duration::from_secs(20);
+/// Quanto o muxer pode esperar por uma das trilhas antes de fechar o pacote.
+const MUX_LATENCY: u64 = 500_000_000;
 
 #[derive(serde::Serialize)]
 #[serde(tag = "event", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -110,8 +112,15 @@ fn attempt(from: &str, to: &str) -> Result<(Duration, String)> {
         .build()
         .context("rtspsrc não existe nesta instalação do GStreamer")?;
 
+    // Sem folga, o `flvmux` fecha o pacote com o que tiver na mão e deixa o
+    // carimbo de tempo andar para trás quando uma das trilhas atrasa. No RTMP
+    // o carimbo do pedaço é uma diferença de 24 bits: diferença negativa vira
+    // número gigante, o destino cai em "received type 3 chunk without previous
+    // chunk" e derruba a conexão. Meio segundo de espera é o que separa um
+    // relay que entrega de um que reconecta para sempre.
     let mux = gst::ElementFactory::make("flvmux")
         .property("streamable", true)
+        .property("latency", MUX_LATENCY)
         .build()?;
     let queue = gst::ElementFactory::make("queue")
         .property("max-size-time", 3_000_000_000u64)

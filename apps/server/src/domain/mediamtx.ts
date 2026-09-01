@@ -35,6 +35,8 @@ export interface MediaMtxOptions {
   readonly configPath: string
   /** Interface em que o servidor escuta. */
   readonly bind: string
+  /** Nível de log do servidor. `info` é o que mostra por que uma conexão caiu. */
+  readonly logLevel: string
 }
 
 /** O que a API do MediaMTX conta sobre um caminho. */
@@ -118,7 +120,7 @@ export class MediaMtx {
     ]
 
     const config = [
-      'logLevel: warn',
+      `logLevel: ${this.options.logLevel}`,
       '# Generoso de propósito: o primeiro frame de um canal em 1080p50 pode',
       '# demorar quando a máquina está subindo tudo ao mesmo tempo, e fechar a',
       '# conexão do engine por impaciência derruba o canal inteiro.',

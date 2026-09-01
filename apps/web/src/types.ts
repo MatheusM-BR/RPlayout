@@ -114,6 +114,15 @@ export interface RelayStatus {
   streams: string[]
 }
 
+/** Saída de rede do canal, como o engine reporta. */
+export interface PublisherStatus {
+  url: string
+  health: 'connecting' | 'onAir' | 'retrying'
+  attempts: number
+  delivered: number
+  error?: string
+}
+
 export interface Distribution {
   server: {
     running: boolean
@@ -126,6 +135,7 @@ export interface Distribution {
     program: string
     clean: string
     urls: Record<string, string> | null
+    publishers: PublisherStatus[]
   }[]
   guests: GuestKey[]
   destinations: Destination[]

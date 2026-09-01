@@ -29,5 +29,8 @@ export const MEDIAMTX_BINARY = process.env.RPLAYOUT_MEDIAMTX ?? ''
  */
 export const MEDIAMTX_BIND = process.env.RPLAYOUT_MEDIAMTX_BIND ?? '0.0.0.0'
 
+/** Nível de log do servidor local. `info` mostra por que uma conexão caiu. */
+export const MEDIAMTX_LOGLEVEL = process.env.RPLAYOUT_MEDIAMTX_LOGLEVEL ?? 'warn'
+
 /** Binário do relay, um processo por destino externo. */
 export const RELAY_BINARY = process.env.RPLAYOUT_RELAY ?? ''

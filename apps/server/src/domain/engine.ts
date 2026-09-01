@@ -10,7 +10,7 @@ import {
 import type { MeterReading } from './meters.js'
 import { SILENCE } from './meters.js'
 import type { RundownView } from './plan.js'
-import type { Transport, TransportState } from './transport.js'
+import type { PublisherState, Transport, TransportState } from './transport.js'
 
 /** O que o engine precisa saber para pôr um item no ar. */
 interface EngineItem {
@@ -29,6 +29,7 @@ type EngineEvent =
   | { event: 'eos'; itemId: string }
   | { event: 'levels'; peak: number[]; rms: number[] }
   | { event: 'output'; frames: number }
+  | ({ event: 'publisher' } & PublisherState)
   | { event: 'error'; message: string }
 
 export interface EngineOptions {
@@ -55,6 +56,8 @@ export class EngineTransport implements Transport {
   private elapsed: Frames = 0
   private preview: PreviewTarget | null = null
   private meter: MeterReading | null = null
+  /** Uma entrada por saída de rede, chaveada pela URL de destino. */
+  private readonly publisherStates = new Map<string, PublisherState>()
   private dirty = false
   private alive = true
   /** Último erro do engine, para a interface não ficar adivinhando. */
@@ -122,6 +125,15 @@ export class EngineTransport implements Transport {
         break
       case 'levels':
         this.meter = toMeter(event.peak, event.rms)
+        break
+      case 'publisher':
+        this.publisherStates.set(event.url, {
+          url: event.url,
+          health: event.health,
+          attempts: event.attempts,
+          delivered: event.delivered,
+          error: event.error,
+        })
         break
       case 'ack':
         if (!event.ok && event.error) this.fail(event.error)
@@ -290,6 +302,17 @@ export class EngineTransport implements Transport {
 
   programMeter(): MeterReading | null {
     return this.meter
+  }
+
+  /**
+   * Situação das saídas de rede do canal.
+   *
+   * Cada saída tem pipeline próprio no engine e reconecta sozinha, então uma
+   * delas caída não diz nada sobre o programa — mas o operador precisa ver a
+   * diferença entre "no ar" e "no ar chegando a algum lugar".
+   */
+  publishers(): readonly PublisherState[] {
+    return [...this.publisherStates.values()]
   }
 
   close(): void {

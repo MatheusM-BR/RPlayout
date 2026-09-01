@@ -15,6 +15,7 @@ use gstreamer::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::output::{encode_chain, Kind, Publisher, PublisherSpec, Report};
 use crate::protocol::ItemSpec;
 
 /// Para onde o programa sai. Todas as saídas penduram no mesmo par de tees,
@@ -72,9 +73,11 @@ pub struct Channel {
     on_air: Option<Item>,
     armed: Option<Item>,
     frames_out: Arc<AtomicU64>,
+    /// Saídas de rede. Cada uma tem pipeline próprio e cai sozinha.
+    publishers: Vec<Publisher>,
 }
 
-fn make(factory: &str) -> Result<gst::Element> {
+pub(crate) fn make(factory: &str) -> Result<gst::Element> {
     gst::ElementFactory::make(factory)
         .build()
         .with_context(|| format!("elemento {factory} não existe nesta instalação do GStreamer"))
@@ -260,7 +263,7 @@ impl Channel {
                 gst::PadProbeReturn::Ok
             });
 
-        let channel = Self {
+        let mut channel = Self {
             pipeline,
             config,
             video_channel,
@@ -268,71 +271,19 @@ impl Channel {
             on_air: None,
             armed: None,
             frames_out,
+            publishers: Vec::new(),
         };
 
-        for output in channel.config.outputs.clone() {
-            channel.attach_output(&output, &tee_video, &tee_audio)?;
+        for (index, output) in channel.config.outputs.clone().iter().enumerate() {
+            channel.attach_output(index, output, &tee_video, &tee_audio)?;
         }
 
         Ok(channel)
     }
 
-    /// Cadeia de codificação compartilhada. Um encode por perfil de saída.
-    ///
-    /// O formato do H.264 é do container, não do encoder: FLV quer `avc`, MPEG-TS
-    /// quer `byte-stream`. Deixar a negociação adivinhar produz um fluxo que o
-    /// servidor de destino recusa com "unexpected video packet" -- e como o erro
-    /// sobe pelo pipeline, o canal inteiro cai junto.
-    fn encode_chain(
-        &self,
-        stream_format: &str,
-    ) -> Result<(
-        gst::Element,
-        gst::Element,
-        gst::Element,
-        gst::Element,
-        gst::Element,
-        gst::Element,
-    )> {
-        let venc = make("x264enc")?;
-        venc.set_property("bitrate", self.config.bitrate_kbps);
-        venc.set_property_from_str("tune", "zerolatency");
-        venc.set_property_from_str("speed-preset", "veryfast");
-        venc.set_property(
-            "key-int-max",
-            (self.config.fps_n / self.config.fps_d) as u32 * 2,
-        );
-
-        let vparse = make("h264parse")?;
-        // Parâmetros do codec voltam de tempos em tempos: quem sintoniza no meio
-        // da transmissão não viu o começo.
-        vparse.set_property("config-interval", -1i32);
-        let vcaps = make("capsfilter")?;
-        vcaps.set_property(
-            "caps",
-            gst::Caps::builder("video/x-h264")
-                .field("stream-format", stream_format)
-                .field("alignment", "au")
-                .build(),
-        );
-
-        let aenc = make("avenc_aac")?;
-        aenc.set_property("bitrate", 128_000i32);
-        let aparse = make("aacparse")?;
-        let acaps = make("capsfilter")?;
-        acaps.set_property(
-            "caps",
-            gst::Caps::builder("audio/mpeg")
-                .field("mpegversion", 4i32)
-                .field("stream-format", if stream_format == "avc" { "raw" } else { "adts" })
-                .build(),
-        );
-
-        Ok((venc, vparse, vcaps, aenc, aparse, acaps))
-    }
-
     fn attach_output(
-        &self,
+        &mut self,
+        index: usize,
         output: &Output,
         tee_video: &gst::Element,
         tee_audio: &gst::Element,
@@ -362,7 +313,12 @@ impl Channel {
                 gst::Element::link_many([&aqueue, &asink])?;
             }
             Output::File(path) => {
-                let (venc, vparse, vcaps, aenc, aparse, acaps) = self.encode_chain("avc")?;
+                let (venc, vparse, vcaps, aenc, aparse, acaps) = encode_chain(
+                    self.config.bitrate_kbps,
+                    self.config.fps_n,
+                    self.config.fps_d,
+                    "avc",
+                )?;
                 let mux = make("matroskamux")?;
                 let sink = make("filesink")?;
                 sink.set_property("location", path);
@@ -373,16 +329,7 @@ impl Channel {
                 acaps.link(&mux)?;
             }
             Output::Rtmp(url) => {
-                let (venc, vparse, vcaps, aenc, aparse, acaps) = self.encode_chain("avc")?;
-                let mux = make("flvmux")?;
-                mux.set_property("streamable", true);
-                let sink = make("rtmp2sink")?;
-                sink.set_property("location", url);
-                self.pipeline
-                    .add_many([&venc, &vparse, &vcaps, &aenc, &aparse, &acaps, &mux, &sink])?;
-                gst::Element::link_many([&vqueue, &venc, &vparse, &vcaps, &mux, &sink])?;
-                gst::Element::link_many([&aqueue, &aenc, &aparse, &acaps])?;
-                acaps.link(&mux)?;
+                self.attach_network(index, Kind::Rtmp, url, &vqueue, &aqueue)?;
             }
             Output::Snapshot(pattern) => {
                 let rate = make("videorate")?;
@@ -407,16 +354,7 @@ impl Channel {
                 gst::Element::link_many([&aqueue, &asink])?;
             }
             Output::Srt(uri) => {
-                let (venc, vparse, vcaps, aenc, aparse, acaps) =
-                    self.encode_chain("byte-stream")?;
-                let mux = make("mpegtsmux")?;
-                let sink = make("srtsink")?;
-                sink.set_property("uri", uri);
-                self.pipeline
-                    .add_many([&venc, &vparse, &vcaps, &aenc, &aparse, &acaps, &mux, &sink])?;
-                gst::Element::link_many([&vqueue, &venc, &vparse, &vcaps, &mux, &sink])?;
-                gst::Element::link_many([&aqueue, &aenc, &aparse, &acaps])?;
-                acaps.link(&mux)?;
+                self.attach_network(index, Kind::Srt, uri, &vqueue, &aqueue)?;
             }
         }
 
@@ -440,12 +378,69 @@ impl Channel {
         Ok(())
     }
 
+    /// Saída de rede: o canal só entrega o sinal cru num par `inter` e quem
+    /// codifica, muxa e empurra é um pipeline à parte.
+    ///
+    /// A fila daqui até o `inter` descarta de propósito. Uma saída que
+    /// engasgou não pode segurar o `tee`, e no `tee` segurar um ramo é parar
+    /// todos -- inclusive o programa.
+    fn attach_network(
+        &mut self,
+        index: usize,
+        kind: Kind,
+        url: &str,
+        vqueue: &gst::Element,
+        aqueue: &gst::Element,
+    ) -> Result<()> {
+        for queue in [vqueue, aqueue] {
+            queue.set_property_from_str("leaky", "downstream");
+        }
+
+        let video_channel = format!("{}-saida{index}-video", self.config.channel_id);
+        let audio_channel = format!("{}-saida{index}-audio", self.config.channel_id);
+
+        let vsink = make("intervideosink")?;
+        vsink.set_property("channel", &video_channel);
+        let asink = make("interaudiosink")?;
+        asink.set_property("channel", &audio_channel);
+        self.pipeline.add_many([&vsink, &asink])?;
+        gst::Element::link_many([vqueue, &vsink])?;
+        gst::Element::link_many([aqueue, &asink])?;
+
+        self.publishers.push(Publisher::new(PublisherSpec {
+            kind,
+            url: url.to_string(),
+            video_channel,
+            audio_channel,
+            width: self.config.width,
+            height: self.config.height,
+            fps_n: self.config.fps_n,
+            fps_d: self.config.fps_d,
+            bitrate_kbps: self.config.bitrate_kbps,
+        }));
+        Ok(())
+    }
+
     /// Sobe o canal e só volta quando ele está de fato no ar.
     pub fn start(&self) -> Result<()> {
         self.pipeline.set_state(gst::State::Playing)?;
         let (result, _, _) = self.pipeline.state(gst::ClockTime::from_seconds(10));
         result.context("o canal não chegou a entrar em execução")?;
         Ok(())
+    }
+
+    /// Dá uma volta nas saídas de rede: colhe falha, reconecta o que caiu e
+    /// devolve só o que mudou de estado.
+    pub fn service_outputs(&mut self) -> Vec<Report> {
+        self.publishers
+            .iter_mut()
+            .filter_map(|publisher| publisher.service())
+            .collect()
+    }
+
+    /// Situação de todas as saídas de rede, mudando ou não.
+    pub fn outputs_report(&self) -> Vec<Report> {
+        self.publishers.iter().map(Publisher::report).collect()
     }
 
     pub fn bus(&self) -> gst::Bus {
@@ -670,6 +665,9 @@ impl Channel {
     /// Ir direto para NULL deixa o container sem índice e a gravação as-run
     /// inútil justamente no dia em que alguém precisar dela.
     pub fn shutdown(&mut self) {
+        for publisher in &mut self.publishers {
+            publisher.shutdown();
+        }
         if let Some(item) = self.on_air.take() {
             discard(item);
         }

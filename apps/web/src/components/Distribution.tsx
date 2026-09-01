@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
-import type { Distribution as Payload, RelayStatus } from '../types.js'
+import type { Distribution as Payload, PublisherStatus, RelayStatus } from '../types.js'
 
 interface Props {
   channelId: string
@@ -13,6 +13,18 @@ const RELAY_TONE: Record<RelayStatus['state'], string> = {
   CONECTANDO: 'warn',
   CAIU: 'bad',
   FALHOU: 'bad',
+}
+
+const PUBLISHER_TONE: Record<PublisherStatus['health'], string> = {
+  onAir: 'ok',
+  connecting: 'warn',
+  retrying: 'bad',
+}
+
+const PUBLISHER_LABEL: Record<PublisherStatus['health'], string> = {
+  onAir: 'NO AR',
+  connecting: 'CONECTANDO',
+  retrying: 'RECONECTANDO',
 }
 
 /** Copia e avisa. Endereço que o operador precisa digitar à mão é endereço errado. */
@@ -100,6 +112,36 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                     <b>{protocol.toUpperCase()}</b>
                     <span>{url}</span>
                   </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Saída do canal. Caminho existir no servidor não quer dizer que
+              alguém esteja publicando nele: quem responde por isso é o engine. */}
+          {channel && channel.publishers.length > 0 && (
+            <div className="field">
+              <label>Saída do canal</label>
+              <div className="rows">
+                {channel.publishers.map((publisher) => (
+                  <div key={publisher.url} className="row-item">
+                    <div>
+                      <div className="t">
+                        Programa
+                        <span className={`pill ${PUBLISHER_TONE[publisher.health]}`}>
+                          {PUBLISHER_LABEL[publisher.health]}
+                        </span>
+                      </div>
+                      <div className="d mono">{publisher.url}</div>
+                      <div className="d">
+                        {publisher.delivered > 0
+                          ? `${publisher.delivered.toLocaleString('pt-BR')} pacotes entregues`
+                          : 'nada entregue ainda'}
+                        {publisher.attempts > 1 && ` · ${publisher.attempts} tentativas`}
+                        {publisher.error && ` · ${publisher.error}`}
+                      </div>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>

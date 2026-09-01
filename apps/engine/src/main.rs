@@ -5,11 +5,13 @@
 //! inteligência de tempo continua no `packages/scheduler`.
 
 mod channel;
+mod output;
 mod protocol;
 
 use anyhow::{anyhow, Context, Result};
 use channel::{Channel, Config, Output};
 use gstreamer as gst;
+use gstreamer::prelude::GstObjectExt;
 use protocol::{Command, Envelope, Event};
 use std::io::BufRead;
 use std::sync::mpsc;
@@ -102,6 +104,9 @@ fn run_command(channel: &mut Channel, command: Command) -> Result<bool> {
                 frames: channel.frames_out(),
             }
             .emit();
+            for report in channel.outputs_report() {
+                Event::Publisher { report }.emit();
+            }
             Ok(true)
         }
         Command::Shutdown => Ok(false),
@@ -122,7 +127,13 @@ fn handle_message(message: &gst::Message) -> Option<Event> {
             ),
         }),
         MessageView::Warning(warning) => {
-            eprintln!("[engine] aviso: {}", warning.error());
+            // Sem o nome do elemento, um aviso do GStreamer é um enigma: dizer
+            // "clock problem" sem dizer quem reclamou não ajuda ninguém.
+            let source = message
+                .src()
+                .map(|object| object.name().to_string())
+                .unwrap_or_else(|| "desconhecido".to_string());
+            eprintln!("[engine] aviso de {source}: {}", warning.error());
             None
         }
         MessageView::Application(application) => {
@@ -178,6 +189,11 @@ fn main() -> Result<()> {
 
     let mut channel = Channel::new(config).context("não consegui montar o pipeline do canal")?;
     channel.start().context("o canal não entrou em execução")?;
+    // As saídas de rede sobem depois do canal e por conta própria: se o
+    // destino ainda não está de pé, o canal não pode ficar esperando por ele.
+    for report in channel.service_outputs() {
+        Event::Publisher { report }.emit();
+    }
 
     Event::Ready {
         channel_id,
@@ -272,12 +288,21 @@ fn main() -> Result<()> {
             }
         }
 
+        for report in channel.service_outputs() {
+            Event::Publisher { report }.emit();
+        }
+
         if last_output.elapsed() >= OUTPUT_EVERY {
             last_output = Instant::now();
             Event::Output {
                 frames: channel.frames_out(),
             }
             .emit();
+            // Repetir a situação das saídas de segundo em segundo mantém a
+            // contagem de entrega viva na interface sem depender de mudança.
+            for report in channel.outputs_report() {
+                Event::Publisher { report }.emit();
+            }
         }
     }
 

@@ -70,6 +70,8 @@ Portas: RTMP 1935, SRT 8890, HLS 8888, WebRTC 8889. A API de controle (9997) e
 o RTSP interno (8554) ficam em loopback e nunca são abertos no firewall.
 `RPLAYOUT_MEDIAMTX_BIND` escolhe a interface; o padrão vale para a rede local e
 `/api/distribution` informa quando o servidor está exposto a todas.
+`RPLAYOUT_MEDIAMTX_LOGLEVEL=info` faz o servidor dizer **por que** fechou uma
+conexão -- é a única fonte que explica uma publicação recusada.
 
 Para exercitar sem acervo, semeie apontando para uma pasta de arquivos reais:
 `RPLAYOUT_MEDIA_DIR=/caminho/para/midia pnpm --filter @rplayout/server seed`.
@@ -111,9 +113,11 @@ Planejamento concluído. **F0** e **F1** entregues:
   volta pelo servidor.
 - Relays entregando a destinos externos, com estado e contagem do que foi
   efetivamente entregue.
+- Saídas de rede isoladas: cada destino do canal roda em pipeline próprio e
+  reconecta sozinho, então o servidor de mídia cair não tira o programa do ar.
 - Painel de distribuição na interface, em `#distribuicao`: endereços do programa
-  para copiar, chaves de convidado com quem está conectado, destinos com o
-  estado do relay e o que foi efetivamente entregue.
+  para copiar, chaves de convidado com quem está conectado, a saída do canal com
+  o que já foi entregue, e destinos com o estado do relay.
 - Falta: preview por WebRTC e a medição de loudness R128 no pipeline — hoje o medidor do programa
   reporta RMS, que é aproximação e está marcado como tal no código.
 
@@ -136,3 +140,36 @@ Três coisas precisaram ser verdade ao mesmo tempo, e cada uma custou um defeito
 A saída foi reservar os dois lugares do muxer antes de qualquer fluxo aparecer e
 ligar cada ramo assim que ele é anunciado. O programa de um canal sempre tem
 vídeo e áudio, então os dois lugares sempre são ocupados.
+
+### A saída de rede não pode derrubar o programa
+
+Uma saída de rede falha por motivo que não é culpa do playout: o servidor
+reinicia, a rede oscila, o destino recusa. Dentro do pipeline do canal essa
+falha não ficava contida -- o sink devolve erro de fluxo, a fila para, o `tee`
+propaga o erro para cima e o canal inteiro morre. Era o "Internal data stream
+error" em cascata que derrubava o PGM junto com o RTMP, com o compositor
+produzindo imagem normalmente o tempo todo.
+
+Agora cada saída de rede vive num pipeline separado, alimentada pelo canal por
+um par `inter`. O canal só entrega o sinal cru; quem codifica, muxa e empurra é
+outro processo de dados. Uma falha derruba a si mesma e volta sozinha, com
+espera crescente entre as tentativas, e a interface mostra a diferença entre
+"no ar" e "no ar chegando a algum lugar" -- a saúde vem da contagem de buffers
+que o sink recebeu, não do estado do pipeline.
+
+Verificado matando o servidor de mídia com o canal no ar: o contador de frames
+do compositor não piscou e a saída voltou por conta própria quando o servidor
+subiu de novo.
+
+### `flvmux` sem folga quebra o RTMP
+
+O sintoma eram duas recusas do servidor que pareciam de conteúdo -- `unexpected
+video packet` e `received type 3 chunk without previous chunk` -- e que
+apareciam só com material de verdade: preto passava, barras não.
+
+A causa é o `flvmux` com `latency=0` e fontes ao vivo. Sem folga ele fecha o
+pacote com o que tiver na mão e deixa o carimbo de tempo andar para trás quando
+uma trilha atrasa. No RTMP o carimbo do pedaço é uma **diferença de 24 bits**:
+diferença negativa vira número gigante, o destino perde o fio do fluxo de
+pedaços e fecha a conexão. Meio segundo de espera no muxer -- no engine e no
+relay -- é o que separa uma saída que entrega de uma que reconecta para sempre.

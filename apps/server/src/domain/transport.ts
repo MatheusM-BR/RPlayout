@@ -7,6 +7,16 @@ import {
 import type { RundownView } from './plan.js'
 import type { MeterReading } from './meters.js'
 
+/** Situação de uma saída de rede do canal, como o engine reporta. */
+export interface PublisherState {
+  readonly url: string
+  readonly health: 'connecting' | 'onAir' | 'retrying'
+  /** Tentativas desde a última entrega. Zera quando volta a entregar. */
+  readonly attempts: number
+  readonly delivered: number
+  readonly error?: string
+}
+
 export interface TransportState {
   readonly channelId: string
   readonly rundownId: string | null
@@ -34,6 +44,8 @@ export interface Transport {
   tick(): boolean
   /** Medição real do programa, quando o transporte tem uma. */
   programMeter(): MeterReading | null
+  /** Saídas de rede do canal. Vazio no simulado, que não sai para lugar nenhum. */
+  publishers(): readonly PublisherState[]
   close(): void
 }
 
@@ -157,6 +169,11 @@ export class SimulatedTransport implements Transport {
     this.startedAt = this.startedAt + duration
     return true
   }
+  /** O simulado não sai para lugar nenhum: quem publica é o engine. */
+  publishers(): readonly PublisherState[] {
+    return []
+  }
+
   /** O simulado não mede nada: quem mede é o engine. */
   programMeter(): MeterReading | null {
     return null

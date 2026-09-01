@@ -14,6 +14,7 @@ import {
   ENGINE_OUTPUTS,
   MEDIAMTX_BINARY,
   MEDIAMTX_BIND,
+  MEDIAMTX_LOGLEVEL,
   RELAY_BINARY,
 } from './config.js'
 import { MediaMtx, channelPaths, type ChannelPaths } from './domain/mediamtx.js'
@@ -145,6 +146,7 @@ export async function createApp(file: string): Promise<App> {
         binary: MEDIAMTX_BINARY,
         configPath: resolvePath(process.cwd(), 'mediamtx.yml'),
         bind: MEDIAMTX_BIND,
+        logLevel: MEDIAMTX_LOGLEVEL,
       })
     : null
 
