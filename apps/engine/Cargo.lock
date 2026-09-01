@@ -457,6 +457,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "gstreamer-audio",
+ "gstreamer-base",
  "serde",
  "serde_json",
 ]

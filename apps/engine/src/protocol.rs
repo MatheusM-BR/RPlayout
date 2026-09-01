@@ -87,6 +87,8 @@ pub enum Event {
         range: f64,
         true_peak: f64,
         correlation: f64,
+        /// Redução do limiter em dB. Zero é o estado saudável.
+        gain_reduction: f64,
     },
     /// Quantos frames o compositor entregou. É a prova de que o PGM não parou.
     Output {

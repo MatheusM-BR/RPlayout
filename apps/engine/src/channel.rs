@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub use crate::loudness::Reading;
+use crate::limiter_element;
 use crate::loudness::Meter;
 use crate::output::{encode_chain, Kind, Publisher, PublisherSpec, Report};
 use crate::protocol::ItemSpec;
@@ -57,6 +58,8 @@ pub struct Config {
     pub fps_n: i32,
     pub fps_d: i32,
     pub bitrate_kbps: u32,
+    /// Teto de pico verdadeiro da saída, em dBTP. É o teto do limiter.
+    pub ceiling_dbtp: f64,
     pub outputs: Vec<Output>,
     /// Para onde o preview sai. Vazio deixa o canal sem barramento de preview.
     pub preview: Option<Output>,
@@ -91,6 +94,7 @@ pub struct Channel {
     meter_sink: gst_app::AppSink,
     /// Medidor do preview. Vive à parte porque mede outro barramento.
     preview_meter: Meter,
+    limiter: gst::Element,
     /// Buffer reaproveitado da conversão de bytes para amostras. Alocar a cada
     /// volta do laço num processo que fica meses no ar não é opção.
     meter_scratch: Vec<f32>,
@@ -191,6 +195,14 @@ impl Channel {
             .field("rate", 48_000i32)
             .field("channels", 2i32)
             .build();
+        // Depois do limiter tudo anda em F32LE intercalado, que é o formato em
+        // que o DSP trabalha e o que o `avenc_aac` já pede.
+        let program_audio_out = gst::Caps::builder("audio/x-raw")
+            .field("format", "F32LE")
+            .field("layout", "interleaved")
+            .field("rate", 48_000i32)
+            .field("channels", 2i32)
+            .build();
 
         // Fundo: preto e silêncio ao vivo. O compositor nunca fica sem pauta,
         // então o programa continua existindo mesmo sem nada no ar.
@@ -235,7 +247,15 @@ impl Channel {
         let aconv = make("audioconvert")?;
         let ares = make("audioresample")?;
         let aout_caps = make("capsfilter")?;
-        aout_caps.set_property("caps", &audio_caps);
+        aout_caps.set_property("caps", &program_audio_out);
+
+        // Rede de proteção da saída, não ferramenta de mixagem: quem põe o
+        // programa no alvo é o nivelamento por item. Se este elemento estiver
+        // trabalhando o tempo todo, o problema está no nivelamento -- e é por
+        // isso que a redução de ganho aparece no medidor.
+        let limiter = make_named(limiter_element::FACTORY, "limiter")?;
+        limiter.set_property("ceiling-dbtp", config.ceiling_dbtp);
+
         let tee_audio = make_named("tee", "tee-audio")?;
 
         // Ramo de medição: o mix cru sai por aqui e a conta de loudness é
@@ -266,6 +286,7 @@ impl Channel {
             &aconv,
             &ares,
             &aout_caps,
+            &limiter,
             &tee_audio,
             &meter_queue,
             &meter_convert,
@@ -289,7 +310,7 @@ impl Channel {
             &program_audio_caps,
         ])?;
         gst::Element::link_many([&compositor, &vconv, &vout_caps, &tee_video])?;
-        gst::Element::link_many([&mixer, &aconv, &ares, &aout_caps, &tee_audio])?;
+        gst::Element::link_many([&mixer, &aconv, &ares, &aout_caps, &limiter, &tee_audio])?;
         gst::Element::link_many([&meter_queue, &meter_convert, &meter_caps, &meter_sink])?;
         tee_audio
             .request_pad_simple("src_%u")
@@ -362,6 +383,7 @@ impl Channel {
                 .dynamic_cast::<gst_app::AppSink>()
                 .map_err(|_| anyhow!("appsink do medidor não é appsink"))?,
             preview_meter: Meter::new(48_000, 2),
+            limiter,
             meter_scratch: Vec::with_capacity(16_384),
         };
 
@@ -631,7 +653,12 @@ impl Channel {
             None => Reading::SILENT,
         };
 
-        (self.meter.read(), preview)
+        // A redução vem do próprio elemento, que a acumula na thread de
+        // streaming; ler zera, então o que chega é o pico do intervalo.
+        let mut program = self.meter.read();
+        program.gain_reduction_db = self.limiter.property::<f64>("gain-reduction-db");
+
+        (program, preview)
     }
 
     /// Sobe o canal e só volta quando ele está de fato no ar.

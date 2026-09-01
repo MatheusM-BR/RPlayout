@@ -28,12 +28,17 @@ function Bar({ dbfs }: { dbfs: number }) {
  *
  * A integrada é a do item no ar, não a do canal desde que ligou: reinicia a
  * cada take. É a leitura que responde "este VT saiu no alvo?", que é a pergunta
- * que o operador faz.
+ * que o operador faz — e por isso o alvo do canal fica ao lado dela.
+ *
+ * A redução de ganho não é decoração: o limiter é rede de proteção, então GR
+ * acesa o tempo todo quer dizer que o nivelamento é que está errado.
  */
 export function Meter({ reading, channel }: { reading: MeterReading; channel: Channel }) {
   const onTarget = Math.abs(reading.integratedLufs - channel.targetLufs) <= 1
   // Acima do teto de pico verdadeiro é o que o destino vai distorcer.
   const clipping = reading.truePeakDbtp > channel.ceilingDbtp
+  // Meio dB já é o limiter fazendo trabalho que era do nivelamento.
+  const working = reading.gainReductionDb > 0.5
 
   return (
     <div className="meter">
@@ -51,20 +56,25 @@ export function Meter({ reading, channel }: { reading: MeterReading; channel: Ch
           <span>{lufs(reading.momentaryLufs)}</span>
         </div>
         <div className="ro">
+          <b>SHORT</b>
+          <span>{lufs(reading.shortTermLufs)}</span>
+        </div>
+        <div className="ro">
           <b>INTEGR.</b>
           <span className={onTarget ? 'ok' : 'warn'}>{lufs(reading.integratedLufs)}</span>
+        </div>
+        <div className="ro">
+          <b>ALVO</b>
+          <span className="dim">{lufs(channel.targetLufs)}</span>
         </div>
         <div className="ro">
           <b>PICO</b>
           <span className={clipping ? 'bad' : ''}>{db(reading.truePeakDbtp)}</span>
         </div>
         <div className="ro">
-          <b>SHORT</b>
-          <span>{lufs(reading.shortTermLufs)}</span>
+          <b>GR</b>
+          <span className={working ? 'bad' : 'ok'}>{reading.gainReductionDb.toFixed(1)}</span>
         </div>
-        {/* A redução de ganho entra aqui quando houver limiter. Enquanto não
-            há, mostrar zero fixo pareceria "está tudo sob controle"; a faixa
-            de loudness é medida de verdade e diz se o programa respira. */}
         <div className="ro">
           <b>FAIXA</b>
           <span>{reading.rangeLu.toFixed(1)}</span>

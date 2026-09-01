@@ -125,9 +125,9 @@ Planejamento concluído. **F0** e **F1** entregues:
 - Medição EBU R128 de verdade, no programa e no preview: loudness momentânea,
   de curto prazo e integrada gateada, faixa de loudness, pico verdadeiro
   sobreamostrado e correlação de fase.
-- Falta: som nos monitores e o limiter de pico verdadeiro na saída — enquanto
-  não existe, o medidor mostra a faixa de loudness no lugar da redução de ganho,
-  porque um GR fixo em zero pareceria "está tudo sob controle".
+- Limiter de pico verdadeiro na saída de programa, com lookahead, e a redução
+  de ganho no medidor.
+- Falta: som nos monitores.
 
 Anotado para depois, com o levantamento pronto na seção 13 do
 [plano](docs/PLANO.md): **ingest de arquivo de verdade** (hoje o acervo vem do
@@ -165,6 +165,33 @@ Conferido contra um tom de 1 kHz a -20 dBFS: o medidor lê -20,00 LUFS
 momentânea e -20,07 integrada, contra -19,99 calculado da resposta do filtro K.
 Os nove testes do medidor não usam número decorado -- o esperado sai dos
 próprios coeficientes.
+
+### O limiter é rede de proteção, e a interface diz quando ele está cobrindo buraco
+
+Quem põe o programa no alvo é o nivelamento por item. O limiter existe para o
+caso de alguém errar, de um item entrar sem medição ou de uma fonte ao vivo
+passar do ponto. Se ele estiver trabalhando o tempo todo, o problema está no
+nivelamento -- e é por isso que a redução de ganho é métrica de primeira classe
+no medidor, em vermelho a partir de meio dB, e não um número escondido.
+
+Limita por **pico verdadeiro**, com o mesmo sobreamostrador do medidor: não
+adianta medir por um critério e limitar por outro. Também não existia elemento
+para isso na instalação -- o `audiodynamic` é compressor de pico de amostra, sem
+antecipação, e sem LADSPA ou LV2 no sistema. Então é código nosso, mas rodando
+como **elemento de GStreamer**, não como ponte de aplicação: um `appsink`
+alimentando um `appsrc` poria o áudio do programa dentro do laço principal do
+processo, e uma volta lenta deixaria o canal sem som. Como elemento, o DSP roda
+na thread de streaming do próprio pipeline, como qualquer outro filtro.
+
+O preço é cinco milissegundos de atraso no áudio: para baixar o ganho *antes* do
+pico chegar é preciso já ter visto o pico. Isso é menos que a distância de um
+metro e meio até a caixa de som e muito dentro da tolerância da EBU R37
+(+40 ms a -60 ms), então não vale compensar o vídeo por isso.
+
+A saída fica 0,1 dB abaixo do teto pedido. O ataque é exponencial e não chega
+exatamente ao alvo dentro da janela; um décimo de dB de folga cobre isso com
+sobra e é inaudível. Conferido no pipeline: item empurrado a +10 dB sai preso em
+-1,10 dBTP contra teto de -1,0, com 9,2 dB de redução relatados.
 
 ### O preview é um tocador à parte
 

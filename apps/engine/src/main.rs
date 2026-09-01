@@ -6,6 +6,8 @@
 
 mod channel;
 mod loudness;
+mod limiter;
+mod limiter_element;
 mod output;
 mod protocol;
 
@@ -31,6 +33,7 @@ fn parse_args() -> Result<Config> {
     let mut fps_n = 50;
     let mut fps_d = 1;
     let mut bitrate_kbps = 4000;
+    let mut ceiling_dbtp = -1.0;
     let mut outputs = Vec::new();
     let mut preview = None;
 
@@ -52,6 +55,7 @@ fn parse_args() -> Result<Config> {
             "--fps-num" => fps_n = value()?.parse().context("--fps-num")?,
             "--fps-den" => fps_d = value()?.parse().context("--fps-den")?,
             "--bitrate" => bitrate_kbps = value()?.parse().context("--bitrate")?,
+            "--ceiling" => ceiling_dbtp = value()?.parse().context("--ceiling")?,
             "--output" => outputs.push(Output::parse(&value()?)?),
             "--preview" => preview = Some(Output::parse(&value()?)?),
             other => return Err(anyhow!("argumento desconhecido: {other}")),
@@ -70,6 +74,7 @@ fn parse_args() -> Result<Config> {
         fps_n,
         fps_d,
         bitrate_kbps,
+        ceiling_dbtp,
         outputs,
         preview,
     })
@@ -86,6 +91,7 @@ fn levels(bus: &'static str, reading: &channel::Reading) -> Event {
         range: reading.range_lu,
         true_peak: reading.true_peak_dbtp,
         correlation: reading.correlation,
+        gain_reduction: reading.gain_reduction_db,
     }
 }
 
@@ -178,6 +184,7 @@ fn handle_message(message: &gst::Message) -> Option<Event> {
 
 fn main() -> Result<()> {
     gst::init().context("GStreamer não inicializou")?;
+    limiter_element::register().context("o limiter não registrou")?;
 
     let config = parse_args()?;
     let channel_id = config.channel_id.clone();

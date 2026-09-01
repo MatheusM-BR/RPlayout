@@ -267,7 +267,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .seg.g { background: var(--ok); }
 .seg.a { background: var(--next); }
 .seg.r { background: var(--onair); }
-.readout { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 9px; font-family: var(--mono); }
+.readout { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 5px; margin-top: 9px; font-family: var(--mono); }
+.ro span.dim { color: var(--dim); }
 .ro b { display: block; font-size: 8.5px; letter-spacing: 0.12em; color: var(--dim); font-weight: 500; }
 .ro span { font-size: 13px; font-variant-numeric: tabular-nums; }
 .ro span.ok { color: var(--ok); }

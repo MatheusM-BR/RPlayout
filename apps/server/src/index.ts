@@ -60,13 +60,19 @@ async function main(): Promise<void> {
   }
 
   const timer = setInterval(() => {
-    if (sockets.size === 0) return
     for (const runtime of app.runtimes.values()) {
-      // O transporte avançou de item: a grade toda muda de forma.
+      // O canal anda com ou sem interface aberta. Amarrar isto à presença de
+      // um navegador seria congelar a grade e o nivelamento no instante em que
+      // o último operador fecha a aba -- num sistema que fica no ar sozinho a
+      // madrugada inteira, isso é o defeito mais caro que existe.
       if (runtime.transport.tick()) {
         void runtime.refresh().then(pushViews)
       }
-      broadcast({ type: 'live', channelId: runtime.channel.id, ...runtime.live() })
+      // Só o desenho depende de audiência: medir e transmitir para ninguém é
+      // que não faz sentido.
+      if (sockets.size > 0) {
+        broadcast({ type: 'live', channelId: runtime.channel.id, ...runtime.live() })
+      }
     }
   }, 1000 / LIVE_HZ)
 

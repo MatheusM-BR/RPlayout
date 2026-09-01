@@ -38,6 +38,7 @@ type EngineEvent =
       range: number
       truePeak: number
       correlation: number
+      gainReduction: number
     }
   | { event: 'output'; frames: number }
   | ({ event: 'publisher' } & PublisherState)
@@ -67,6 +68,8 @@ export class EngineTransport implements Transport {
   private onAirItemId: string | null = null
   private armedItemId: string | null = null
   private elapsed: Frames = 0
+  /** Último nível que o engine recebeu para o item no ar. */
+  private appliedGainDb: number | null = null
   private preview: PreviewTarget | null = null
   private meter: MeterReading | null = null
   private previewReading: MeterReading | null = null
@@ -97,6 +100,9 @@ export class EngineTransport implements Transport {
       String(channel.rate.den),
       '--bitrate',
       String(options.bitrateKbps),
+      // O teto do limiter é do canal: é a promessa que o canal faz ao destino.
+      '--ceiling',
+      String(channel.ceilingDbtp),
     ]
     for (const output of options.outputs) args.push('--output', output)
     if (options.preview) args.push('--preview', options.preview)
@@ -300,6 +306,9 @@ export class EngineTransport implements Transport {
 
     this.onAirItemId = itemId
     this.elapsed = 0
+    // O item entra com o nível que o `load` levou; a partir daí o `syncGain`
+    // acompanha.
+    this.appliedGainDb = spec.gainDb
     this.preview = null
     this.dirty = true
     // O item entrou no ar: o preview não tem mais o que mostrar dele.
@@ -342,9 +351,33 @@ export class EngineTransport implements Transport {
   }
 
   tick(): boolean {
+    this.syncGain()
     const changed = this.dirty
     this.dirty = false
     return changed
+  }
+
+  /**
+   * Leva ao engine o nível do item no ar quando ele muda.
+   *
+   * Aqui e não em quem edita: nível muda por diálogo de áudio, por escopo que
+   * pega vários itens, por desfazer e por refazer. Reconciliar a partir do
+   * estado cobre todos esses caminhos de uma vez -- e o engine troca o ganho
+   * sem interromper o que está no ar, então não há custo em aplicar já.
+   */
+  private syncGain(): void {
+    const itemId = this.onAirItemId
+    if (!itemId) {
+      this.appliedGainDb = null
+      return
+    }
+
+    const entry = this.view()?.items.find((candidate) => candidate.item.id === itemId)
+    if (!entry) return
+
+    if (this.appliedGainDb !== null && Math.abs(entry.gainDb - this.appliedGainDb) < 0.01) return
+    this.appliedGainDb = entry.gainDb
+    this.send({ cmd: 'setGain', gainDb: entry.gainDb })
   }
 
   programMeter(): MeterReading | null {
@@ -388,6 +421,7 @@ function toMeter(event: {
   range: number
   truePeak: number
   correlation: number
+  gainReduction: number
 }): MeterReading {
   if (event.peak.length === 0) return SILENCE
 
@@ -398,8 +432,7 @@ function toMeter(event: {
     integratedLufs: event.integrated,
     rangeLu: event.range,
     truePeakDbtp: event.truePeak,
-    // Ainda não há limiter no pipeline, então não há redução de ganho a medir.
-    gainReductionDb: 0,
+    gainReductionDb: event.gainReduction,
     correlation: event.correlation,
   }
 }

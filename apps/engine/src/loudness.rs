@@ -237,13 +237,16 @@ impl Histogram {
 ///
 /// Pico de amostra não é pico verdadeiro: o sinal reconstruído passa por cima
 /// das amostras, e é o valor reconstruído que estoura no conversor do destino.
-struct TruePeak {
+///
+/// O limiter usa o mesmo: não adianta medir por um critério e limitar por
+/// outro.
+pub struct TruePeak {
     phases: Vec<Vec<f64>>,
     history: Vec<VecDeque<f64>>,
 }
 
 impl TruePeak {
-    fn new(channels: usize) -> Self {
+    pub fn new(channels: usize) -> Self {
         use std::f64::consts::PI;
         let length = OVERSAMPLE * PHASE_TAPS;
         let center = (length as f64 - 1.0) / 2.0;
@@ -283,7 +286,7 @@ impl TruePeak {
         }
     }
 
-    fn push(&mut self, channel: usize, sample: f64) -> f64 {
+    pub fn push(&mut self, channel: usize, sample: f64) -> f64 {
         let history = &mut self.history[channel];
         history.push_front(sample);
         history.pop_back();
@@ -314,6 +317,9 @@ pub struct Reading {
     pub true_peak_dbtp: f64,
     /// Correlação de fase do par estéreo. Negativo denuncia mono invertido.
     pub correlation: f64,
+    /// Redução de ganho do limiter, em dB. Zero é o estado saudável; o medidor
+    /// não a calcula, quem preenche é quem tem o limiter.
+    pub gain_reduction_db: f64,
 }
 
 impl Reading {
@@ -326,6 +332,7 @@ impl Reading {
         range_lu: 0.0,
         true_peak_dbtp: -90.0,
         correlation: 1.0,
+        gain_reduction_db: 0.0,
     };
 }
 
@@ -503,6 +510,7 @@ impl Meter {
             range_lu: range,
             true_peak_dbtp: true_peak,
             correlation,
+            gain_reduction_db: 0.0,
         }
     }
 }
