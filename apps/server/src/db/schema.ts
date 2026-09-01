@@ -2,6 +2,7 @@ import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 import type {
   Anchor,
   AudioLevel,
+  AudioTrack,
   Elastic,
   Fit,
   ItemType,
@@ -76,6 +77,8 @@ export const mediaAssets = sqliteTable('media_assets', {
   interlaceMode: text('interlace_mode'),
   hasAudio: integer('has_audio', { mode: 'boolean' }),
   audioChannels: integer('audio_channels'),
+  /** Todas as trilhas de áudio, como a sonda as viu. */
+  audioTracks: text('audio_tracks', { mode: 'json' }).$type<AudioTrack[] | null>(),
   /** Motivo de a sonda não ter aberto. Preenchido, o arquivo não é tocável. */
   probeError: text('probe_error'),
   categoryId: text('category_id'),
@@ -119,6 +122,8 @@ export const rundownItems = sqliteTable('rundown_items', {
   blockId: text('block_id'),
   /** Proporção diferente da do canal. Nulo é pillarbox. */
   fit: text('fit').$type<Fit>(),
+  /** Trilha de áudio escolhida. Nulo é a primeira do arquivo. */
+  audioTrack: integer('audio_track'),
   locked: integer('locked', { mode: 'boolean' }).notNull(),
   autoNext: integer('auto_next', { mode: 'boolean' }).notNull(),
   loop: integer('loop', { mode: 'boolean' }).notNull(),

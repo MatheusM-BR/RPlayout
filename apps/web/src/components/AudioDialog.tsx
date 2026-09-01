@@ -16,6 +16,8 @@ interface Props {
   channel: Channel
   onCancel: () => void
   onApply: (audio: AudioLevel, scope: EditScope) => void
+  /** Trocar de trilha vale na hora: não é nível, e não tem escopo. */
+  onSetTrack: (index: number) => void
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -25,10 +27,13 @@ const SOURCE_LABEL: Record<string, string> = {
   NONE: 'sem medição',
 }
 
-export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
+export function AudioDialog({ view, channel, onCancel, onApply, onSetTrack }: Props) {
   const [scope, setScope] = useState<EditScope>('ITEM')
   const [mode, setMode] = useState<AudioMode>(view.audio.mode)
   const [gain, setGain] = useState(view.gainDb)
+
+  const tracks = view.asset?.probe?.audioTracks ?? []
+  const track = view.item.audioTrack ?? 0
 
   const measured = view.audio.measured ?? view.asset?.loudnessFile ?? null
   const auto = computeAutoGain(measured, channel.targetLufs, channel.ceilingDbtp)
@@ -82,6 +87,32 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
             <div className="note warn">
               Este arquivo ainda não foi medido. Sem medição, o modo automático não tem de onde
               tirar o ganho.
+            </div>
+          )}
+
+          {/* Dublagem, original e trilha internacional no mesmo arquivo é
+              corriqueiro. Só aparece quando há o que escolher. */}
+          {tracks.length > 1 && (
+            <div className="field">
+              <label>Trilha de áudio</label>
+              <select
+                value={track}
+                onChange={(event) => onSetTrack(Number(event.target.value))}
+              >
+                {tracks.map((option) => (
+                  <option key={option.index} value={option.index}>
+                    {option.index + 1}ª · {option.channels === 1 ? 'mono' : `${option.channels} canais`}
+                    {option.language ? ` · ${option.language}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {tracks.length > 1 && (
+            <div className="note">
+              A medição de loudness é da primeira trilha. Trocando de trilha, o modo automático
+              pode errar o ganho até a próxima varredura do acervo.
             </div>
           )}
 

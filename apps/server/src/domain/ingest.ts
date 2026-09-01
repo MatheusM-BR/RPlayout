@@ -5,6 +5,7 @@ import { mkdir, readdir, stat } from 'node:fs/promises'
 import { basename, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
+import type { AudioTrack } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
 import { mediaAssets } from '../db/schema.js'
 
@@ -28,6 +29,8 @@ type ProbeResult =
         lra?: number
         truePeakDbtp?: number
       }
+      /** Todas as trilhas, na ordem em que o arquivo as declara. */
+      audioTracks?: AudioTrack[]
       thumbnail?: string
     }
   | { ok: false; reason: string }
@@ -211,6 +214,7 @@ export class Ingest {
         interlaceMode: null,
         hasAudio: null,
         audioChannels: null,
+        audioTracks: null,
         probeError: probe.reason,
       }
       await this.upsert(existing?.id ?? null, row)
@@ -232,6 +236,7 @@ export class Ingest {
       interlaceMode: probe.video?.interlaceMode ?? null,
       hasAudio: Boolean(probe.audio),
       audioChannels: probe.audio?.channels ?? 0,
+      audioTracks: probe.audioTracks ?? [],
       probeError: null,
       loudnessFile:
         probe.audio?.integratedLufs !== undefined

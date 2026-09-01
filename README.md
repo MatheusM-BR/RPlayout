@@ -239,6 +239,22 @@ ruído.
 Verificado quadro a quadro com um 4:3 num canal 16:9: barras laterais num modo,
 tela cheia sem distorção no outro.
 
+### Mais de uma trilha de áudio: quem escolhe é o operador
+
+Dublagem, idioma original e trilha internacional no mesmo arquivo é
+corriqueiro, e pegar sempre a primeira é escolha, não padrão neutro. A sonda
+lista todas as trilhas -- índice, canais e idioma quando o arquivo declara --,
+o item guarda qual toca, e o engine liga só essa: ligar todas somaria os
+idiomas. A linha mostra `TRILHA 2/2` quando a escolha não é a primeira, e o
+diálogo de nível traz o seletor só quando há o que escolher.
+
+A medição de loudness continua sendo da primeira trilha, e o diálogo diz isso:
+trocar de trilha pode deixar o modo automático errado até a próxima varredura.
+Fingir que a medição vale para todas seria pior.
+
+Verificado com um arquivo de duas trilhas (440 Hz e 880 Hz): escolhida a
+segunda pela interface, o programa gravado sai em 880 Hz.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino

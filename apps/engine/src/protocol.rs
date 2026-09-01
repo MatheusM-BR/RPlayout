@@ -28,6 +28,12 @@ pub struct ItemSpec {
     /// O que fazer quando a proporção do material não é a do canal.
     #[serde(default)]
     pub fit: Fit,
+    /// Qual trilha de áudio tocar, na ordem em que o arquivo as declara.
+    ///
+    /// Arquivo com dublagem, idioma original e trilha internacional é comum, e
+    /// pegar sempre a primeira é escolha, não padrão neutro.
+    #[serde(default)]
+    pub audio_track: usize,
 }
 
 /// Proporção diferente da do canal. Deformar não é opção.

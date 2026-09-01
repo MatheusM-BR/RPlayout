@@ -27,6 +27,8 @@ interface EngineItem {
   gainDb: number
   /** Proporção diferente da do canal: barra preta ou corte. */
   fit?: Fit
+  /** Trilha de áudio, na ordem em que o arquivo as declara. */
+  audioTrack?: number
 }
 
 type EngineEvent =
@@ -242,6 +244,7 @@ export class EngineTransport implements Transport {
       trimOut: entry.trim.out,
       gainDb: entry.gainDb,
       fit: entry.item.fit,
+      audioTrack: entry.item.audioTrack ?? 0,
     }
   }
 

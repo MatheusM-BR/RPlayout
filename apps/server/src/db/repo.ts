@@ -43,6 +43,7 @@ export const toAsset = (row: AssetRow): MediaAsset => ({
           interlaceMode: (row.interlaceMode ?? 'progressive') as MediaProbe['interlaceMode'],
           hasAudio: row.hasAudio ?? false,
           audioChannels: row.audioChannels ?? 0,
+          audioTracks: row.audioTracks ?? [],
         }
       : null,
   probeError: row.probeError ?? null,
@@ -83,6 +84,7 @@ export const toItem = (row: ItemRow): RundownItem => ({
   blockId: row.blockId,
   // Coluna acrescentada depois: item antigo é pillarbox, como sempre foi.
   fit: row.fit ?? DEFAULT_FIT,
+  audioTrack: row.audioTrack,
   locked: row.locked,
   autoNext: row.autoNext,
   loop: row.loop,

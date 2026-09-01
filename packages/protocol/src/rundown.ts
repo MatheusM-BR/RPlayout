@@ -137,6 +137,9 @@ export interface RundownItem {
   /** Proporção diferente da do canal: mostrar inteiro ou encher cortando. */
   readonly fit: Fit
 
+  /** Trilha de áudio escolhida. Nulo é a primeira que o arquivo declara. */
+  readonly audioTrack: number | null
+
   /** Item travado não é cortado, removido nem reordenado pelo scheduler. */
   readonly locked: boolean
   /** false segura no último frame esperando take manual. */

@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS rundown_items (
   elastic TEXT,
   block_id TEXT,
   fit TEXT,
+  audio_track INTEGER,
   locked INTEGER NOT NULL DEFAULT 0,
   auto_next INTEGER NOT NULL DEFAULT 1,
   loop INTEGER NOT NULL DEFAULT 0,
@@ -147,6 +148,8 @@ export function openDatabase(file: string) {
     "ALTER TABLE channels ADD COLUMN scan TEXT NOT NULL DEFAULT 'PROGRESSIVE'",
     "ALTER TABLE channels ADD COLUMN field_order TEXT NOT NULL DEFAULT 'TFF'",
     'ALTER TABLE rundown_items ADD COLUMN fit TEXT',
+    'ALTER TABLE rundown_items ADD COLUMN audio_track INTEGER',
+    'ALTER TABLE media_assets ADD COLUMN audio_tracks TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS media_assets_path ON media_assets (path)',
   ]) {
     try {

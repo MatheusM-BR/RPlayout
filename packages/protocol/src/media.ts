@@ -43,6 +43,15 @@ export const NO_AUDIO_LEVEL: AudioLevel = { mode: 'OFF', gainDb: 0, measured: nu
 
 export type MediaKind = 'VIDEO' | 'AUDIO' | 'STILL'
 
+/** Uma trilha de áudio do arquivo, na ordem em que ele a declara. */
+export interface AudioTrack {
+  readonly index: number
+  readonly rate: number
+  readonly channels: number
+  /** Só quando o arquivo declara. A maioria não declara. */
+  readonly language?: string
+}
+
 /** O que a sonda achou dentro do arquivo. Vazio para o que ela não abriu. */
 export interface MediaProbe {
   readonly width: number
@@ -52,6 +61,11 @@ export interface MediaProbe {
   readonly interlaceMode: 'progressive' | 'interleaved' | 'mixed'
   readonly hasAudio: boolean
   readonly audioChannels: number
+  /**
+   * Todas as trilhas de áudio. Vazio no que foi sondado antes disto existir,
+   * e é por isso que uma lista vazia significa "não sei", não "não tem".
+   */
+  readonly audioTracks: AudioTrack[]
 }
 
 export interface MediaAsset {

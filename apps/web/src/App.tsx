@@ -379,6 +379,13 @@ export function App() {
     })
   }
 
+  const setTrack = (id: string, audioTrack: number): void => {
+    void guard(async () => {
+      absorb(await api.patchItem(id, { audioTrack }))
+      say(`Item passa a tocar a ${audioTrack + 1}ª trilha de áudio.`)
+    })
+  }
+
   const setFit = (id: string, fit: Fit): void => {
     void guard(async () => {
       absorb(await api.patchItem(id, { fit }))
@@ -612,10 +619,13 @@ export function App() {
       )}
       {dialog?.kind === 'audio' && (
         <AudioDialog
-          view={dialog.view}
+          // A linha vem da grade viva, não da cópia de quando o diálogo abriu:
+          // trocar de trilha aplica na hora e o seletor tem de acompanhar.
+          view={view.items.find((item) => item.item.id === dialog.view.item.id) ?? dialog.view}
           channel={view.channel}
           onCancel={() => setDialog(null)}
           onApply={applyAudio}
+          onSetTrack={(index) => setTrack(dialog.view.item.id, index)}
         />
       )}
       {dialog?.kind === 'add' && (

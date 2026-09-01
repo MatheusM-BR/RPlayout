@@ -135,6 +135,7 @@ export function Rundown(props: Props) {
           const shortened = scheduled.duration < scheduled.plannedDuration
           const anchor = view.item.anchor
           const aspect = aspectLabel(view, props.channel)
+          const trackCount = view.asset?.probe?.audioTracks.length ?? 0
           const blockId = view.item.blockId
           const opensBlock = blockId !== null && props.items[index - 1]?.item.blockId !== blockId
 
@@ -226,6 +227,21 @@ export function Rundown(props: Props) {
                     <span className="chip src">{TYPE_LABEL[view.item.type]}</span>
                     {view.item.sourceRef && <span className="chip src">{view.item.sourceRef}</span>}
                     {view.item.locked && <span className="chip lock">TRAVADO</span>}
+                    {/* Arquivo sem trilha entra e toca; o que não pode é o
+                        operador descobrir isso no ar. */}
+                    {view.asset?.probe?.hasAudio === false && (
+                      <span className="chip mute" title="O arquivo não tem trilha de áudio">
+                        MUDO
+                      </span>
+                    )}
+                    {trackCount > 1 && (
+                      <span
+                        className="chip track"
+                        title={`${trackCount} trilhas de áudio; tocando a ${(view.item.audioTrack ?? 0) + 1}ª`}
+                      >
+                        TRILHA {(view.item.audioTrack ?? 0) + 1}/{trackCount}
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td>

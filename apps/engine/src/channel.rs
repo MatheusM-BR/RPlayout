@@ -14,7 +14,7 @@ use serde::Deserialize;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub use crate::loudness::Reading;
@@ -1160,6 +1160,8 @@ impl Channel {
         // `interaudiosrc`, que já existe.
         let pending = std::sync::Mutex::new(Some(chain));
         let audio_pipeline = pipeline.clone();
+        let seen_audio = Arc::new(AtomicUsize::new(0));
+        let wanted_track = spec.audio_track;
         src.connect_pad_added(move |_, pad| {
             // Pad recém-nascido nem sempre traz caps prontas; perguntar ao pad
             // evita descartar o fluxo em silêncio e deixar o item sem áudio.
@@ -1183,8 +1185,13 @@ impl Channel {
                 return;
             }
 
-            // Só a primeira trilha entra. Escolher entre várias ainda não é
-            // decisão do operador, e ligar todas somaria os idiomas.
+            // Entra uma trilha só: a que o operador escolheu, contada na
+            // ordem em que o arquivo as declara. Ligar todas somaria os
+            // idiomas, e é assim que dublagem vira ruído.
+            let index = seen_audio.fetch_add(1, Ordering::Relaxed);
+            if index != wanted_track {
+                return;
+            }
             let Ok(mut slot) = pending.lock() else {
                 return;
             };

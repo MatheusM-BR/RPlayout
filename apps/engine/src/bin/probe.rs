@@ -44,6 +44,21 @@ struct VideoInfo {
     interlace_mode: String,
 }
 
+/// Uma trilha de áudio do arquivo, do jeito que ele a declara.
+///
+/// O índice é a ordem em que a trilha aparece, que é a mesma que o engine usa
+/// para escolher qual tocar. Idioma vem da tag do arquivo quando existe -- e
+/// não existe com frequência, então ele é opcional em vez de inventado.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AudioTrack {
+    index: usize,
+    rate: i32,
+    channels: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AudioInfo {
@@ -73,6 +88,12 @@ struct Probe {
     video: Option<VideoInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     audio: Option<AudioInfo>,
+    /// Todas as trilhas de áudio, na ordem em que o arquivo as declara.
+    ///
+    /// A medição vale para a primeira, que é a que a sonda decodifica; as
+    /// outras entram aqui para o operador poder escolher.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    audio_tracks: Vec<AudioTrack>,
     /// Caminho da miniatura escrita, quando pedida e possível.
     #[serde(skip_serializing_if = "Option::is_none")]
     thumbnail: Option<String>,
@@ -162,12 +183,15 @@ fn main() -> Result<()> {
     // miniatura e o resto é descartado sem custo de codificação.
     let video_info: Arc<Mutex<Option<VideoInfo>>> = Arc::new(Mutex::new(None));
     let audio_info: Arc<Mutex<Option<(i32, i32)>>> = Arc::new(Mutex::new(None));
+    // Toda trilha entra na lista; só a primeira é decodificada e medida.
+    let audio_tracks: Arc<Mutex<Vec<AudioTrack>>> = Arc::new(Mutex::new(Vec::new()));
     let meter: Arc<Mutex<Option<Meter>>> = Arc::new(Mutex::new(None));
     let thumbnail_done = Arc::new(AtomicU64::new(0));
 
     let stage = pipeline.clone();
     let seen_video = Arc::clone(&video_info);
     let seen_audio = Arc::clone(&audio_info);
+    let listed_audio = Arc::clone(&audio_tracks);
     let shared_meter = Arc::clone(&meter);
     let want_thumbnail = args.thumbnail.clone();
     let measure = args.measure;
@@ -192,6 +216,16 @@ fn main() -> Result<()> {
                 eprintln!("[probe] vídeo ignorado: {error}");
             }
         } else if name.starts_with("audio/") {
+            let mut tracks = listed_audio.lock().unwrap();
+            let index = tracks.len();
+            tracks.push(AudioTrack {
+                index,
+                rate: structure.get::<i32>("rate").unwrap_or(0),
+                channels: structure.get::<i32>("channels").unwrap_or(0),
+                language: language_of(pad),
+            });
+            drop(tracks);
+
             if seen_audio.lock().unwrap().is_some() {
                 return;
             }
@@ -261,12 +295,29 @@ fn main() -> Result<()> {
         duration_ns,
         video: video_info.lock().unwrap().take(),
         audio,
+        audio_tracks: std::mem::take(&mut *audio_tracks.lock().unwrap()),
         thumbnail: args
             .thumbnail
             .filter(|_| thumbnail_done.load(Ordering::Relaxed) > 0),
     };
     println!("{}", serde_json::to_string(&probe)?);
     Ok(())
+}
+
+/// Idioma declarado da trilha, quando o arquivo diz.
+///
+/// A tag chega como evento pegajoso no pad, então dá para ler sem decodificar
+/// nada. Arquivo que não declara idioma é a maioria -- daí `Option`, e não uma
+/// string vazia que a interface teria de adivinhar o que significa.
+fn language_of(pad: &gst::Pad) -> Option<String> {
+    let mut index = 0;
+    while let Some(event) = pad.sticky_event::<gst::event::Tag>(index) {
+        if let Some(language) = event.tag().get::<gst::tags::LanguageCode>() {
+            return Some(language.get().to_string());
+        }
+        index += 1;
+    }
+    None
 }
 
 /// Liga o ramo de vídeo: guarda a geometria e escreve a miniatura.
