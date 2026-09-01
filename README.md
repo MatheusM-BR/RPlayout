@@ -126,6 +126,11 @@ Planejamento concluído. **F0** e **F1** entregues:
   medidor do programa reporta RMS, que é aproximação e está marcado como tal no
   código.
 
+Anotado para depois, com o levantamento pronto na seção 13 do
+[plano](docs/PLANO.md): **ingest de arquivo de verdade** (hoje o acervo vem do
+seed; não há varredura de pasta) e **perfil de saída por destino**, com varredura
+entrelaçada para 1080i5994.
+
 ### O preview é um tocador à parte
 
 O item armado não vira preview com outro destino: o `inter` do GStreamer fixa a

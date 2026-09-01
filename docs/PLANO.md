@@ -559,13 +559,111 @@ Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 | F0 | Fundação: monorepo, TS, lint, testes, Drizzle + SQLite, protocolo zod, CI | Base |
 | F1 | **Rundown e scheduler**: modelo, âncoras, trim e **nivelamento de áudio** com escopos, UI completa com mídia simulada | Primeira entrega |
 | F2 | Engine: binário Rust/GStreamer, VT com A/B, PGM, **MediaMTX local** com o PGM em `rtmp://127.0.0.1:1935/ch1`, relays supervisionados para destinos externos, preview WebRTC, **cadeia de áudio com medidores e limiter** | No ar |
+| F2.5 | **Ingest de arquivo de verdade** (varredura, SHA-256, sonda, sem lista de extensões) e **perfil de saída por destino**, com varredura entrelaçada e 1080i5994 — seção 13 | Formatos |
 | F3 | Ao vivo: **Decklink entrada e saída** com alocação de sub-dispositivos, clock da placa e detecção de sinal; NDI discovery; SRT in/out; chaves e painel de convidados | Ao vivo |
 | F4 | Grafismo: camada CEF, templates + manifest, editor, rundown de GC | Grafismo |
 | F5 | Multicanal e perfis de saída, monitoramento e alertas | Escala |
 | F6 | Automação: regras, geração de grade, log de decisões, Claude opcional | Automação |
 | F7 | Robustez: watchdog, failover slate, as-run log, relatórios, backup | Produção |
 
-## 13. Riscos e mitigações
+## 13. Pendências anotadas: entrada de arquivo e perfil de saída
+
+Duas coisas pedidas que ainda não estão feitas. Ficam aqui com o levantamento
+já pronto para quando formos mexer.
+
+### 13.1 Aceitar qualquer arquivo de entrada
+
+**O que já funciona.** O item roda no pipeline dele com `uridecodebin` seguido de
+`videoconvert → videoscale → videorate → caps do canal` e
+`audioconvert → audioresample → caps do canal`. Ou seja: tamanho, formato de
+pixel, cadência, taxa de amostragem e número de canais diferentes já entram e
+saem normalizados. O `gst-libav` está presente, então a cobertura de codec é a
+da instalação do GStreamer, não uma limitação nossa.
+
+**O buraco de verdade não é o decodificador, é o ingest.** Hoje o acervo vem do
+seed: não existe varredura de pasta. Precisa de um ingest que percorra o
+diretório, identifique por SHA-256 (para reconhecer o mesmo arquivo renomeado ou
+movido), sonde com `gst-discoverer` e grave duração, geometria, cadência,
+varredura e trilhas de áudio.
+
+**Sem lista de extensões.** Quem decide se o arquivo abre é o GStreamer, não uma
+lista nossa: o teste é abrir com o discoverer. Arquivo que não abre entra no
+acervo marcado como não-abriu, com o motivo do GStreamer, em vez de sumir sem
+explicação — inclusive quando o motivo é plugin que falta (ProRes, DNxHD, HEVC
+10 bits), que é informação acionável.
+
+**Casos que precisam de tratamento explícito e ainda não têm:**
+
+| Caso | Hoje | O que fazer |
+|---|---|---|
+| Fonte entrelaçada | entra como quadro entrelaçado e é escalado com combing | `deinterlace` no pipeline do item (existe na instalação) |
+| Arquivo sem trilha de áudio | o pad de áudio nunca aparece; o mixer do canal segura com o silêncio de fundo | confirmar que não trava e marcar o item como mudo na grade |
+| Mais de uma trilha de áudio | pega a primeira que aparecer | escolher a trilha, por item e por padrão do acervo |
+| Cadência variável (VFR) | o `videorate` já força a cadência do canal | confirmar com material real |
+| Proporção diferente (4:3 em canal 16:9) | o `videoscale` deforma | decidir pillarbox contra corte, por item |
+| Arquivo ainda em cópia | abriria pela metade | não ingerir enquanto o tamanho estiver mudando |
+| Imagem parada e áudio-só | não previsto | duração vem da grade, não do arquivo |
+
+### 13.2 Perfil de saída definível, incluindo 1080i59.94
+
+**Nomenclatura.** "1080i59" na prática é **1080i59.94**: 29.97 quadros por
+segundo, 59.94 campos. Fica a nomenclatura da Decklink, `1080i5994`. O quadro
+continua sendo a unidade de verdade — 29.97 quadros com drop-frame, que a tabela
+de rates já expressa (`29.97 = 30000/1001`, e `isDropFrame` já responde certo).
+
+**O que já existe.** Geometria e cadência já são por canal no banco
+(`rate_num`, `rate_den`, `width`, `height`). Falta o modo de varredura: hoje
+tudo é progressivo, implicitamente.
+
+**O que muda:**
+
+1. `channels` ganha `scan` (`PROGRESSIVE` | `INTERLACED`) e `field_order`
+   (`TFF` | `BFF` — 1080i é TFF).
+2. O perfil de saída deixa de ser argumento de linha de comando e vira registro
+   por destino. Cada saída de rede já tem pipeline próprio desde a F2, então
+   perfil por destino é uma consequência natural: o preview, que sai em metade
+   do tamanho, já é um caso disso.
+3. Engine: as caps do canal ganham `interlace-mode=interleaved` e `field-order`;
+   o `x264enc` ganha `interlaced=true`; entra o elemento `interlace` entre o
+   compositor e o encoder.
+
+**Decisão de arquitetura a tomar antes de codar: compor em campo ou em quadro.**
+
+O elemento `interlace` chama de "60i" o que é 29.97 quadros / 59.94 campos:
+
+- `field-pattern=1:1` — compor a **59.94 progressivo** e entrelaçar, cada quadro
+  virando um campo. É o movimento correto de 1080i, é o que playout de verdade
+  faz, e custa compor no dobro da cadência (o compositor dobra; o encoder não).
+- `field-pattern=2:2` — compor a **29.97** e repetir cada quadro nos dois campos.
+  Custa metade e não dá combing, mas o movimento fica em 29.97 e o grafismo
+  denuncia.
+
+A escolha é `1:1`. O custo é no compositor, que é onde temos folga.
+
+**Cuidado que isso cria: a grade e o pipeline passam a contar diferente.** Com o
+canal em 1080i5994, o rundown conta **29.97 quadros** — é o que vai no banco, no
+timecode e em toda a aritmética do scheduler — enquanto o compositor roda a
+**59.94**. São duas cadências no mesmo canal, e confundir uma com a outra é erro
+de fator dois em duração de item. O `rate` do canal continua sendo o da grade;
+a cadência de composição é derivada dele (`× 2` quando entrelaçado) e não deve
+existir fora do engine.
+
+**Entrada entrelaçada com saída entrelaçada.** Desentrelaçar na entrada e
+re-entrelaçar na saída perde resolução vertical no movimento. Passar direto
+exigiria manter o material em campos até o fim, o que o compositor não faz — e
+sem compositor não há grafismo nem escala. Decisão: desentrelaça na entrada,
+entrelaça na saída.
+
+**A saída de rede continua progressiva mesmo com o canal entrelaçado.** O
+RTMP/FLV não tem onde declarar entrelaçamento e a maior parte dos destinos
+assume progressivo. Então, com canal em 1080i5994, o publisher de rede ganha um
+`deinterlace` antes do encoder. É exatamente por isso que o perfil de saída
+precisa ser **por destino**, não por canal: SDI em 1080i5994, RTMP em 1080p2997.
+
+**SDI.** O `decklinkvideosink` tem modo `1080i5994` e, preenchido o
+`program_sdi_device_id`, a placa passa a ser o clock mestre. Isso é F3.
+
+## 14. Riscos e mitigações
 
 | Risco | Mitigação |
 |---|---|
