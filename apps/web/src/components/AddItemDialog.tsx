@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import {
+  durationIn,
   formatTimecode,
   parseTimecode,
   secondsToFrames,
@@ -69,7 +70,7 @@ export function AddItemDialog({
             <select value={assetId} onChange={(event) => setAssetId(event.target.value)}>
               {assets.map((option) => (
                 <option key={option.id} value={option.id}>
-                  {option.title} · {dur(option.durationFrames, rate)}
+                  {option.title} · {dur(durationIn(option, rate), rate)}
                 </option>
               ))}
             </select>

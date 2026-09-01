@@ -445,8 +445,32 @@ input.bad { border-color: var(--onair); }
 
 /* ---------- explorador de arquivos ---------- */
 
-.search { padding: 8px 10px; border-bottom: 1px solid var(--border-soft); }
+.scanning {
+  padding: 5px 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Arquivo que não abriu fica visível e apagado: não some, mas também não
+   convida a clicar. */
+.file.broken { opacity: 0.55; cursor: default; }
+.file .sub.bad { color: var(--onair); }
+
+.search {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
 .search input {
+  flex: 1;
+  min-width: 0;
   padding: 6px 9px;
   font-family: var(--body);
   font-size: 12px;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   computeAutoGain,
+  durationIn,
   effectiveGainDb,
   resolveAudio,
   resolveTrim,
@@ -9,6 +10,7 @@ import {
   type LoudnessMeasurement,
   type MediaAsset,
 } from './media.js'
+import { RATE } from './rate.js'
 
 const measurement = (
   integratedLufs: number,
@@ -29,6 +31,9 @@ const asset = (overrides: Partial<MediaAsset> = {}): MediaAsset => ({
   title: 'VT',
   kind: 'VIDEO',
   durationFrames: 5000,
+  durationNs: null,
+  probe: null,
+  probeError: null,
   categoryId: null,
   defaultTrim: null,
   defaultAudio: null,
@@ -94,21 +99,40 @@ describe('precedência do corte', () => {
     const resolved = resolveTrim(
       { in: 100, out: 400 },
       asset({ defaultTrim: { in: 50, out: 4000 } }),
+      RATE['50'],
     )
     expect(resolved.source).toBe('ITEM')
     expect(trimDuration(resolved.value)).toBe(300)
   })
 
   it('sem corte no item, vale o padrão do asset', () => {
-    const resolved = resolveTrim(null, asset({ defaultTrim: { in: 50, out: 4000 } }))
+    const resolved = resolveTrim(null, asset({ defaultTrim: { in: 50, out: 4000 } }), RATE['50'])
     expect(resolved.source).toBe('ASSET')
     expect(resolved.value).toEqual({ in: 50, out: 4000 })
   })
 
   it('sem nada, vale o arquivo inteiro', () => {
-    const resolved = resolveTrim(null, asset())
+    const resolved = resolveTrim(null, asset(), RATE['50'])
     expect(resolved.source).toBe('FILE')
     expect(resolved.value).toEqual({ in: 0, out: 5000 })
+  })
+
+  /**
+   * O corte é contado na cadência do canal, não na do arquivo. O mesmo arquivo
+   * num canal de 25 e num de 50 tem o mesmo tempo e o dobro de frames -- contar
+   * na cadência errada aqui poria a grade inteira fora por um fator dois.
+   */
+  it('o arquivo inteiro é contado na cadência do canal', () => {
+    const dezSegundos = asset({ durationNs: 10 * 1_000_000_000 })
+
+    expect(resolveTrim(null, dezSegundos, RATE['25']).value).toEqual({ in: 0, out: 250 })
+    expect(resolveTrim(null, dezSegundos, RATE['50']).value).toEqual({ in: 0, out: 500 })
+    // 59,94 é 60000/1001, então dez segundos são 599 frames e meio.
+    expect(resolveTrim(null, dezSegundos, RATE['59.94']).value).toEqual({ in: 0, out: 599 })
+  })
+
+  it('sem duração medida, o valor herdado ainda vale', () => {
+    expect(durationIn(asset(), RATE['25'])).toBe(5000)
   })
 })
 

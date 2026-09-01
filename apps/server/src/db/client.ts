@@ -112,6 +112,18 @@ export function openDatabase(file: string) {
   for (const alter of [
     'ALTER TABLE rundowns ADD COLUMN loop INTEGER NOT NULL DEFAULT 1',
     'ALTER TABLE rundown_items ADD COLUMN block_id TEXT',
+    'ALTER TABLE media_assets ADD COLUMN duration_ns INTEGER',
+    'ALTER TABLE media_assets ADD COLUMN size_bytes INTEGER',
+    'ALTER TABLE media_assets ADD COLUMN modified_at TEXT',
+    'ALTER TABLE media_assets ADD COLUMN width INTEGER',
+    'ALTER TABLE media_assets ADD COLUMN height INTEGER',
+    'ALTER TABLE media_assets ADD COLUMN rate_num INTEGER',
+    'ALTER TABLE media_assets ADD COLUMN rate_den INTEGER',
+    'ALTER TABLE media_assets ADD COLUMN interlace_mode TEXT',
+    'ALTER TABLE media_assets ADD COLUMN has_audio INTEGER',
+    'ALTER TABLE media_assets ADD COLUMN audio_channels INTEGER',
+    'ALTER TABLE media_assets ADD COLUMN probe_error TEXT',
+    'CREATE UNIQUE INDEX IF NOT EXISTS media_assets_path ON media_assets (path)',
   ]) {
     try {
       sqlite.exec(alter)

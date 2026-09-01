@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import {
+  durationIn,
   framesSinceMidnight,
   type Channel,
   type MediaAsset,
@@ -214,7 +215,7 @@ export class EngineTransport implements Transport {
       itemId: asset.id,
       path: asset.path,
       trimIn: 0,
-      trimOut: asset.durationFrames,
+      trimOut: durationIn(asset, this.channel.rate),
       gainDb: 0,
     }
   }

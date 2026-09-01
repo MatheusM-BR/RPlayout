@@ -23,3 +23,7 @@ path = "src/bin/relay.rs"
 
 [profile.release]
 opt-level = 2
+
+[[bin]]
+name = "rplayout-probe"
+path = "src/bin/probe.rs"

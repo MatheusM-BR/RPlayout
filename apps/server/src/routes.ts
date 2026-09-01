@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
-import { trimDuration, type Frames, type MediaAsset, type PreviewTarget } from '@rplayout/protocol'
+import {
+  durationIn,
+  trimDuration,
+  type Frames,
+  type MediaAsset,
+  type PreviewTarget,
+} from '@rplayout/protocol'
 import { networkInterfaces } from 'node:os'
 import {
   runtimeFor,
@@ -17,6 +23,8 @@ import { PORTS } from './domain/mediamtx.js'
 import { destinations, guestKeys } from './db/schema.js'
 import { operatorDecisions, rundownItems } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
+import { createReadStream, existsSync } from 'node:fs'
+import { resolve as resolvePath } from 'node:path'
 import { thumbnailSvg } from './domain/thumbnail.js'
 import type { RundownView } from './domain/plan.js'
 
@@ -165,11 +173,26 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
+  /**
+   * Miniatura do arquivo. O quadro de verdade quando a sonda conseguiu tirar
+   * um; o cartão desenhado quando não -- arquivo que não abriu também precisa
+   * aparecer no explorador, e sem miniatura ele sumiria de vista.
+   */
   server.get('/api/assets/:id/thumbnail.svg', async (request, reply) => {
     const { id } = request.params as { id: string }
     const assets = await listAssets(app.db)
     const asset = assets.find((candidate) => candidate.id === id)
     if (!asset) return reply.code(404).send({ error: 'Arquivo não encontrado.' })
+
+    const frame = resolvePath(app.thumbnailDir, `${asset.contentHash}.jpg`)
+    if (existsSync(frame)) {
+      return reply
+        .type('image/jpeg')
+        // O nome do arquivo é o hash do conteúdo, então conteúdo novo é
+        // endereço novo e o cache nunca serve a miniatura errada.
+        .header('cache-control', 'public, max-age=604800, immutable')
+        .send(createReadStream(frame))
+    }
 
     const [channel] = await listChannels(app.db)
     const rate = channel?.rate ?? { num: 50, den: 1 }
@@ -177,6 +200,29 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .type('image/svg+xml')
       .header('cache-control', 'public, max-age=3600')
       .send(thumbnailSvg(asset, rate))
+  })
+
+  // ---- acervo -----------------------------------------------------------
+
+  server.get('/api/library/scan', async () => ({
+    ...app.ingest.status(),
+    available: app.ingest.available,
+    root: app.ingest.status().root ?? app.mediaRoot,
+  }))
+
+  server.post('/api/library/scan', async (request, reply) => {
+    if (!app.ingest.available) {
+      return reply.code(409).send({ error: 'A sonda de mídia não está configurada.' })
+    }
+    const body = z
+      .object({ root: z.string().min(1).optional() })
+      .safeParse(request.body ?? {})
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    if (!app.ingest.start(body.data.root ?? app.mediaRoot)) {
+      return reply.code(409).send({ error: 'A varredura já está em andamento.' })
+    }
+    return app.ingest.status()
   })
 
   server.get('/api/rundowns/:id', async (request, reply) => {
@@ -215,7 +261,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const duration =
       body.data.durationOverride ??
       (asset
-        ? trimDuration(asset.defaultTrim ?? { in: 0, out: asset.durationFrames })
+        ? trimDuration(asset.defaultTrim ?? { in: 0, out: durationIn(asset, runtime.channel.rate) })
         : 0)
 
     const anchor = body.data.anchor ?? { kind: 'FLOW' as const }

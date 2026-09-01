@@ -1,5 +1,5 @@
 import type { MediaAsset, Rate } from '@rplayout/protocol'
-import { formatDuration } from '@rplayout/protocol'
+import { durationIn, formatDuration } from '@rplayout/protocol'
 
 /**
  * Miniatura de reserva, desenhada a partir do hash do arquivo.
@@ -22,7 +22,7 @@ export function thumbnailSvg(asset: MediaAsset, rate: Rate): string {
     .map((word) => word[0]?.toUpperCase() ?? '')
     .join('')
 
-  const duration = formatDuration(asset.durationFrames, rate)
+  const duration = formatDuration(durationIn(asset, rate), rate)
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90" width="160" height="90">
   <defs>

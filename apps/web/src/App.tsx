@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { anchorTarget } from '@rplayout/protocol'
+import { anchorTarget, durationIn } from '@rplayout/protocol'
 import type { AudioLevel, Anchor, EditScope, Trim } from '@rplayout/protocol'
 import { api } from './api.js'
 import { clock, dur } from './format.js'
@@ -9,6 +9,7 @@ import type {
   LibraryAsset,
   LibraryFolder,
   Live,
+  ScanStatus,
   Monitors as MonitorFeeds,
   RundownView,
   Snapshot,
@@ -43,6 +44,8 @@ export function App() {
   })
   /** Onde buscar a imagem dos monitores. Nulo enquanto não há servidor de mídia. */
   const [monitors, setMonitors] = useState<MonitorFeeds | null>(null)
+  /** Situação da varredura do acervo. */
+  const [scan, setScan] = useState<ScanStatus | null>(null)
   /** Linhas marcadas para agrupar. Marcar não é armar: o PGM não muda. */
   const [marked, setMarked] = useState<Set<string>>(new Set())
   const lastClicked = useRef<string | null>(null)
@@ -75,18 +78,51 @@ export function App() {
     }
   }, [])
 
+  const refreshLibrary = useCallback(async () => {
+    const [library, status] = await Promise.all([api.library(), api.scanStatus()])
+    setFolders(library.folders)
+    setScan(status)
+    return status
+  }, [])
+
   useEffect(() => {
     void (async () => {
       try {
-        const [state, library] = await Promise.all([api.state(), api.library()])
-        setFolders(library.folders)
+        const [state] = await Promise.all([api.state(), refreshLibrary()])
         const first = state.rundowns[0]
         if (first) absorb(await api.rundown(first.id))
       } catch (failure) {
         setError(failure instanceof Error ? failure.message : 'Servidor fora do ar.')
       }
     })()
-  }, [absorb])
+  }, [absorb, refreshLibrary])
+
+  /**
+   * Dispara a varredura e acompanha até acabar.
+   *
+   * Ler um acervo inteiro leva minutos -- medir loudness custa decodificar o
+   * áudio de cada arquivo --, então quem informa o andamento é a consulta, não
+   * a resposta do disparo.
+   */
+  const startScan = useCallback(async () => {
+    try {
+      setScan(await api.scan())
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Não consegui ler a pasta.')
+      return
+    }
+
+    const poll = window.setInterval(() => {
+      void refreshLibrary().then((status) => {
+        if (status.running) return
+        window.clearInterval(poll)
+        say(
+          status.error ??
+            `Acervo lido: ${status.added} novos, ${status.updated} atualizados, ${status.failed} sem abrir.`,
+        )
+      })
+    }, 1000)
+  }, [refreshLibrary, say])
 
   // O painel de distribuição tem endereço próprio: dá para deixar aberto numa
   // segunda tela ou mandar o link para quem cuida da entrega.
@@ -152,14 +188,18 @@ export function App() {
         fromExplorer: false,
       }
     }
-    if (target?.kind === 'ASSET') {
+    if (target?.kind === 'ASSET' && view) {
       const asset = assets.find((candidate) => candidate.id === target.id)
       if (asset) {
-        return { title: asset.title, duration: asset.durationFrames, fromExplorer: true }
+        return {
+          title: asset.title,
+          duration: durationIn(asset, view.channel.rate),
+          fromExplorer: true,
+        }
       }
     }
     return null
-  }, [target, selected, schedule, assets])
+  }, [target, selected, schedule, assets, view])
 
   /**
    * Próximo item com hora marcada. É a informação que o operador realmente
@@ -398,6 +438,8 @@ export function App() {
             openAssetId={openAssetId}
             onPreview={(assetId) => void command('cue', { assetId })}
             onInsert={(assetId) => setDialog({ kind: 'add', assetId })}
+            scan={scan}
+            onScan={() => void startScan()}
           />
         </aside>
 

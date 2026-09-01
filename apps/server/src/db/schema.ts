@@ -34,6 +34,20 @@ export const mediaAssets = sqliteTable('media_assets', {
   title: text('title').notNull(),
   kind: text('kind').$type<MediaKind>().notNull(),
   durationFrames: integer('duration_frames').notNull(),
+  /** Duração de verdade. Frame só existe relativo a uma cadência. */
+  durationNs: integer('duration_ns'),
+  /** Tamanho e data, para a varredura pular o que não mudou sem reler o arquivo. */
+  sizeBytes: integer('size_bytes'),
+  modifiedAt: text('modified_at'),
+  width: integer('width'),
+  height: integer('height'),
+  rateNum: integer('rate_num'),
+  rateDen: integer('rate_den'),
+  interlaceMode: text('interlace_mode'),
+  hasAudio: integer('has_audio', { mode: 'boolean' }),
+  audioChannels: integer('audio_channels'),
+  /** Motivo de a sonda não ter aberto. Preenchido, o arquivo não é tocável. */
+  probeError: text('probe_error'),
   categoryId: text('category_id'),
   defaultTrim: text('default_trim', { mode: 'json' }).$type<Trim | null>(),
   defaultAudio: text('default_audio', { mode: 'json' }).$type<AudioLevel | null>(),

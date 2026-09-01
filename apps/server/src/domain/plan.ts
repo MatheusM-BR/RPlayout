@@ -8,6 +8,7 @@ import {
   type Frames,
   type MediaAsset,
   type PlanItem,
+  type Rate,
   type ResolveResult,
   type Rundown,
   type RundownItem,
@@ -20,14 +21,22 @@ import { resolve } from '@rplayout/scheduler'
  * Duração no ar do item: o corte manda quando existe arquivo; sem arquivo,
  * vale a duração declarada. É esta a duração que o scheduler recebe.
  */
-export function itemDuration(item: RundownItem, asset: MediaAsset | undefined): Frames {
+export function itemDuration(
+  item: RundownItem,
+  asset: MediaAsset | undefined,
+  rate: Rate,
+): Frames {
   if (!asset) return item.durationOverride ?? 0
   if (item.durationOverride !== null) return item.durationOverride
-  return trimDuration(resolveTrim(item.trim, asset).value)
+  return trimDuration(resolveTrim(item.trim, asset, rate).value)
 }
 
-export function toPlanItem(item: RundownItem, asset: MediaAsset | undefined): PlanItem {
-  const duration = itemDuration(item, asset)
+export function toPlanItem(
+  item: RundownItem,
+  asset: MediaAsset | undefined,
+  rate: Rate,
+): PlanItem {
+  const duration = itemDuration(item, asset, rate)
   return {
     id: item.id,
     order: item.order,
@@ -95,7 +104,7 @@ export function buildView(
       }
     }
 
-    const trim = resolveTrim(item.trim, asset)
+    const trim = resolveTrim(item.trim, asset, channel.rate)
     const audio = resolveAudio(item.audio, asset)
     return {
       item,
@@ -111,7 +120,9 @@ export function buildView(
 
   const schedule = resolve({
     rate: channel.rate,
-    items: ordered.map((item) => toPlanItem(item, item.mediaId ? assets.get(item.mediaId) : undefined)),
+    items: ordered.map((item) =>
+      toPlanItem(item, item.mediaId ? assets.get(item.mediaId) : undefined, channel.rate),
+    ),
     now,
     onAir,
     plannedStart: rundown.plannedStart,

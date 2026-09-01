@@ -54,6 +54,22 @@ export interface Live {
   meters: { program: MeterReading; preview: MeterReading }
 }
 
+/** Situação da varredura do acervo. */
+export interface ScanStatus {
+  available: boolean
+  running: boolean
+  root: string | null
+  current: string | null
+  seen: number
+  total: number
+  added: number
+  updated: number
+  skipped: number
+  failed: number
+  finishedAt: string | null
+  error: string | null
+}
+
 /** Arquivo do explorador, com o caminho já quebrado para exibição. */
 export interface LibraryAsset extends MediaAsset {
   fileName: string

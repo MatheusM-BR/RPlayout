@@ -1,5 +1,12 @@
 import { useState } from 'react'
-import { formatTimecode, parseTimecode, type EditScope, type Rate, type Trim } from '@rplayout/protocol'
+import {
+  durationIn,
+  formatTimecode,
+  parseTimecode,
+  type EditScope,
+  type Rate,
+  type Trim,
+} from '@rplayout/protocol'
 import type { ItemView } from '../types.js'
 import { dur } from '../format.js'
 import { ScopePicker } from './ScopePicker.js'
@@ -26,7 +33,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
 
   const inFrames = parseTimecode(inText, rate)
   const outFrames = parseTimecode(outText, rate)
-  const total = asset?.durationFrames ?? 0
+  const total = asset ? durationIn(asset, rate) : 0
 
   const inBad = inFrames === null || inFrames < 0 || inFrames >= total
   const outBad = outFrames === null || outFrames > total || (inFrames !== null && outFrames <= inFrames)

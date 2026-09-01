@@ -1,6 +1,6 @@
 import type { AudioLevel, Anchor, EditScope, Trim } from '@rplayout/protocol'
 import type { MediaAsset, Rundown } from '@rplayout/protocol'
-import type { Distribution, LibraryFolder, Snapshot } from './types.js'
+import type { Distribution, LibraryFolder, ScanStatus, Snapshot } from './types.js'
 
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -25,6 +25,8 @@ export const api = {
   state: () => send<{ rundowns: Rundown[] }>('/api/state'),
   assets: () => send<{ assets: MediaAsset[] }>('/api/assets'),
   library: () => send<{ folders: LibraryFolder[] }>('/api/library'),
+  scanStatus: () => send<ScanStatus>('/api/library/scan'),
+  scan: () => send<ScanStatus>('/api/library/scan', { method: 'POST', body: '{}' }),
   rundown: (id: string) => send<Snapshot>(`/api/rundowns/${id}`),
 
   addItem: (

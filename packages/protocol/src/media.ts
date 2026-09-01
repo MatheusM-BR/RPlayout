@@ -1,4 +1,4 @@
-import type { Frames } from './rate.js'
+import { msToFrames, type Frames, type Rate } from './rate.js'
 
 /** Ponto de entrada e de saída, em frames, sobre a timeline do arquivo. */
 export interface Trim {
@@ -43,6 +43,17 @@ export const NO_AUDIO_LEVEL: AudioLevel = { mode: 'OFF', gainDb: 0, measured: nu
 
 export type MediaKind = 'VIDEO' | 'AUDIO' | 'STILL'
 
+/** O que a sonda achou dentro do arquivo. Vazio para o que ela não abriu. */
+export interface MediaProbe {
+  readonly width: number
+  readonly height: number
+  /** Cadência do arquivo como razão exata, nunca decimal. */
+  readonly rate: Rate
+  readonly interlaceMode: 'progressive' | 'interleaved' | 'mixed'
+  readonly hasAudio: boolean
+  readonly audioChannels: number
+}
+
 export interface MediaAsset {
   readonly id: string
   /** SHA-256 do conteúdo: reconhece o mesmo arquivo renomeado ou movido. */
@@ -50,7 +61,26 @@ export interface MediaAsset {
   readonly path: string
   readonly title: string
   readonly kind: MediaKind
+  /**
+   * Duração em frames.
+   *
+   * Só existe relativa a uma cadência, e a cadência que importa é a do canal.
+   * Use `durationIn` em vez deste campo sempre que houver um canal por perto:
+   * este aqui é o valor herdado de quando o acervo era do seed.
+   */
   readonly durationFrames: Frames
+  /** Duração de verdade, independente de cadência. */
+  readonly durationNs: number | null
+  /** O que a sonda leu do arquivo. */
+  readonly probe: MediaProbe | null
+  /**
+   * Por que a sonda não abriu o arquivo.
+   *
+   * Arquivo que não abre continua no acervo, com o motivo à vista. Sumir com
+   * ele esconde justamente o caso em que o operador precisa fazer alguma coisa
+   * -- instalar um plugin, refazer a cópia, trocar o formato.
+   */
+  readonly probeError: string | null
   readonly categoryId: string | null
 
   /** Corte padrão do acervo. Item novo criado a partir dele já nasce cortado. */
@@ -68,19 +98,42 @@ export interface MediaAsset {
 /** De onde veio o valor que está valendo — a interface mostra isso como selo. */
 export type ValueSource = 'ITEM' | 'ASSET' | 'FILE' | 'NONE'
 
+/**
+ * Duração do arquivo na cadência de um canal.
+ *
+ * A duração de verdade é em nanossegundos; frame só existe relativo a uma
+ * cadência. Converter aqui, com o canal em mãos, é o que impede um acervo de
+ * 29,97 de contar errado num canal de 50 -- e é o mesmo motivo de o resto do
+ * sistema contar em frames e não em milissegundos.
+ */
+export function durationIn(
+  asset: Pick<MediaAsset, 'durationNs' | 'durationFrames'>,
+  rate: Rate,
+): Frames {
+  if (asset.durationNs === null) return asset.durationFrames
+  return msToFrames(asset.durationNs / 1_000_000, rate)
+}
+
 export interface Resolved<T> {
   readonly value: T
   readonly source: ValueSource
 }
 
-/** Precedência do corte: item > padrão do asset > arquivo inteiro. */
+/**
+ * Precedência do corte: item > padrão do asset > arquivo inteiro.
+ *
+ * O corte é contado na cadência do **canal**, não na do arquivo: é assim que o
+ * engine faz o seek, e é o que mantém a grade inteira numa unidade só. Por isso
+ * o arquivo inteiro precisa da cadência para virar um corte.
+ */
 export function resolveTrim(
   itemTrim: Trim | null | undefined,
-  asset: Pick<MediaAsset, 'defaultTrim' | 'durationFrames'>,
+  asset: Pick<MediaAsset, 'defaultTrim' | 'durationFrames' | 'durationNs'>,
+  rate: Rate,
 ): Resolved<Trim> {
   if (itemTrim) return { value: itemTrim, source: 'ITEM' }
   if (asset.defaultTrim) return { value: asset.defaultTrim, source: 'ASSET' }
-  return { value: { in: 0, out: asset.durationFrames }, source: 'FILE' }
+  return { value: { in: 0, out: durationIn(asset, rate) }, source: 'FILE' }
 }
 
 /**

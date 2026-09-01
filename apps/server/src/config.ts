@@ -34,3 +34,12 @@ export const MEDIAMTX_LOGLEVEL = process.env.RPLAYOUT_MEDIAMTX_LOGLEVEL ?? 'warn
 
 /** Binário do relay, um processo por destino externo. */
 export const RELAY_BINARY = process.env.RPLAYOUT_RELAY ?? ''
+
+/** Binário da sonda de mídia. Vazio desliga a varredura do acervo. */
+export const PROBE_BINARY = process.env.RPLAYOUT_PROBE ?? ''
+
+/** Pasta que a varredura percorre. */
+export const MEDIA_ROOT = process.env.RPLAYOUT_MEDIA ?? resolve(process.cwd(), 'midia')
+
+/** Onde as miniaturas geradas ficam. Cache: pode ser apagada a qualquer hora. */
+export const THUMBNAIL_DIR = process.env.RPLAYOUT_THUMBS ?? resolve(process.cwd(), '.thumbs')

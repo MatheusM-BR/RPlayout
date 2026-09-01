@@ -1,5 +1,5 @@
 import { asc, eq } from 'drizzle-orm'
-import type { Channel, MediaAsset, Rundown, RundownItem } from '@rplayout/protocol'
+import type { Channel, MediaAsset, MediaProbe, Rundown, RundownItem } from '@rplayout/protocol'
 import type { Db } from './client.js'
 import { channels, mediaAssets, rundownItems, rundowns } from './schema.js'
 
@@ -28,6 +28,21 @@ export const toAsset = (row: AssetRow): MediaAsset => ({
   title: row.title,
   kind: row.kind,
   durationFrames: row.durationFrames,
+  durationNs: row.durationNs ?? null,
+  // Só há sonda quando há geometria: um arquivo que não abriu não tem nada
+  // dentro para contar.
+  probe:
+    row.width !== null && row.height !== null
+      ? {
+          width: row.width,
+          height: row.height,
+          rate: { num: row.rateNum ?? 25, den: row.rateDen ?? 1 },
+          interlaceMode: (row.interlaceMode ?? 'progressive') as MediaProbe['interlaceMode'],
+          hasAudio: row.hasAudio ?? false,
+          audioChannels: row.audioChannels ?? 0,
+        }
+      : null,
+  probeError: row.probeError ?? null,
   categoryId: row.categoryId,
   defaultTrim: row.defaultTrim ?? null,
   defaultAudio: row.defaultAudio ?? null,

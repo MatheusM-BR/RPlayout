@@ -59,6 +59,14 @@ async function main(): Promise<void> {
     if (runtime && first) await runtime.load(first.id)
   }
 
+  // Medição nova precisa chegar à grade: o nivelamento automático sai da
+  // loudness do arquivo, e ela acabou de mudar.
+  app.ingest.onFinished = () => {
+    void Promise.all([...app.runtimes.values()].map((runtime) => runtime.refresh())).then(
+      pushViews,
+    )
+  }
+
   const timer = setInterval(() => {
     for (const runtime of app.runtimes.values()) {
       // O canal anda com ou sem interface aberta. Amarrar isto à presença de

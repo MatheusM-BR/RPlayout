@@ -129,10 +129,42 @@ Planejamento concluído. **F0** e **F1** entregues:
   de ganho no medidor.
 - Falta: som nos monitores.
 
-Anotado para depois, com o levantamento pronto na seção 13 do
-[plano](docs/PLANO.md): **ingest de arquivo de verdade** (hoje o acervo vem do
-seed; não há varredura de pasta) e **perfil de saída por destino**, com varredura
-entrelaçada para 1080i5994.
+**F2.5** em andamento:
+
+- **Ingest de arquivo de verdade**: varredura de pasta, identificação por
+  SHA-256, sonda que abre o arquivo com o mesmo GStreamer que vai tocá-lo,
+  medição EBU R128 do arquivo inteiro e miniatura tirada do próprio vídeo.
+- Falta: perfil de saída por destino, com varredura entrelaçada e 1080i5994 —
+  seção 13.2 do [plano](docs/PLANO.md).
+
+### O acervo é lido, não declarado
+
+Não existe lista de extensões, de propósito. Quem decide se um arquivo abre é o
+GStreamer, e a sonda usa **o mesmo GStreamer que vai tocá-lo**: se a sonda
+abriu, o playout abre; se não abriu, o motivo que ela devolve é o mesmo que o
+playout daria -- inclusive quando o motivo é plugin que falta, que é a
+informação acionável. Uma lista nossa diria "sim" para arquivo que o pipeline
+recusa e "não" para arquivo que ele tocaria sem reclamar.
+
+Arquivo que não abre **não some**: fica no acervo, apagado e sem botão de
+inserir, com o motivo no `title`. Sumir com ele esconderia justamente o caso em
+que alguém precisa fazer alguma coisa.
+
+A loudness é medida no mesmo passe, pela BS.1770-4, sobre o arquivo inteiro. É
+isso que faz o nivelamento automático parar de depender de metadado que alguém
+digitou. Ao ligar a medição real no acervo de demonstração, os arquivos que se
+declaravam entre -16,9 e -27,6 LUFS mediram todos por volta de -2,5, e os ganhos
+automáticos foram de +0,2 para -20,5 dB. O medidor já vinha dizendo isso; agora
+o acervo concorda.
+
+Segunda varredura não relê nada: tamanho e data iguais bastam para pular, e o
+SHA-256 só é calculado no que mudou. Arquivo modificado nos últimos cinco
+segundos fica para a próxima passada -- pode ainda estar sendo copiado.
+
+**Duração é em nanossegundos, não em frames.** Frame só existe relativo a uma
+cadência, e a que vale é a do canal: o mesmo arquivo num canal de 25 e num de 50
+tem o mesmo tempo e o dobro de frames. A conversão acontece onde há um canal em
+mãos, com `durationIn`.
 
 ### A medição de loudness é nossa
 

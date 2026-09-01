@@ -15,9 +15,13 @@ import {
   MEDIAMTX_BINARY,
   MEDIAMTX_BIND,
   MEDIAMTX_LOGLEVEL,
+  MEDIA_ROOT,
+  PROBE_BINARY,
   RELAY_BINARY,
+  THUMBNAIL_DIR,
 } from './config.js'
 import { MediaMtx, channelPaths, type ChannelPaths } from './domain/mediamtx.js'
+import { Ingest } from './domain/ingest.js'
 import { RelaySupervisor } from './domain/relays.js'
 import { destinations, guestKeys } from './db/schema.js'
 import { resolve as resolvePath } from 'node:path'
@@ -136,6 +140,9 @@ export interface App {
   /** Servidor de mídia local. Nulo quando não há binário configurado. */
   readonly mediamtx: MediaMtx | null
   readonly relays: RelaySupervisor
+  readonly ingest: Ingest
+  readonly mediaRoot: string
+  readonly thumbnailDir: string
   /** Caminho de cada canal no servidor local. */
   paths: ChannelPaths[]
   close(): void
@@ -159,6 +166,9 @@ export async function createApp(file: string): Promise<App> {
     history: new History(),
     mediamtx,
     relays: new RelaySupervisor(RELAY_BINARY),
+    ingest: new Ingest(db, PROBE_BINARY, THUMBNAIL_DIR),
+    mediaRoot: MEDIA_ROOT,
+    thumbnailDir: THUMBNAIL_DIR,
     paths: [],
     close: () => {
       app.relays.closeAll()

@@ -571,9 +571,19 @@ Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 Duas coisas pedidas que ainda não estão feitas. Ficam aqui com o levantamento
 já pronto para quando formos mexer.
 
-### 13.1 Aceitar qualquer arquivo de entrada
+### 13.1 Aceitar qualquer arquivo de entrada — **feito**
 
-**O que já funciona.** O item roda no pipeline dele com `uridecodebin` seguido de
+O ingest existe: `rplayout-probe` abre o arquivo com o mesmo GStreamer que vai
+tocá-lo, mede a loudness pela BS.1770-4 no mesmo passe e tira a miniatura. A
+varredura percorre a pasta, identifica por SHA-256, pula o que não mudou pelo
+par tamanho+data e grava geometria, cadência, varredura e trilhas de áudio.
+Arquivo que não abre entra no acervo com o motivo do GStreamer à vista.
+
+Fica de fora, por enquanto: escolher entre várias trilhas de áudio, `deinterlace`
+no item para fonte entrelaçada, e a decisão de pillarbox contra corte para
+proporção diferente. O resto do levantamento abaixo continua valendo.
+
+**O que já funcionava antes disso.** O item roda no pipeline dele com `uridecodebin` seguido de
 `videoconvert → videoscale → videorate → caps do canal` e
 `audioconvert → audioresample → caps do canal`. Ou seja: tamanho, formato de
 pixel, cadência, taxa de amostragem e número de canais diferentes já entram e
