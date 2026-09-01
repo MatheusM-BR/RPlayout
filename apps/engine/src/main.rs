@@ -24,6 +24,10 @@ const POSITION_EVERY: Duration = Duration::from_millis(100);
 /// O medidor entrega dez vezes por segundo, que é a cadência do bloco de
 /// 100 ms da R128 e o mínimo para um VU não parecer travado.
 const METER_EVERY: Duration = Duration::from_millis(100);
+/// Espera entre tentativas de reabrir uma fonte ao vivo que caiu. Curta o
+/// bastante para o estúdio voltar rápido, longa o bastante para não inundar a
+/// rede de tentativas.
+const LIVE_RETRY: Duration = Duration::from_secs(2);
 const OUTPUT_EVERY: Duration = Duration::from_secs(1);
 
 fn parse_args() -> Result<Config> {
@@ -240,6 +244,7 @@ fn main() -> Result<()> {
     let mut last_position = Instant::now();
     let mut last_output = Instant::now();
     let mut last_meter = Instant::now();
+    let mut live_retry_at: Option<Instant> = None;
     let mut running = true;
 
     while running {
@@ -273,18 +278,50 @@ fn main() -> Result<()> {
         // O item tem bus próprio. É por ele que chega o fim do trecho, e é por
         // isso que o fim de um item não tem como virar fim do canal.
         if let (Some(item_bus), Some(item_id)) = (channel.item_bus(), channel.on_air_id()) {
+            let live = channel.on_air_is_live();
             while let Some(message) = item_bus.pop() {
-                match message.view() {
-                    gst::MessageView::Eos(_) => Event::Eos {
+                let fault = match message.view() {
+                    // Fim de arquivo é fim de item; fonte ao vivo que termina
+                    // é fonte que caiu, e isso não pode andar com a grade.
+                    gst::MessageView::Eos(_) if !live => {
+                        Event::Eos {
+                            item_id: item_id.clone(),
+                        }
+                        .emit();
+                        None
+                    }
+                    gst::MessageView::Eos(_) => Some("a fonte encerrou o sinal".to_string()),
+                    gst::MessageView::Error(error) if live => Some(error.error().to_string()),
+                    gst::MessageView::Error(error) => {
+                        Event::Error {
+                            message: format!("item {item_id}: {}", error.error()),
+                        }
+                        .emit();
+                        None
+                    }
+                    _ => None,
+                };
+
+                if let Some(reason) = fault {
+                    Event::SourceLost {
                         item_id: item_id.clone(),
+                        reason,
                     }
-                    .emit(),
-                    gst::MessageView::Error(error) => Event::Error {
-                        message: format!("item {item_id}: {}", error.error()),
-                    }
-                    .emit(),
-                    _ => {}
+                    .emit();
+                    live_retry_at = Some(Instant::now() + LIVE_RETRY);
+                    break;
                 }
+            }
+        }
+
+        // Fonte ao vivo caiu: tenta de novo até voltar. A hora de sair continua
+        // sendo a que a grade marcou.
+        if let Some(when) = live_retry_at {
+            if Instant::now() >= when {
+                live_retry_at = channel
+                    .restart_on_air()
+                    .err()
+                    .map(|_| Instant::now() + LIVE_RETRY);
             }
         }
 

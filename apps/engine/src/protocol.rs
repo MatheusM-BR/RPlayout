@@ -12,11 +12,25 @@ use crate::output::Report;
 #[serde(rename_all = "camelCase")]
 pub struct ItemSpec {
     pub item_id: String,
+    /// Arquivo do acervo. Vazio quando o item é ao vivo.
+    #[serde(default)]
     pub path: String,
+    /// Fonte ao vivo: `srt://...`, `rtsp://...`, `sdi:0`, `ndi:Nome`.
+    ///
+    /// Preenchido, manda: item ao vivo não tem corte, não termina sozinho e
+    /// quem decide quando ele sai é a grade, não o arquivo.
+    #[serde(default)]
+    pub source: Option<String>,
     pub trim_in: i64,
     pub trim_out: i64,
     /// Ganho de nivelamento já resolvido pelo servidor.
     pub gain_db: f64,
+}
+
+impl ItemSpec {
+    pub fn is_live(&self) -> bool {
+        self.source.is_some()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +88,12 @@ pub enum Event {
     },
     Eos {
         item_id: String,
+    },
+    /// Fonte ao vivo caiu. Não é fim de item: a grade não anda por causa disto,
+    /// e o engine fica tentando reabrir até a hora marcada de sair.
+    SourceLost {
+        item_id: String,
+        reason: String,
     },
     /// Medição pela BS.1770-4. Pico em dBFS, loudness em LUFS, faixa em LU.
     /// Não é RMS: tem ponderação K e gate.

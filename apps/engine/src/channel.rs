@@ -185,6 +185,71 @@ fn make_named(factory: &str, name: &str) -> Result<gst::Element> {
         .with_context(|| format!("elemento {factory} não existe nesta instalação do GStreamer"))
 }
 
+/// Por que um item pode não ter aberto, em português de operador.
+///
+/// "Element failed to change its state" é a verdade e não serve para nada: quem
+/// está no ar precisa saber se o problema é a placa, a rede ou o arquivo.
+fn open_failure(spec: &ItemSpec, where_: &str) -> String {
+    match spec.source.as_deref() {
+        Some(source) if source.starts_with("sdi:") => format!(
+            "a entrada {source} não respondeu{where_} -- confira se a placa está instalada, \
+             se o sub-dispositivo existe e se há sinal nele"
+        ),
+        Some(source) => format!("não consegui abrir a fonte {source}{where_}"),
+        None => format!("não consegui abrir {}{where_}", spec.path),
+    }
+}
+
+/// De onde o item tira o sinal: arquivo do acervo ou fonte ao vivo.
+///
+/// Fonte com esquema de URI (`srt://`, `rtsp://`, `rtmp://`) entra pelo mesmo
+/// `uridecodebin` do arquivo -- é o mesmo pipeline, e é por isso que um estúdio
+/// ao vivo e um VT são a mesma coisa para o resto do canal. Placa e NDI têm
+/// elemento próprio.
+fn source_for(spec: &ItemSpec) -> Result<gst::Element> {
+    let Some(source) = spec.source.as_deref() else {
+        let src = make("uridecodebin")?;
+        let uri = if spec.path.contains("://") {
+            spec.path.clone()
+        } else {
+            gst::glib::filename_to_uri(&spec.path, None)?.to_string()
+        };
+        src.set_property("uri", &uri);
+        return Ok(src);
+    };
+
+    if source.contains("://") {
+        let src = make("uridecodebin")?;
+        src.set_property("uri", source);
+        // Fonte ao vivo não pode ficar remoendo: o buffer que interessa é o
+        // mínimo que segura o jitter da rede, e o resto é atraso no ar.
+        src.set_property("buffer-duration", 500_000_000i64);
+        return Ok(src);
+    }
+
+    match source.split_once(':') {
+        Some(("sdi", index)) => {
+            let src = make("decklinkvideosrc")?;
+            src.set_property(
+                "device-number",
+                index.parse::<i32>().context("índice de SDI inválido")?,
+            );
+            // `auto` deixa a placa detectar o formato do sinal que chegou, que
+            // é o que o operador espera de uma entrada.
+            src.set_property_from_str("mode", "auto");
+            Ok(src)
+        }
+        Some(("ndi", name)) => {
+            let src = make("ndisrc").context(
+                "a entrada NDI precisa do plugin `ndisrc`, que não está nesta instalação",
+            )?;
+            src.set_property("ndi-name", name);
+            Ok(src)
+        }
+        _ => Err(anyhow!("fonte ao vivo desconhecida: {source}")),
+    }
+}
+
 /// Consome o que houver no `appsink` e entrega ao medidor.
 ///
 /// O buffer de conversão é emprestado: alocar a cada volta do laço num
@@ -697,9 +762,11 @@ impl Channel {
 
         let mut item =
             self.build_item(&spec, &video_channel, &audio_channel, &self.preview_caps(), true)?;
-        item.pipeline.set_state(gst::State::Paused)?;
+        item.pipeline
+            .set_state(gst::State::Paused)
+            .with_context(|| open_failure(&spec, " no preview"))?;
         let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
-        result.with_context(|| format!("não consegui abrir {} no preview", spec.path))?;
+        result.with_context(|| open_failure(&spec, " no preview"))?;
 
         item.pipeline
             .seek(
@@ -788,6 +855,41 @@ impl Channel {
         self.frames_out.load(Ordering::Relaxed)
     }
 
+    /// O que está no ar é fonte ao vivo.
+    pub fn on_air_is_live(&self) -> bool {
+        self.on_air.as_ref().is_some_and(|item| item.spec.is_live())
+    }
+
+    /// Reabre a fonte ao vivo que está no ar.
+    ///
+    /// Fonte ao vivo que cai não é fim de item: o estúdio pode voltar, e a hora
+    /// de sair continua sendo a que a grade marcou. Enquanto não volta, o
+    /// programa fica no preto do canal -- que é o comportamento certo, e é
+    /// melhor do que pular para o item seguinte antes da hora.
+    pub fn restart_on_air(&mut self) -> Result<()> {
+        let spec = self
+            .on_air
+            .as_ref()
+            .map(|item| item.spec.clone())
+            .ok_or_else(|| anyhow!("nada no ar para reabrir"))?;
+
+        if let Some(previous) = self.on_air.take() {
+            discard(previous);
+        }
+
+        let mut item = self.build_item(
+            &spec,
+            &self.video_channel.clone(),
+            &self.audio_channel.clone(),
+            &self.video_caps(),
+            false,
+        )?;
+        item.pipeline.set_state(gst::State::Playing)?;
+        item.on_air = true;
+        self.on_air = Some(item);
+        Ok(())
+    }
+
     pub fn on_air_id(&self) -> Option<String> {
         self.on_air.as_ref().map(|item| item.spec.item_id.clone())
     }
@@ -830,9 +932,18 @@ impl Channel {
             false,
         )?;
 
-        item.pipeline.set_state(gst::State::Paused)?;
+        item.pipeline
+            .set_state(gst::State::Paused)
+            .with_context(|| open_failure(&spec, ""))?;
         let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
-        result.with_context(|| format!("não consegui abrir {}", spec.path))?;
+        result.with_context(|| open_failure(&spec, ""))?;
+
+        // Item ao vivo não tem ponto de entrada nem de saída: ele já está
+        // acontecendo. Quem decide quando ele sai é a grade.
+        if spec.is_live() {
+            self.armed = Some(item);
+            return Ok(());
+        }
 
         // O corte vira um seek com início e fim: o item termina sozinho no
         // ponto de saída, sem ninguém precisar cronometrar.
@@ -870,13 +981,7 @@ impl Channel {
     ) -> Result<Item> {
         let pipeline = gst::Pipeline::with_name(&format!("item-{}", spec.item_id));
 
-        let src = make("uridecodebin")?;
-        let uri = if spec.path.contains("://") {
-            spec.path.clone()
-        } else {
-            gst::glib::filename_to_uri(&spec.path, None)?.to_string()
-        };
-        src.set_property("uri", &uri);
+        let src = source_for(spec)?;
 
         let vconv = make("videoconvert")?;
         // Fonte entrelaçada vira progressiva aqui. O compositor não trabalha em

@@ -9,6 +9,7 @@ import {
   type OnAirState,
   type PreviewTarget,
 } from '@rplayout/protocol'
+import { MediaMtx } from './mediamtx.js'
 import type { MeterReading } from './meters.js'
 import { SILENCE } from './meters.js'
 import type { RundownView } from './plan.js'
@@ -18,6 +19,8 @@ import type { PublisherState, Transport, TransportState } from './transport.js'
 interface EngineItem {
   itemId: string
   path: string
+  /** Fonte ao vivo já resolvida para endereço concreto. */
+  source?: string
   trimIn: Frames
   trimOut: Frames
   gainDb: number
@@ -29,6 +32,7 @@ type EngineEvent =
   | { event: 'state'; onAir?: string; armed?: string; preview?: string }
   | { event: 'position'; itemId: string; frames: number; duration: number }
   | { event: 'eos'; itemId: string }
+  | { event: 'sourceLost'; itemId: string; reason: string }
   | {
       event: 'levels'
       bus: 'pgm' | 'pvw'
@@ -71,6 +75,14 @@ export class EngineTransport implements Transport {
   private elapsed: Frames = 0
   /** Último nível que o engine recebeu para o item no ar. */
   private appliedGainDb: number | null = null
+  /**
+   * Quando o item ao vivo no ar deve sair, em frames desde a meia-noite.
+   *
+   * Arquivo acaba sozinho e avisa; fonte ao vivo não acaba nunca. Quem marca a
+   * hora de sair de um estúdio é a grade, e sem isto o item ao vivo ficaria no
+   * ar para sempre e a programação pararia atrás dele.
+   */
+  private liveEndsAt: Frames | null = null
   private preview: PreviewTarget | null = null
   private meter: MeterReading | null = null
   private previewReading: MeterReading | null = null
@@ -153,6 +165,12 @@ export class EngineTransport implements Transport {
       case 'eos':
         this.advanceAfter(event.itemId)
         break
+      case 'sourceLost':
+        // Fonte ao vivo que cai não anda com a grade: o estúdio pode voltar, e
+        // a hora de sair continua sendo a que a grade marcou. O engine fica
+        // tentando reabrir; aqui só registramos para o operador ver.
+        this.fail(`fonte ao vivo caiu: ${event.reason}`)
+        break
       case 'levels':
         if (event.bus === 'pgm') this.meter = toMeter(event)
         else this.previewReading = toMeter(event)
@@ -195,8 +213,17 @@ export class EngineTransport implements Transport {
   private specFor(itemId: string): EngineItem | null {
     const view = this.view()
     const entry = view?.items.find((candidate) => candidate.item.id === itemId)
-    if (!entry?.asset) return null
+    if (!entry) return null
 
+    // Item ao vivo não tem arquivo: tem fonte, e a duração vem da grade, não do
+    // conteúdo. Corte em zero é a forma de dizer isso ao engine.
+    if (entry.item.sourceRef) {
+      const source = resolveSource(entry.item.sourceRef)
+      if (!source) return null
+      return { itemId, path: '', source, trimIn: 0, trimOut: 0, gainDb: entry.gainDb }
+    }
+
+    if (!entry.asset) return null
     return {
       itemId,
       path: entry.asset.path,
@@ -302,7 +329,7 @@ export class EngineTransport implements Transport {
   take(rundownId: string, itemId: string): void {
     const spec = this.specFor(itemId)
     if (!spec) {
-      this.lastError = 'Este item não tem arquivo para o engine abrir.'
+      this.lastError = 'Este item não tem arquivo nem fonte que o engine saiba abrir.'
       return
     }
 
@@ -313,6 +340,7 @@ export class EngineTransport implements Transport {
 
     this.onAirItemId = itemId
     this.elapsed = 0
+    this.liveEndsAt = spec.source === undefined ? null : this.plannedEnd(itemId)
     // O item entra com o nível que o `load` levou; a partir daí o `syncGain`
     // acompanha.
     this.appliedGainDb = spec.gainDb
@@ -344,6 +372,7 @@ export class EngineTransport implements Transport {
     this.send({ cmd: 'stop' })
     this.onAirItemId = null
     this.elapsed = 0
+    this.liveEndsAt = null
     this.dirty = true
     // O que saiu do ar volta para o preview: é dali que o operador retoma, e
     // passar pelo cue é o que faz o monitor de preview acompanhar.
@@ -357,11 +386,34 @@ export class EngineTransport implements Transport {
     this.cue({ kind: 'ITEM', id: itemId })
   }
 
+  /** Hora de saída que a grade marcou para este item, em frames. */
+  private plannedEnd(itemId: string): Frames | null {
+    const row = this.view()?.schedule.items.find((entry) => entry.id === itemId)
+    if (!row) return null
+    return framesSinceMidnight(new Date(), this.channel.rate) + row.duration
+  }
+
   tick(): boolean {
     this.syncGain()
+    this.endLiveWhenDue()
     const changed = this.dirty
     this.dirty = false
     return changed
+  }
+
+  /**
+   * Tira do ar o item ao vivo quando dá a hora que a grade marcou.
+   *
+   * Arquivo acaba e avisa; fonte ao vivo não acaba. Sem isto a programação
+   * pararia atrás de um estúdio que ficou no ar para sempre.
+   */
+  private endLiveWhenDue(): void {
+    if (this.liveEndsAt === null || !this.onAirItemId) return
+    if (framesSinceMidnight(new Date(), this.channel.rate) < this.liveEndsAt) return
+
+    const itemId = this.onAirItemId
+    this.liveEndsAt = null
+    this.advanceAfter(itemId)
   }
 
   /**
@@ -412,6 +464,28 @@ export class EngineTransport implements Transport {
     this.alive = false
     setTimeout(() => this.child.kill(), 1000).unref()
   }
+}
+
+/**
+ * Referência de fonte vira endereço.
+ *
+ * `sdi:` e `ndi:` passam direto -- quem sabe abrir placa e NDI é o engine, e
+ * traduzir isso aqui seria o servidor fingir que entende de hardware.
+ * Convidado vira leitura no servidor de mídia local, onde ele publica, e por
+ * RTSP em loopback como os relays: nunca pela rede.
+ */
+function resolveSource(ref: string): string | null {
+  if (ref.includes('://')) return ref
+
+  const separator = ref.indexOf(':')
+  if (separator <= 0) return null
+  const kind = ref.slice(0, separator)
+  const rest = ref.slice(separator + 1)
+
+  if (kind === 'sdi' || kind === 'ndi') return ref
+  if (kind === 'guest') return MediaMtx.internalRead(`guest/${rest}`)
+  if (kind === 'path') return MediaMtx.internalRead(rest)
+  return null
 }
 
 /**
