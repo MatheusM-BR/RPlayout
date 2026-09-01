@@ -320,6 +320,13 @@ impl Publisher {
             }
             Kind::Srt => {
                 let mux = make("mpegtsmux")?;
+                // Sete pacotes de 188 bytes por buffer, que é o payload padrão
+                // do SRT (1316 bytes). Sem isto o muxer entrega buffers de
+                // tamanho qualquer, o `srtsink` os corta em datagramas que não
+                // caem na fronteira do pacote de transporte, e o receptor não
+                // ressincroniza: o caminho fica "pronto" no servidor, os bytes
+                // entram e saem, e ninguém consegue decodificar um quadro.
+                mux.set_property("alignment", 7i32);
                 let sink = make("srtsink")?;
                 sink.set_property("uri", &spec.url);
                 (mux, sink)
@@ -368,13 +375,24 @@ impl Publisher {
         // destino recusa a outra quando ela aparece.
         acaps.link(&mux)?;
 
+        // Conta buffer avulso e lista de buffers. O `flvmux` empurra um a um;
+        // o `mpegtsmux` agrupa em lista, e uma sonda que só olha `BUFFER`
+        // nunca dispara para SRT -- a saída funciona e o painel diz
+        // "conectando" para sempre, que é pior do que não mostrar nada.
         let counter = Arc::clone(&self.delivered);
         sink.static_pad("sink")
             .ok_or_else(|| anyhow!("sink da saída sem pad"))?
-            .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
-                counter.fetch_add(1, Ordering::Relaxed);
-                gst::PadProbeReturn::Ok
-            });
+            .add_probe(
+                gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                move |_, info| {
+                    let count = match &info.data {
+                        Some(gst::PadProbeData::BufferList(list)) => list.len() as u64,
+                        _ => 1,
+                    };
+                    counter.fetch_add(count, Ordering::Relaxed);
+                    gst::PadProbeReturn::Ok
+                },
+            );
 
         Ok(pipeline)
     }

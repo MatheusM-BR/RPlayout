@@ -140,6 +140,29 @@ Planejamento concluído. **F0** e **F1** entregues:
   as-run: nenhuma delas consegue derrubar o programa.
 - **Perfis de saída persistidos e editáveis**, no painel de distribuição.
 
+### SRT precisa de pacote alinhado
+
+O SRT manda datagramas de tamanho fixo. Sem alinhar, o `mpegtsmux` entrega
+buffers de tamanho qualquer, o `srtsink` os corta em datagramas que não caem na
+fronteira do pacote de transporte de 188 bytes, e o receptor não ressincroniza.
+`alignment=7` -- sete pacotes, os 1316 bytes do payload padrão do SRT -- resolve.
+
+O sintoma engana: o caminho fica **pronto** no servidor, com as trilhas
+identificadas, bytes entrando e bytes saindo para os leitores, e **nenhum
+leitor decodifica um quadro**. Testado por RTSP, por SRT e por RTMP, os três
+liam zero; o mesmo MPEG-TS gravado em arquivo decodificava sem reclamar.
+
+Isto estava na nossa saída SRT desde que ela foi escrita, e passou porque eu só
+tinha verificado a saída RTMP.
+
+Junto veio um segundo defeito, do tipo que mente para o operador: a contagem de
+entrega só olhava `BUFFER`, e o `mpegtsmux` empurra **lista** de buffers. Com a
+saída SRT funcionando, o painel dizia "conectando" para sempre. A sonda agora
+conta as duas formas.
+
+Verificado: canal publicando por SRT no servidor local, `NO AR` com contagem
+subindo, e a imagem lida de volta.
+
 ### Fonte ao vivo é um item como outro qualquer
 
 Um estúdio entra na grade pelo mesmo caminho que um VT. Fonte com esquema de URI
