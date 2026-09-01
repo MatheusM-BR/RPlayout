@@ -255,6 +255,32 @@ Fingir que a medição vale para todas seria pior.
 Verificado com um arquivo de duas trilhas (440 Hz e 880 Hz): escolhida a
 segunda pela interface, o programa gravado sai em 880 Hz.
 
+### Imagem parada e arquivo só de áudio
+
+Os dois existem no acervo de qualquer emissora -- um cartaz, uma locução -- e
+nenhum dos dois entrava no ar.
+
+**Só áudio**: o ramo de vídeo era montado sempre, e sem quadro o sink esperava
+para sempre. Agora ele também só entra quando aparece um pad de vídeo; sem
+imagem, o que sai é o preto do canal, e a linha avisa `SEM IMAGEM`.
+
+**Imagem parada**: o arquivo é um quadro, não tem tempo. Entra com
+`imagefreeze`, que repete o quadro pelo número de quadros que a grade pediu e
+encerra sozinho -- o item acaba como um arquivo acaba, sem ninguém cronometrar.
+O botão de I/O da linha abre a duração em vez da marcação, porque não há entrada
+nem saída para marcar, e o item nasce com dez segundos quando ninguém diz.
+
+**`chroma-site` mata a gravação.** Arquivo decodificado de JPEG chega com
+`chroma-site=jpeg`; o campo atravessava o canal e mudava as caps do H.264 no
+meio do fluxo. O Matroska recusa mudança de caps e a gravação as-run morria --
+um VT depois de um cartaz e acabou. As caps do canal agora fixam `chroma-site`
+junto com colorimetria e PAR. É o mesmo erro que a colorimetria já tinha
+ensinado: **o que não é fixado nas caps do canal vaza da fonte para a saída**.
+
+Verificado ponta a ponta: o cartaz fica no ar exatamente o tempo da grade e sai
+sozinho, aparece na gravação do programa (antes: dez segundos de preto), e o
+arquivo só de áudio toca com a tela no preto do canal.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino

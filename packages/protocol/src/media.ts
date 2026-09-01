@@ -120,6 +120,19 @@ export type ValueSource = 'ITEM' | 'ASSET' | 'FILE' | 'NONE'
  * 29,97 de contar errado num canal de 50 -- e é o mesmo motivo de o resto do
  * sistema contar em frames e não em milissegundos.
  */
+/**
+ * Imagem parada: o arquivo tem quadro mas não tem tempo.
+ *
+ * Quem diz quanto ela fica no ar é a grade, como num item ao vivo -- por isso
+ * ela não tem duração própria e nunca deve herdar zero.
+ */
+export function isStill(asset: Pick<MediaAsset, 'kind' | 'probe'>): boolean {
+  return asset.kind === 'STILL' || asset.probe?.rate.num === 0
+}
+
+/** Quanto uma imagem parada fica no ar quando ninguém disse. */
+export const STILL_DEFAULT_SECONDS = 10
+
 export function durationIn(
   asset: Pick<MediaAsset, 'durationNs' | 'durationFrames'>,
   rate: Rate,

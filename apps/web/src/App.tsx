@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { anchorTarget, durationIn } from '@rplayout/protocol'
+import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
 import type { AudioLevel, EditScope, Fit, Trim } from '@rplayout/protocol'
 import { api } from './api.js'
 import { clock, dur } from './format.js'
@@ -15,6 +15,7 @@ import type {
   Snapshot,
 } from './types.js'
 import { AddItemDialog, type NewItem } from './components/AddItemDialog.js'
+import { StillDialog } from './components/StillDialog.js'
 import { AudioDialog } from './components/AudioDialog.js'
 import { Distribution } from './components/Distribution.js'
 import { Explorer } from './components/Explorer.js'
@@ -24,6 +25,7 @@ import { TrimDialog } from './components/TrimDialog.js'
 
 type Dialog =
   | { kind: 'trim'; view: ItemView }
+  | { kind: 'still'; view: ItemView }
   | { kind: 'audio'; view: ItemView }
   | { kind: 'add'; assetId?: string }
   | { kind: 'distribution' }
@@ -483,7 +485,13 @@ export function App() {
               onSelect={select}
               onMove={move}
               onUngroup={ungroup}
-              onOpenTrim={(item) => setDialog({ kind: 'trim', view: item })}
+              onOpenTrim={(item) =>
+                // Imagem parada não tem o que marcar: o I/O dela é a duração.
+                setDialog({
+                  kind: item.asset && isStill(item.asset) ? 'still' : 'trim',
+                  view: item,
+                })
+              }
               onOpenAudio={(item) => setDialog({ kind: 'audio', view: item })}
               onSetFit={setFit}
               onNotes={saveNotes}
@@ -615,6 +623,21 @@ export function App() {
           rate={rate}
           onCancel={() => setDialog(null)}
           onApply={applyTrim}
+        />
+      )}
+      {dialog?.kind === 'still' && (
+        <StillDialog
+          view={dialog.view}
+          rate={rate}
+          onCancel={() => setDialog(null)}
+          onApply={(frames) => {
+            const id = dialog.view.item.id
+            setDialog(null)
+            void guard(async () => {
+              absorb(await api.patchItem(id, { durationOverride: frames }))
+              say('Tempo da imagem parada atualizado; a grade foi remanejada.')
+            })
+          }}
         />
       )}
       {dialog?.kind === 'audio' && (

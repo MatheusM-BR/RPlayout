@@ -224,7 +224,13 @@ export class Ingest {
 
     const row = {
       ...base,
-      kind: (probe.video ? 'VIDEO' : 'AUDIO') as 'VIDEO' | 'AUDIO',
+      // Vídeo sem cadência é imagem parada: tem quadro, não tem tempo. Quem
+      // diz quanto ela fica no ar é a grade.
+      kind: (probe.video
+        ? probe.video.rateNum === 0
+          ? 'STILL'
+          : 'VIDEO'
+        : 'AUDIO') as 'VIDEO' | 'AUDIO' | 'STILL',
       // Mantido só para o que foi semeado antes de existir sonda; quem conta é
       // `durationNs`, convertido na cadência de quem pergunta.
       durationFrames: 0,

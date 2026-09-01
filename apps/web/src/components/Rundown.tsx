@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
+import { isStill } from '@rplayout/protocol'
 import type { Channel, Fit, ItemType, Rate, ResolvedItem } from '@rplayout/protocol'
 import type { ItemView } from '../types.js'
 import { clock, db, deviation, dur } from '../format.js'
@@ -229,6 +230,16 @@ export function Rundown(props: Props) {
                     {view.item.locked && <span className="chip lock">TRAVADO</span>}
                     {/* Arquivo sem trilha entra e toca; o que não pode é o
                         operador descobrir isso no ar. */}
+                    {view.asset && isStill(view.asset) && (
+                      <span className="chip still" title="Imagem parada: o tempo é o da grade">
+                        PARADA
+                      </span>
+                    )}
+                    {view.asset?.kind === 'AUDIO' && (
+                      <span className="chip still" title="Arquivo só de áudio: a tela fica no preto do canal">
+                        SEM IMAGEM
+                      </span>
+                    )}
                     {view.asset?.probe?.hasAudio === false && (
                       <span className="chip mute" title="O arquivo não tem trilha de áudio">
                         MUDO

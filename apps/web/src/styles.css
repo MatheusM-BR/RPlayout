@@ -180,6 +180,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .chip.lock { border-color: var(--border); color: var(--muted); }
 .chip.mute { background: #2a1e1e; border-color: #6b3a3a; color: #e0a0a0; }
 .chip.track { background: #16233d; border-color: #2f4a7a; color: #9dbbf0; }
+.chip.still { background: #1d2233; border-color: #3d4667; color: #b6bfe0; }
 .chip.src { border-color: var(--border-soft); color: var(--dim); }
 
 .gain { font-variant-numeric: tabular-nums; }

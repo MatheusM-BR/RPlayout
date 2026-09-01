@@ -148,6 +148,88 @@ struct Item {
     meter_sink: Option<gst_app::AppSink>,
 }
 
+/// Quantos quadros uma imagem parada precisa gerar para durar o que a grade
+/// pediu.
+///
+/// O corte do item está na cadência da grade; o pipeline anda na cadência de
+/// composição, que é o dobro quando o canal é entrelaçado. Contar na cadência
+/// errada é erro de fator dois na duração -- por isso a conta sai das caps de
+/// destino, que são as que o item realmente produz.
+fn still_frames(grid_frames: i64, grid_rate: (i32, i32), caps: &gst::Caps) -> i32 {
+    let grid = grid_frames.max(0);
+    let Some(structure) = caps.structure(0) else {
+        return grid as i32;
+    };
+    let Ok(rate) = structure.get::<gst::Fraction>("framerate") else {
+        return grid as i32;
+    };
+    // A duração em segundos vem da grade e é o que manda; a cadência de saída
+    // só diz em quantos quadros ela cabe.
+    let seconds = grid as f64 * grid_rate.1 as f64 / grid_rate.0.max(1) as f64;
+    (seconds * rate.numer() as f64 / rate.denom().max(1) as f64).round() as i32
+}
+
+/// A cadeia de vídeo do item, montada mas ainda fora do pipeline.
+///
+/// Vale o mesmo raciocínio da cadeia de áudio: arquivo só de áudio existe (uma
+/// trilha de locução, uma vinheta sonora) e, com o ramo de vídeo montado à
+/// toa, o sink fica esperando quadro que nunca vem e o item não carrega. Sem
+/// vídeo, o que aparece é o preto do canal.
+struct VideoChain {
+    /// Do `videoconvert` até o `intervideosink`, na ordem.
+    elements: Vec<gst::Element>,
+    /// Quantos quadros a imagem parada deve gerar antes de acabar. A grade é
+    /// que diz quanto tempo ela fica, porque o arquivo não tem duração.
+    still_frames: i32,
+}
+
+impl VideoChain {
+    fn attach(self, pipeline: &gst::Pipeline, pad: &gst::Pad) -> Result<()> {
+        // Imagem parada chega com cadência 0/1: um quadro só, e o pipeline
+        // acabaria antes de aparecer. O `imagefreeze` repete o quadro pelo
+        // tempo que a grade marcou e então encerra sozinho, como um arquivo.
+        let freeze = still_rate(pad).then(|| make("imagefreeze")).transpose()?;
+        if let Some(freeze) = &freeze {
+            freeze.set_property("num-buffers", self.still_frames);
+        }
+
+        let mut chain: Vec<&gst::Element> = Vec::with_capacity(self.elements.len() + 1);
+        if let Some(freeze) = &freeze {
+            pipeline.add(freeze)?;
+            chain.push(freeze);
+        }
+        for element in &self.elements {
+            pipeline.add(element)?;
+            chain.push(element);
+        }
+        gst::Element::link_many(chain.clone())?;
+        for element in chain.iter() {
+            element.sync_state_with_parent()?;
+        }
+
+        let head = chain.first().ok_or_else(|| anyhow!("cadeia de vídeo vazia"))?;
+        pad.link(
+            &head
+                .static_pad("sink")
+                .ok_or_else(|| anyhow!("cabeça da cadeia de vídeo sem sink"))?,
+        )?;
+        Ok(())
+    }
+}
+
+/// A cadência do pad é a de imagem parada: um quadro, sem tempo próprio.
+fn still_rate(pad: &gst::Pad) -> bool {
+    let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+    let Some(structure) = caps.structure(0) else {
+        return false;
+    };
+    match structure.get::<gst::Fraction>("framerate") {
+        Ok(rate) => rate.numer() == 0,
+        // Sem cadência declarada também é imagem parada: vídeo traz a sua.
+        Err(_) => true,
+    }
+}
+
 /// A cadeia de áudio do item, montada mas ainda fora do pipeline.
 ///
 /// Ela só entra quando aparece uma trilha de áudio de verdade. Um sink de
@@ -391,6 +473,12 @@ fn channel_video_caps(width: i32, height: i32, framerate: gst::Fraction) -> gst:
         .field("framerate", framerate)
         .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
         .field("colorimetry", if height >= 720 { "bt709" } else { "bt601" })
+        // Posição do croma junto com o resto. Arquivo vindo de JPEG chega com
+        // `chroma-site=jpeg` e, sem fixar, esse campo atravessa o canal e
+        // aparece nas caps do H.264 -- o Matroska recusa mudança de caps e a
+        // gravação morre no meio, uma imagem parada depois de um VT. `mpeg2`
+        // é o que material de broadcast usa.
+        .field("chroma-site", "mpeg2")
         .build()
 }
 
@@ -1101,23 +1189,21 @@ impl Channel {
         let audio_sink = make("interaudiosink")?;
         audio_sink.set_property("channel", audio_channel);
 
-        pipeline.add_many([
-            &src,
-            &vconv,
-            &vdeint,
-            &vscale,
-            &vrate,
-            &vcaps,
-            &vqueue,
-            &video_sink,
-        ])?;
-        if let Some(crop) = &vcrop {
-            pipeline.add(crop)?;
-            gst::Element::link_many([&vconv, &vdeint, crop, &vscale, &vrate, &vcaps])?;
-        } else {
-            gst::Element::link_many([&vconv, &vdeint, &vscale, &vrate, &vcaps])?;
+        pipeline.add(&src)?;
+
+        let mut video_elements = vec![vconv, vdeint];
+        if let Some(crop) = vcrop {
+            video_elements.push(crop);
         }
-        gst::Element::link_many([&vcaps, &vqueue, &video_sink])?;
+        video_elements.extend([vscale, vrate, vcaps, vqueue, video_sink]);
+        let video = VideoChain {
+            elements: video_elements,
+            still_frames: still_frames(
+                spec.trim_out - spec.trim_in,
+                (self.config.fps_n, self.config.fps_d),
+                caps,
+            ),
+        };
 
         // O áudio do item sai do `acaps` já nivelado. Sem medição, vai direto
         // para o `inter`; com medição, um `tee` abre a segunda saída.
@@ -1147,9 +1233,9 @@ impl Channel {
             )
         };
 
-        let video_target = vconv
-            .static_pad("sink")
-            .ok_or_else(|| anyhow!("videoconvert sem sink"))?;
+        // O vídeo só entra no pipeline se o arquivo tiver vídeo.
+        let pending_video = std::sync::Mutex::new(Some(video));
+        let video_pipeline = pipeline.clone();
         // O áudio só entra no pipeline se o arquivo tiver áudio.
         //
         // Montar a cadeia de áudio à toa parece inofensivo e não é: o sink
@@ -1172,11 +1258,16 @@ impl Channel {
             let name = structure.name();
 
             if name.starts_with("video/") {
-                if video_target.is_linked() {
+                // Só a primeira trilha de vídeo: arquivo com duas é raro e
+                // compor as duas não é o que ninguém espera.
+                let Ok(mut slot) = pending_video.lock() else {
                     return;
-                }
-                if let Err(error) = pad.link(&video_target) {
-                    eprintln!("[engine] não liguei o pad {name}: {error}");
+                };
+                let Some(chain) = slot.take() else {
+                    return;
+                };
+                if let Err(error) = chain.attach(&video_pipeline, pad) {
+                    eprintln!("[engine] não montei o vídeo do item: {error}");
                 }
                 return;
             }

@@ -589,6 +589,11 @@ Escolher entre várias trilhas de áudio também está feito: a sonda lista toda
 o item guarda qual toca e o engine liga só essa. O que continua de fora é medir
 a loudness de cada trilha -- a medição é da primeira, e a interface avisa.
 
+Imagem parada e arquivo só de áudio entram: os dois ramos do item, vídeo e
+áudio, só são montados quando o pad correspondente aparece, e a parada ganha
+`imagefreeze` com o número de quadros que a grade pediu. Só falta o padrão de
+duração por acervo -- hoje toda parada nasce com dez segundos.
+
 O resto do levantamento abaixo continua valendo.
 
 **O que já funcionava antes disso.** O item roda no pipeline dele com `uridecodebin` seguido de
@@ -620,7 +625,7 @@ explicação — inclusive quando o motivo é plugin que falta (ProRes, DNxHD, H
 | Cadência variável (VFR) | o `videorate` já força a cadência do canal | confirmar com material real |
 | Proporção diferente (4:3 em canal 16:9) | **resolvido**: pillarbox por padrão, corte por item, no botão da proporção | — |
 | Arquivo ainda em cópia | abriria pela metade | não ingerir enquanto o tamanho estiver mudando |
-| Imagem parada e áudio-só | não previsto | duração vem da grade, não do arquivo |
+| Imagem parada e áudio-só | **resolvido**: parada entra com `imagefreeze` e duração da grade; áudio-só toca com o preto do canal | — |
 
 ### 13.2 Perfil de saída definível, incluindo 1080i59.94 — **parcialmente feito**
 

@@ -3,6 +3,9 @@ import { createInterface } from 'node:readline'
 import {
   durationIn,
   framesSinceMidnight,
+  isStill,
+  secondsToFrames,
+  STILL_DEFAULT_SECONDS,
   type Channel,
   type Fit,
   type MediaAsset,
@@ -237,11 +240,18 @@ export class EngineTransport implements Transport {
     }
 
     if (!entry.asset) return null
+
+    // Imagem parada não tem tempo dentro do arquivo: o corte dela é a duração
+    // que a grade marcou. Sem isto o item entraria com zero quadro.
+    const still = isStill(entry.asset)
+    const stillOut =
+      entry.item.durationOverride ?? secondsToFrames(STILL_DEFAULT_SECONDS, this.channel.rate)
+
     return {
       itemId,
       path: entry.asset.path,
-      trimIn: entry.trim.in,
-      trimOut: entry.trim.out,
+      trimIn: still ? 0 : entry.trim.in,
+      trimOut: still ? stillOut : entry.trim.out,
       gainDb: entry.gainDb,
       fit: entry.item.fit,
       audioTrack: entry.item.audioTrack ?? 0,
@@ -263,7 +273,11 @@ export class EngineTransport implements Transport {
       itemId: asset.id,
       path: asset.path,
       trimIn: 0,
-      trimOut: durationIn(asset, this.channel.rate),
+      // A parada não acaba sozinha: no preview ela fica um tempo fixo, o
+      // suficiente para o operador olhar.
+      trimOut: isStill(asset)
+        ? secondsToFrames(STILL_DEFAULT_SECONDS, this.channel.rate)
+        : durationIn(asset, this.channel.rate),
       gainDb: 0,
     }
   }

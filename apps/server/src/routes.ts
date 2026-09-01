@@ -5,6 +5,9 @@ import type { FastifyInstance } from 'fastify'
 import {
   durationIn,
   formatVideoFormat,
+  isStill,
+  secondsToFrames,
+  STILL_DEFAULT_SECONDS,
   trimDuration,
   type Frames,
   type MediaAsset,
@@ -266,8 +269,16 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return reply.code(400).send({ error: 'Arquivo não existe no acervo.' })
     }
 
+    // Imagem parada não traz duração: quem diz quanto ela fica é a grade, e
+    // sem um valor o item entraria com zero quadro.
+    const stillDefault =
+      asset && isStill(asset)
+        ? secondsToFrames(STILL_DEFAULT_SECONDS, runtime.channel.rate)
+        : null
+
     const duration =
       body.data.durationOverride ??
+      stillDefault ??
       (asset
         ? trimDuration(asset.defaultTrim ?? { in: 0, out: durationIn(asset, runtime.channel.rate) })
         : 0)
@@ -297,7 +308,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       sourceRef: body.data.sourceRef ?? null,
       trim: null,
       audio: null,
-      durationOverride: body.data.durationOverride ?? null,
+      durationOverride: body.data.durationOverride ?? stillDefault,
       minDuration: duration,
       anchor,
       onOverrun: body.data.type === 'FILLER' ? 'DROP_FILLER' : 'PUSH',
