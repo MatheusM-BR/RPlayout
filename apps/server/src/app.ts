@@ -22,6 +22,12 @@ import {
 } from './config.js'
 import { MediaMtx, channelPaths, type ChannelPaths } from './domain/mediamtx.js'
 import { Ingest } from './domain/ingest.js'
+import {
+  encodeProfile,
+  ensureManagedOutputs,
+  listOutputs,
+  toEngineProfile,
+} from './domain/outputs.js'
 import { RelaySupervisor } from './domain/relays.js'
 import { destinations, guestKeys } from './db/schema.js'
 import { resolve as resolvePath } from 'node:path'
@@ -187,17 +193,28 @@ export async function runtimeFor(app: App, channelId: string): Promise<ChannelRu
   if (!channel) return null
 
   const path = app.paths.find((entry) => entry.channelId === channelId)
-  // Havendo servidor local, o engine publica nele por loopback e não fala com
-  // a rede: quem distribui é o servidor, não o encoder.
-  const outputs =
-    app.mediamtx && path ? [MediaMtx.loopback(path.program)] : [...ENGINE_OUTPUTS]
+  if (app.mediamtx) await ensureManagedOutputs(app.db, channel, path)
 
-  const runtime = new ChannelRuntime(
-    channel,
-    app.db,
-    outputs,
-    app.mediamtx && path ? MediaMtx.loopback(path.preview) : null,
-  )
+  const profiles = await listOutputs(app.db, channelId)
+  const forRole = (role: 'PROGRAM' | 'PREVIEW'): string | null => {
+    const row = profiles.find((entry) => entry.role === role)
+    const profile = row ? toEngineProfile(row, path) : null
+    return profile ? encodeProfile(profile) : null
+  }
+
+  // Sem servidor de mídia local não há caminho para publicar, e aí vale o que
+  // as variáveis de ambiente disserem -- é o que mantém um canal operável numa
+  // máquina que só tem o engine.
+  const program = forRole('PROGRAM')
+  const extras = profiles
+    .filter((entry) => entry.role === 'EXTRA')
+    .map((entry) => toEngineProfile(entry, path))
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    .map(encodeProfile)
+
+  const outputs = program ? [program, ...extras] : [...ENGINE_OUTPUTS, ...extras]
+
+  const runtime = new ChannelRuntime(channel, app.db, outputs, forRole('PREVIEW'))
   app.runtimes.set(channelId, runtime)
   return runtime
 }

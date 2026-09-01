@@ -26,6 +26,13 @@ import { operatorDecisions, rundownItems } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
+import {
+  createOutput,
+  deleteOutput,
+  listOutputs,
+  targetOf,
+  updateOutput,
+} from './domain/outputs.js'
 import { thumbnailSvg } from './domain/thumbnail.js'
 import type { RundownView } from './domain/plan.js'
 
@@ -508,6 +515,69 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       relays: app.relays.status(),
       paths: status,
     }
+  })
+
+  // ---- perfis de saída ---------------------------------------------------
+
+  server.get('/api/channels/:id/outputs', async (request) => {
+    const { id } = request.params as { id: string }
+    const path = app.paths.find((entry) => entry.channelId === id)
+    const rows = await listOutputs(app.db, id)
+    return {
+      outputs: rows.map((row) => ({
+        ...row,
+        // Destino efetivo: derivado nos gerenciados, guardado nos demais.
+        resolvedTarget: targetOf(row, path),
+      })),
+    }
+  })
+
+  server.post('/api/channels/:id/outputs', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z
+      .object({
+        name: z.string().min(1),
+        kind: z.enum(['RTMP', 'SRT', 'FILE']),
+        target: z.string().min(1),
+      })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Dê um nome e um destino.' })
+
+    const row = await createOutput(app.db, id, body.data)
+    // Saída nova só existe no engine no próximo start do canal: mexer no
+    // conjunto de saídas de um pipeline que está no ar é o tipo de cirurgia
+    // que este projeto já pagou caro para evitar.
+    return { output: row, restartRequired: true }
+  })
+
+  server.patch('/api/outputs/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z
+      .object({
+        name: z.string().min(1).optional(),
+        target: z.string().min(1).optional(),
+        kind: z.enum(['RTMP', 'SRT', 'FILE']).optional(),
+        width: z.number().int().positive().nullable().optional(),
+        height: z.number().int().positive().nullable().optional(),
+        rateNum: z.number().int().positive().nullable().optional(),
+        rateDen: z.number().int().positive().nullable().optional(),
+        scan: z.enum(['PROGRESSIVE', 'INTERLACED']).nullable().optional(),
+        bitrateKbps: z.number().int().positive().nullable().optional(),
+        enabled: z.boolean().optional(),
+      })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    await updateOutput(app.db, id, body.data)
+    return { ok: true, restartRequired: true }
+  })
+
+  server.delete('/api/outputs/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!(await deleteOutput(app.db, id))) {
+      return reply.code(409).send({ error: 'Programa e preview não podem ser removidos.' })
+    }
+    return { ok: true, restartRequired: true }
   })
 
   server.post('/api/channels/:id/guests', async (request, reply) => {

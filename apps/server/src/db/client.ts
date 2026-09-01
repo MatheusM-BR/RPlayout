@@ -23,6 +23,24 @@ CREATE TABLE IF NOT EXISTS channels (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS output_profiles (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT 'EXTRA',
+  width INTEGER,
+  height INTEGER,
+  rate_num INTEGER,
+  rate_den INTEGER,
+  scan TEXT,
+  bitrate_kbps INTEGER,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS output_profiles_channel ON output_profiles (channel_id);
+
 CREATE TABLE IF NOT EXISTS media_assets (
   id TEXT PRIMARY KEY,
   content_hash TEXT NOT NULL,

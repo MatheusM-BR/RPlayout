@@ -1,6 +1,12 @@
 import type { AudioLevel, Anchor, EditScope, Trim } from '@rplayout/protocol'
 import type { MediaAsset, Rundown } from '@rplayout/protocol'
-import type { Distribution, LibraryFolder, ScanStatus, Snapshot } from './types.js'
+import type {
+  Distribution,
+  LibraryFolder,
+  OutputProfile,
+  ScanStatus,
+  Snapshot,
+} from './types.js'
 
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -26,6 +32,16 @@ export const api = {
   assets: () => send<{ assets: MediaAsset[] }>('/api/assets'),
   library: () => send<{ folders: LibraryFolder[] }>('/api/library'),
   scanStatus: () => send<ScanStatus>('/api/library/scan'),
+  outputs: (channelId: string) =>
+    send<{ outputs: OutputProfile[] }>(`/api/channels/${channelId}/outputs`),
+  addOutput: (channelId: string, body: { name: string; kind: string; target: string }) =>
+    post<{ restartRequired: boolean }>(`/api/channels/${channelId}/outputs`, body),
+  patchOutput: (id: string, body: Record<string, unknown>) =>
+    send<{ ok: boolean }>(`/api/outputs/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  removeOutput: (id: string) => send<{ ok: boolean }>(`/api/outputs/${id}`, { method: 'DELETE' }),
   scan: () => send<ScanStatus>('/api/library/scan', { method: 'POST', body: '{}' }),
   rundown: (id: string) => send<Snapshot>(`/api/rundowns/${id}`),
 

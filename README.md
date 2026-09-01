@@ -138,8 +138,27 @@ Planejamento concluído. **F0** e **F1** entregues:
   e a saída de rede em 1080p2997, ao mesmo tempo.
 - **Toda saída que codifica roda em pipeline próprio**, inclusive a gravação
   as-run: nenhuma delas consegue derrubar o programa.
-- Falta: persistir e editar o perfil de saída por destino — hoje ele é derivado
-  do canal. Seção 13.2 do [plano](docs/PLANO.md).
+- **Perfis de saída persistidos e editáveis**, no painel de distribuição.
+
+### Perfis de saída: o que não é dito, é herdado
+
+Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino
+deles vem do servidor de mídia e não é do operador escolher (nem apagar), mas
+geometria, cadência, varredura e bitrate são. Saídas extras são livres: RTMP,
+SRT ou arquivo, com destino próprio.
+
+Campo em branco **herda do canal**, e isso é decisão e não preguiça: valor
+herdado acompanha quando o canal muda de formato, valor escrito fica para trás.
+Por isso a interface mostra "tudo como o canal" em vez de repetir os números.
+
+Mudança em perfil vale **no próximo início do canal**, e a interface diz isso.
+Mexer no conjunto de saídas de um pipeline que está no ar é a cirurgia que este
+projeto já pagou caro para evitar; fingir que aplicou seria pior do que avisar.
+
+Verificado: um perfil pedindo 1280x720 a 2500 kbps num canal 1080p50 grava
+exatamente 1280x720; apagar o perfil do programa é recusado; e um `PATCH`
+tentando trocar o destino de um gerenciado é ignorado enquanto o bitrate no
+mesmo pedido passa.
 
 ### Nenhuma saída derruba o programa
 

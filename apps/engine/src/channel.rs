@@ -10,6 +10,7 @@
 //! canal, e uma falha ao abrir arquivo não derruba o que está no ar.
 
 use anyhow::{anyhow, Context, Result};
+use serde::Deserialize;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -28,23 +29,71 @@ use crate::protocol::ItemSpec;
 pub enum Output {
     /// Descarta, contando os frames. É o modo de teste e de canal ocioso.
     Null,
-    File(String),
-    Rtmp(String),
-    Srt(String),
     /// Um quadro por segundo em JPEG. Serve de monitor barato e de prova de
     /// que o programa está de fato com imagem, sem depender de muxer.
     Snapshot(String),
+    /// Saída codificada, com perfil próprio.
+    Encoded(OutputSpec),
+}
+
+/// Perfil de uma saída codificada.
+///
+/// Os campos em branco herdam do canal. É o que permite `--output rtmp://...`
+/// continuar valendo para teste e uso manual enquanto o servidor manda o perfil
+/// inteiro em JSON.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputSpec {
+    pub kind: Kind,
+    pub target: String,
+    #[serde(default)]
+    pub width: Option<i32>,
+    #[serde(default)]
+    pub height: Option<i32>,
+    #[serde(default)]
+    pub rate_num: Option<i32>,
+    #[serde(default)]
+    pub rate_den: Option<i32>,
+    /// `progressive` ou `interlaced`. Em branco herda a varredura do canal --
+    /// menos na rede, que nunca sai entrelaçada.
+    #[serde(default)]
+    pub scan: Option<String>,
+    #[serde(default)]
+    pub bitrate_kbps: Option<u32>,
 }
 
 impl Output {
+    /// Aceita duas formas: o atalho de linha de comando (`rtmp://...`,
+    /// `file:...`, `null`, `snapshot:...`), que herda tudo do canal, e o
+    /// perfil completo em JSON, que é o que o servidor manda.
     pub fn parse(text: &str) -> Result<Self> {
+        let text = text.trim();
+        if text.starts_with('{') {
+            let spec: OutputSpec =
+                serde_json::from_str(text).context("perfil de saída inválido")?;
+            return Ok(Output::Encoded(spec));
+        }
         if text == "null" {
             return Ok(Output::Null);
         }
+
+        let shorthand = |kind: Kind, target: String| {
+            Output::Encoded(OutputSpec {
+                kind,
+                target,
+                width: None,
+                height: None,
+                rate_num: None,
+                rate_den: None,
+                scan: None,
+                bitrate_kbps: None,
+            })
+        };
+
         match text.split_once(':') {
-            Some(("file", path)) => Ok(Output::File(path.to_string())),
-            Some(("rtmp", _)) => Ok(Output::Rtmp(text.to_string())),
-            Some(("srt", _)) => Ok(Output::Srt(text.to_string())),
+            Some(("file", path)) => Ok(shorthand(Kind::File, path.to_string())),
+            Some(("rtmp", _)) => Ok(shorthand(Kind::Rtmp, text.to_string())),
+            Some(("srt", _)) => Ok(shorthand(Kind::Srt, text.to_string())),
             Some(("snapshot", pattern)) => Ok(Output::Snapshot(pattern.to_string())),
             _ => Err(anyhow!("saída desconhecida: {text}")),
         }
@@ -464,10 +513,10 @@ impl Channel {
         for queue in [&vqueue, &aqueue] {
             queue.set_property("max-size-time", 2_000_000_000u64);
             // Fila com descarte só serve para saída que pode perder frame. Num
-            // muxer, o buraco vira erro de multiplexação e a gravação morre.
-            if matches!(output, Output::Null | Output::Snapshot(_)) {
-                queue.set_property_from_str("leaky", "downstream");
-            }
+            // muxer, o buraco vira erro de multiplexação e a gravação morre --
+            // por isso saída codificada leva o descarte só até o `inter`, e
+            // dali para a frente corre num pipeline que ninguém segura.
+            queue.set_property_from_str("leaky", "downstream");
         }
         self.pipeline.add_many([&vqueue, &aqueue])?;
 
@@ -482,16 +531,6 @@ impl Channel {
                 self.pipeline.add_many([&vsink, &asink])?;
                 gst::Element::link_many([&vqueue, &vsink])?;
                 gst::Element::link_many([&aqueue, &asink])?;
-            }
-            Output::File(path) => {
-                // A gravação as-run sai na varredura do canal: ela tem que ser
-                // o que foi ao ar.
-                let interlaced = self.config.scan == Scan::Interlaced;
-                self.attach_network(index, Kind::File, path, interlaced, &vqueue, &aqueue)?;
-            }
-            Output::Rtmp(url) => {
-                // Rede nunca sai entrelaçada.
-                self.attach_network(index, Kind::Rtmp, url, false, &vqueue, &aqueue)?;
             }
             Output::Snapshot(pattern) => {
                 let rate = make("videorate")?;
@@ -515,8 +554,8 @@ impl Channel {
                 gst::Element::link_many([&vqueue, &rate, &caps, &convert, &enc, &sink])?;
                 gst::Element::link_many([&aqueue, &asink])?;
             }
-            Output::Srt(uri) => {
-                self.attach_network(index, Kind::Srt, uri, false, &vqueue, &aqueue)?;
+            Output::Encoded(spec) => {
+                self.attach_encoded(index, spec, &vqueue, &aqueue)?;
             }
         }
 
@@ -540,28 +579,19 @@ impl Channel {
         Ok(())
     }
 
-    /// Saída de rede: o canal só entrega o sinal cru num par `inter` e quem
+    /// Saída codificada: o canal só entrega o sinal cru num par `inter` e quem
     /// codifica, muxa e empurra é um pipeline à parte.
     ///
-    /// A fila daqui até o `inter` descarta de propósito. Uma saída que
-    /// engasgou não pode segurar o `tee`, e no `tee` segurar um ramo é parar
-    /// todos -- inclusive o programa.
-    fn attach_network(
+    /// O que o perfil não disser, herda do canal. A varredura tem uma exceção:
+    /// a rede nunca sai entrelaçada, porque o RTMP não declara entrelaçamento
+    /// e a maior parte dos destinos assume progressivo.
+    fn attach_encoded(
         &mut self,
         index: usize,
-        kind: Kind,
-        url: &str,
-        // `interlaced`: esta saída sai em campos. A rede nunca sai -- o RTMP
-        // não declara entrelaçamento e a maior parte dos destinos assume
-        // progressivo --, então na prática só a gravação pede.
-        interlaced: bool,
+        spec: &OutputSpec,
         vqueue: &gst::Element,
         aqueue: &gst::Element,
     ) -> Result<()> {
-        for queue in [vqueue, aqueue] {
-            queue.set_property_from_str("leaky", "downstream");
-        }
-
         let video_channel = format!("{}-saida{index}-video", self.config.channel_id);
         let audio_channel = format!("{}-saida{index}-audio", self.config.channel_id);
 
@@ -573,16 +603,22 @@ impl Channel {
         gst::Element::link_many([vqueue, &vsink])?;
         gst::Element::link_many([aqueue, &asink])?;
 
+        let interlaced = match spec.scan.as_deref() {
+            Some("interlaced") => spec.kind == Kind::File,
+            Some(_) => false,
+            None => spec.kind == Kind::File && self.config.scan == Scan::Interlaced,
+        };
+
         self.publishers.push(Publisher::new(PublisherSpec {
-            kind,
-            url: url.to_string(),
+            kind: spec.kind,
+            url: spec.target.clone(),
             video_channel,
             audio_channel,
-            width: self.config.width,
-            height: self.config.height,
-            fps_n: self.config.fps_n,
-            fps_d: self.config.fps_d,
-            bitrate_kbps: self.config.bitrate_kbps,
+            width: spec.width.unwrap_or(self.config.width),
+            height: spec.height.unwrap_or(self.config.height),
+            fps_n: spec.rate_num.unwrap_or(self.config.fps_n),
+            fps_d: spec.rate_den.unwrap_or(self.config.fps_d),
+            bitrate_kbps: spec.bitrate_kbps.unwrap_or(self.config.bitrate_kbps),
             interlaced,
             top_field_first: self.config.top_field_first,
         }));
@@ -596,11 +632,12 @@ impl Channel {
     /// cadência. Um pipeline intermediário só para segurar um fundo preto
     /// seria uma peça a mais para quebrar.
     fn attach_preview(&mut self, output: &Output) -> Result<()> {
-        let (kind, url) = match output {
-            Output::Rtmp(url) => (Kind::Rtmp, url),
-            Output::Srt(url) => (Kind::Srt, url),
-            other => return Err(anyhow!("preview só sai por rede, não por {other:?}")),
+        let Output::Encoded(spec) = output else {
+            return Err(anyhow!("preview só sai por rede, não por {output:?}"));
         };
+        if spec.kind == Kind::File {
+            return Err(anyhow!("preview não sai para arquivo"));
+        }
 
         let video_channel = format!("{}-pvw-video", self.config.channel_id);
         let audio_channel = format!("{}-pvw-audio", self.config.channel_id);
@@ -609,8 +646,8 @@ impl Channel {
         // Codificar o preview em 1080p50 dobraria o custo do canal para nada.
         let (width, height) = (self.config.width / 2, self.config.height / 2);
         self.publishers.push(Publisher::new(PublisherSpec {
-            kind,
-            url: url.clone(),
+            kind: spec.kind,
+            url: spec.target.clone(),
             video_channel: video_channel.clone(),
             audio_channel: audio_channel.clone(),
             width: width - width % 2,

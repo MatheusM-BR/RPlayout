@@ -54,6 +54,24 @@ export interface Live {
   meters: { program: MeterReading; preview: MeterReading }
 }
 
+/** Perfil de uma saída do canal. */
+export interface OutputProfile {
+  id: string
+  name: string
+  kind: 'RTMP' | 'SRT' | 'FILE'
+  role: 'PROGRAM' | 'PREVIEW' | 'EXTRA'
+  target: string
+  /** Destino efetivo: derivado nos gerenciados, guardado nos demais. */
+  resolvedTarget: string | null
+  width: number | null
+  height: number | null
+  rateNum: number | null
+  rateDen: number | null
+  scan: 'PROGRESSIVE' | 'INTERLACED' | null
+  bitrateKbps: number | null
+  enabled: boolean
+}
+
 /** Situação da varredura do acervo. */
 export interface ScanStatus {
   available: boolean

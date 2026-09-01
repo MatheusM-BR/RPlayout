@@ -445,6 +445,18 @@ input.bad { border-color: var(--onair); }
 
 /* ---------- explorador de arquivos ---------- */
 
+.add-row { display: grid; grid-template-columns: 1fr auto 2fr auto; gap: 6px; margin-top: 6px; }
+.add-row select {
+  padding: 7px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.d .dim { color: var(--dim); }
+
 .scanning {
   padding: 5px 12px;
   font-family: var(--mono);

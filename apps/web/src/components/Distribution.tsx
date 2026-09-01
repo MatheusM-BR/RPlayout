@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
-import type { Distribution as Payload, PublisherStatus, RelayStatus } from '../types.js'
+import type {
+  Distribution as Payload,
+  OutputProfile,
+  PublisherStatus,
+  RelayStatus,
+} from '../types.js'
 
 interface Props {
   channelId: string
@@ -43,8 +48,35 @@ async function copy(text: string, say: (message: string) => void): Promise<void>
  * Não é tela de operação segundo a segundo -- é onde se configura quem recebe o
  * sinal e se confere quem está conectado. Por isso vive fora do rundown.
  */
+/**
+ * Resumo do perfil em uma linha.
+ *
+ * Campo em branco herda do canal, e dizer isso é mais útil do que repetir o
+ * valor: quando o canal muda de formato, o herdado acompanha e o escrito não.
+ */
+function profileSummary(output: OutputProfile): string {
+  const parts: string[] = []
+  if (output.width !== null && output.height !== null) {
+    parts.push(`${output.width}×${output.height}`)
+  }
+  if (output.rateNum !== null && output.rateDen !== null) {
+    parts.push(`${(output.rateNum / output.rateDen).toFixed(2).replace(/\.00$/, '')} fps`)
+  }
+  if (output.bitrateKbps !== null) parts.push(`${output.bitrateKbps} kbps`)
+  if (output.scan !== null) {
+    parts.push(output.scan === 'INTERLACED' ? 'entrelaçada' : 'progressiva')
+  }
+
+  if (parts.length === 0) return 'tudo como o canal'
+  return `${parts.join(' · ')} · resto como o canal`
+}
+
 export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [data, setData] = useState<Payload | null>(null)
+  const [outputs, setOutputs] = useState<OutputProfile[]>([])
+  const [outName, setOutName] = useState('')
+  const [outTarget, setOutTarget] = useState('')
+  const [outKind, setOutKind] = useState<'RTMP' | 'SRT' | 'FILE'>('RTMP')
   const [guestLabel, setGuestLabel] = useState('')
   const [destName, setDestName] = useState('')
   const [destUrl, setDestUrl] = useState('')
@@ -52,12 +84,17 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
 
   const refresh = useCallback(async () => {
     try {
-      setData(await api.distribution())
+      const [payload, profiles] = await Promise.all([
+        api.distribution(),
+        api.outputs(channelId),
+      ])
+      setData(payload)
+      setOutputs(profiles.outputs)
       setError(null)
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Falha ao ler a distribuição.')
     }
-  }, [])
+  }, [channelId])
 
   useEffect(() => {
     void refresh()
@@ -140,7 +177,8 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                   <div key={publisher.url} className="row-item">
                     <div>
                       <div className="t">
-                        {publisher.url.endsWith(channel.preview) ? 'Preview' : 'Programa'}
+                        {outputs.find((entry) => entry.resolvedTarget === publisher.url)?.name ??
+                          'Saída'}
                         <span className={`pill ${PUBLISHER_TONE[publisher.health]}`}>
                           {PUBLISHER_LABEL[publisher.health]}
                         </span>
@@ -159,6 +197,97 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
               </div>
             </div>
           )}
+
+          {/* ---- perfis de saída ---- */}
+          <div className="field">
+            <label>Perfis de saída</label>
+            <div className="rows">
+              {outputs.map((output) => (
+                <div key={output.id} className="row-item">
+                  <div>
+                    <div className="t">
+                      {output.name}
+                      <span className="pill">{output.kind}</span>
+                      {output.role !== 'EXTRA' && <span className="pill">do sistema</span>}
+                      {!output.enabled && <span className="pill bad">desligada</span>}
+                    </div>
+                    <div className="d mono">{output.resolvedTarget ?? '(sem destino)'}</div>
+                    <div className="d">{profileSummary(output)}</div>
+                  </div>
+                  <div className="actions">
+                    <button
+                      className="btn small"
+                      onClick={() =>
+                        void guard(async () => {
+                          await api.patchOutput(output.id, { enabled: !output.enabled })
+                          onMessage('Vale no próximo início do canal.')
+                        })
+                      }
+                    >
+                      {output.enabled ? 'DESLIGAR' : 'LIGAR'}
+                    </button>
+                    {output.role === 'EXTRA' && (
+                      <button
+                        className="btn small"
+                        onClick={() =>
+                          void guard(async () => {
+                            await api.removeOutput(output.id)
+                          })
+                        }
+                      >
+                        REMOVER
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {/* Mexer no conjunto de saídas de um pipeline que está no ar é o
+                tipo de cirurgia que este projeto já pagou caro para evitar. */}
+            <div className="note">
+              Mudança em perfil de saída vale no próximo início do canal.
+            </div>
+            <div className="add-row">
+              <input
+                type="text"
+                placeholder="nome"
+                value={outName}
+                onChange={(event) => setOutName(event.target.value)}
+              />
+              <select
+                value={outKind}
+                onChange={(event) => setOutKind(event.target.value as typeof outKind)}
+              >
+                <option value="RTMP">RTMP</option>
+                <option value="SRT">SRT</option>
+                <option value="FILE">Arquivo</option>
+              </select>
+              <input
+                type="text"
+                placeholder={outKind === 'FILE' ? 'caminho do arquivo' : 'rtmp://...'}
+                value={outTarget}
+                onChange={(event) => setOutTarget(event.target.value)}
+              />
+              <button
+                className="btn small"
+                disabled={!outName.trim() || !outTarget.trim()}
+                onClick={() =>
+                  void guard(async () => {
+                    await api.addOutput(channelId, {
+                      name: outName.trim(),
+                      kind: outKind,
+                      target: outTarget.trim(),
+                    })
+                    setOutName('')
+                    setOutTarget('')
+                    onMessage('Saída criada. Vale no próximo início do canal.')
+                  })
+                }
+              >
+                ADICIONAR
+              </button>
+            </div>
+          </div>
 
           {/* ---- convidados ---- */}
           <div className="field">

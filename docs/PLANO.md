@@ -629,9 +629,20 @@ sozinha e o programa continua no ar. Ela não reconecta -- reabrir um `filesink`
 recomeçaria a gravação por cima da anterior, e disco cheio não se resolve em
 segundos --, e encerra por EOS para o container fechar com índice.
 
-Falta: persistir e editar o `OutputProfile`. Ele existe no protocolo desde a F0
-e nunca foi gravado, então hoje os perfis são derivados do canal em vez de
-escolhidos.
+Os perfis também estão persistidos e editáveis. Cada canal nasce com dois
+gerenciados -- programa e preview --, cujo destino é derivado do servidor de
+mídia e não é do operador escolher, mas cuja geometria, cadência, varredura e
+bitrate são. Saídas extras são livres: RTMP, SRT ou arquivo, com destino próprio.
+
+O que o perfil não disser herda do canal, e isso é decisão, não preguiça: valor
+herdado acompanha quando o canal muda de formato, valor escrito fica para trás.
+
+Mudança em perfil vale no próximo início do canal. Mexer no conjunto de saídas de
+um pipeline que está no ar é a cirurgia que este projeto já pagou caro para
+evitar -- e a interface diz isso em vez de fingir que aplicou.
+
+Falta desta seção: só o `encoder` e o `gopFrames` do `OutputProfile`, que
+esperam a F3 (NVENC).
 
 O levantamento original, que continua valendo:
 

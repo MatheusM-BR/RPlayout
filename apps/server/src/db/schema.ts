@@ -30,6 +30,31 @@ export const channels = sqliteTable('channels', {
   createdAt: text('created_at').notNull(),
 })
 
+/**
+ * Perfis de saída do canal.
+ *
+ * `managed` marca os que o sistema mantém -- programa e preview, cujo destino é
+ * o servidor de mídia local e não é do operador escolher. Geometria, cadência e
+ * bitrate desses são editáveis; o destino não, e apagar também não.
+ */
+export const outputProfiles = sqliteTable('output_profiles', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id').notNull(),
+  name: text('name').notNull(),
+  kind: text('kind').$type<'RTMP' | 'SRT' | 'FILE'>().notNull(),
+  /** URL de rede ou caminho de arquivo. Vazio nos gerenciados: vem do servidor. */
+  target: text('target').notNull().default(''),
+  role: text('role').$type<'PROGRAM' | 'PREVIEW' | 'EXTRA'>().notNull().default('EXTRA'),
+  width: integer('width'),
+  height: integer('height'),
+  rateNum: integer('rate_num'),
+  rateDen: integer('rate_den'),
+  scan: text('scan').$type<Scan>(),
+  bitrateKbps: integer('bitrate_kbps'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+})
+
 export const mediaAssets = sqliteTable('media_assets', {
   id: text('id').primaryKey(),
   /** SHA-256 do conteúdo: acha o mesmo arquivo renomeado ou movido de pasta. */
