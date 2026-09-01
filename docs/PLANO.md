@@ -623,11 +623,15 @@ ganhou `deinterlace` em `auto`. Verificado com o canal em 1080i5994: a gravaçã
 sai `interlace-mode=interleaved` a 30000/1001 e a saída de rede sai progressiva
 a 30000/1001, ao mesmo tempo e do mesmo canal.
 
-Falta: persistir e editar o `OutputProfile` -- ele existe no protocolo desde a
-F0 e nunca foi gravado, então hoje os perfis são derivados do canal em vez de
-escolhidos. E isolar a saída em arquivo num pipeline próprio, como já é o caso
-das saídas de rede: hoje um erro de multiplexação nela ainda derruba o canal
-(foi o que aconteceu ao exercitar a gravação pela primeira vez).
+A saída em arquivo também roda em pipeline próprio agora, como as de rede.
+Verificado apontando a gravação para um caminho que não existe: ela falha
+sozinha e o programa continua no ar. Ela não reconecta -- reabrir um `filesink`
+recomeçaria a gravação por cima da anterior, e disco cheio não se resolve em
+segundos --, e encerra por EOS para o container fechar com índice.
+
+Falta: persistir e editar o `OutputProfile`. Ele existe no protocolo desde a F0
+e nunca foi gravado, então hoje os perfis são derivados do canal em vez de
+escolhidos.
 
 O levantamento original, que continua valendo:
 

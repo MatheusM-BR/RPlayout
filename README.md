@@ -136,9 +136,26 @@ Planejamento concluído. **F0** e **F1** entregues:
   medição EBU R128 do arquivo inteiro e miniatura tirada do próprio vídeo.
 - **Varredura entrelaçada**: canal em 1080i5994 com a gravação as-run em campos
   e a saída de rede em 1080p2997, ao mesmo tempo.
-- Falta: persistir e editar o perfil de saída por destino (hoje ele é derivado
-  do canal) e isolar a saída em arquivo num pipeline próprio — seção 13.2 do
-  [plano](docs/PLANO.md).
+- **Toda saída que codifica roda em pipeline próprio**, inclusive a gravação
+  as-run: nenhuma delas consegue derrubar o programa.
+- Falta: persistir e editar o perfil de saída por destino — hoje ele é derivado
+  do canal. Seção 13.2 do [plano](docs/PLANO.md).
+
+### Nenhuma saída derruba o programa
+
+As saídas de rede já rodavam em pipeline próprio; a gravação as-run não, e na
+primeira vez que ela foi exercitada de verdade um erro de multiplexação levou
+junto o compositor e o programa. Agora ela roda igual às outras.
+
+Duas diferenças de propósito: a gravação **não reconecta** -- reabrir um
+`filesink` recomeçaria por cima da anterior, e o motivo de uma gravação falhar
+(disco cheio, caminho sumido) não se resolve sozinho em segundos --, e ela
+encerra por EOS, para o container fechar com índice em vez de virar um arquivo
+sem duração.
+
+Verificado apontando a gravação para um caminho que não existe: ela vai para
+`retrying` com o motivo à vista, o RTMP segue no ar e o contador do compositor
+não pisca.
 
 ### 1080i5994: a grade conta quadros, o pipeline compõe campos
 

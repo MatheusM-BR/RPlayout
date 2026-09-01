@@ -23,9 +23,10 @@ type ProbeResult =
       audio?: {
         rate: number
         channels: number
-        integratedLufs: number
-        lra: number
-        truePeakDbtp: number
+        /** Ausente quando a sonda não mediu. */
+        integratedLufs?: number
+        lra?: number
+        truePeakDbtp?: number
       }
       thumbnail?: string
     }
@@ -232,15 +233,16 @@ export class Ingest {
       hasAudio: Boolean(probe.audio),
       audioChannels: probe.audio?.channels ?? 0,
       probeError: null,
-      loudnessFile: probe.audio
-        ? {
-            integratedLufs: probe.audio.integratedLufs,
-            lra: probe.audio.lra,
-            truePeakDbtp: probe.audio.truePeakDbtp,
-            scope: 'FILE' as const,
-            measuredAt: new Date().toISOString(),
-          }
-        : null,
+      loudnessFile:
+        probe.audio?.integratedLufs !== undefined
+          ? {
+              integratedLufs: probe.audio.integratedLufs,
+              lra: probe.audio.lra ?? 0,
+              truePeakDbtp: probe.audio.truePeakDbtp ?? -90,
+              scope: 'FILE' as const,
+              measuredAt: new Date().toISOString(),
+            }
+          : null,
     }
     await this.upsert(existing?.id ?? null, row)
     this.patch(

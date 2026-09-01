@@ -50,10 +50,16 @@ struct AudioInfo {
     rate: i32,
     channels: i32,
     /// Loudness integrada gateada do arquivo inteiro, em LUFS.
-    integrated_lufs: f64,
+    ///
+    /// Ausente quando a medição foi dispensada. Mandar -70 nesse caso seria
+    /// indistinguível de um arquivo mudo medido de verdade.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    integrated_lufs: Option<f64>,
     /// Faixa de loudness, em LU.
-    lra: f64,
-    true_peak_dbtp: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lra: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    true_peak_dbtp: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -237,13 +243,16 @@ fn main() -> Result<()> {
 
     let audio = audio_info.lock().unwrap().take().map(|(rate, channels)| {
         let mut guard = meter.lock().unwrap();
-        let reading = guard.as_mut().map(|meter| meter.read());
+        let reading = args
+            .measure
+            .then(|| guard.as_mut().map(|meter| meter.read()))
+            .flatten();
         AudioInfo {
             rate,
             channels,
-            integrated_lufs: reading.as_ref().map_or(-70.0, |value| value.integrated_lufs),
-            lra: reading.as_ref().map_or(0.0, |value| value.range_lu),
-            true_peak_dbtp: reading.as_ref().map_or(-90.0, |value| value.true_peak_dbtp),
+            integrated_lufs: reading.as_ref().map(|value| value.integrated_lufs),
+            lra: reading.as_ref().map(|value| value.range_lu),
+            true_peak_dbtp: reading.as_ref().map(|value| value.true_peak_dbtp),
         }
     });
 
@@ -322,37 +331,42 @@ fn attach_video(
             .unwrap_or_else(|_| "progressive".to_string()),
     });
 
-    if let Some(path) = thumbnail {
-        let target = path.to_string();
-        let flag = Arc::clone(done);
-        let app_sink = sink
-            .clone()
-            .dynamic_cast::<gst_app::AppSink>()
-            .map_err(|_| anyhow!("appsink de vídeo não é appsink"))?;
-        app_sink.set_callbacks(
-            gst_app::AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                    // Só o primeiro quadro interessa; escrever a cada quadro
-                    // deixaria a miniatura sendo o último frame do arquivo,
-                    // que costuma ser preto.
-                    if flag
-                        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
-                        .is_ok()
-                    {
-                        if let Some(buffer) = sample.buffer() {
-                            if let Ok(map) = buffer.map_readable() {
-                                if std::fs::write(&target, map.as_slice()).is_err() {
-                                    flag.store(0, Ordering::Relaxed);
-                                }
+    // O `appsink` precisa de alguém puxando **sempre**, mesmo sem miniatura a
+    // escrever: sem consumidor ele fica preso no preroll, o ramo de vídeo nunca
+    // chega a PLAYING e o arquivo inteiro morre no tempo limite. Foi assim que
+    // uma sonda sem `--thumbnail` passou a travar sessenta segundos.
+    let target = thumbnail.map(str::to_string);
+    let flag = Arc::clone(done);
+    let app_sink = sink
+        .clone()
+        .dynamic_cast::<gst_app::AppSink>()
+        .map_err(|_| anyhow!("appsink de vídeo não é appsink"))?;
+    app_sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let Some(target) = target.as_deref() else {
+                    return Ok(gst::FlowSuccess::Ok);
+                };
+                // Só o primeiro quadro interessa; escrever a cada quadro
+                // deixaria a miniatura sendo o último frame do arquivo, que
+                // costuma ser preto.
+                if flag
+                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    if let Some(buffer) = sample.buffer() {
+                        if let Ok(map) = buffer.map_readable() {
+                            if std::fs::write(target, map.as_slice()).is_err() {
+                                flag.store(0, Ordering::Relaxed);
                             }
                         }
                     }
-                    Ok(gst::FlowSuccess::Ok)
-                })
-                .build(),
-        );
-    }
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
 
     pad.link(
         &convert

@@ -65,6 +65,21 @@ pub struct Report {
 pub enum Kind {
     Rtmp,
     Srt,
+    /// Gravação as-run. Vive aqui pelo mesmo motivo das outras: um erro de
+    /// multiplexação dela derrubava o canal inteiro -- foi o que aconteceu na
+    /// primeira vez que a gravação foi exercitada de verdade.
+    File,
+}
+
+impl Kind {
+    /// Reconectar faz sentido para rede; para arquivo, não.
+    ///
+    /// Reabrir um `filesink` recomeça a gravação por cima da anterior, e o
+    /// motivo de uma gravação falhar -- disco cheio, caminho sumido -- não se
+    /// resolve sozinho em segundos. Melhor parar e dizer.
+    fn retries(self) -> bool {
+        !matches!(self, Kind::File)
+    }
 }
 
 impl Kind {
@@ -73,7 +88,7 @@ impl Kind {
     /// fluxo que o servidor recusa com "unexpected video packet".
     fn stream_format(self) -> &'static str {
         match self {
-            Kind::Rtmp => "avc",
+            Kind::Rtmp | Kind::File => "avc",
             Kind::Srt => "byte-stream",
         }
     }
@@ -81,14 +96,20 @@ impl Kind {
 
 pub struct PublisherSpec {
     pub kind: Kind,
+    /// URL de rede ou caminho de arquivo, conforme o `kind`.
     pub url: String,
     pub video_channel: String,
     pub audio_channel: String,
     pub width: i32,
     pub height: i32,
+    /// Cadência de **quadros** desta saída.
     pub fps_n: i32,
     pub fps_d: i32,
     pub bitrate_kbps: u32,
+    /// Esta saída sai entrelaçada. Independente da varredura do canal: um
+    /// canal em 1080i5994 entrega a gravação em campos e a rede progressiva.
+    pub interlaced: bool,
+    pub top_field_first: bool,
 }
 
 pub struct Publisher {
@@ -186,6 +207,10 @@ impl Publisher {
         self.close();
         self.health = Health::Retrying;
         self.error = Some(reason);
+        if !self.spec.kind.retries() {
+            self.retry_at = None;
+            return;
+        }
         let wait = Duration::from_secs(1 << self.attempts.min(4)).min(RETRY_CAP);
         self.retry_at = Some(Instant::now() + wait);
     }
@@ -200,6 +225,22 @@ impl Publisher {
 
     pub fn shutdown(&mut self) {
         self.retry_at = None;
+
+        // Arquivo precisa de EOS antes do NULL: ir direto para NULL deixa o
+        // container sem índice e a gravação as-run inútil justamente no dia em
+        // que alguém precisar dela.
+        if self.spec.kind == Kind::File {
+            if let Some(pipeline) = self.pipeline.as_ref() {
+                pipeline.send_event(gst::event::Eos::new());
+                if let Some(bus) = pipeline.bus() {
+                    let _ = bus.timed_pop_filtered(
+                        gst::ClockTime::from_seconds(5),
+                        &[gst::MessageType::Eos, gst::MessageType::Error],
+                    );
+                }
+            }
+        }
+
         self.close();
         self.health = Health::Retrying;
     }
@@ -282,6 +323,12 @@ impl Publisher {
                 sink.set_property("uri", &spec.url);
                 (mux, sink)
             }
+            Kind::File => {
+                let mux = make("matroskamux")?;
+                let sink = make("filesink")?;
+                sink.set_property("location", &spec.url);
+                (mux, sink)
+            }
         };
         sink.set_property("async", false);
 
@@ -290,9 +337,30 @@ impl Publisher {
             &aconv, &ares, &acapsf, &aqueue, &aenc, &aparse, &acaps, &mux, &sink,
         ])?;
 
-        gst::Element::link_many([
-            &vsrc, &vconv, &vscale, &vrate, &vcapsf, &vqueue, &venc, &vparse, &vcaps, &mux, &sink,
-        ])?;
+        // Tece os campos quando a saída pede. `field-pattern=1:1` faz cada
+        // quadro que chega virar um campo, e é por isso que o canal
+        // entrelaçado compõe no dobro da cadência da grade.
+        if spec.interlaced {
+            let interlace = make("interlace")?;
+            interlace.set_property_from_str("field-pattern", "1:1");
+            interlace.set_property("top-field-first", spec.top_field_first);
+            let woven = make("capsfilter")?;
+            woven.set_property(
+                "caps",
+                gst::Caps::builder("video/x-raw")
+                    .field("interlace-mode", "interleaved")
+                    .field("framerate", gst::Fraction::new(spec.fps_n, spec.fps_d))
+                    .build(),
+            );
+            venc.set_property("interlaced", true);
+            pipeline.add_many([&interlace, &woven])?;
+            gst::Element::link_many([
+                &vsrc, &vconv, &vscale, &vrate, &vcapsf, &vqueue, &interlace, &woven, &venc,
+            ])?;
+        } else {
+            gst::Element::link_many([&vsrc, &vconv, &vscale, &vrate, &vcapsf, &vqueue, &venc])?;
+        }
+        gst::Element::link_many([&venc, &vparse, &vcaps, &mux, &sink])?;
         gst::Element::link_many([&asrc, &aconv, &ares, &acapsf, &aqueue, &aenc, &aparse, &acaps])?;
         // As duas trilhas entram no muxer antes de qualquer estado: muxer que
         // começa com uma trilha só escreve cabeçalho de uma trilha só, e o

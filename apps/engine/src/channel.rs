@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub use crate::loudness::Reading;
 use crate::limiter_element;
 use crate::loudness::Meter;
-use crate::output::{encode_chain, Kind, Publisher, PublisherSpec, Report};
+use crate::output::{Kind, Publisher, PublisherSpec, Report};
 use crate::protocol::ItemSpec;
 
 /// Para onde o programa sai. Todas as saídas penduram no mesmo par de tees,
@@ -484,35 +484,14 @@ impl Channel {
                 gst::Element::link_many([&aqueue, &asink])?;
             }
             Output::File(path) => {
-                let (venc, vparse, vcaps, aenc, aparse, acaps) = encode_chain(
-                    self.config.bitrate_kbps,
-                    self.config.fps_n,
-                    self.config.fps_d,
-                    "avc",
-                )?;
-                let mux = make("matroskamux")?;
-                let sink = make("filesink")?;
-                sink.set_property("location", path);
-                self.pipeline
-                    .add_many([&venc, &vparse, &vcaps, &aenc, &aparse, &acaps, &mux, &sink])?;
-
-                // A gravação as-run tem que ser o que foi ao ar, então ela sai
-                // na varredura do canal. É a única saída em arquivo que existe
-                // hoje; a SDI vai pelo mesmo caminho quando existir.
-                match self.weave()? {
-                    Some((interlace, caps)) => {
-                        venc.set_property("interlaced", true);
-                        self.pipeline.add_many([&interlace, &caps])?;
-                        gst::Element::link_many([&vqueue, &interlace, &caps, &venc])?;
-                    }
-                    None => gst::Element::link_many([&vqueue, &venc])?,
-                }
-                gst::Element::link_many([&venc, &vparse, &vcaps, &mux, &sink])?;
-                gst::Element::link_many([&aqueue, &aenc, &aparse, &acaps])?;
-                acaps.link(&mux)?;
+                // A gravação as-run sai na varredura do canal: ela tem que ser
+                // o que foi ao ar.
+                let interlaced = self.config.scan == Scan::Interlaced;
+                self.attach_network(index, Kind::File, path, interlaced, &vqueue, &aqueue)?;
             }
             Output::Rtmp(url) => {
-                self.attach_network(index, Kind::Rtmp, url, &vqueue, &aqueue)?;
+                // Rede nunca sai entrelaçada.
+                self.attach_network(index, Kind::Rtmp, url, false, &vqueue, &aqueue)?;
             }
             Output::Snapshot(pattern) => {
                 let rate = make("videorate")?;
@@ -537,7 +516,7 @@ impl Channel {
                 gst::Element::link_many([&aqueue, &asink])?;
             }
             Output::Srt(uri) => {
-                self.attach_network(index, Kind::Srt, uri, &vqueue, &aqueue)?;
+                self.attach_network(index, Kind::Srt, uri, false, &vqueue, &aqueue)?;
             }
         }
 
@@ -561,35 +540,6 @@ impl Channel {
         Ok(())
     }
 
-    /// Tece os quadros compostos em campos, quando o canal é entrelaçado.
-    ///
-    /// `field-pattern=1:1` é o que faz cada quadro composto virar um campo, e
-    /// é por isso que a composição roda no dobro da cadência da grade. O padrão
-    /// `2:2` custaria metade e repetiria o mesmo instante nos dois campos --
-    /// sem pente, mas com o movimento de 29,97, que o grafismo denuncia.
-    fn weave(&self) -> Result<Option<(gst::Element, gst::Element)>> {
-        if self.config.scan == Scan::Progressive {
-            return Ok(None);
-        }
-
-        let interlace = make("interlace")?;
-        interlace.set_property_from_str("field-pattern", "1:1");
-        interlace.set_property("top-field-first", self.config.top_field_first);
-
-        let caps = make("capsfilter")?;
-        caps.set_property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("interlace-mode", "interleaved")
-                .field(
-                    "framerate",
-                    gst::Fraction::new(self.config.fps_n, self.config.fps_d),
-                )
-                .build(),
-        );
-        Ok(Some((interlace, caps)))
-    }
-
     /// Saída de rede: o canal só entrega o sinal cru num par `inter` e quem
     /// codifica, muxa e empurra é um pipeline à parte.
     ///
@@ -601,6 +551,10 @@ impl Channel {
         index: usize,
         kind: Kind,
         url: &str,
+        // `interlaced`: esta saída sai em campos. A rede nunca sai -- o RTMP
+        // não declara entrelaçamento e a maior parte dos destinos assume
+        // progressivo --, então na prática só a gravação pede.
+        interlaced: bool,
         vqueue: &gst::Element,
         aqueue: &gst::Element,
     ) -> Result<()> {
@@ -629,6 +583,8 @@ impl Channel {
             fps_n: self.config.fps_n,
             fps_d: self.config.fps_d,
             bitrate_kbps: self.config.bitrate_kbps,
+            interlaced,
+            top_field_first: self.config.top_field_first,
         }));
         Ok(())
     }
@@ -662,6 +618,10 @@ impl Channel {
             fps_n: self.config.fps_n,
             fps_d: self.config.fps_d,
             bitrate_kbps: (self.config.bitrate_kbps / 3).max(500),
+            // Monitor é sempre progressivo: quem olha o preview está num
+            // navegador, não num monitor de referência.
+            interlaced: false,
+            top_field_first: self.config.top_field_first,
         }));
 
         self.preview_channels = Some((video_channel, audio_channel));
