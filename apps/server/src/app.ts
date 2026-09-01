@@ -39,13 +39,16 @@ export class ChannelRuntime {
     private readonly db: Db,
     /** Para onde este canal sai. Vem do servidor local quando ele existe. */
     engineOutputs: readonly string[],
+    /** Para onde o preview sai. Nulo deixa o canal sem barramento de preview. */
+    previewOutput: string | null = null,
   ) {
     // Sem engine configurado, a grade inteira continua operável no simulado:
     // é o que permite montar programação numa máquina sem GStreamer.
     this.transport = ENGINE_BINARY
-      ? new EngineTransport(channel, () => this.view, {
+      ? new EngineTransport(channel, () => this.view, (id) => this.assets.get(id) ?? null, {
           binary: ENGINE_BINARY,
           outputs: engineOutputs,
+          preview: previewOutput,
           bitrateKbps: ENGINE_BITRATE_KBPS,
         })
       : new SimulatedTransport(channel.id, () => this.view)
@@ -179,7 +182,12 @@ export async function runtimeFor(app: App, channelId: string): Promise<ChannelRu
   const outputs =
     app.mediamtx && path ? [MediaMtx.loopback(path.program)] : [...ENGINE_OUTPUTS]
 
-  const runtime = new ChannelRuntime(channel, app.db, outputs)
+  const runtime = new ChannelRuntime(
+    channel,
+    app.db,
+    outputs,
+    app.mediamtx && path ? MediaMtx.loopback(path.preview) : null,
+  )
   app.runtimes.set(channelId, runtime)
   return runtime
 }

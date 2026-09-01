@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline'
 import {
   framesSinceMidnight,
   type Channel,
+  type MediaAsset,
   type Frames,
   type OnAirState,
   type PreviewTarget,
@@ -24,7 +25,7 @@ interface EngineItem {
 type EngineEvent =
   | { event: 'ready'; channelId: string }
   | { event: 'ack'; id: number; ok: boolean; error?: string }
-  | { event: 'state'; onAir?: string; armed?: string }
+  | { event: 'state'; onAir?: string; armed?: string; preview?: string }
   | { event: 'position'; itemId: string; frames: number; duration: number }
   | { event: 'eos'; itemId: string }
   | { event: 'levels'; peak: number[]; rms: number[] }
@@ -37,6 +38,8 @@ export interface EngineOptions {
   readonly binary: string
   /** Saídas do canal, no formato que o engine entende. */
   readonly outputs: readonly string[]
+  /** Saída do barramento de preview. Nulo deixa o canal sem preview de vídeo. */
+  readonly preview: string | null
   readonly bitrateKbps: number
 }
 
@@ -66,6 +69,8 @@ export class EngineTransport implements Transport {
   constructor(
     private readonly channel: Channel,
     private readonly view: () => RundownView | null,
+    /** Acervo, para o preview abrir arquivo que nem está na grade. */
+    private readonly asset: (assetId: string) => MediaAsset | null,
     options: EngineOptions,
   ) {
     const args = [
@@ -83,6 +88,7 @@ export class EngineTransport implements Transport {
       String(options.bitrateKbps),
     ]
     for (const output of options.outputs) args.push('--output', output)
+    if (options.preview) args.push('--preview', options.preview)
 
     this.child = spawn(options.binary, args, { stdio: ['pipe', 'pipe', 'pipe'] })
 
@@ -175,6 +181,26 @@ export class EngineTransport implements Transport {
     }
   }
 
+  /**
+   * O que o preview deve abrir para este alvo.
+   *
+   * Arquivo do explorador entra inteiro: quem está olhando o acervo quer ver o
+   * arquivo, não o corte que alguém definiu na grade.
+   */
+  private specForPreview(target: PreviewTarget): EngineItem | null {
+    if (target.kind === 'ITEM') return this.specFor(target.id)
+
+    const asset = this.asset(target.id)
+    if (!asset) return null
+    return {
+      itemId: asset.id,
+      path: asset.path,
+      trimIn: 0,
+      trimOut: asset.durationFrames,
+      gainDb: 0,
+    }
+  }
+
   /** Deixa o próximo item aberto e parado, para o take seguinte ser imediato. */
   private preload(afterItemId: string): void {
     const view = this.view()
@@ -264,12 +290,18 @@ export class EngineTransport implements Transport {
     this.elapsed = 0
     this.preview = null
     this.dirty = true
+    // O item entrou no ar: o preview não tem mais o que mostrar dele.
+    this.send({ cmd: 'preview', item: null })
     this.preload(itemId)
   }
 
   cue(target: PreviewTarget | null): void {
     this.preview = target
     this.dirty = true
+
+    // O preview é um tocador à parte: abre o arquivo de novo, no barramento
+    // dele. É o que permite olhar um arquivo sem encostar no que vai ao ar.
+    this.send({ cmd: 'preview', item: target ? this.specForPreview(target) : null })
 
     // Armar item da grade também arma no engine: o take seguinte não paga o
     // preço de abrir o arquivo.
@@ -280,11 +312,14 @@ export class EngineTransport implements Transport {
   }
 
   stop(): void {
-    if (this.onAirItemId) this.preview = { kind: 'ITEM', id: this.onAirItemId }
+    const wasOnAir = this.onAirItemId
     this.send({ cmd: 'stop' })
     this.onAirItemId = null
     this.elapsed = 0
     this.dirty = true
+    // O que saiu do ar volta para o preview: é dali que o operador retoma, e
+    // passar pelo cue é o que faz o monitor de preview acompanhar.
+    if (wasOnAir) this.cue({ kind: 'ITEM', id: wasOnAir })
   }
 
   park(itemId: string): void {

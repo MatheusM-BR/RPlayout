@@ -55,6 +55,8 @@ pub struct Config {
     pub fps_d: i32,
     pub bitrate_kbps: u32,
     pub outputs: Vec<Output>,
+    /// Para onde o preview sai. Vazio deixa o canal sem barramento de preview.
+    pub preview: Option<Output>,
 }
 
 /// Um item aberto, no seu próprio pipeline.
@@ -75,6 +77,9 @@ pub struct Channel {
     frames_out: Arc<AtomicU64>,
     /// Saídas de rede. Cada uma tem pipeline próprio e cai sozinha.
     publishers: Vec<Publisher>,
+    /// Barramento de preview: nomes do par `inter` e o que estiver aberto nele.
+    preview_channels: Option<(String, String)>,
+    previewing: Option<Item>,
 }
 
 pub(crate) fn make(factory: &str) -> Result<gst::Element> {
@@ -272,10 +277,16 @@ impl Channel {
             armed: None,
             frames_out,
             publishers: Vec::new(),
+            preview_channels: None,
+            previewing: None,
         };
 
         for (index, output) in channel.config.outputs.clone().iter().enumerate() {
             channel.attach_output(index, output, &tee_video, &tee_audio)?;
+        }
+
+        if let Some(output) = channel.config.preview.clone() {
+            channel.attach_preview(&output)?;
         }
 
         Ok(channel)
@@ -421,6 +432,100 @@ impl Channel {
         Ok(())
     }
 
+    /// Liga o barramento de preview.
+    ///
+    /// Não há palco nenhum entre o item e a saída: o `intervideosrc` da saída
+    /// já entrega preto enquanto ninguém publica, e já normaliza formato e
+    /// cadência. Um pipeline intermediário só para segurar um fundo preto
+    /// seria uma peça a mais para quebrar.
+    fn attach_preview(&mut self, output: &Output) -> Result<()> {
+        let (kind, url) = match output {
+            Output::Rtmp(url) => (Kind::Rtmp, url),
+            Output::Srt(url) => (Kind::Srt, url),
+            other => return Err(anyhow!("preview só sai por rede, não por {other:?}")),
+        };
+
+        let video_channel = format!("{}-pvw-video", self.config.channel_id);
+        let audio_channel = format!("{}-pvw-audio", self.config.channel_id);
+
+        // Metade da altura e um terço do bitrate: é um monitor, não uma saída.
+        // Codificar o preview em 1080p50 dobraria o custo do canal para nada.
+        let (width, height) = (self.config.width / 2, self.config.height / 2);
+        self.publishers.push(Publisher::new(PublisherSpec {
+            kind,
+            url: url.clone(),
+            video_channel: video_channel.clone(),
+            audio_channel: audio_channel.clone(),
+            width: width - width % 2,
+            height: height - height % 2,
+            fps_n: self.config.fps_n,
+            fps_d: self.config.fps_d,
+            bitrate_kbps: (self.config.bitrate_kbps / 3).max(500),
+        }));
+
+        self.preview_channels = Some((video_channel, audio_channel));
+        Ok(())
+    }
+
+    /// Caps do preview: mesma cadência do canal, metade do tamanho.
+    fn preview_caps(&self) -> gst::Caps {
+        let (width, height) = (self.config.width / 2, self.config.height / 2);
+        gst::Caps::builder("video/x-raw")
+            .field("format", "I420")
+            .field("width", width - width % 2)
+            .field("height", height - height % 2)
+            .field(
+                "framerate",
+                gst::Fraction::new(self.config.fps_n, self.config.fps_d),
+            )
+            .build()
+    }
+
+    /// Abre um arquivo no preview e o deixa rodando.
+    ///
+    /// O preview é um tocador independente: não é o item armado com outro
+    /// destino. É isso que permite ver um arquivo que nem está na grade sem
+    /// encostar no que vai entrar no ar.
+    pub fn preview(&mut self, spec: Option<ItemSpec>) -> Result<()> {
+        if let Some(previous) = self.previewing.take() {
+            discard(previous);
+        }
+        let Some(spec) = spec else { return Ok(()) };
+        let Some((video_channel, audio_channel)) = self.preview_channels.clone() else {
+            return Err(anyhow!("este canal não tem barramento de preview"));
+        };
+
+        let mut item = self.build_item(&spec, &video_channel, &audio_channel, &self.preview_caps())?;
+        item.pipeline.set_state(gst::State::Paused)?;
+        let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
+        result.with_context(|| format!("não consegui abrir {} no preview", spec.path))?;
+
+        item.pipeline
+            .seek(
+                1.0,
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+                gst::SeekType::Set,
+                self.frame_to_time(spec.trim_in),
+                gst::SeekType::Set,
+                self.frame_to_time(spec.trim_out),
+            )
+            .context("o preview não aceitou o ponto de entrada")?;
+
+        item.pipeline.set_state(gst::State::Playing)?;
+        item.on_air = true;
+        self.previewing = Some(item);
+        Ok(())
+    }
+
+    /// Bus do que está no preview, para captar fim e erro sem confundir com o ar.
+    pub fn preview_bus(&self) -> Option<gst::Bus> {
+        self.previewing.as_ref().and_then(|item| item.pipeline.bus())
+    }
+
+    pub fn preview_id(&self) -> Option<String> {
+        self.previewing.as_ref().map(|item| item.spec.item_id.clone())
+    }
+
     /// Sobe o canal e só volta quando ele está de fato no ar.
     pub fn start(&self) -> Result<()> {
         self.pipeline.set_state(gst::State::Playing)?;
@@ -490,7 +595,12 @@ impl Channel {
         //
         // Publicar cedo não vaza nada: em PAUSED o item não empurra buffer
         // nenhum. Quem solta o sinal é o PLAYING, no take.
-        let item = self.build_item(&spec)?;
+        let item = self.build_item(
+            &spec,
+            &self.video_channel.clone(),
+            &self.audio_channel.clone(),
+            &self.video_caps(),
+        )?;
 
         item.pipeline.set_state(gst::State::Paused)?;
         let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
@@ -518,7 +628,17 @@ impl Channel {
         Ok(())
     }
 
-    fn build_item(&self, spec: &ItemSpec) -> Result<Item> {
+    /// Monta o pipeline de um item, publicando no par `inter` que for pedido.
+    ///
+    /// Programa e preview usam a mesma montagem e diferem só no destino e no
+    /// tamanho: o preview não precisa sair em 1080p para caber num monitor.
+    fn build_item(
+        &self,
+        spec: &ItemSpec,
+        video_channel: &str,
+        audio_channel: &str,
+        caps: &gst::Caps,
+    ) -> Result<Item> {
         let pipeline = gst::Pipeline::with_name(&format!("item-{}", spec.item_id));
 
         let src = make("uridecodebin")?;
@@ -533,10 +653,10 @@ impl Channel {
         let vscale = make("videoscale")?;
         let vrate = make("videorate")?;
         let vcaps = make("capsfilter")?;
-        vcaps.set_property("caps", self.video_caps());
+        vcaps.set_property("caps", caps);
         let vqueue = make("queue")?;
         let video_sink = make("intervideosink")?;
-        video_sink.set_property("channel", &self.video_channel);
+        video_sink.set_property("channel", video_channel);
 
         let aconv = make("audioconvert")?;
         let ares = make("audioresample")?;
@@ -552,7 +672,7 @@ impl Channel {
         );
         let aqueue = make("queue")?;
         let audio_sink = make("interaudiosink")?;
-        audio_sink.set_property("channel", &self.audio_channel);
+        audio_sink.set_property("channel", audio_channel);
 
         pipeline.add_many([
             &src,
@@ -665,6 +785,9 @@ impl Channel {
     /// Ir direto para NULL deixa o container sem índice e a gravação as-run
     /// inútil justamente no dia em que alguém precisar dela.
     pub fn shutdown(&mut self) {
+        if let Some(item) = self.previewing.take() {
+            discard(item);
+        }
         for publisher in &mut self.publishers {
             publisher.shutdown();
         }

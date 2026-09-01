@@ -26,6 +26,8 @@ pub enum Command {
     Load { item: ItemSpec },
     /// Coloca no ar o que estiver armado.
     Take,
+    /// Abre um arquivo no preview, ou fecha o que estiver aberto.
+    Preview { item: Option<ItemSpec> },
     /// Tira do ar e volta para o preto.
     Stop,
     /// Muda o ganho do item no ar sem interromper nada.
@@ -61,6 +63,8 @@ pub enum Event {
         on_air: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         armed: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        preview: Option<String>,
     },
     /// Posição do item no ar, em frames desde o ponto de entrada.
     Position {

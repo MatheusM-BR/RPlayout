@@ -142,6 +142,7 @@ export interface Distribution {
     channelId: string
     program: string
     clean: string
+    preview: string
     urls: Record<string, string> | null
     publishers: PublisherStatus[]
   }[]

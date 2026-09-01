@@ -28,6 +28,7 @@ fn parse_args() -> Result<Config> {
     let mut fps_d = 1;
     let mut bitrate_kbps = 4000;
     let mut outputs = Vec::new();
+    let mut preview = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut index = 0;
@@ -48,6 +49,7 @@ fn parse_args() -> Result<Config> {
             "--fps-den" => fps_d = value()?.parse().context("--fps-den")?,
             "--bitrate" => bitrate_kbps = value()?.parse().context("--bitrate")?,
             "--output" => outputs.push(Output::parse(&value()?)?),
+            "--preview" => preview = Some(Output::parse(&value()?)?),
             other => return Err(anyhow!("argumento desconhecido: {other}")),
         }
         index += 1;
@@ -65,6 +67,7 @@ fn parse_args() -> Result<Config> {
         fps_d,
         bitrate_kbps,
         outputs,
+        preview,
     })
 }
 
@@ -73,6 +76,7 @@ fn announce(channel: &Channel) {
     Event::State {
         on_air: channel.on_air_id(),
         armed: channel.armed_id(),
+        preview: channel.preview_id(),
     }
     .emit();
 }
@@ -86,6 +90,11 @@ fn run_command(channel: &mut Channel, command: Command) -> Result<bool> {
         }
         Command::Take => {
             channel.take()?;
+            announce(channel);
+            Ok(true)
+        }
+        Command::Preview { item } => {
+            channel.preview(item)?;
             announce(channel);
             Ok(true)
         }
@@ -272,6 +281,19 @@ fn main() -> Result<()> {
                     }
                     .emit(),
                     _ => {}
+                }
+            }
+        }
+
+        // O preview tem bus próprio pelo mesmo motivo do item no ar: o fim de
+        // um arquivo aberto para olhar não pode virar fim de nada.
+        if let (Some(preview_bus), Some(item_id)) = (channel.preview_bus(), channel.preview_id()) {
+            while let Some(message) = preview_bus.pop() {
+                if let gst::MessageView::Error(error) = message.view() {
+                    Event::Error {
+                        message: format!("preview {item_id}: {}", error.error()),
+                    }
+                    .emit();
                 }
             }
         }

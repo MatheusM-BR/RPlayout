@@ -28,6 +28,8 @@ export interface ChannelPaths {
   readonly program: string
   /** Caminho do clean feed, sem a camada de grafismo. */
   readonly clean: string
+  /** Caminho do preview: o que o operador olha sem estar no ar. */
+  readonly preview: string
 }
 
 export interface MediaMtxOptions {
@@ -81,7 +83,12 @@ export function channelPaths(
 
     // Endereço RTMP é sempre `app/stream`: um caminho de segmento único não é
     // URL de RTMP válida e o cliente nem chega a conectar.
-    return { channelId: channel.id, program: `${app}/pgm`, clean: `${app}/clean` }
+    return {
+      channelId: channel.id,
+      program: `${app}/pgm`,
+      clean: `${app}/clean`,
+      preview: `${app}/pvw`,
+    }
   })
 }
 
@@ -115,7 +122,7 @@ export class MediaMtx {
    */
   async apply(channels: readonly ChannelPaths[], guests: readonly GuestPath[]): Promise<void> {
     const paths = [
-      ...channels.flatMap((channel) => [channel.program, channel.clean]),
+      ...channels.flatMap((channel) => [channel.program, channel.clean, channel.preview]),
       ...guests.map((guest) => `guest/${guest.streamKey}`),
     ]
 

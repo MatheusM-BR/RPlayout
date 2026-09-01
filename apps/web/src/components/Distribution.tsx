@@ -127,7 +127,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                   <div key={publisher.url} className="row-item">
                     <div>
                       <div className="t">
-                        Programa
+                        {publisher.url.endsWith(channel.preview) ? 'Preview' : 'Programa'}
                         <span className={`pill ${PUBLISHER_TONE[publisher.health]}`}>
                           {PUBLISHER_LABEL[publisher.health]}
                         </span>

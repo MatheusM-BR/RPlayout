@@ -109,7 +109,7 @@ const snapshot = (app: App, runtime: ChannelRuntime) => ({
 function monitors(app: App, channelId: string) {
   const path = app.paths.find((entry) => entry.channelId === channelId)
   if (!app.mediamtx?.running || !path) return null
-  return { port: PORTS.webrtc, program: path.program, preview: null as string | null }
+  return { port: PORTS.webrtc, program: path.program, preview: path.preview }
 }
 
 /**
@@ -434,6 +434,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         channelId: path.channelId,
         program: path.program,
         clean: path.clean,
+        preview: path.preview,
         urls: app.mediamtx?.urls(path.program, host) ?? null,
         // Saídas do engine deste canal. Caminho declarado no servidor não é
         // prova de nada: só a entrega do engine diz que o canal está saindo.
