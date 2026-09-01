@@ -140,6 +140,33 @@ Planejamento concluído. **F0** e **F1** entregues:
   as-run: nenhuma delas consegue derrubar o programa.
 - **Perfis de saída persistidos e editáveis**, no painel de distribuição.
 
+### Fonte ao vivo é um item como outro qualquer
+
+Um estúdio entra na grade pelo mesmo caminho que um VT. Fonte com esquema de URI
+-- `srt://`, `rtsp://`, `rtmp://` -- passa pelo mesmo `uridecodebin` do arquivo,
+então o resto do canal não sabe a diferença. Placa e NDI têm elemento próprio.
+Convidado publicando no servidor local vira `guest:<chave>` e é lido por RTSP em
+loopback, como os relays: nunca pela rede.
+
+**Fonte ao vivo que cai não anda com a grade.** Arquivo acaba e avisa; estúdio
+que some é falha, não fim de item. O engine reporta `sourceLost`, fica tentando
+reabrir de dois em dois segundos, e o programa fica no preto do canal até
+voltar. A hora de sair continua sendo a que a grade marcou -- pular para o item
+seguinte porque o link caiu adiantaria a programação inteira.
+
+E o inverso: **nada tira um item ao vivo do ar sozinho**, então quem marca a
+hora de sair é a grade. Sem isso a programação pararia atrás de um estúdio que
+ficou no ar para sempre.
+
+Verificado ponta a ponta: estúdio publicando no servidor local, take, barras no
+PGM; estúdio derrubado, a grade não andou; estúdio de volta, a imagem voltou
+sozinha.
+
+Sem placa, `sdi:0` responde *"a entrada sdi:0 não respondeu -- confira se a placa
+está instalada, se o sub-dispositivo existe e se há sinal nele"*, e `ndi:` diz
+qual plugin falta. "Element failed to change its state" é a verdade e não serve
+para nada.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino
