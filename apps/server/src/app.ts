@@ -7,6 +7,7 @@ import { buildView, type RundownView } from './domain/plan.js'
 import { simulateMeter, SILENCE, type MeterReading } from './domain/meters.js'
 import { SimulatedTransport, type Transport } from './domain/transport.js'
 import { EngineTransport } from './domain/engine.js'
+import { ensureDefaultGraphics, Graphics } from './domain/graphics.js'
 import { History } from './domain/history.js'
 import {
   ENGINE_BINARY,
@@ -42,6 +43,8 @@ import { resolve as resolvePath } from 'node:path'
 export class ChannelRuntime {
   view: RundownView | null = null
   readonly transport: Transport
+  /** Grafismo no ar deste canal. */
+  readonly graphics: Graphics
   /** Acervo em memória: o medidor do preview precisa dele a cada tick. */
   private assets: Map<string, MediaAsset> = new Map()
   private phase = 0
@@ -64,6 +67,8 @@ export class ChannelRuntime {
           bitrateKbps: ENGINE_BITRATE_KBPS,
         })
       : new SimulatedTransport(channel.id, () => this.view)
+
+    this.graphics = new Graphics(channel, this.transport)
   }
 
   async load(rundownId: string): Promise<RundownView | null> {
@@ -130,6 +135,7 @@ export class ChannelRuntime {
     const state = this.transport.state()
     return {
       transport: state,
+      graphic: this.graphics.onAir(),
       now: framesSinceMidnight(new Date(), this.channel.rate),
       meters: {
         // Havendo engine, os dois medidores são medição de verdade, pela
@@ -198,6 +204,7 @@ export async function runtimeFor(app: App, channelId: string): Promise<ChannelRu
 
   const path = app.paths.find((entry) => entry.channelId === channelId)
   if (app.mediamtx) await ensureManagedOutputs(app.db, channel, path)
+  await ensureDefaultGraphics(app.db)
 
   const profiles = await listOutputs(app.db, channelId)
   const forRole = (role: 'PROGRAM' | 'PREVIEW'): string | null => {

@@ -281,6 +281,43 @@ Verificado ponta a ponta: o cartaz fica no ar exatamente o tempo da grade e sai
 sozinho, aparece na gravação do programa (antes: dez segundos de preto), e o
 arquivo só de áudio toca com a tela no preto do canal.
 
+## Grafismo
+
+### O engine não sabe o que é um template
+
+Quem preenche campo é o servidor; para o engine vai SVG pronto. Isso é o que
+deixa o modelo de grafismo mudar -- campo novo, arte nova, regra nova de quanto
+tempo fica no ar -- sem recompilar o processo que está no ar.
+
+SVG porque SVG é texto: cabe no banco, sai numa caixa de edição e é desenhado
+pelo `rsvgoverlay`, sem navegador embutido. O sistema já vem com três artes --
+crédito, selo e tarja -- que são também o exemplo de como se escreve uma.
+
+### A camada fica em linha, não no compositor
+
+Grafismo como pad do compositor é mais elegante e é a escolha errada: um pad a
+mais faz o programa **esperar** por ele, e arte que trava não pode parar o ar.
+Em linha, sem SVG, o elemento é passagem. O preço é o par de conversões para
+BGRA, o único formato que o `rsvgoverlay` aceita -- medido em 1080p50, o canal
+segue entregando os 50 quadros.
+
+### O que o operador digita não pode quebrar a arte
+
+Um `&` num nome próprio invalida o SVG inteiro e o grafismo simplesmente não
+aparece -- falha silenciosa, a pior espécie. O que vem do operador é escapado
+antes de entrar no SVG, e `{{campo}}` que o template não declara vira vazio em
+vez de ir ao ar como está escrito.
+
+### Crédito tem hora para sair
+
+O template diz quanto tempo fica no ar, e quem cumpre é o servidor: crédito
+esquecido no ar é erro clássico de operação. Selo de canal é o caso oposto e
+fica até alguém tirar -- por isso o campo é `holdSeconds` anulável, e não um
+número com valor mágico.
+
+Verificado ponta a ponta: crédito com `&` no nome entra sobre o VT, aparece na
+gravação do programa e sai sozinho no tempo do template.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino

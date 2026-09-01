@@ -288,6 +288,68 @@ impl AudioChain {
     }
 }
 
+/// O grafismo no ar e a entrada/saída dele.
+///
+/// A opacidade anda por passos em vez de saltar: grafismo que aparece de
+/// estalo é o que denuncia gerador de caracteres improvisado. A animação é
+/// barata -- um punhado de re-renderizações do SVG durante a transição, e
+/// nada entre uma e outra.
+#[derive(Default)]
+struct Graphic {
+    /// O SVG que o servidor mandou, já com os campos preenchidos.
+    svg: Option<String>,
+    /// Opacidade agora e para onde ela vai, de 0 a 1.
+    opacity: f64,
+    target: f64,
+    /// Quanto a opacidade anda por milissegundo.
+    per_ms: f64,
+    /// Última opacidade desenhada, para não re-renderizar à toa.
+    drawn: f64,
+}
+
+impl Graphic {
+    /// Anda a transição e diz o que desenhar, ou `None` se nada mudou.
+    fn advance(&mut self, elapsed_ms: f64) -> Option<Option<String>> {
+        if (self.opacity - self.target).abs() > f64::EPSILON {
+            let step = self.per_ms * elapsed_ms;
+            self.opacity = if self.opacity < self.target {
+                (self.opacity + step).min(self.target)
+            } else {
+                (self.opacity - step).max(self.target)
+            };
+        }
+
+        // Um passo de 1% é invisível e custa uma re-renderização: não vale.
+        if (self.opacity - self.drawn).abs() < 0.01 && self.opacity != self.target {
+            return None;
+        }
+        if (self.opacity - self.drawn).abs() < f64::EPSILON {
+            return None;
+        }
+        self.drawn = self.opacity;
+
+        let Some(svg) = self.svg.as_deref() else {
+            return Some(None);
+        };
+        if self.opacity <= 0.0 {
+            // Saiu de vez: o SVG some junto, para o elemento voltar a ser
+            // passagem em vez de desenhar nada caro.
+            self.svg = None;
+            return Some(None);
+        }
+        Some(Some(wrap_opacity(svg, self.opacity)))
+    }
+}
+
+/// Embrulha o SVG num grupo com opacidade. SVG dentro de `<g>` é SVG válido,
+/// então o modelo do operador não precisa saber que existe transição.
+fn wrap_opacity(svg: &str, opacity: f64) -> String {
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1920 1080\" \
+         preserveAspectRatio=\"none\"><g opacity=\"{opacity:.3}\">{svg}</g></svg>"
+    )
+}
+
 pub struct Channel {
     pipeline: gst::Pipeline,
     config: Config,
@@ -307,6 +369,9 @@ pub struct Channel {
     /// Medidor do preview. Vive à parte porque mede outro barramento.
     preview_meter: Meter,
     limiter: gst::Element,
+    /// Camada de grafismo e o estado da entrada/saída dela.
+    graphics: gst::Element,
+    gfx: Graphic,
     /// Buffer reaproveitado da conversão de bytes para amostras. Alocar a cada
     /// volta do laço num processo que fica meses no ar não é opção.
     meter_scratch: Vec<f32>,
@@ -570,6 +635,24 @@ impl Channel {
         let mixer = make_named("audiomixer", "mix")?;
 
         let vconv = make("videoconvert")?;
+        // Camada de grafismo, entre a composição e as saídas.
+        //
+        // Fica em linha, não como pad do compositor, e isso é decisão de
+        // segurança: um pad a mais no compositor faz o programa esperar por
+        // ele, e grafismo que trava não pode parar o ar. Em linha, sem SVG,
+        // o elemento é passagem.
+        //
+        // O preço é o par de conversões para BGRA, que é o único formato que
+        // o `rsvgoverlay` aceita.
+        let gfx_in = make("videoconvert")?;
+        let gfx_caps = make("capsfilter")?;
+        gfx_caps.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw").field("format", "BGRA").build(),
+        );
+        let graphics = make_named("rsvgoverlay", "gfx")?;
+        graphics.set_property("fit-to-frame", true);
+        let gfx_out = make("videoconvert")?;
         let vout_caps = make("capsfilter")?;
         vout_caps.set_property("caps", &video_caps);
         let tee_video = make_named("tee", "tee-video")?;
@@ -611,6 +694,10 @@ impl Channel {
             &compositor,
             &mixer,
             &vconv,
+            &gfx_in,
+            &gfx_caps,
+            &graphics,
+            &gfx_out,
             &vout_caps,
             &tee_video,
             &aconv,
@@ -639,7 +726,16 @@ impl Channel {
             &program_audio_resample,
             &program_audio_caps,
         ])?;
-        gst::Element::link_many([&compositor, &vconv, &vout_caps, &tee_video])?;
+        gst::Element::link_many([
+            &compositor,
+            &vconv,
+            &gfx_in,
+            &gfx_caps,
+            &graphics,
+            &gfx_out,
+            &vout_caps,
+            &tee_video,
+        ])?;
         gst::Element::link_many([&mixer, &aconv, &ares, &aout_caps, &limiter, &tee_audio])?;
         gst::Element::link_many([&meter_queue, &meter_convert, &meter_caps, &meter_sink])?;
         tee_audio
@@ -714,6 +810,8 @@ impl Channel {
                 .map_err(|_| anyhow!("appsink do medidor não é appsink"))?,
             preview_meter: Meter::new(48_000, 2),
             limiter,
+            graphics,
+            gfx: Graphic::default(),
             meter_scratch: Vec::with_capacity(16_384),
         };
 
@@ -1335,6 +1433,43 @@ impl Channel {
         // que saiu seria o medidor mentindo sobre o que está saindo agora.
         self.meter.reset();
         Ok(())
+    }
+
+    /// Põe (ou tira) o grafismo no ar.
+    ///
+    /// O engine não sabe o que é um template: quem preenche os campos é o
+    /// servidor, e aqui chega SVG pronto. Assim o modelo de grafismo evolui
+    /// sem recompilar o processo que está no ar.
+    pub fn set_graphic(&mut self, svg: Option<String>, fade_ms: u64) {
+        let fade = fade_ms.max(1) as f64;
+        self.gfx.per_ms = 1.0 / fade;
+        match svg {
+            Some(svg) => {
+                self.gfx.svg = Some(svg);
+                self.gfx.target = 1.0;
+                // Entrar de uma opacidade já acesa seria um salto: quem
+                // troca de arte volta do zero.
+                self.gfx.opacity = 0.0;
+                self.gfx.drawn = -1.0;
+            }
+            None => self.gfx.target = 0.0,
+        }
+    }
+
+    /// Anda a transição do grafismo. Chamado a cada volta do laço principal.
+    pub fn tick_graphics(&mut self, elapsed_ms: f64) {
+        let Some(draw) = self.gfx.advance(elapsed_ms) else {
+            return;
+        };
+        match draw {
+            Some(svg) => self.graphics.set_property("data", svg),
+            None => self.graphics.set_property("data", None::<String>),
+        }
+    }
+
+    /// O que está no ar em grafismo, para a interface conferir.
+    pub fn graphic_on_air(&self) -> bool {
+        self.gfx.svg.is_some() && self.gfx.target > 0.0
     }
 
     pub fn set_gain(&mut self, gain_db: f64) -> Result<()> {

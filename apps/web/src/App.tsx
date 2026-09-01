@@ -19,6 +19,7 @@ import { StillDialog } from './components/StillDialog.js'
 import { AudioDialog } from './components/AudioDialog.js'
 import { Distribution } from './components/Distribution.js'
 import { Explorer } from './components/Explorer.js'
+import { GraphicsPanel } from './components/GraphicsPanel.js'
 import { Monitors } from './components/Monitors.js'
 import { Rundown } from './components/Rundown.js'
 import { TrimDialog } from './components/TrimDialog.js'
@@ -29,6 +30,7 @@ type Dialog =
   | { kind: 'audio'; view: ItemView }
   | { kind: 'add'; assetId?: string }
   | { kind: 'distribution' }
+  | { kind: 'graphics' }
   | null
 
 export function App() {
@@ -146,7 +148,12 @@ export function App() {
       if (payload.type === 'view') {
         if (payload.view) setView(payload.view)
       } else {
-        setLive({ transport: payload.transport, now: payload.now, meters: payload.meters })
+        setLive({
+          transport: payload.transport,
+          graphic: payload.graphic,
+          now: payload.now,
+          meters: payload.meters,
+        })
       }
     })
     return () => socket.close()
@@ -570,6 +577,13 @@ export function App() {
           inserir item
         </button>
         <button
+          className={`btn${live?.graphic ? ' on' : ''}`}
+          onClick={() => setDialog({ kind: 'graphics' })}
+          title="Gerador de caracteres"
+        >
+          gc{live?.graphic ? ' no ar' : ''}
+        </button>
+        <button
           className="btn"
           onClick={() => {
             window.location.hash = 'distribuicao'
@@ -662,6 +676,14 @@ export function App() {
         />
       )}
 
+      {dialog?.kind === 'graphics' && (
+        <GraphicsPanel
+          channelId={view.channel.id}
+          onAir={live?.graphic ?? null}
+          onClose={() => setDialog(null)}
+          onMessage={say}
+        />
+      )}
       {dialog?.kind === 'distribution' && (
         <Distribution
           channelId={view.channel.id}

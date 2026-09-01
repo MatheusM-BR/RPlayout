@@ -1,5 +1,6 @@
 import type {
   AudioLevel,
+  GraphicOnAir,
   PreviewTarget,
   Channel,
   Frames,
@@ -50,6 +51,8 @@ export interface Live {
     playing: boolean
     standby: boolean
   }
+  /** Grafismo no ar, ou nulo. */
+  graphic: GraphicOnAir | null
   now: Frames
   meters: { program: MeterReading; preview: MeterReading }
 }

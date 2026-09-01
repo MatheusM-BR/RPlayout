@@ -76,6 +76,9 @@ async function main(): Promise<void> {
       if (runtime.transport.tick()) {
         void runtime.refresh().then(pushViews)
       }
+      // Crédito que fica no ar porque ninguém lembrou de tirar é erro clássico
+      // de operação: o template diz quanto dura e quem cumpre é o servidor.
+      runtime.graphics.tick()
       // Só o desenho depende de audiência: medir e transmitir para ninguém é
       // que não faz sentido.
       if (sockets.size > 0) {

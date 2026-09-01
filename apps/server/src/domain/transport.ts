@@ -48,6 +48,8 @@ export interface Transport {
   previewMeter(): MeterReading | null
   /** Saídas de rede do canal. Vazio no simulado, que não sai para lugar nenhum. */
   publishers(): readonly PublisherState[]
+  /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
+  graphic(svg: string | null, fadeMs: number): void
   close(): void
 }
 
@@ -175,6 +177,9 @@ export class SimulatedTransport implements Transport {
   publishers(): readonly PublisherState[] {
     return []
   }
+
+  /** Sem engine não há o que desenhar; o estado do grafismo mora no servidor. */
+  graphic(): void {}
 
   /** O simulado não mede nada: quem mede é o engine. */
   programMeter(): MeterReading | null {

@@ -212,6 +212,15 @@ export class EngineTransport implements Transport {
     process.stderr.write(`[engine ${this.channel.name}] ERRO ${message}\n`)
   }
 
+  /**
+   * Grafismo no programa. O engine recebe SVG pronto: quem preenche campo é o
+   * servidor, e assim o modelo de template muda sem recompilar o que está no
+   * ar.
+   */
+  graphic(svg: string | null, fadeMs: number): void {
+    this.send({ cmd: 'graphic', svg, fadeMs })
+  }
+
   private send(command: Record<string, unknown>): void {
     if (!this.alive) return
     this.child.stdin?.write(`${JSON.stringify({ id: this.nextId++, ...command })}\n`)

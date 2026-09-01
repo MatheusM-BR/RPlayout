@@ -53,11 +53,24 @@ impl ItemSpec {
     }
 }
 
+/// Entrada e saída de grafismo. Curto o bastante para não atrasar quem opera,
+/// longo o bastante para não parecer defeito.
+fn default_fade() -> u64 {
+    300
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Command {
     /// Arma um item: abre, decodifica e para no primeiro frame do corte.
     Load { item: ItemSpec },
+    /// Grafismo: SVG já preenchido, ou nada para tirar do ar.
+    Graphic {
+        #[serde(default)]
+        svg: Option<String>,
+        #[serde(default = "default_fade")]
+        fade_ms: u64,
+    },
     /// Coloca no ar o que estiver armado.
     Take,
     /// Abre um arquivo no preview, ou fecha o que estiver aberto.
@@ -99,6 +112,8 @@ pub enum Event {
         armed: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         preview: Option<String>,
+        /// Se há grafismo no ar. O operador precisa saber sem olhar o monitor.
+        graphic: bool,
     },
     /// Posição do item no ar, em frames desde o ponto de entrada.
     Position {

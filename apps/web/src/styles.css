@@ -319,6 +319,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .btn:hover:not(:disabled) { border-color: var(--accent); background: rgba(27, 58, 143, 0.3); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn.take { background: var(--deep); border-color: var(--accent); font-weight: 600; }
+/* Botão de estado ligado: o GC no ar precisa ser visível sem olhar o monitor. */
+.btn.on { background: var(--deep); border-color: var(--accent); color: var(--text); }
 .btn.take:hover:not(:disabled) { background: #2450b8; }
 .btn.stop:hover:not(:disabled) { border-color: var(--onair); background: rgba(255, 59, 59, 0.16); }
 .btn.small { padding: 5px 9px; font-size: 10px; letter-spacing: 0.08em; }

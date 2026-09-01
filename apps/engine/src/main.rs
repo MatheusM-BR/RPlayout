@@ -111,6 +111,7 @@ fn announce(channel: &Channel) {
         on_air: channel.on_air_id(),
         armed: channel.armed_id(),
         preview: channel.preview_id(),
+        graphic: channel.graphic_on_air(),
     }
     .emit();
 }
@@ -134,6 +135,11 @@ fn run_command(channel: &mut Channel, command: Command) -> Result<bool> {
         }
         Command::Stop => {
             channel.stop()?;
+            announce(channel);
+            Ok(true)
+        }
+        Command::Graphic { svg, fade_ms } => {
+            channel.set_graphic(svg, fade_ms);
             announce(channel);
             Ok(true)
         }
@@ -244,10 +250,17 @@ fn main() -> Result<()> {
     let mut last_position = Instant::now();
     let mut last_output = Instant::now();
     let mut last_meter = Instant::now();
+    let mut last_graphics = Instant::now();
     let mut live_retry_at: Option<Instant> = None;
     let mut running = true;
 
     while running {
+        // A transição do grafismo anda com o relógio de verdade, não com o
+        // número de voltas do laço: a volta dura o que o bus deixar.
+        let elapsed = last_graphics.elapsed();
+        last_graphics = Instant::now();
+        channel.tick_graphics(elapsed.as_secs_f64() * 1000.0);
+
         while let Ok(envelope) = receiver.try_recv() {
             let id = envelope.id;
             match run_command(&mut channel, envelope.command) {

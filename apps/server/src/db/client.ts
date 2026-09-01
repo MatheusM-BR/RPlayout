@@ -112,6 +112,17 @@ CREATE TABLE IF NOT EXISTS destinations (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS graphic_templates (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT REFERENCES channels (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  svg TEXT NOT NULL,
+  fields TEXT NOT NULL,
+  fade_ms INTEGER NOT NULL DEFAULT 300,
+  hold_seconds INTEGER,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS operator_decisions (
   id TEXT PRIMARY KEY,
   rundown_id TEXT NOT NULL,

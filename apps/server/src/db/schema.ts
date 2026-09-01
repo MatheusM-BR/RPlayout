@@ -5,6 +5,7 @@ import type {
   AudioTrack,
   Elastic,
   Fit,
+  GraphicField,
   ItemType,
   LoudnessMeasurement,
   FieldOrder,
@@ -128,6 +129,23 @@ export const rundownItems = sqliteTable('rundown_items', {
   autoNext: integer('auto_next', { mode: 'boolean' }).notNull(),
   loop: integer('loop', { mode: 'boolean' }).notNull(),
   notes: text('notes'),
+})
+
+/**
+ * Templates de grafismo. SVG é texto: cabe no banco e sai numa caixa de
+ * edição, sem navegador embutido no engine.
+ */
+export const graphicTemplates = sqliteTable('graphic_templates', {
+  id: text('id').primaryKey(),
+  /** Nulo vale para qualquer canal. */
+  channelId: text('channel_id'),
+  name: text('name').notNull(),
+  svg: text('svg').notNull(),
+  fields: text('fields', { mode: 'json' }).$type<GraphicField[]>().notNull(),
+  fadeMs: integer('fade_ms').notNull(),
+  /** Segundos no ar antes de sair sozinho. Nulo fica até tirarem. */
+  holdSeconds: integer('hold_seconds'),
+  createdAt: text('created_at').notNull(),
 })
 
 /**

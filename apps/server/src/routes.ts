@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { eq } from 'drizzle-orm'
+import { asc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
 import {
   durationIn,
+  fieldsUsedIn,
   formatVideoFormat,
   isStill,
   secondsToFrames,
@@ -24,7 +25,7 @@ import {
 import { listAssets, listChannels, listRundowns } from './db/repo.js'
 import { syncDistribution } from './app.js'
 import { PORTS } from './domain/mediamtx.js'
-import { destinations, guestKeys } from './db/schema.js'
+import { destinations, graphicTemplates, guestKeys } from './db/schema.js'
 import { operatorDecisions, rundownItems } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync } from 'node:fs'
@@ -540,6 +541,130 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/sources', async (request) => {
     const { refresh } = request.query as { refresh?: string }
     return app.sources.list(refresh === '1')
+  })
+
+  // ---- grafismo ----------------------------------------------------------
+
+  server.get('/api/graphics', async (request) => {
+    const { channelId } = request.query as { channelId?: string }
+    const rows = await app.db.select().from(graphicTemplates).orderBy(asc(graphicTemplates.name))
+    // Template sem canal vale para todos; com canal, só para o dele.
+    return {
+      templates: rows.filter(
+        (row) => !channelId || row.channelId === null || row.channelId === channelId,
+      ),
+    }
+  })
+
+  const templateSchema = z.object({
+    name: z.string().min(1),
+    svg: z.string().min(1),
+    channelId: z.string().nullable().optional(),
+    fields: z
+      .array(
+        z.object({
+          key: z.string().min(1),
+          label: z.string().min(1),
+          defaultValue: z.string(),
+        }),
+      )
+      .optional(),
+    fadeMs: z.number().int().min(0).max(5000).optional(),
+    holdSeconds: z.number().int().min(1).max(3600).nullable().optional(),
+  })
+
+  server.post('/api/graphics', async (request, reply) => {
+    const body = templateSchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    // Campo que o SVG usa e ninguém declarou entra com o próprio nome: é
+    // melhor um rótulo feio do que um campo que não dá para preencher.
+    const declared = body.data.fields ?? []
+    const fields = fieldsUsedIn(body.data.svg).map(
+      (key) =>
+        declared.find((field) => field.key === key) ?? {
+          key,
+          label: key,
+          defaultValue: '',
+        },
+    )
+
+    const row = {
+      id: randomUUID(),
+      channelId: body.data.channelId ?? null,
+      name: body.data.name,
+      svg: body.data.svg,
+      fields,
+      fadeMs: body.data.fadeMs ?? 300,
+      holdSeconds: body.data.holdSeconds ?? null,
+      createdAt: new Date().toISOString(),
+    }
+    await app.db.insert(graphicTemplates).values(row)
+    return { template: row }
+  })
+
+  server.patch('/api/graphics/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = templateSchema.partial().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    const [existing] = await app.db
+      .select()
+      .from(graphicTemplates)
+      .where(eq(graphicTemplates.id, id))
+    if (!existing) return reply.code(404).send({ error: 'Template não existe.' })
+
+    const svg = body.data.svg ?? existing.svg
+    const declared = body.data.fields ?? existing.fields
+    const fields = fieldsUsedIn(svg).map(
+      (key) =>
+        declared.find((field) => field.key === key) ?? { key, label: key, defaultValue: '' },
+    )
+
+    await app.db
+      .update(graphicTemplates)
+      .set({ ...body.data, svg, fields })
+      .where(eq(graphicTemplates.id, id))
+    return { ok: true }
+  })
+
+  server.delete('/api/graphics/:id', async (request) => {
+    const { id } = request.params as { id: string }
+    await app.db.delete(graphicTemplates).where(eq(graphicTemplates.id, id))
+    return { ok: true }
+  })
+
+  const fireSchema = z.object({
+    templateId: z.string(),
+    values: z.record(z.string(), z.string()).optional(),
+  })
+
+  server.post('/api/channels/:id/graphic', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = fireSchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    const runtime = await runtimeFor(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+
+    const [template] = await app.db
+      .select()
+      .from(graphicTemplates)
+      .where(eq(graphicTemplates.id, body.data.templateId))
+    if (!template) return reply.code(404).send({ error: 'Template não existe.' })
+
+    runtime.graphics.show(template, body.data.values ?? {})
+    onChange()
+    return snapshot(app, runtime)
+  })
+
+  server.delete('/api/channels/:id/graphic', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const runtime = await runtimeFor(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    runtime.graphics.hide()
+    onChange()
+    return snapshot(app, runtime)
   })
 
   // ---- perfis de saída ---------------------------------------------------
