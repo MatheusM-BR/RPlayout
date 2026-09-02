@@ -8,16 +8,34 @@ outro.
 > "existem" não é "eu vi funcionando" — o primeiro passo abaixo serve
 > exatamente para transformar uma coisa na outra antes de você perder tempo.
 
+## Conferir o que falta
+
+Antes de instalar na tentativa e erro, pergunte à máquina:
+
+```powershell
+cd C:\RPlayout
+powershell -ExecutionPolicy Bypass -File scripts\conferir-windows.ps1
+```
+
+Ele lista ferramenta por ferramenta -- presente ou faltando, para que serve e o
+comando que instala. Instalou alguma coisa? Feche e reabra o PowerShell (o
+`PATH` só vale para janelas novas) e rode de novo.
+
 ## O que instalar
 
 | O quê | Versão | Onde |
 |---|---|---|
 | Node | 22 ou mais novo | nodejs.org |
 | pnpm | 10 | `corepack enable` já resolve |
-| Rust | estável, toolchain **MSVC** | rustup.rs |
+| Rust | estável, toolchain **MSVC** | `winget install Rustlang.Rustup` |
 | GStreamer | 1.24+, **runtime e development**, instalação *Complete* | gstreamer.freedesktop.org/download |
 | MediaMTX | binário do Windows | github.com/bluenviron/mediamtx/releases |
 | Plugin NDI | opcional, só se você for usar NDI | teltek/gst-plugin-ndi |
+
+O Rust no Windows compila com o linker da Microsoft: se o `cargo build` falhar
+dizendo que não achou `link.exe`, faltam as ferramentas de C++
+(`winget install Microsoft.VisualStudio.2022.BuildTools`, marcando *Desktop
+development with C++*). O instalador do rustup costuma oferecer isso sozinho.
 
 Instale os **dois** pacotes MSI do GStreamer (runtime *e* development) e escolha
 *Complete*. Faltando o development, o `cargo build` não acha as bibliotecas;
