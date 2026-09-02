@@ -19,6 +19,7 @@ import { StillDialog } from './components/StillDialog.js'
 import { AudioDialog } from './components/AudioDialog.js'
 import { Distribution } from './components/Distribution.js'
 import { Explorer } from './components/Explorer.js'
+import { AsRunPanel } from './components/AsRunPanel.js'
 import { GraphicsPanel } from './components/GraphicsPanel.js'
 import { ItemGraphicsDialog } from './components/ItemGraphicsDialog.js'
 import { Monitors } from './components/Monitors.js'
@@ -33,6 +34,7 @@ type Dialog =
   | { kind: 'distribution' }
   | { kind: 'graphics' }
   | { kind: 'itemGraphics'; view: ItemView }
+  | { kind: 'asrun' }
   | null
 
 export function App() {
@@ -586,6 +588,9 @@ export function App() {
         >
           gc{live?.graphic ? ' no ar' : ''}
         </button>
+        <button className="btn" onClick={() => setDialog({ kind: 'asrun' })}>
+          as-run
+        </button>
         <button
           className="btn"
           onClick={() => {
@@ -687,9 +692,13 @@ export function App() {
           onMessage={say}
         />
       )}
+      {dialog?.kind === 'asrun' && (
+        <AsRunPanel channelId={view.channel.id} rate={rate} onClose={() => setDialog(null)} />
+      )}
       {dialog?.kind === 'graphics' && (
         <GraphicsPanel
           channelId={view.channel.id}
+          slateTemplateId={view.channel.slateTemplateId}
           onAir={live?.graphic ?? null}
           onClose={() => setDialog(null)}
           onMessage={say}

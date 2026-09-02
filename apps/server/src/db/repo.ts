@@ -21,6 +21,7 @@ export const toChannel = (row: ChannelRow): Channel => ({
   ceilingDbtp: row.ceilingDbtp,
   limiterLookaheadMs: row.limiterLookaheadMs,
   programSdiDeviceId: row.programSdiDeviceId,
+  slateTemplateId: row.slateTemplateId ?? null,
   createdAt: row.createdAt,
 })
 

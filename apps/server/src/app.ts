@@ -15,6 +15,7 @@ import { buildView, type RundownView } from './domain/plan.js'
 import { simulateMeter, SILENCE, type MeterReading } from './domain/meters.js'
 import { SimulatedTransport, type Transport } from './domain/transport.js'
 import { EngineTransport } from './domain/engine.js'
+import { AsRun } from './domain/asrun.js'
 import { ensureDefaultGraphics, Graphics } from './domain/graphics.js'
 import { History } from './domain/history.js'
 import {
@@ -53,6 +54,8 @@ export class ChannelRuntime {
   readonly transport: Transport
   /** Grafismo no ar deste canal. */
   readonly graphics: Graphics
+  /** O que realmente foi ao ar. */
+  readonly asRun: AsRun
   /** Acervo em memória: o medidor do preview precisa dele a cada tick. */
   private assets: Map<string, MediaAsset> = new Map()
   /** Grafismo preso a item, por item, e as artes que eles usam. */
@@ -60,11 +63,19 @@ export class ChannelRuntime {
   private templates: Map<string, GraphicTemplate> = new Map()
   /** Qual item o disparo automático está acompanhando e o que já disparou. */
   private cuesFor: string | null = null
+  /** Se a apresentação técnica está no ar por conta do canal vazio. */
+  private slateUp = false
+
   private fired = new Set<string>()
   private phase = 0
 
   constructor(
-    readonly channel: Channel,
+    /**
+     * O canal deste runtime. Não é `readonly` porque campos de operação
+     * mudam com o canal no ar -- a arte de apresentação técnica, por exemplo --
+     * e recriar o runtime para lê-los subiria um segundo engine.
+     */
+    public channel: Channel,
     private readonly db: Db,
     /** Para onde este canal sai. Vem do servidor local quando ele existe. */
     engineOutputs: readonly string[],
@@ -83,6 +94,7 @@ export class ChannelRuntime {
       : new SimulatedTransport(channel.id, () => this.view)
 
     this.graphics = new Graphics(channel, this.transport)
+    this.asRun = new AsRun(db, channel)
   }
 
   async load(rundownId: string): Promise<RundownView | null> {
@@ -106,6 +118,10 @@ export class ChannelRuntime {
         .where(eq(rundownItems.rundownId, rundownId)),
     ])
     this.templates = new Map(templates.map((row) => [row.id, row]))
+    // O canal é relido do banco: campos de operação mudam com o canal no ar, e
+    // a cópia em memória não pode ficar para trás.
+    const fresh = await getChannel(this.db, this.channel.id)
+    if (fresh) this.channel = fresh
     this.cues = new Map()
     for (const row of cues) {
       const cue = row.item_graphics
@@ -178,6 +194,58 @@ export class ChannelRuntime {
    * de novo, mais tarde na grade, dispara de novo -- que é o comportamento
    * esperado de uma reprise.
    */
+  /**
+   * Troca a arte de apresentação técnica sem derrubar o canal.
+   *
+   * Recriar o runtime para ler um campo novo subiria um segundo engine e
+   * deixaria dois processos publicando no mesmo destino -- a interface veria
+   * um canal só e a saída teria duas.
+   */
+  setSlate(templateId: string | null): void {
+    this.channel = { ...this.channel, slateTemplateId: templateId }
+    if (templateId === null && this.slateUp) {
+      this.graphics.hide()
+      this.slateUp = false
+    }
+  }
+
+  /**
+   * Apresentação técnica: entra quando nada está no ar.
+   *
+   * Preto no ar é honesto e não diz nada a quem está assistindo. Com uma arte
+   * escolhida, o canal mostra que está de pé e por que não há programa -- e ela
+   * sai sozinha assim que um item entra.
+   */
+  followSlate(): void {
+    const onAir = this.transport.state().onAir !== null
+    const slateId = this.channel.slateTemplateId
+
+    if (onAir || !slateId) {
+      if (this.slateUp) {
+        this.graphics.hide()
+        this.slateUp = false
+      }
+      return
+    }
+    if (this.slateUp || this.graphics.onAir()) return
+
+    const template = this.templates.get(slateId)
+    if (!template) return
+    // Slate não tem hora para sair: quem a tira é o item que entrar.
+    this.graphics.show({ ...template, holdSeconds: null }, {})
+    this.slateUp = true
+  }
+
+  /**
+   * Anota no as-run o que está no ar.
+   *
+   * Roda a cada volta do laço e só escreve quando o item muda -- inclusive
+   * quando ele muda para nada, porque preto no ar também é informação.
+   */
+  followAsRun(): void {
+    void this.asRun.follow(this.transport.state().onAir?.itemId ?? null, this.view)
+  }
+
   fireDueGraphics(): boolean {
     const onAir = this.transport.state().onAir
     if (!onAir) {

@@ -8,6 +8,7 @@ import type {
 } from '@rplayout/protocol'
 import type { MediaAsset, Rundown } from '@rplayout/protocol'
 import type {
+  AsRunEntry,
   Distribution,
   LibraryFolder,
   OutputProfile,
@@ -83,12 +84,21 @@ export const api = {
 
   distribution: () => send<Distribution>('/api/distribution'),
 
+  asRun: (channelId: string) =>
+    send<{ since: string; entries: AsRunEntry[] }>(`/api/channels/${channelId}/asrun`),
+
   graphics: (channelId: string) =>
     send<{ templates: GraphicTemplate[] }>(`/api/graphics?channelId=${channelId}`),
   showGraphic: (channelId: string, templateId: string, values: Record<string, string>) =>
     post<Snapshot>(`/api/channels/${channelId}/graphic`, { templateId, values }),
   hideGraphic: (channelId: string) =>
     send<Snapshot>(`/api/channels/${channelId}/graphic`, { method: 'DELETE' }),
+
+  setSlate: (channelId: string, templateId: string | null) =>
+    send<{ ok: true }>(`/api/channels/${channelId}/slate`, {
+      method: 'PATCH',
+      body: JSON.stringify({ templateId }),
+    }),
 
   itemGraphics: (itemId: string) => send<{ cues: ItemGraphic[] }>(`/api/items/${itemId}/graphics`),
   addItemGraphic: (

@@ -74,8 +74,18 @@ export interface EngineOptions {
  * dos dois está no comando. A diferença é que aqui o tempo não é calculado:
  * ele é reportado por quem está de fato tocando o arquivo.
  */
+/** Espera entre tentativas de subir o engine de novo. */
+const RESTART_DELAY_MS = 1_000
+/**
+ * Quanto tempo sem quadro novo é considerado congelamento.
+ *
+ * O engine reporta o contador a cada segundo; três segundos sem andar é longe
+ * demais de um soluço e perto o bastante para o ar não ficar preto meio minuto.
+ */
+const STALL_MS = 3_000
+
 export class EngineTransport implements Transport {
-  private readonly child: ChildProcess
+  private child: ChildProcess
   private nextId = 1
   private rundownId: string | null = null
   private onAirItemId: string | null = null
@@ -98,6 +108,15 @@ export class EngineTransport implements Transport {
   private readonly publisherStates = new Map<string, PublisherState>()
   private dirty = false
   private alive = true
+  private readonly args: string[]
+  private readonly binary: string
+  /** Watchdog: quadros do programa e quando eles andaram pela última vez. */
+  private framesOut = 0
+  private lastFrames = 0
+  private lastProgress = Date.now()
+  private restartAt: number | null = null
+  /** Quantas vezes o engine já teve de ser ressuscitado neste canal. */
+  restarts = 0
   /** Último erro do engine, para a interface não ficar adivinhando. */
   lastError: string | null = null
 
@@ -134,20 +153,39 @@ export class EngineTransport implements Transport {
     for (const output of options.outputs) args.push('--output', output)
     if (options.preview) args.push('--preview', options.preview)
 
-    this.child = spawn(options.binary, args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    this.args = args
+    this.binary = options.binary
+    this.child = this.spawnChild()
+  }
 
-    if (this.child.stdout) {
-      createInterface({ input: this.child.stdout }).on('line', (line) => this.absorb(line))
+  /**
+   * Sobe o processo do engine e liga os canais de conversa com ele.
+   *
+   * Está numa função à parte porque o watchdog precisa fazer isto de novo: um
+   * playout que fica meses no ar não pode depender de o primeiro processo
+   * nunca morrer.
+   */
+  private spawnChild(): ChildProcess {
+    const child = spawn(this.binary, this.args, { stdio: ['pipe', 'pipe', 'pipe'] })
+
+    if (child.stdout) {
+      createInterface({ input: child.stdout }).on('line', (line) => this.absorb(line))
     }
     // O engine loga no stderr de propósito, para nunca sujar o canal de dados.
-    this.child.stderr?.on('data', (chunk: Buffer) => {
-      process.stderr.write(`[engine ${channel.name}] ${chunk.toString()}`)
+    child.stderr?.on('data', (chunk: Buffer) => {
+      process.stderr.write(`[engine ${this.channel.name}] ${chunk.toString()}`)
     })
-    this.child.on('exit', (code) => {
+    child.on('exit', (code) => {
       this.alive = false
       this.lastError = `O engine encerrou com código ${code ?? 'desconhecido'}.`
       this.dirty = true
     })
+
+    this.alive = true
+    this.framesOut = 0
+    this.lastFrames = 0
+    this.lastProgress = Date.now()
+    return child
   }
 
   private absorb(line: string): void {
@@ -192,6 +230,11 @@ export class EngineTransport implements Transport {
           error: event.error,
         })
         break
+      case 'output':
+        // Contador de quadros do programa: é a prova objetiva de que o canal
+        // continua produzindo, e o que o watchdog observa.
+        this.framesOut = event.frames
+        break
       case 'ack':
         if (!event.ok && event.error) this.fail(event.error)
         break
@@ -219,6 +262,55 @@ export class EngineTransport implements Transport {
    */
   graphic(svg: string | null, fadeMs: number): void {
     this.send({ cmd: 'graphic', svg, fadeMs })
+  }
+
+  /**
+   * Vigia o engine e o levanta quando ele cai ou congela.
+   *
+   * Duas mortes diferentes, um tratamento só. Processo que morreu é fácil de
+   * ver; processo vivo que parou de entregar quadro é o caso perigoso -- do
+   * lado de fora parece que está tudo bem, e o ar está preto.
+   *
+   * Ressuscitar não basta: o item que estava no ar volta, porque um canal que
+   * acorda mudo é tão inútil quanto um canal morto.
+   */
+  watchdog(): void {
+    if (!this.alive) {
+      // Espera curta entre tentativas: se o engine não sobe, insistir sem
+      // pausa transforma um defeito em tempestade de processos.
+      this.restartAt ??= Date.now() + RESTART_DELAY_MS
+      if (Date.now() < this.restartAt) return
+
+      this.restartAt = null
+      this.restarts += 1
+      this.child = this.spawnChild()
+      this.restore()
+      return
+    }
+
+    if (this.framesOut !== this.lastFrames) {
+      this.lastFrames = this.framesOut
+      this.lastProgress = Date.now()
+      return
+    }
+    if (Date.now() - this.lastProgress < STALL_MS) return
+
+    // Vivo e parado: derruba: o caminho de volta é o mesmo do processo morto,
+    // e ter um caminho só é o que faz o conserto ser testável.
+    this.fail('O programa parou de produzir quadros; reiniciando o engine.')
+    this.lastProgress = Date.now()
+    this.child.kill('SIGKILL')
+  }
+
+  /** Põe de volta no ar o que estava no ar quando o engine caiu. */
+  private restore(): void {
+    const itemId = this.onAirItemId
+    if (!itemId) return
+    const spec = this.specFor(itemId)
+    if (!spec) return
+    this.send({ cmd: 'load', item: spec })
+    this.send({ cmd: 'take' })
+    this.appliedGainDb = spec.gainDb
   }
 
   private send(command: Record<string, unknown>): void {

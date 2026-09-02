@@ -76,6 +76,8 @@ export interface Channel {
 
   /** Sub-dispositivo Decklink de saída, quando existe. Define o clock mestre. */
   readonly programSdiDeviceId: string | null
+  /** Arte de apresentação técnica, quando nada está no ar. Nulo deixa no preto. */
+  readonly slateTemplateId: string | null
   readonly createdAt: string
 }
 

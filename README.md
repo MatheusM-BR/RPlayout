@@ -331,6 +331,44 @@ separa "não repetir agora" de "nunca mais". Sair do ar limpa a lembrança.
 Verificado com a deixa marcada aos quatro segundos: entrou aos quatro, aparece
 na gravação do programa e saiu no tempo do template, sem ninguém no teclado.
 
+## Robustez
+
+### As-run: o que a grade prometeu e o que foi ao ar
+
+A grade responde o que era para acontecer. O as-run responde o que aconteceu:
+hora real de entrada, quanto ficou no ar contra quanto estava previsto, e como
+saiu -- fim do arquivo, entrada do seguinte, parada. É o documento que a
+emissora mostra quando o anunciante pergunta se o comercial entrou.
+
+A linha fecha **também quando o item muda para nada**: preto no ar é
+informação, e um as-run que só registra sucesso não explica o dia em que algo
+falhou. A duração é medida no relógio de parede, não em frames desde a
+meia-noite -- item que atravessa a virada do dia daria duração negativa.
+
+### O engine morre; o canal, não
+
+Duas mortes diferentes com um tratamento só: processo que caiu é fácil de ver;
+processo vivo que parou de entregar quadro é o caso perigoso, porque de fora
+parece que está tudo bem e o ar está preto. O watchdog observa o contador de
+quadros do programa e, passados três segundos sem andar, derruba o processo --
+para que o caminho de volta seja o mesmo dos dois casos, e um caminho só é o
+que se consegue testar.
+
+Ressuscitar não basta: **o item que estava no ar volta**. Um canal que acorda
+mudo é tão inútil quanto um canal morto.
+
+Verificado com `kill -9` no engine com um VT no ar: o processo novo subiu e o
+mesmo item voltou ao ar sozinho.
+
+### Apresentação técnica no lugar do preto
+
+Canal sem nada no ar mostra preto, que é honesto e não diz nada a quem assiste.
+Escolhida uma arte como apresentação técnica, ela entra quando o canal esvazia
+e sai sozinha quando um item entra -- sem hora para sair, porque quem a tira é
+a programação voltando.
+
+Verificado: a arte entra com o canal parado, some no take e volta no stop.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino

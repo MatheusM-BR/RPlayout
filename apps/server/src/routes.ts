@@ -22,10 +22,17 @@ import {
   type App,
   type ChannelRuntime,
 } from './app.js'
-import { listAssets, listChannels, listRundowns } from './db/repo.js'
+import { getChannel, listAssets, listChannels, listRundowns } from './db/repo.js'
+import { listAsRun } from './domain/asrun.js'
 import { syncDistribution } from './app.js'
 import { PORTS } from './domain/mediamtx.js'
-import { destinations, graphicTemplates, guestKeys, itemGraphics } from './db/schema.js'
+import {
+  channels,
+  destinations,
+  graphicTemplates,
+  guestKeys,
+  itemGraphics,
+} from './db/schema.js'
 import { operatorDecisions, rundownItems } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync } from 'node:fs'
@@ -541,6 +548,41 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/sources', async (request) => {
     const { refresh } = request.query as { refresh?: string }
     return app.sources.list(refresh === '1')
+  })
+
+  server.patch('/api/channels/:id/slate', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z
+      .object({ templateId: z.string().nullable() })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    await app.db
+      .update(channels)
+      .set({ slateTemplateId: body.data.templateId })
+      .where(eq(channels.id, id))
+
+    // O canal que está no ar recebe a escolha em memória. Recriar o runtime
+    // aqui subiria um segundo engine no mesmo destino.
+    const runtime = app.runtimes.get(id)
+    runtime?.setSlate(body.data.templateId)
+    onChange()
+    return { ok: true }
+  })
+
+  // ---- as-run ------------------------------------------------------------
+
+  server.get('/api/channels/:id/asrun', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { since } = request.query as { since?: string }
+    const channel = await getChannel(app.db, id)
+    if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
+
+    // Sem `since`, o dia de hoje: é o recorte que o operador quer ver, e um
+    // as-run inteiro de meses não cabe numa tela nem numa resposta.
+    const start = since ?? new Date(new Date().setHours(0, 0, 0, 0)).toISOString()
+    const entries = await listAsRun(app.db, id, start)
+    return { since: start, entries }
   })
 
   // ---- grafismo ----------------------------------------------------------

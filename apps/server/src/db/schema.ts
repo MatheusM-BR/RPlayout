@@ -30,6 +30,8 @@ export const channels = sqliteTable('channels', {
   limiterLookaheadMs: integer('limiter_lookahead_ms').notNull(),
   /** Sub-dispositivo Decklink de saída. Preenchido, a placa é o clock mestre. */
   programSdiDeviceId: text('program_sdi_device_id'),
+  /** Arte de apresentação técnica: entra quando nada está no ar. */
+  slateTemplateId: text('slate_template_id'),
   createdAt: text('created_at').notNull(),
 })
 
@@ -162,6 +164,36 @@ export const itemGraphics = sqliteTable('item_graphics', {
   values: text('field_values', { mode: 'json' }).$type<Record<string, string>>().notNull(),
   /** Segundos desde o início do item. */
   atSeconds: integer('at_seconds').notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
+/**
+ * As-run: o que realmente foi ao ar.
+ *
+ * A grade diz o que era para acontecer; isto diz o que aconteceu. É o
+ * documento que a emissora precisa quando o anunciante pergunta se o comercial
+ * entrou -- e é também a matéria-prima do aprendizado, porque a diferença
+ * entre o planejado e o que foi ao ar é o que ensina.
+ */
+export const asRun = sqliteTable('as_run', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id').notNull(),
+  rundownId: text('rundown_id'),
+  itemId: text('item_id'),
+  mediaId: text('media_id'),
+  title: text('title').notNull(),
+  type: text('type').notNull(),
+  /** Instante real de entrada e saída, em ISO -- o relógio de parede manda. */
+  startedAt: text('started_at').notNull(),
+  endedAt: text('ended_at'),
+  /** Frames desde a meia-noite: entrada planejada e a que aconteceu. */
+  plannedStart: integer('planned_start'),
+  actualStart: integer('actual_start').notNull(),
+  /** Duração no ar, em frames, e a que a grade previa. */
+  airedFrames: integer('aired_frames'),
+  plannedFrames: integer('planned_frames'),
+  /** Como saiu: fim do arquivo, take manual, parada, ou queda da fonte. */
+  endedBy: text('ended_by'),
   createdAt: text('created_at').notNull(),
 })
 

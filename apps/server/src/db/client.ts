@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS channels (
   ceiling_dbtp REAL NOT NULL,
   limiter_lookahead_ms INTEGER NOT NULL,
   program_sdi_device_id TEXT,
+  slate_template_id TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -133,6 +134,25 @@ CREATE TABLE IF NOT EXISTS item_graphics (
 );
 CREATE INDEX IF NOT EXISTS item_graphics_item ON item_graphics (item_id);
 
+CREATE TABLE IF NOT EXISTS as_run (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL,
+  rundown_id TEXT,
+  item_id TEXT,
+  media_id TEXT,
+  title TEXT NOT NULL,
+  type TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  planned_start INTEGER,
+  actual_start INTEGER NOT NULL,
+  aired_frames INTEGER,
+  planned_frames INTEGER,
+  ended_by TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS as_run_channel ON as_run (channel_id, started_at);
+
 CREATE TABLE IF NOT EXISTS operator_decisions (
   id TEXT PRIMARY KEY,
   rundown_id TEXT NOT NULL,
@@ -168,6 +188,7 @@ export function openDatabase(file: string) {
     'ALTER TABLE media_assets ADD COLUMN probe_error TEXT',
     "ALTER TABLE channels ADD COLUMN scan TEXT NOT NULL DEFAULT 'PROGRESSIVE'",
     "ALTER TABLE channels ADD COLUMN field_order TEXT NOT NULL DEFAULT 'TFF'",
+    'ALTER TABLE channels ADD COLUMN slate_template_id TEXT',
     'ALTER TABLE rundown_items ADD COLUMN fit TEXT',
     'ALTER TABLE rundown_items ADD COLUMN audio_track INTEGER',
     'ALTER TABLE media_assets ADD COLUMN audio_tracks TEXT',

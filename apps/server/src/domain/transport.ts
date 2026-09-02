@@ -50,6 +50,8 @@ export interface Transport {
   publishers(): readonly PublisherState[]
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
+  /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */
+  watchdog(): void
   close(): void
 }
 
@@ -180,6 +182,9 @@ export class SimulatedTransport implements Transport {
 
   /** Sem engine não há o que desenhar; o estado do grafismo mora no servidor. */
   graphic(): void {}
+
+  /** O simulado é o próprio processo do servidor: não há o que vigiar. */
+  watchdog(): void {}
 
   /** O simulado não mede nada: quem mede é o engine. */
   programMeter(): MeterReading | null {

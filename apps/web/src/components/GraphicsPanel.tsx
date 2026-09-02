@@ -4,6 +4,8 @@ import { api } from '../api.js'
 
 interface Props {
   channelId: string
+  /** Arte usada como apresentação técnica, quando há uma. */
+  slateTemplateId: string | null
   /** O que está no ar agora, vindo do estado ao vivo. */
   onAir: GraphicOnAir | null
   onClose: () => void
@@ -18,7 +20,14 @@ interface Props {
  * para o engine -- não há um segundo caminho "de emergência" que se comporte
  * diferente na hora do aperto.
  */
-export function GraphicsPanel({ channelId, onAir, onClose, onMessage }: Props) {
+export function GraphicsPanel({
+  channelId,
+  slateTemplateId,
+  onAir,
+  onClose,
+  onMessage,
+}: Props) {
+  const [slate, setSlate] = useState(slateTemplateId)
   const [templates, setTemplates] = useState<GraphicTemplate[] | null>(null)
   const [chosen, setChosen] = useState<string>('')
   const [values, setValues] = useState<Record<string, string>>({})
@@ -116,6 +125,28 @@ export function GraphicsPanel({ channelId, onAir, onClose, onMessage }: Props) {
               {template?.fields.length === 0 && (
                 <div className="note">Esta arte não tem campo para preencher.</div>
               )}
+
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={slate === chosen}
+                  onChange={(event) => {
+                    const next = event.target.checked ? chosen : null
+                    setSlate(next)
+                    api
+                      .setSlate(channelId, next)
+                      .then(() =>
+                        onMessage(
+                          next
+                            ? 'Esta arte entra quando nada estiver no ar.'
+                            : 'Canal vazio volta a ficar no preto.',
+                        ),
+                      )
+                      .catch((failure: Error) => onMessage(failure.message))
+                  }}
+                />
+                Usar como apresentação técnica — entra sozinha quando nada estiver no ar
+              </label>
 
               <div className="note">
                 {template?.holdSeconds === null

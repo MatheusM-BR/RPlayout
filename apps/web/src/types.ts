@@ -212,3 +212,17 @@ export interface SourceList {
   ndi: SourceFamily
   guests: SourceFamily
 }
+
+/** Uma linha do as-run, como o servidor a devolve. */
+export interface AsRunEntry {
+  id: string
+  title: string
+  type: string
+  startedAt: string
+  endedAt: string | null
+  plannedStart: number | null
+  actualStart: number
+  airedFrames: number | null
+  plannedFrames: number | null
+  endedBy: string | null
+}

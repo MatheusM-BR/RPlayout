@@ -73,6 +73,8 @@ async function main(): Promise<void> {
       // um navegador seria congelar a grade e o nivelamento no instante em que
       // o último operador fecha a aba -- num sistema que fica no ar sozinho a
       // madrugada inteira, isso é o defeito mais caro que existe.
+      // Antes de qualquer coisa: o motor está de pé e produzindo?
+      runtime.transport.watchdog()
       if (runtime.transport.tick()) {
         void runtime.refresh().then(pushViews)
       }
@@ -81,6 +83,11 @@ async function main(): Promise<void> {
       runtime.graphics.tick()
       // Deixa de grafismo presa a item entra sozinha na hora marcada.
       runtime.fireDueGraphics()
+      // E o que passou fica escrito: a grade diz o que era para acontecer, o
+      // as-run diz o que aconteceu.
+      runtime.followAsRun()
+      // Canal vazio mostra apresentação técnica, quando há uma escolhida.
+      runtime.followSlate()
       // Só o desenho depende de audiência: medir e transmitir para ninguém é
       // que não faz sentido.
       if (sockets.size > 0) {
