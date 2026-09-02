@@ -26,6 +26,8 @@ interface Props {
   onOpenGraphics: (view: ItemView) => void
   /** Arquivo do acervo largado na grade, na posição indicada. */
   onDropAsset: (assetId: string, atIndex: number) => void
+  /** Tira o item da grade. */
+  onRemove: (id: string) => void
   onNotes: (id: string, notes: string) => void
 }
 
@@ -387,10 +389,30 @@ export function Rundown(props: Props) {
                             : `${aspect} inteiro: barra preta na sobra`
                         }
                       >
-                        {aspect}
+                            {aspect}
                       </button>
                     </>
-                  )}
+                  )}{' '}
+                  {/* Tirar da grade fica na ponta direita, longe do I/O e do
+                      dB: botão que apaga não pode ficar vizinho de botão que
+                      se usa o dia inteiro. O que está no ar não sai -- apagar
+                      a linha não tiraria a imagem da tela, e a grade passaria
+                      a mentir sobre o que está acontecendo. */}
+                  <button
+                    className="btn small tira"
+                    disabled={live}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      props.onRemove(view.item.id)
+                    }}
+                    title={
+                      live
+                        ? 'O item no ar não sai da grade. Pare antes.'
+                        : 'Tira este item da grade (Del · Ctrl+Z desfaz)'
+                    }
+                  >
+                    ×
+                  </button>
                 </td>
               </tr>
             </Fragment>

@@ -177,12 +177,20 @@ fn handle_message(message: &gst::Message) -> Option<Event> {
         }),
         MessageView::Warning(warning) => {
             // Sem o nome do elemento, um aviso do GStreamer é um enigma: dizer
-            // "clock problem" sem dizer quem reclamou não ajuda ninguém.
+            // "clock problem" sem dizer quem reclamou não ajuda ninguém. E sem
+            // o detalhe é pior ainda: "clock problem" é a categoria, e a frase
+            // que explica o que houve mora só no campo de depuração -- que
+            // este código descartava, deixando no log exatamente a metade
+            // inútil da mensagem.
             let source = message
                 .src()
                 .map(|object| object.name().to_string())
                 .unwrap_or_else(|| "desconhecido".to_string());
-            eprintln!("[engine] aviso de {source}: {}", warning.error());
+            eprintln!(
+                "[engine] aviso de {source}: {} ({})",
+                warning.error(),
+                warning.debug().unwrap_or_else(|| "sem detalhe".into())
+            );
             None
         }
         MessageView::Application(application) => {

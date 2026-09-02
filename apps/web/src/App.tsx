@@ -383,6 +383,12 @@ export function App() {
         event.preventDefault()
         if (selectedId) void command('take', { itemId: selectedId })
       }
+      // Delete tira da grade. Backspace não: num teclado de notebook ele fica
+      // ao lado do Enter e a chance de errar não vale a comodidade.
+      if (event.key === 'Delete' && selectedId) {
+        event.preventDefault()
+        removerItem(selectedId)
+      }
       if (event.key === 'i' && selected?.asset) setDialog({ kind: 'trim', view: selected })
       if (event.key === 'n' && selected?.asset) setDialog({ kind: 'audio', view: selected })
 
@@ -414,6 +420,29 @@ export function App() {
       absorb(await api.group(view.rundown.id, [...marked]))
       setMarked(new Set())
       say('Bloco criado. Os itens passam a andar juntos.')
+    })
+  }
+
+  /**
+   * Tira o item da grade.
+   *
+   * O que está no ar não sai: apagar a linha não tira a imagem da tela, e a
+   * grade passaria a mentir sobre o que está acontecendo. Parar primeiro é uma
+   * decisão consciente; apagar por engano no meio de um VT não é.
+   *
+   * O resto sai na hora, sem perguntar -- porque desfazer existe e é um Ctrl+Z.
+   * Caixa de confirmação em ferramenta de todo dia vira clique automático, e aí
+   * não protege ninguém.
+   */
+  const removerItem = (id: string): void => {
+    if (id === onAirId) {
+      say('O item no ar não sai da grade. Pare antes.')
+      return
+    }
+    const alvo = view?.items.find((entry) => entry.item.id === id)
+    void guard(async () => {
+      absorb(await api.removeItem(id))
+      say(`"${alvo?.item.title ?? 'Item'}" saiu da grade — Ctrl+Z traz de volta.`)
     })
   }
 
@@ -779,6 +808,7 @@ export function App() {
               onSetFit={setFit}
               onOpenGraphics={(item) => setDialog({ kind: 'itemGraphics', view: item })}
               onDropAsset={inserirEm}
+              onRemove={removerItem}
               onNotes={saveNotes}
             />
           </div>

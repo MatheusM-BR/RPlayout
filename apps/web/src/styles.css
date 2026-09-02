@@ -1226,3 +1226,12 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
   color: var(--dim);
   align-self: center;
 }
+
+/* Botão que apaga não se parece com botão que se usa: só o hover é vermelho,
+   para ele não gritar o dia inteiro numa grade cheia. */
+.rd .btn.small.tira { color: var(--dim); padding: 5px 8px; }
+.rd .btn.small.tira:hover:not(:disabled) {
+  border-color: var(--onair);
+  background: rgba(255, 59, 59, 0.16);
+  color: var(--onair);
+}
