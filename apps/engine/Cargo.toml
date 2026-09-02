@@ -31,3 +31,7 @@ path = "src/bin/probe.rs"
 [[bin]]
 name = "rplayout-devices"
 path = "src/bin/devices.rs"
+
+[[bin]]
+name = "rplayout"
+path = "src/bin/launcher.rs"

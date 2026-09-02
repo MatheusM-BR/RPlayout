@@ -127,7 +127,15 @@ pnpm start
 ```
 
 A interface abre em `http://<a-máquina>:4000` -- a mesma porta da API e do
-WebSocket, sem `vite` nenhum. Achando `apps/web/dist`, o servidor a serve e
+WebSocket, sem `vite` nenhum.
+
+Para não digitar isso todo dia, o `cargo build --release` produz também um
+lançador (`rplayout`, ao lado dos outros binários): ele descobre a instalação a
+partir de onde está, sobe o servidor com os caminhos que existirem, espera a
+porta responder e abre a interface no navegador. O que faltar ele avisa e segue
+sem -- sem servidor de mídia não há monitores, sem sonda não há leitura de
+acervo --, e sem a interface construída ele manda rodar `pnpm build` em vez de
+subir pela metade. Achando `apps/web/dist`, o servidor a serve e
 devolve `index.html` para qualquer caminho que não seja `/api` nem `/ws`, para
 recarregar numa rota interna não dar 404. Sem a pasta construída ele sobe do
 mesmo jeito, e aí quem serve a interface é o `vite` em desenvolvimento.

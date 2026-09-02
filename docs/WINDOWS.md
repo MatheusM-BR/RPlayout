@@ -172,25 +172,45 @@ A tela abre em <http://localhost:4000> -- ou pelo IP da máquina, de outro
 computador da rede. Repetir `pnpm build` só é necessário quando a interface
 mudar.
 
-### Subir sozinho quando a máquina ligar
+### Um clique para pôr no ar
 
-Sem instalar nada, pelo Agendador de Tarefas. Crie `C:\RPlayout\subir.cmd`:
+O `cargo build --release` produz, junto com o engine, um lançador:
 
-```bat
-@echo off
-cd /d C:\RPlayout
-set RPLAYOUT_ENGINE=C:\RPlayout\apps\engine\target\release\rplayout-engine.exe
-set RPLAYOUT_PROBE=C:\RPlayout\apps\engine\target\release\rplayout-probe.exe
-set RPLAYOUT_DEVICES=C:\RPlayout\apps\engine\target\release\rplayout-devices.exe
-set RPLAYOUT_RELAY=C:\RPlayout\apps\engine\target\release\rplayout-relay.exe
-set RPLAYOUT_MEDIAMTX=C:\RPlayout\mediamtx\mediamtx.exe
-set RPLAYOUT_MEDIA=C:\RPlayout\midia
-pnpm start
+```
+C:\RPlayout\apps\engine\target\release\rplayout.exe
 ```
 
-e uma tarefa que o execute **ao iniciar o computador**, com "executar mesmo sem
-usuário conectado" e "reiniciar em caso de falha". O canal anda com ou sem
-navegador aberto: fechar a tela não para a programação.
+Ele descobre a instalação a partir de onde está, sobe o servidor com os
+caminhos certos, espera a porta responder e abre a interface no navegador. A
+janela que fica aberta é o log do servidor -- é onde aparece por que uma saída
+caiu ou um arquivo não abriu --, e fechá-la tira o RPlayout do ar.
+
+Copie para a raiz e faça um atalho na área de trabalho:
+
+```powershell
+Copy-Item apps\engine\target\release\rplayout.exe C:\RPlayout\
+```
+
+O que não existir na instalação ele avisa e segue sem: sem `mediamtx.exe` não
+há RTMP interno nem monitores, sem a sonda não há leitura de acervo. E se a
+interface não tiver sido construída, ele diz para rodar `pnpm build` em vez de
+subir pela metade.
+
+Continua valendo definir `RPLAYOUT_MEDIA` antes, se a sua pasta de vídeos não
+for `C:\RPlayout\midia` -- o lançador respeita o que já estiver definido.
+
+### Subir sozinho quando a máquina ligar
+
+Sem instalar nada, pelo Agendador de Tarefas: uma tarefa que execute
+`C:\RPlayout\rplayout.exe` **ao iniciar o computador**, com "iniciar em"
+apontando para `C:\RPlayout`, "executar mesmo sem usuário conectado" e
+"reiniciar em caso de falha".
+
+Se a sua pasta de vídeos não for `C:\RPlayout\midia`, defina `RPLAYOUT_MEDIA`
+como variável de sistema (o lançador respeita o que já existir).
+
+O canal anda com ou sem navegador aberto: fechar a tela não para a programação
+-- o que para é fechar a janela do lançador.
 
 ## Firewall
 
