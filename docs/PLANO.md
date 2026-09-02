@@ -554,6 +554,12 @@ Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 
 ## 12. Roadmap
 
+Estado em setembro de 2026: da F0 à F7, tudo entregue e verificado com vídeo e
+áudio de verdade, menos a F3 — que precisa de placa Decklink, do plugin NDI e de
+uma GPU com NVENC, nenhum dos três presentes na máquina em que o sistema foi
+construído. A descoberta de fontes (`rplayout-devices`) já responde o que existe
+na máquina de destino.
+
 | Fase | Escopo | Entrega |
 |---|---|---|
 | F0 | Fundação: monorepo, TS, lint, testes, Drizzle + SQLite, protocolo zod, CI | Base |
@@ -561,10 +567,10 @@ Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 | F2 | Engine: binário Rust/GStreamer, VT com A/B, PGM, **MediaMTX local** com o PGM em `rtmp://127.0.0.1:1935/ch1`, relays supervisionados para destinos externos, preview WebRTC, **cadeia de áudio com medidores e limiter** | No ar |
 | F2.5 | **Ingest de arquivo de verdade** (varredura, SHA-256, sonda, sem lista de extensões) e **perfil de saída por destino**, com varredura entrelaçada e 1080i5994 — seção 13 | Formatos |
 | F3a | **Fonte ao vivo como item da grade**: SRT, RTMP e convidado do servidor local. Fonte que cai não anda com a grade; quem marca a hora de sair é a grade. **Descoberta de fontes** (`rplayout-devices`) e seletor no diálogo de inserir item, com o motivo de cada família vazia | Ao vivo |
-| F3 | Ao vivo: **Decklink entrada e saída** com alocação de sub-dispositivos, clock da placa e detecção de sinal; NDI discovery; SRT in/out; chaves e painel de convidados | Ao vivo |
+| F3 | Ao vivo: **Decklink entrada e saída** com alocação de sub-dispositivos, clock da placa e detecção de sinal; NDI discovery; NVENC. **Pendente**: depende de placa e de plugin NDI, que não existem na máquina onde isto foi construído | Ao vivo |
 | F4 | Grafismo: camada de SVG em linha (`rsvgoverlay`), templates com campos, painel de GC. **Feito**: artes com campos, painel de GC e deixa presa a item | Grafismo |
-| F5 | Multicanal **feito**: canal novo pela interface, engine e caminhos próprios, troca de canal na barra. Faltam alertas | Escala |
-| F6 | Automação: **montagem automática com encaixe, frescor e preferência aprendida** do log de decisões e do as-run. com pauta por faixa horária e montagem do dia | Automação |
+| F5 | Multicanal **feito**: canal novo pela interface, engine e caminhos próprios, troca de canal na barra, e o que está quebrado avisando na barra de cima | Escala |
+| F6 | Automação **feita**: montagem com encaixe, frescor e preferência aprendida do log de decisões e do as-run, pauta por faixa horária e montagem do dia | Automação |
 | F7 | Robustez **feita**: watchdog do engine, apresentação técnica, as-run com relatório em CSV e cópia de segurança automática do banco | Produção |
 
 ## 13. Pendências anotadas: entrada de arquivo e perfil de saída

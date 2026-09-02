@@ -302,6 +302,10 @@ export class EngineTransport implements Transport {
     this.child.kill('SIGKILL')
   }
 
+  health(): { restarts: number; error: string | null } {
+    return { restarts: this.restarts, error: this.lastError }
+  }
+
   /** Põe de volta no ar o que estava no ar quando o engine caiu. */
   private restore(): void {
     const itemId = this.onAirItemId

@@ -215,6 +215,26 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .asrun td.bad { color: var(--next); }
 
 /* Caixa de marcar com rótulo à direita. */
+/* Aviso do que está quebrado, na barra de cima. */
+.alerts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #2a1414;
+  border: 1px solid #6b2a2a;
+  border-radius: 2px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: #f0b3b3;
+}
+.alerts .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e05555;
+}
+.alerts b { font-family: var(--mono); font-size: 10px; opacity: 0.75; }
+
 a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 
 .channel {

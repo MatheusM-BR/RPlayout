@@ -53,6 +53,8 @@ export interface Live {
   }
   /** Grafismo no ar, ou nulo. */
   graphic: GraphicOnAir | null
+  /** O que está quebrado agora, uma linha por problema. */
+  alerts: { kind: 'OUTPUT' | 'ENGINE'; message: string }[]
   now: Frames
   meters: { program: MeterReading; preview: MeterReading }
 }

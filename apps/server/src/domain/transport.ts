@@ -52,6 +52,8 @@ export interface Transport {
   graphic(svg: string | null, fadeMs: number): void
   /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */
   watchdog(): void
+  /** Saúde do motor: quantas vezes teve de ser levantado e o último erro. */
+  health(): { restarts: number; error: string | null }
   close(): void
 }
 
@@ -185,6 +187,10 @@ export class SimulatedTransport implements Transport {
 
   /** O simulado é o próprio processo do servidor: não há o que vigiar. */
   watchdog(): void {}
+
+  health(): { restarts: number; error: string | null } {
+    return { restarts: 0, error: null }
+  }
 
   /** O simulado não mede nada: quem mede é o engine. */
   programMeter(): MeterReading | null {

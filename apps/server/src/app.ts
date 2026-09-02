@@ -51,6 +51,9 @@ import { resolve as resolvePath } from 'node:path'
  * transporte precisa dela de forma síncrona, a cada tick, e recalcular do
  * banco vinte vezes por segundo seria desperdício.
  */
+/** O fim do endereço, que é a parte que identifica a saída para quem opera. */
+const short = (url: string): string => url.split('/').slice(-2).join('/')
+
 export class ChannelRuntime {
   view: RundownView | null = null
   readonly transport: Transport
@@ -272,6 +275,36 @@ export class ChannelRuntime {
     return changed
   }
 
+  /**
+   * O que está errado agora, em uma linha por problema.
+   *
+   * Saída morta só era visível para quem abrisse o painel de distribuição --
+   * ou seja, para quem já desconfiava. Num playout, o que está quebrado tem de
+   * aparecer na tela em que o operador já está olhando.
+   */
+  alerts(): { kind: 'OUTPUT' | 'ENGINE'; message: string }[] {
+    const found: { kind: 'OUTPUT' | 'ENGINE'; message: string }[] = []
+
+    for (const publisher of this.transport.publishers()) {
+      if (publisher.health === 'onAir' || publisher.health === 'connecting') continue
+      found.push({
+        kind: 'OUTPUT',
+        message: `saída ${short(publisher.url)} ${
+          publisher.health === 'retrying' ? 'caiu e está tentando voltar' : 'parou'
+        }`,
+      })
+    }
+
+    const health = this.transport.health()
+    if (health.restarts > 0) {
+      found.push({
+        kind: 'ENGINE',
+        message: `o motor precisou ser levantado ${health.restarts}x nesta sessão`,
+      })
+    }
+    return found
+  }
+
   /** Estado que vai para a interface a cada frame de atualização. */
   live() {
     this.phase += 0.12
@@ -279,6 +312,7 @@ export class ChannelRuntime {
     return {
       transport: state,
       graphic: this.graphics.onAir(),
+      alerts: this.alerts(),
       now: framesSinceMidnight(new Date(), this.channel.rate),
       meters: {
         // Havendo engine, os dois medidores são medição de verdade, pela

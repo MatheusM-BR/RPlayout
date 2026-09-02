@@ -181,6 +181,7 @@ export function App() {
         setLive({
           transport: payload.transport,
           graphic: payload.graphic,
+          alerts: payload.alerts,
           now: payload.now,
           meters: payload.meters,
         })
@@ -530,6 +531,17 @@ export function App() {
               <div className="who">{commitment.title}</div>
             </div>
             <div className="cd">{dur(commitment.left, rate)}</div>
+          </div>
+        )}
+
+        {/* O que está quebrado aparece na tela em que o operador já está
+            olhando, não escondido atrás de um painel que ele só abre quando
+            já desconfia. */}
+        {live.alerts.length > 0 && (
+          <div className="alerts" title={live.alerts.map((alert) => alert.message).join('\n')}>
+            <span className="dot" />
+            {live.alerts[0]?.message}
+            {live.alerts.length > 1 && <b>+{live.alerts.length - 1}</b>}
           </div>
         )}
 

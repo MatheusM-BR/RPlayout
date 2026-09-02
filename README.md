@@ -7,13 +7,30 @@ rodando na própria máquina.
 O plano completo de arquitetura, modelo de dados e roadmap está em
 [`docs/PLANO.md`](docs/PLANO.md).
 
+## O que está pronto
+
+Grade com âncoras de hora e remanejamento automático; corte e nivelamento por
+loudness com escopos; acervo lido do disco com sonda, miniatura e medição;
+engine de vídeo em GStreamer com programa, preview e saídas independentes;
+servidor de mídia local com convidados; grafismo com templates e deixa presa a
+item; montagem automática com pauta por faixa horária; as-run com relatório;
+watchdog, apresentação técnica e cópia de segurança; mais de um canal.
+
+O que **não** foi verificado aqui e depende da sua máquina: entrada e saída
+Decklink, descoberta NDI e encoder NVENC. A descoberta de fontes já responde o
+que existe na máquina, então dá para conferir antes de ligar qualquer cabo:
+
+```bash
+apps/engine/target/release/rplayout-devices
+```
+
 ## Decisões travadas
 
 - **Plataforma:** Windows (NDI nativo, NVENC, Decklink)
 - **Motor de vídeo:** GStreamer, um pipeline por canal
 - **Interface:** Web (backend serve a UI, vários operadores)
 - **Canais:** multicanal desde o início
-- **Grafismo:** camada CEF com templates HTML + editor
+- **Grafismo:** camada de SVG em linha (`rsvgoverlay`) com templates e campos — CEF foi descartado: um pad a mais no compositor faz o programa esperar por ele, e arte que trava não pode parar o ar
 - **Áudio:** nivelamento por loudness (EBU R128) com os mesmos escopos do trim; limiter de true peak como proteção
 - **Hardware SDI:** Decklink Duo 2 / Quad 2, entrada e saída, placa como clock mestre
 - **Servidor interno:** MediaMTX local (RTMP/SRT/HLS/WebRTC, ingest e distribuição)
