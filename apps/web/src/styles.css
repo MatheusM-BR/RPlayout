@@ -1008,3 +1008,146 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
 
 .inline { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 .inline input { flex: 1; }
+
+/* ---------- régua de corte ---------- */
+
+.trim { display: grid; gap: 10px; }
+
+.tela {
+  position: relative;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+}
+.tela video,
+.tela img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.tela .tc {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  padding: 3px 7px;
+}
+.tela .aviso {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  right: 96px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1.4;
+  letter-spacing: 0.04em;
+  color: var(--next);
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(240, 160, 32, 0.45);
+  border-radius: 2px;
+  padding: 4px 7px;
+}
+
+.régua {
+  position: relative;
+  height: 56px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--sunk);
+  cursor: pointer;
+  touch-action: none;
+}
+/* A fita é que recorta, não a régua: a alça da saída fica em 100% e metade
+   dela cairia fora se a régua cortasse -- ficaria meia alça, e a metade que
+   sobrasse não pegaria o clique. */
+.régua .fita {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+  border-radius: 2px;
+}
+/* Cada quadro toma a mesma largura: a fita é uma régua de tempo, não uma
+   galeria -- fatia mais larga mentiria sobre quanto daquele trecho existe. */
+.régua .fita .quadro {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  border-right: 1px solid rgba(5, 7, 14, 0.5);
+}
+.régua .fita img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0.85;
+  pointer-events: none;
+}
+/* O que fica fora do corte continua visível, só que apagado: o operador
+   precisa ver o que está descartando para saber se descartou demais. */
+.régua .fora {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(5, 7, 14, 0.74);
+  pointer-events: none;
+}
+.régua .alça {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 11px;
+  margin-left: -5px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.régua .alça::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 3px;
+  background: var(--ok);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.65);
+}
+.régua .alça.out::before { background: var(--next); }
+.régua .alça:hover::before,
+.régua .alça.pego::before { box-shadow: 0 0 0 1px #000, 0 0 10px currentColor; }
+.régua .alça::after {
+  content: 'I';
+  position: absolute;
+  top: 2px;
+  left: 0;
+  width: 11px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: #05070e;
+  background: var(--ok);
+  border-radius: 1px;
+}
+.régua .alça.out::after { content: 'O'; background: var(--next); }
+
+.régua .cabeça {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -1px;
+  background: var(--onair);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.controles { display: flex; gap: 6px; flex-wrap: wrap; }

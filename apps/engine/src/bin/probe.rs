@@ -17,7 +17,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 // O medidor é compartilhado com o engine por inclusão de caminho: são dois
@@ -120,12 +120,32 @@ struct Args {
     /// Medir loudness custa decodificar o áudio inteiro. Vale desligar quando
     /// só se quer saber se o arquivo abre.
     measure: bool,
+    /// Segundo de onde tirar o quadro. Sem isto, o quadro é o do começo.
+    ///
+    /// É o que permite montar a régua de miniaturas do in/out: marcar corte
+    /// olhando só o primeiro quadro é marcar no escuro.
+    at: Option<f64>,
+    /// Quantos quadros tirar de uma vez, espalhados pelo arquivo inteiro.
+    ///
+    /// Abrir e posicionar um arquivo grande custa segundos; a régua do in/out
+    /// quer dezesseis quadros e abrir dezesseis vezes levaria um minuto. Com
+    /// `--fita`, abre-se uma vez e salta-se dentro do mesmo pipeline: os
+    /// quadros saem como `<prefixo>-0.jpg`, `<prefixo>-1.jpg`, e assim por
+    /// diante, onde o prefixo é o que veio em `--thumbnail`.
+    fita: Option<u32>,
+    /// Largura da miniatura em pixels. A régua do in/out quer quadro pequeno,
+    /// para encher rápido; a tela de conferência quer quadro grande, para dar
+    /// para ver onde cortar.
+    largura: i32,
 }
 
 fn parse_args() -> Result<Args> {
     let mut path = None;
     let mut thumbnail = None;
     let mut measure = true;
+    let mut at = None;
+    let mut largura = 320i32;
+    let mut fita = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut index = 0;
@@ -140,6 +160,32 @@ fn parse_args() -> Result<Args> {
                 );
             }
             "--no-loudness" => measure = false,
+            "--at" => {
+                index += 1;
+                at = Some(
+                    args.get(index)
+                        .ok_or_else(|| anyhow!("--at precisa de um número de segundos"))?
+                        .parse()
+                        .context("--at")?,
+                );
+            }
+            "--fita" => {
+                index += 1;
+                fita = Some(
+                    args.get(index)
+                        .ok_or_else(|| anyhow!("--fita precisa de um número de quadros"))?
+                        .parse()
+                        .context("--fita")?,
+                );
+            }
+            "--largura" => {
+                index += 1;
+                largura = args
+                    .get(index)
+                    .ok_or_else(|| anyhow!("--largura precisa de um número"))?
+                    .parse()
+                    .context("--largura")?;
+            }
             other => path = Some(other.to_string()),
         }
         index += 1;
@@ -149,6 +195,11 @@ fn parse_args() -> Result<Args> {
         path: path.ok_or_else(|| anyhow!("falta o caminho do arquivo"))?,
         thumbnail,
         measure,
+        at,
+        fita: fita.map(|n: u32| n.clamp(1, 64)),
+        // Largura ímpar quebra a subamostragem de croma do JPEG; e uma largura
+        // absurda transformaria a sonda num gerador de imagem enorme.
+        largura: largura.clamp(64, 1920) & !1,
     })
 }
 
@@ -187,15 +238,26 @@ fn main() -> Result<()> {
     let audio_tracks: Arc<Mutex<Vec<AudioTrack>>> = Arc::new(Mutex::new(Vec::new()));
     let meter: Arc<Mutex<Option<Meter>>> = Arc::new(Mutex::new(None));
     let thumbnail_done = Arc::new(AtomicU64::new(0));
+    // Sem `--at` nem `--fita`, o primeiro quadro serve e a captura já nasce
+    // liberada.
+    let liberado = Arc::new(AtomicBool::new(args.at.is_none() && args.fita.is_none()));
+    // Para onde o próximo quadro capturado vai. Com `--fita` isso muda a cada
+    // salto, então o destino não pode ficar preso dentro da callback.
+    let alvo: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(match args.fita {
+        Some(_) => None,
+        None => args.thumbnail.clone(),
+    }));
 
     let stage = pipeline.clone();
     let seen_video = Arc::clone(&video_info);
     let seen_audio = Arc::clone(&audio_info);
     let listed_audio = Arc::clone(&audio_tracks);
     let shared_meter = Arc::clone(&meter);
-    let want_thumbnail = args.thumbnail.clone();
+    let want_thumbnail = Arc::clone(&alvo);
     let measure = args.measure;
+    let largura_thumb = args.largura;
     let thumb_flag = Arc::clone(&thumbnail_done);
+    let porteiro_video = Arc::clone(&liberado);
 
     src.connect_pad_added(move |_, pad| {
         let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
@@ -210,8 +272,10 @@ fn main() -> Result<()> {
                 &stage,
                 pad,
                 &seen_video,
-                want_thumbnail.as_deref(),
+                &want_thumbnail,
                 &thumb_flag,
+                &porteiro_video,
+                largura_thumb,
             ) {
                 eprintln!("[probe] vídeo ignorado: {error}");
             }
@@ -237,6 +301,99 @@ fn main() -> Result<()> {
 
     if let Err(error) = pipeline.set_state(gst::State::Playing) {
         fail(format!("não consegui abrir: {error}"));
+    }
+
+    // Quadro de uma posição pedida: espera o pipeline responder (só aí o
+    // arquivo aceita busca), salta, e só então libera a captura. A ordem
+    // importa: liberar antes do salto grava o primeiro quadro do arquivo.
+    if let Some(segundos) = args.at {
+        let _ = pipeline.state(gst::ClockTime::from_seconds(10));
+        let alvo = gst::ClockTime::from_nseconds((segundos.max(0.0) * 1e9) as u64);
+        if pipeline
+            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, alvo)
+            .is_err()
+        {
+            // Arquivo sem índice não busca; o quadro do começo é melhor do que
+            // nenhum, e a régua fica com repetição em vez de buraco.
+            eprintln!("[probe] o arquivo não aceitou busca; usando o começo");
+        }
+        let _ = pipeline.state(gst::ClockTime::from_seconds(10));
+        liberado.store(true, Ordering::Release);
+    }
+
+    // A fita inteira numa abertura só. O caro aqui é abrir e posicionar o
+    // arquivo -- um MKV de duzentos megabytes leva segundos para o primeiro
+    // salto. Repetir isso dezesseis vezes levaria um minuto; dentro do mesmo
+    // pipeline, cada salto seguinte custa uma fração disso.
+    if let Some(quantos) = args.fita {
+        let _ = pipeline.state(gst::ClockTime::from_seconds(15));
+        let total = pipeline
+            .query_duration::<gst::ClockTime>()
+            .map(|d| d.nseconds())
+            .unwrap_or(0);
+        if total == 0 {
+            let _ = pipeline.set_state(gst::State::Null);
+            fail("o arquivo não disse quanto dura; sem isso não dá para montar a fita".to_string());
+        }
+
+        let prefixo = args
+            .thumbnail
+            .clone()
+            .unwrap_or_else(|| "quadro".to_string());
+        let mut escritos = 0u32;
+
+        for i in 0..quantos {
+            // O quadro sai do meio da fatia, não da borda: a borda de uma
+            // fatia é a mesma imagem da vizinha, e a fita sairia com pares
+            // repetidos.
+            let alvo_ns = ((i as f64 + 0.5) / quantos as f64 * total as f64) as u64;
+
+            liberado.store(false, Ordering::Release);
+            thumbnail_done.store(0, Ordering::Release);
+            *alvo.lock().unwrap() = Some(format!("{prefixo}-{i}.jpg"));
+
+            if pipeline
+                .seek_simple(
+                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                    gst::ClockTime::from_nseconds(alvo_ns),
+                )
+                .is_err()
+            {
+                eprintln!("[probe] o arquivo não aceitou busca; fita interrompida");
+                break;
+            }
+            let _ = pipeline.state(gst::ClockTime::from_seconds(15));
+            liberado.store(true, Ordering::Release);
+
+            // Espera o quadro chegar. Quem escreve é a callback do appsink, e
+            // ela avisa pelo contador -- sem isso o próximo salto derrubaria o
+            // quadro atual antes de ele virar arquivo.
+            let limite = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while thumbnail_done.load(Ordering::Acquire) == 0 {
+                if std::time::Instant::now() > limite {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if thumbnail_done.load(Ordering::Acquire) > 0 {
+                escritos += 1;
+            }
+        }
+
+        liberado.store(false, Ordering::Release);
+        let _ = pipeline.set_state(gst::State::Null);
+        let probe = Probe {
+            ok: true,
+            duration_ns: total,
+            video: video_info.lock().unwrap().take(),
+            audio: None,
+            audio_tracks: std::mem::take(&mut *audio_tracks.lock().unwrap()),
+            // Aqui a miniatura não é um arquivo só, então o campo diz quantos
+            // quadros saíram -- é o que o servidor precisa saber.
+            thumbnail: Some(format!("{escritos}")),
+        };
+        println!("{}", serde_json::to_string(&probe)?);
+        return Ok(());
     }
 
     let bus = pipeline.bus().expect("pipeline sempre tem bus");
@@ -325,8 +482,15 @@ fn attach_video(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
     info: &Arc<Mutex<Option<VideoInfo>>>,
-    thumbnail: Option<&str>,
+    // Destino do próximo quadro. Vazio quer dizer "não escreva nada".
+    thumbnail: &Arc<Mutex<Option<String>>>,
     done: &Arc<AtomicU64>,
+    // Enquanto `liberado` for falso, o quadro que chega é descartado: com
+    // `--at`, o pipeline entrega o primeiro quadro do arquivo antes de o salto
+    // acontecer, e capturá-lo daria sempre a mesma miniatura.
+    liberado: &Arc<AtomicBool>,
+    // Largura pedida na linha de comando.
+    largura: i32,
 ) -> Result<()> {
     // A geometria vem das caps do pad de origem, não do que foi escalado.
     let source_caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
@@ -339,15 +503,15 @@ fn attach_video(
     let convert = gst::ElementFactory::make("videoconvert").build()?;
     let scale = gst::ElementFactory::make("videoscale").build()?;
     let caps = gst::ElementFactory::make("capsfilter").build()?;
-    // Miniatura com 320 de largura e altura calculada da proporção do arquivo.
-    // Fixar só a largura deixa o `videoscale` manter a altura original, e um
-    // 16:9 chega ao explorador esticado -- foi o que aconteceu.
-    let thumb_width = 320i32;
+    // Altura calculada da proporção do arquivo. Fixar só a largura deixa o
+    // `videoscale` manter a altura original, e um 16:9 chega ao explorador
+    // esticado -- foi o que aconteceu.
+    let thumb_width = largura;
     let thumb_height = if source_width > 0 && source_height > 0 {
         let scaled = (thumb_width as i64 * source_height as i64 / source_width as i64) as i32;
         (scaled + scaled % 2).max(2)
     } else {
-        180
+        thumb_width * 9 / 16
     };
     caps.set_property(
         "caps",
@@ -386,8 +550,9 @@ fn attach_video(
     // escrever: sem consumidor ele fica preso no preroll, o ramo de vídeo nunca
     // chega a PLAYING e o arquivo inteiro morre no tempo limite. Foi assim que
     // uma sonda sem `--thumbnail` passou a travar sessenta segundos.
-    let target = thumbnail.map(str::to_string);
+    let target = Arc::clone(thumbnail);
     let flag = Arc::clone(done);
+    let porteiro = Arc::clone(liberado);
     let app_sink = sink
         .clone()
         .dynamic_cast::<gst_app::AppSink>()
@@ -396,7 +561,11 @@ fn attach_video(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                let Some(target) = target.as_deref() else {
+                if !porteiro.load(Ordering::Acquire) {
+                    return Ok(gst::FlowSuccess::Ok);
+                }
+                let destino = target.lock().unwrap().clone();
+                let Some(destino) = destino else {
                     return Ok(gst::FlowSuccess::Ok);
                 };
                 // Só o primeiro quadro interessa; escrever a cada quadro
@@ -408,7 +577,7 @@ fn attach_video(
                 {
                     if let Some(buffer) = sample.buffer() {
                         if let Ok(map) = buffer.map_readable() {
-                            if std::fs::write(target, map.as_slice()).is_err() {
+                            if std::fs::write(&destino, map.as_slice()).is_err() {
                                 flag.store(0, Ordering::Relaxed);
                             }
                         }

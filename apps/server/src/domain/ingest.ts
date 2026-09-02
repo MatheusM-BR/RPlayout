@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createReadStream, mkdirSync } from 'node:fs'
 import { mkdir, readdir, stat } from 'node:fs/promises'
 import { constants, setPriority } from 'node:os'
-import { basename, extname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import type { AudioTrack } from '@rplayout/protocol'
@@ -307,6 +307,86 @@ export class Ingest {
       createdAt: new Date().toISOString(),
       ...values,
     } as typeof mediaAssets.$inferInsert)
+  }
+
+  /** Onde as miniaturas moram. A rota de quadros guarda os dela no mesmo lugar. */
+  get thumbs(): string {
+    return this.thumbnailDir
+  }
+
+  /**
+   * Fitas em produção, por prefixo.
+   *
+   * A régua pede os dezesseis quadros de uma vez, e cada pedido que chegasse
+   * antes do primeiro terminar mandaria abrir o arquivo de novo. Aqui todos
+   * esperam a mesma leitura.
+   */
+  private readonly fitas = new Map<string, Promise<number>>()
+
+  /**
+   * Tira `quantos` quadros espalhados pelo arquivo, numa leitura só, gravando
+   * `<prefixo>-0.jpg` ... `<prefixo>-(quantos-1).jpg`.
+   *
+   * Abrir e posicionar um arquivo grande custa segundos. Pedir quadro a quadro
+   * multiplicava esse custo pelo tamanho da régua -- eram dezesseis aberturas
+   * para montar uma fita, quase um minuto num VT de duas centenas de megabytes.
+   *
+   * Devolve quantos quadros saíram.
+   */
+  strip(path: string, quantos: number, prefixo: string, largura = 320): Promise<number> {
+    const emCurso = this.fitas.get(prefixo)
+    if (emCurso !== undefined) return emCurso
+
+    const trabalho = new Promise<number>((done) => {
+      if (!this.available) {
+        done(0)
+        return
+      }
+      // Quem cria a pasta de miniaturas é a varredura. Uma instalação onde
+      // ninguém varreu ainda -- ou onde alguém limpou a pasta -- deixaria a
+      // sonda escrevendo em lugar nenhum, e a régua pediria a fita de novo a
+      // cada quadro, para sempre.
+      try {
+        mkdirSync(dirname(prefixo), { recursive: true })
+      } catch {
+        // Sem permissão de criar, a sonda falha logo abaixo e a régua cai na
+        // miniatura de sempre.
+      }
+      const child = spawn(this.probeBinary, [
+        path,
+        '--thumbnail',
+        prefixo,
+        '--fita',
+        String(quantos),
+        '--largura',
+        String(largura),
+        '--no-loudness',
+      ])
+      try {
+        if (child.pid) setPriority(child.pid, constants.priority.PRIORITY_LOW)
+      } catch {
+        // Igual à varredura: sem prioridade baixa ainda funciona.
+      }
+      let out = ''
+      child.stdout?.on('data', (chunk: Buffer) => {
+        out += chunk.toString()
+      })
+      child.on('error', () => done(0))
+      child.on('close', () => {
+        const line = out.trim().split('\n').pop() ?? ''
+        try {
+          const resultado = JSON.parse(line) as ProbeResult
+          done(resultado.ok ? Number(resultado.thumbnail ?? '0') : 0)
+        } catch {
+          done(0)
+        }
+      })
+    }).finally(() => {
+      this.fitas.delete(prefixo)
+    })
+
+    this.fitas.set(prefixo, trabalho)
+    return trabalho
   }
 
   /** Roda a sonda e lê a linha de JSON. Falha dela nunca derruba a varredura. */

@@ -43,8 +43,8 @@ import {
 } from './db/schema.js'
 import { operatorDecisions } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
-import { createReadStream, existsSync } from 'node:fs'
-import { resolve as resolvePath } from 'node:path'
+import { createReadStream, existsSync, statSync } from 'node:fs'
+import { extname, resolve as resolvePath } from 'node:path'
 import {
   createOutput,
   deleteOutput,
@@ -54,6 +54,26 @@ import {
 } from './domain/outputs.js'
 import { thumbnailSvg } from './domain/thumbnail.js'
 import type { RundownView } from './domain/plan.js'
+
+/**
+ * Só o que um navegador tem chance de tocar. O resto sai como octet-stream e o
+ * `<video>` recusa na hora, que é o sinal para a interface cair na régua de
+ * quadros em vez de fingir que vai tocar.
+ */
+const MIME: Record<string, string> = {
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska',
+  '.ogv': 'video/ogg',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.wav': 'audio/wav',
+  '.flac': 'audio/flac',
+  '.aac': 'audio/aac',
+  '.ogg': 'audio/ogg',
+}
 
 const trimSchema = z.object({ in: z.number().int().min(0), out: z.number().int().min(0) })
 
@@ -347,6 +367,102 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .type('image/svg+xml')
       .header('cache-control', 'public, max-age=3600')
       .send(thumbnailSvg(asset, rate))
+  })
+
+  /**
+   * O arquivo em si, para o navegador tocar na hora de marcar entrada e saída.
+   *
+   * Sai com Range: sem isso o navegador teria que baixar um VT inteiro antes
+   * de mostrar o primeiro quadro, e arrastar a cabeça de leitura seria baixar
+   * tudo de novo. Com Range, ele pede só o pedaço que vai mostrar.
+   *
+   * O caminho vem do acervo, nunca da requisição -- quem chama escolhe um id,
+   * não um lugar no disco.
+   *
+   * Formato que o navegador não decodifica (MXF, ProRes) simplesmente não toca,
+   * e a régua de quadros continua servindo: quem extrai lá é o GStreamer.
+   */
+  server.get('/api/assets/:id/media', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const assets = await listAssets(app.db)
+    const asset = assets.find((candidate) => candidate.id === id)
+    if (!asset || !existsSync(asset.path)) {
+      return reply.code(404).send({ error: 'Arquivo não encontrado.' })
+    }
+
+    const tamanho = statSync(asset.path).size
+    const tipo = MIME[extname(asset.path).toLowerCase()] ?? 'application/octet-stream'
+    const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? '')
+
+    reply.header('accept-ranges', 'bytes').type(tipo)
+
+    if (!range) {
+      return reply.header('content-length', tamanho).send(createReadStream(asset.path))
+    }
+
+    const inicio = range[1] === '' ? 0 : Number(range[1])
+    const fim = range[2] === '' ? tamanho - 1 : Math.min(Number(range[2]), tamanho - 1)
+    if (inicio > fim || inicio >= tamanho) {
+      return reply.code(416).header('content-range', `bytes */${tamanho}`).send()
+    }
+
+    return reply
+      .code(206)
+      .header('content-range', `bytes ${inicio}-${fim}/${tamanho}`)
+      .header('content-length', fim - inicio + 1)
+      .send(createReadStream(asset.path, { start: inicio, end: fim }))
+  })
+
+  /**
+   * Um quadro de dentro do arquivo, para a régua do corte.
+   *
+   * `:pos` é o índice do quadro na régua e `total` diz de quantas fatias ela é
+   * feita: pede-se `0..total-1` e sai a fita inteira. Cada quadro vem do meio
+   * da sua fatia, não da borda, porque a borda de uma fatia é a mesma imagem
+   * da vizinha e a régua sairia com pares repetidos.
+   *
+   * O primeiro pedido manda extrair a fita inteira de uma vez -- abrir e
+   * posicionar um arquivo grande custa segundos, e fazer isso dezesseis vezes
+   * levava um minuto. Os quadros ficam em disco com o hash do conteúdo no
+   * nome, então da segunda vez em diante a régua sai na velocidade do disco, e
+   * conteúdo novo é endereço novo.
+   */
+  server.get('/api/assets/:id/frame/:pos.jpg', async (request, reply) => {
+    const { id, pos } = request.params as { id: string; pos: string }
+    const { total } = request.query as { total?: string }
+
+    const quantos = Math.min(Math.max(Number(total ?? '12') | 0, 1), 64)
+    const indice = Math.min(Math.max(Number(pos) | 0, 0), quantos - 1)
+
+    const assets = await listAssets(app.db)
+    const asset = assets.find((candidate) => candidate.id === id)
+    if (!asset) return reply.code(404).send({ error: 'Arquivo não encontrado.' })
+
+    // Quantas fatias diz para que serve o pedido: a fita embaixo da régua é
+    // grosseira e cada quadro dela ocupa uns quarenta pixels na tela, enquanto
+    // a divisão fina é a que alimenta a tela de conferência -- essa precisa dar
+    // para ver onde cortar.
+    const largura = quantos > 24 ? 640 : 320
+    const prefixo = resolvePath(app.thumbnailDir, `${asset.contentHash}-${quantos}`)
+    const destino = `${prefixo}-${indice}.jpg`
+
+    if (!existsSync(destino)) {
+      if ((await app.ingest.strip(asset.path, quantos, prefixo, largura)) === 0) {
+        // Sem quadro, a régua usa a miniatura de sempre: ela fica pobre, e não
+        // quebrada.
+        return reply.redirect(`/api/assets/${asset.id}/thumbnail.svg`)
+      }
+      // A sonda pode ter parado no meio -- arquivo sem índice não busca até o
+      // fim. As fatias que saíram servem; as que faltam caem na miniatura.
+      if (!existsSync(destino)) {
+        return reply.redirect(`/api/assets/${asset.id}/thumbnail.svg`)
+      }
+    }
+
+    return reply
+      .type('image/jpeg')
+      .header('cache-control', 'public, max-age=604800, immutable')
+      .send(createReadStream(destino))
   })
 
   // ---- acervo -----------------------------------------------------------
