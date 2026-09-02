@@ -218,7 +218,19 @@ export class Ingest {
 
     // Tamanho e data iguais: nada mudou, e reler para descobrir isso custaria
     // ler o acervo inteiro a cada varredura.
-    if (existing && existing.sizeBytes === info.size && existing.modifiedAt === modifiedAt) {
+    //
+    // Com uma exceção: quem pediu para medir e encontra arquivo sem medição
+    // quer a medição. Sem isso, uma leitura rápida antes deixava o acervo
+    // inteiro marcado como visto, e a leitura com medição depois pulava tudo
+    // -- o nivelamento automático ficava sem base para sempre, e não havia
+    // como descobrir por quê.
+    const faltaMedir = this.measure && existing?.loudnessFile == null
+    if (
+      existing &&
+      existing.sizeBytes === info.size &&
+      existing.modifiedAt === modifiedAt &&
+      !faltaMedir
+    ) {
       this.patch({ skipped: this.state.skipped + 1 })
       return
     }

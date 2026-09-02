@@ -309,6 +309,47 @@ export class ChannelRuntime {
       })
     }
 
+    // Item no ar cujo arquivo tem trilha, mas nada chega ao medidor.
+    //
+    // Silêncio no ar é o defeito que ninguém percebe olhando a tela: a imagem
+    // está lá, o VT anda, e só quem está de fone descobre. A causa quase
+    // sempre é decodificador ausente -- AAC costuma vir do gst-libav, e uma
+    // instalação parcial do GStreamer entrega o vídeo e engole o som.
+    //
+    // Só reclama depois de dois segundos no ar: no primeiro instante o medidor
+    // ainda não recebeu bloco nenhum, e avisar ali seria alarme falso a cada
+    // entrada.
+    const noAr = this.transport.state().onAir
+    const emSilencio =
+      noAr !== null && noAr.elapsed > secondsToFrames(2, this.channel.rate)
+        ? this.transport.programMeter()
+        : null
+    if (noAr && emSilencio && emSilencio.peakDbfs.every((pico) => pico <= -89)) {
+      const item = this.view?.items.find((entry) => entry.item.id === noAr.itemId)
+      // Quem decide é a loudness medida, não a existência da trilha: VT de
+      // intervalo com trilha muda é normal, e reclamar dele encheria o sino de
+      // alarme falso. Loudness acima de -60 LUFS quer dizer que a leitura do
+      // arquivo achou som de verdade -- e aí silêncio no ar é defeito.
+      const medida = item?.asset?.loudnessFile?.integratedLufs
+      // E o silêncio não pode ser obra do próprio operador: quem baixou o
+      // ganho deste item a -90 dB queria silêncio, e culpar o decodificador
+      // seria acusar a instalação de um defeito que é uma decisão.
+      const abaixado = (item?.gainDb ?? 0) <= -40 || item?.audio.mode === 'OFF'
+      if (
+        item?.asset?.probe?.hasAudio === true &&
+        medida !== undefined &&
+        medida > -60 &&
+        !abaixado
+      ) {
+        found.push({
+          kind: 'ENGINE',
+          message:
+            `"${item.item.title}" tem trilha de áudio mas nada chega ao medidor — ` +
+            'pode faltar o decodificador (AAC vem do gst-libav)',
+        })
+      }
+    }
+
     const health = this.transport.health()
     if (health.restarts > 0) {
       found.push({
