@@ -11,6 +11,7 @@ import {
   secondsToFrames,
   STILL_DEFAULT_SECONDS,
   trimDuration,
+  type Anchor,
   type Frames,
   type MediaAsset,
   type PreviewTarget,
@@ -36,6 +37,7 @@ import {
   graphicTemplates,
   guestKeys,
   itemGraphics,
+  scheduleRules,
 } from './db/schema.js'
 import { operatorDecisions, rundownItems } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
@@ -639,6 +641,166 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     runtime?.setSlate(body.data.templateId)
     onChange()
     return { ok: true }
+  })
+
+  // ---- pauta ---------------------------------------------------------------
+
+  server.get('/api/channels/:id/rules', async (request) => {
+    const { id } = request.params as { id: string }
+    const rules = await app.db
+      .select()
+      .from(scheduleRules)
+      .where(eq(scheduleRules.channelId, id))
+      .orderBy(asc(scheduleRules.startMinute))
+    return { rules }
+  })
+
+  const ruleSchema = z.object({
+    name: z.string().min(1),
+    weekdays: z.string().regex(/^[0-6]{1,7}$/),
+    startMinute: z.number().int().min(0).max(1439),
+    endMinute: z.number().int().min(1).max(1440),
+    categories: z.array(z.string()),
+    avoidHours: z.number().int().min(0).max(240).optional(),
+  })
+
+  server.post('/api/channels/:id/rules', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = ruleSchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    if (body.data.endMinute <= body.data.startMinute) {
+      return reply.code(400).send({ error: 'A faixa termina antes de começar.' })
+    }
+
+    const row = {
+      id: randomUUID(),
+      channelId: id,
+      ...body.data,
+      avoidHours: body.data.avoidHours ?? 6,
+      createdAt: new Date().toISOString(),
+    }
+    await app.db.insert(scheduleRules).values(row)
+    return { rule: row }
+  })
+
+  server.delete('/api/rules/:id', async (request) => {
+    const { id } = request.params as { id: string }
+    await app.db.delete(scheduleRules).where(eq(scheduleRules.id, id))
+    return { ok: true }
+  })
+
+  /**
+   * Monta o dia inteiro pela pauta.
+   *
+   * Cada faixa vira um bloco que começa na hora dela: o primeiro item entra com
+   * âncora de hora fixa e o resto vai no fluxo. Sem a âncora, um atraso na
+   * faixa da manhã empurraria a noite inteira -- que é exatamente o que a pauta
+   * existe para evitar.
+   */
+  server.post('/api/rundowns/:id/autofill-day', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const runtime = await runtimeForRundown(app, id)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
+
+    const weekday = String(new Date(`${runtime.view.rundown.date}T12:00:00`).getDay())
+    const rules = (
+      await app.db
+        .select()
+        .from(scheduleRules)
+        .where(eq(scheduleRules.channelId, runtime.channel.id))
+        .orderBy(asc(scheduleRules.startMinute))
+    ).filter((rule) => rule.weekdays.includes(weekday))
+
+    if (rules.length === 0) {
+      return reply.code(400).send({ error: 'Nenhuma faixa da pauta vale para este dia.' })
+    }
+
+    const assets = await listAssets(app.db)
+    const byId = new Map(assets.map((asset) => [asset.id, asset]))
+    const candidates = await buildCandidates(app.db, runtime.channel, assets)
+
+    await app.history.capture(app.db, id, 'montar o dia pela pauta', { wholeRundown: true })
+
+    const bands: { rule: string; items: number; leftover: number }[] = []
+    // O que uma faixa usou não volta na seguinte: o dia inteiro montado com o
+    // mesmo VT em todas as faixas seria pior do que não montar.
+    const used = new Set<string>()
+    /** Ordem final da grade: o que já existia mais as faixas, no lugar delas. */
+    const ordered = runtime.view.items.map((entry) => entry.item.id)
+    const inserts: { id: string; mediaId: string; title: string; duration: Frames; anchor: Anchor }[] =
+      []
+
+    for (const rule of rules) {
+      const plan = planFill(
+        candidates.filter((candidate) => !used.has(candidate.id)),
+        runtime.channel,
+        secondsToFrames((rule.endMinute - rule.startMinute) * 60, runtime.channel.rate),
+        rule.categories,
+        rule.avoidHours * 60,
+      )
+
+      // A faixa entra onde a hora dela cai, não no fim da grade: pendurada no
+      // fim, a âncora das seis da manhã fica atrás do que já estava marcado
+      // para as seis da tarde, e o scheduler não tem como puxá-la de volta.
+      const startFrames = secondsToFrames(rule.startMinute * 60, runtime.channel.rate)
+      let at = insertionIndexForTime(runtime.view, startFrames)
+      at += inserts.filter((entry) => ordered.indexOf(entry.id) < at).length
+
+      let first = true
+      for (const item of plan.items) {
+        const asset = byId.get(item.id)
+        if (!asset) continue
+        used.add(item.id)
+
+        const itemId = randomUUID()
+        inserts.push({
+          id: itemId,
+          mediaId: asset.id,
+          title: asset.title,
+          duration: item.durationFrames,
+          anchor: first ? { kind: 'FIXED', at: startFrames } : { kind: 'FLOW' },
+        })
+        ordered.splice(at, 0, itemId)
+        at += 1
+        first = false
+      }
+      bands.push({ rule: rule.name, items: plan.items.length, leftover: plan.leftover })
+    }
+
+    for (const entry of inserts) {
+      await app.db.insert(rundownItems).values({
+        id: entry.id,
+        rundownId: id,
+        sortOrder: 0,
+        type: 'VT',
+        title: entry.title,
+        mediaId: entry.mediaId,
+        sourceRef: null,
+        trim: null,
+        audio: null,
+        durationOverride: null,
+        minDuration: entry.duration,
+        anchor: entry.anchor,
+        onOverrun: 'PUSH',
+        elastic: null,
+        locked: false,
+        autoNext: true,
+        loop: false,
+        notes: null,
+      })
+      await logDecision(app, id, entry.id, 'AUTO_FILLED', { mediaId: entry.mediaId })
+    }
+
+    for (const [position, itemId] of ordered.entries()) {
+      await app.db
+        .update(rundownItems)
+        .set({ sortOrder: (position + 1) * 10 })
+        .where(eq(rundownItems.id, itemId))
+    }
+
+    await runtime.refresh()
+    onChange()
+    return { bands, ...snapshot(app, runtime) }
   })
 
   /**

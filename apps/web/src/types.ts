@@ -234,3 +234,16 @@ export interface FillPlan {
   reason: 'FILLED' | 'OUT_OF_MATERIAL'
   items: { mediaId: string; title: string; durationFrames: number }[]
 }
+
+/** Uma faixa da pauta: o que entra em cada hora do dia. */
+export interface ScheduleRule {
+  id: string
+  channelId: string
+  name: string
+  /** Dígitos de 0 (domingo) a 6. */
+  weekdays: string
+  startMinute: number
+  endMinute: number
+  categories: string[]
+  avoidHours: number
+}

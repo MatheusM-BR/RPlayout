@@ -411,6 +411,30 @@ Verificado: proposta de oito minutos fechando com nove frames de sobra, aplicada
 na grade pela interface; e uma janela de vinte minutos dizendo honestamente que
 o acervo acabou antes.
 
+### A pauta: montar o dia, não trinta minutos
+
+Uma faixa diz o que entra em cada hora -- nome, horário, dias da semana e as
+categorias que valem ali. "Montar o dia" percorre as faixas do dia e preenche
+cada uma com o material que a categoria permite.
+
+Duas decisões que a implementação obrigou a tomar:
+
+**A faixa entra onde a hora dela cai, não no fim da grade.** Pendurada no fim,
+a âncora das seis da manhã fica atrás do que já estava marcado para as seis da
+tarde, e o scheduler não tem como puxá-la de volta -- o item viraria conflito em
+vez de programação.
+
+**O primeiro item de cada faixa entra com hora fixa; o resto vai no fluxo.** Sem
+isso, um atraso na faixa da manhã empurraria a noite inteira, que é exatamente o
+que a pauta existe para evitar.
+
+O que uma faixa usou não volta na seguinte: o dia inteiro montado com o mesmo VT
+em todas as faixas seria pior do que não montar.
+
+Verificado com duas faixas no mesmo dia: a das 19:00 entrou exatamente às 19:00,
+e a das 06:00 -- hora que já passou na grade em curso -- entrou no fluxo, com o
+conflito explicado na tela em vez de sumir.
+
 ## Mais de um canal
 
 Cada canal tem processo de engine próprio, caminho próprio no servidor de mídia

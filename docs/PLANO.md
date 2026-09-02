@@ -564,7 +564,7 @@ Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 | F3 | Ao vivo: **Decklink entrada e saída** com alocação de sub-dispositivos, clock da placa e detecção de sinal; NDI discovery; SRT in/out; chaves e painel de convidados | Ao vivo |
 | F4 | Grafismo: camada de SVG em linha (`rsvgoverlay`), templates com campos, painel de GC. **Feito**: artes com campos, painel de GC e deixa presa a item | Grafismo |
 | F5 | Multicanal **feito**: canal novo pela interface, engine e caminhos próprios, troca de canal na barra. Faltam alertas | Escala |
-| F6 | Automação: **montagem automática com encaixe, frescor e preferência aprendida** do log de decisões e do as-run. Falta a pauta com regras por faixa horária | Automação |
+| F6 | Automação: **montagem automática com encaixe, frescor e preferência aprendida** do log de decisões e do as-run. com pauta por faixa horária e montagem do dia | Automação |
 | F7 | Robustez **feita**: watchdog do engine, apresentação técnica, as-run com relatório em CSV e cópia de segurança automática do banco | Produção |
 
 ## 13. Pendências anotadas: entrada de arquivo e perfil de saída

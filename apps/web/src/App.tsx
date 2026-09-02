@@ -777,6 +777,10 @@ export function App() {
       {dialog?.kind === 'autofill' && (
         <AutoFillDialog
           rundownId={view.rundown.id}
+          channelId={view.channel.id}
+          categories={[
+            ...new Set(assets.map((asset) => asset.categoryId).filter((id): id is string => !!id)),
+          ].sort()}
           rate={rate}
           onCancel={() => setDialog(null)}
           onApplied={(snapshot, message) => {

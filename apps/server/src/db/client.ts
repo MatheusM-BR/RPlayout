@@ -134,6 +134,19 @@ CREATE TABLE IF NOT EXISTS item_graphics (
 );
 CREATE INDEX IF NOT EXISTS item_graphics_item ON item_graphics (item_id);
 
+CREATE TABLE IF NOT EXISTS schedule_rules (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  weekdays TEXT NOT NULL,
+  start_minute INTEGER NOT NULL,
+  end_minute INTEGER NOT NULL,
+  categories TEXT NOT NULL,
+  avoid_hours INTEGER NOT NULL DEFAULT 6,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS schedule_rules_channel ON schedule_rules (channel_id, start_minute);
+
 CREATE TABLE IF NOT EXISTS as_run (
   id TEXT PRIMARY KEY,
   channel_id TEXT NOT NULL,

@@ -513,6 +513,8 @@ input.bad { border-color: var(--onair); }
 }
 
 .seg-group { display: flex; gap: 0; }
+.seg-group.wrap { flex-wrap: wrap; gap: 4px; }
+.seg-group.wrap button { border-radius: 2px; border-left-width: 1px; }
 .seg-group button {
   flex: 1;
   border: 1px solid var(--border);

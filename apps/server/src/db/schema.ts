@@ -168,6 +168,27 @@ export const itemGraphics = sqliteTable('item_graphics', {
 })
 
 /**
+ * Pauta: o que entra em cada faixa do dia.
+ *
+ * É a diferença entre "monte trinta minutos" e "monte o dia": a faixa diz que
+ * às sete da manhã entra chamada e comercial, e à meia-noite entra reprise.
+ */
+export const scheduleRules = sqliteTable('schedule_rules', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id').notNull(),
+  name: text('name').notNull(),
+  /** Dias da semana em que vale, como dígitos de 0 (domingo) a 6. */
+  weekdays: text('weekdays').notNull(),
+  /** Início e fim da faixa, em minutos desde a meia-noite. */
+  startMinute: integer('start_minute').notNull(),
+  endMinute: integer('end_minute').notNull(),
+  categories: text('categories', { mode: 'json' }).$type<string[]>().notNull(),
+  /** Não repetir o que foi ao ar nas últimas N horas. */
+  avoidHours: integer('avoid_hours').notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
+/**
  * As-run: o que realmente foi ao ar.
  *
  * A grade diz o que era para acontecer; isto diz o que aconteceu. É o

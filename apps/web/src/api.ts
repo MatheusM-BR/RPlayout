@@ -11,6 +11,7 @@ import type {
   AsRunEntry,
   Distribution,
   FillPlan,
+  ScheduleRule,
   LibraryFolder,
   OutputProfile,
   ScanStatus,
@@ -91,6 +92,26 @@ export const api = {
     rundownId: string,
     body: { minutes: number; avoidHours: number; preview: boolean },
   ) => post<Partial<Snapshot> & { plan: FillPlan }>(`/api/rundowns/${rundownId}/autofill`, body),
+
+  rules: (channelId: string) =>
+    send<{ rules: ScheduleRule[] }>(`/api/channels/${channelId}/rules`),
+  addRule: (
+    channelId: string,
+    body: {
+      name: string
+      weekdays: string
+      startMinute: number
+      endMinute: number
+      categories: string[]
+      avoidHours: number
+    },
+  ) => post<{ rule: ScheduleRule }>(`/api/channels/${channelId}/rules`, body),
+  removeRule: (id: string) => send<{ ok: true }>(`/api/rules/${id}`, { method: 'DELETE' }),
+  autoFillDay: (rundownId: string) =>
+    post<Snapshot & { bands: { rule: string; items: number; leftover: number }[] }>(
+      `/api/rundowns/${rundownId}/autofill-day`,
+      {},
+    ),
 
   asRun: (channelId: string) =>
     send<{ since: string; entries: AsRunEntry[] }>(`/api/channels/${channelId}/asrun`),
