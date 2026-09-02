@@ -271,10 +271,20 @@ impl Publisher {
         let spec = &self.spec;
         let pipeline = gst::Pipeline::new();
 
+        // O codificador é montado antes das caps porque é ele quem decide o
+        // formato cru que elas vão fixar.
+        let (venc, vparse, vcaps, aenc, aparse, acaps) = encode_chain(
+            spec.bitrate_kbps,
+            spec.fps_n,
+            spec.fps_d,
+            spec.kind.stream_format(),
+            spec.prefer_software,
+        )?;
+
         // Mesma fixação de colorimetria do canal, e pelo mesmo motivo: o
         // encoder não pode ver a colorimetria mudar no meio.
         let video_caps = gst::Caps::builder("video/x-raw")
-            .field("format", "I420")
+            .field("format", formato_do_encoder(&venc))
             .field("width", spec.width)
             .field("height", spec.height)
             .field("framerate", gst::Fraction::new(spec.fps_n, spec.fps_d))
@@ -311,14 +321,6 @@ impl Publisher {
         acapsf.set_property("caps", &audio_caps);
         let aqueue = make("queue")?;
         aqueue.set_property("max-size-time", 2_000_000_000u64);
-
-        let (venc, vparse, vcaps, aenc, aparse, acaps) = encode_chain(
-            spec.bitrate_kbps,
-            spec.fps_n,
-            spec.fps_d,
-            spec.kind.stream_format(),
-            spec.prefer_software,
-        )?;
 
         let (mux, sink) = match spec.kind {
             Kind::Rtmp => {
@@ -470,6 +472,16 @@ fn video_encoder(bitrate_kbps: u32, key_int_max: u32, prefer_software: bool) -> 
     for name in candidates {
         let Ok(encoder) = make(name) else { continue };
 
+        // Existir não é servir. Quando o driver não responde à consulta de
+        // capacidade, o elemento da placa registra sem formato nenhum: ele é
+        // criado, é escolhido, e só falha na hora de ligar o pipeline -- que é
+        // a saída caindo e voltando sem dizer por quê. Perguntar antes custa
+        // uma consulta e evita o laço inteiro.
+        if formato_do_encoder_bruto(&encoder).is_empty() {
+            eprintln!("[engine] {name} existe mas não aceita vídeo cru; pulando");
+            continue;
+        }
+
         // Cada um chama as coisas pelo seu nome. Ajustar só o que existe evita
         // um `set_property` que derruba o processo por propriedade ausente.
         match name {
@@ -503,6 +515,80 @@ fn video_encoder(bitrate_kbps: u32, key_int_max: u32, prefer_software: bool) -> 
         "nenhum codificador de H.264 disponível: instale o GStreamer completo (x264enc) \
          ou verifique a placa"
     ))
+}
+
+/// Os formatos crus deste codificador, ou vazio quando ele não anuncia nenhum.
+fn formato_do_encoder_bruto(encoder: &gst::Element) -> Vec<String> {
+    let Some(pad) = encoder.static_pad("sink") else {
+        return Vec::new();
+    };
+    formatos_de(&pad.query_caps(None))
+}
+
+/// O formato cru que este codificador aceita, para o filtro fixar o certo.
+///
+/// Fixar I420 para todo mundo era o que produzia
+/// `Failed to link elements 'queue' and 'nvh264enc'`: o NVENC recebe NV12
+/// nativamente e a maioria das versões do `nvh264enc` não anuncia I420 nenhum.
+/// O `videoconvert` logo antes converteria de bom grado -- só que o filtro já
+/// tinha decidido por ele, e a negociação morria ali. Numa máquina com placa
+/// isso não é intermitente: falha sempre, o programa fica preto, e a saída
+/// entra num laço de reconexão que não explica nada.
+///
+/// Preferência por I420 quando existe, porque é o que o resto do canal já usa
+/// e evita uma conversão; NV12 em seguida, que é o que a placa quer.
+fn formato_do_encoder(encoder: &gst::Element) -> String {
+    let aceitos = formato_do_encoder_bruto(encoder);
+
+    for preferido in ["I420", "NV12"] {
+        if aceitos.iter().any(|f| f == preferido) {
+            return preferido.to_string();
+        }
+    }
+    // Codificador exótico: o primeiro que ele anuncia serve mais do que um
+    // palpite nosso. Sem nenhum, I420 -- que é o caso do software.
+    aceitos
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "I420".to_string())
+}
+
+/// Os formatos de `video/x-raw` que estas caps aceitam em memória de sistema.
+///
+/// Variante em memória de placa (CUDA, GL) é ignorada: o que chega aqui vem do
+/// `videoconvert`, que entrega em memória de sistema.
+fn formatos_de(caps: &gst::Caps) -> Vec<String> {
+    let mut achados = Vec::new();
+
+    for (estrutura, features) in caps.iter_with_features() {
+        if estrutura.name() != "video/x-raw" {
+            continue;
+        }
+        if !features.is_empty() && !features.contains("memory:SystemMemory") {
+            continue;
+        }
+        match estrutura.value("format") {
+            Ok(valor) => coletar_formatos(valor, &mut achados),
+            Err(_) => continue,
+        }
+    }
+
+    achados
+}
+
+/// Um campo de caps pode ser uma string só ou uma lista delas.
+fn coletar_formatos(valor: &gst::glib::Value, saida: &mut Vec<String>) {
+    if let Ok(texto) = valor.get::<String>() {
+        saida.push(texto);
+        return;
+    }
+    if let Ok(lista) = valor.get::<gst::List>() {
+        for item in lista.iter() {
+            if let Ok(texto) = item.get::<String>() {
+                saida.push(texto);
+            }
+        }
+    }
 }
 
 /// Diz qual codificador entrou, uma vez por escolha.
@@ -578,4 +664,118 @@ pub fn encode_chain(
     );
 
     Ok((venc, vparse, vcaps, aenc, aparse, acaps))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn init() {
+        let _ = gst::init();
+    }
+
+    /// O formato tem que sair do que o codificador anuncia, não de um palpite.
+    ///
+    /// É este o teste que faltava quando o filtro fixava I420 para todo mundo:
+    /// `x264enc` aceita I420 e nunca reclamou, enquanto o `nvh264enc` da
+    /// máquina do operador só anuncia NV12 e o pipeline não ligava.
+    #[test]
+    fn formato_vem_do_codificador() {
+        init();
+        let Ok(x264) = make("x264enc") else {
+            // Máquina sem o plugin: o teste não tem o que afirmar.
+            return;
+        };
+        assert_eq!(formato_do_encoder(&x264), "I420");
+    }
+
+    /// Codificador que só aceita NV12 recebe NV12, e não o I420 preferido.
+    ///
+    /// É o caso da placa: o `nvh264enc` recebe NV12 nativamente e a maioria das
+    /// versões não anuncia I420 nenhum. Sem placa nesta máquina, quem faz o
+    /// papel dela é um `capsfilter` limitado a NV12 -- um elemento de verdade,
+    /// cujo pad de entrada anuncia só isso, que é exatamente o que a função lê.
+    ///
+    /// Este é o teste que pega alguém fixando um formato na mão de novo: se
+    /// `formato_do_encoder` voltar a devolver I420 sem perguntar, ele cai.
+    #[test]
+    fn sem_i420_cai_no_nv12() {
+        init();
+        let placa_de_mentira = make("capsfilter").expect("capsfilter é do núcleo");
+        placa_de_mentira.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("format", gst::List::new(["NV12", "Y444"]))
+                .build(),
+        );
+        assert_eq!(formato_do_encoder(&placa_de_mentira), "NV12");
+    }
+
+    /// Caps de memória de placa não contam: o que chega ali vem em memória de
+    /// sistema, e aceitar uma variante CUDA daria um formato que não se pode
+    /// pedir ao `videoconvert`.
+    #[test]
+    fn memoria_de_placa_nao_conta() {
+        init();
+        let mut caps = gst::Caps::builder("video/x-raw")
+            .field("format", "P010_10LE")
+            .build();
+        caps.get_mut()
+            .unwrap()
+            .set_features(0, Some(gst::CapsFeatures::new(["memory:CUDAMemory"])));
+        assert!(formatos_de(&caps).is_empty());
+    }
+
+    /// Sem formato nenhum -- placa cujo driver não respondeu -- o codificador
+    /// é recusado antes de entrar no pipeline.
+    #[test]
+    fn caps_vazias_nao_dao_formato() {
+        init();
+        assert!(formatos_de(&gst::Caps::new_empty()).is_empty());
+    }
+
+    /// Monta o começo do publisher com um formato fixo e diz se o pipeline
+    /// chegou a ligar. É a mesma corrente do `build`: filtro, fila, encoder.
+    fn liga_com(formato: &str, encoder: &gst::Element) -> bool {
+        let pipeline = gst::Pipeline::new();
+        let src = make("videotestsrc").expect("videotestsrc é do plugin base");
+        let conv = make("videoconvert").expect("videoconvert é do plugin base");
+        let filtro = make("capsfilter").expect("capsfilter é do núcleo");
+        filtro.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw").field("format", formato).build(),
+        );
+        let fila = make("queue").expect("queue é do núcleo");
+
+        pipeline
+            .add_many([&src, &conv, &filtro, &fila, encoder])
+            .expect("adicionar ao pipeline não falha");
+        gst::Element::link_many([&src, &conv, &filtro, &fila, encoder]).is_ok()
+    }
+
+    /// Fixar um formato que o codificador não aceita quebra o link entre a
+    /// fila e ele -- e perguntar ao codificador resolve.
+    ///
+    /// Este é o defeito que apareceu na máquina do operador, com a mensagem
+    /// `Failed to link elements 'queue3' and 'nvh264enc0'`: o filtro fixava
+    /// I420 e a placa só aceita NV12. Aqui o caso é o espelho -- `openh264enc`
+    /// só aceita I420 -- porque o que se testa é a regra, não a marca da placa,
+    /// e assim o teste roda em máquina sem placa nenhuma.
+    #[test]
+    fn formato_errado_no_filtro_quebra_o_link() {
+        init();
+        let (Ok(errado), Ok(certo)) = (make("openh264enc"), make("openh264enc")) else {
+            // Sem o plugin, não há o que afirmar.
+            return;
+        };
+
+        assert!(
+            !liga_com("NV12", &errado),
+            "fixar um formato que o codificador recusa tem que quebrar o link"
+        );
+        assert!(
+            liga_com(&formato_do_encoder(&certo), &certo),
+            "o formato pedido ao próprio codificador tem que ligar"
+        );
+    }
 }
