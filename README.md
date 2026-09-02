@@ -24,6 +24,15 @@ que existe na máquina, então dá para conferir antes de ligar qualquer cabo:
 apps/engine/target/release/rplayout-devices
 ```
 
+Ele responde também o que falta nesta instalação do GStreamer, separando o que
+o canal **precisa** do que ele dispensa com menos recursos. Elemento que falta
+só se manifesta quando o caminho dele é exercitado -- a gravação que morre no
+primeiro take, a saída SRT que nunca conecta --, e aí a causa está longe do
+sintoma; conferir antes é mais barato.
+
+Para instalar e rodar no Windows, incluindo o que o `cargo` precisa achar e o
+que liberar no firewall: [`docs/WINDOWS.md`](docs/WINDOWS.md).
+
 ## Decisões travadas
 
 - **Plataforma:** Windows (NDI nativo, NVENC, Decklink)

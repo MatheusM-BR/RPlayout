@@ -42,6 +42,68 @@ struct Family {
 struct Devices {
     decklink: Family,
     ndi: Family,
+    /// O que o canal precisa e não está nesta instalação do GStreamer.
+    plugins: Plugins,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Plugins {
+    /// Elementos essenciais que faltam. Vazio é instalação completa.
+    missing: Vec<Missing>,
+    /// Elementos opcionais ausentes: o canal sobe sem eles, com menos recursos.
+    optional: Vec<Missing>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Missing {
+    element: String,
+    /// De qual pacote ele vem, que é a informação que resolve o problema.
+    plugin: String,
+    /// O que deixa de funcionar sem ele.
+    breaks: String,
+}
+
+/// O que o canal usa, com a origem de cada um.
+///
+/// Elemento que falta só aparece quando o caminho dele é exercitado -- a
+/// gravação as-run que morre no primeiro take, a saída SRT que nunca conecta --
+/// e aí a causa está longe do sintoma. Conferir antes é mais barato.
+const REQUIRED: &[(&str, &str, &str)] = &[
+    ("compositor", "base", "a composição do programa"),
+    ("intervideosink", "bad (inter)", "a passagem do item para o canal"),
+    ("uridecodebin", "base", "abrir qualquer arquivo"),
+    ("deinterlace", "good", "entrada entrelaçada"),
+    ("videocrop", "good (videocrop)", "encher a tela cortando a sobra"),
+    ("imagefreeze", "good", "imagem parada na grade"),
+    ("audiomixer", "base", "a mistura de áudio do canal"),
+    ("x264enc", "ugly (x264)", "toda saída de vídeo"),
+    ("avenc_aac", "gst-libav", "o áudio de toda saída"),
+    ("flvmux", "good", "saída RTMP"),
+    ("matroskamux", "good", "a gravação as-run"),
+    ("jpegenc", "good", "as miniaturas do acervo"),
+];
+
+const OPTIONAL: &[(&str, &str, &str)] = &[
+    ("rsvgoverlay", "bad (rsvg)", "o grafismo"),
+    ("rtmp2sink", "bad (rtmp2)", "publicar em RTMP"),
+    ("srtsink", "bad (srt)", "saída SRT"),
+    ("mpegtsmux", "bad (mpegtsmux)", "saída SRT"),
+    ("interlace", "bad", "saída entrelaçada, como 1080i5994"),
+    ("decklinkvideosrc", "bad (decklink)", "entrada e saída por placa"),
+    ("ndisrc", "plugin NDI, instalado à parte", "entrada NDI"),
+];
+
+fn survey(list: &[(&str, &str, &str)]) -> Vec<Missing> {
+    list.iter()
+        .filter(|(element, _, _)| gst::ElementFactory::find(element).is_none())
+        .map(|(element, plugin, breaks)| Missing {
+            element: (*element).to_string(),
+            plugin: (*plugin).to_string(),
+            breaks: (*breaks).to_string(),
+        })
+        .collect()
 }
 
 /// Lista o que um provedor de dispositivos conhece.
@@ -115,6 +177,10 @@ fn main() -> Result<()> {
             "ndi",
             "o plugin NDI (`ndisrc`) não está nesta instalação do GStreamer",
         ),
+        plugins: Plugins {
+            missing: survey(REQUIRED),
+            optional: survey(OPTIONAL),
+        },
     };
 
     println!("{}", serde_json::to_string(&devices)?);
