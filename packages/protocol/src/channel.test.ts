@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatVideoFormat } from './channel.js'
+import { formatVideoFormat, suggestedBitrateKbps } from './channel.js'
 import { RATE } from './rate.js'
 
 describe('nome do formato de vídeo', () => {
@@ -32,5 +32,48 @@ describe('nome do formato de vídeo', () => {
     expect(formatVideoFormat({ height: 1080, rate: RATE['29.97'], scan: 'PROGRESSIVE' })).toBe(
       '1080p2997',
     )
+  })
+})
+
+describe('suggestedBitrateKbps', () => {
+  /**
+   * O ponto do cálculo: o mesmo quadro em cadência dobrada custa o dobro.
+   * Um número fixo -- que era o que havia -- mente exatamente aqui.
+   */
+  it('dobra quando a cadência dobra', () => {
+    const p25 = suggestedBitrateKbps(1920, 1080, { num: 25, den: 1 })
+    const p50 = suggestedBitrateKbps(1920, 1080, { num: 50, den: 1 })
+    // Não é o dobro exato porque o resultado é arredondado para múltiplo de
+    // 250 -- e é esse arredondamento que faz o número ser digitável. A folga
+    // de um degrau é o preço, e é invisível na imagem.
+    expect(Math.abs(p50 - p25 * 2)).toBeLessThanOrEqual(250)
+    expect(p50).toBeGreaterThan(p25 * 1.9)
+  })
+
+  it('cai com a resolução', () => {
+    const cheio = suggestedBitrateKbps(1920, 1080, { num: 30, den: 1 })
+    const metade = suggestedBitrateKbps(960, 540, { num: 30, den: 1 })
+    expect(metade).toBeLessThan(cheio)
+  })
+
+  /** 1080p50 pedia 4 Mbps antes: é a metade do que precisa. */
+  it('dá ao 1080p50 um número de gente grande', () => {
+    expect(suggestedBitrateKbps(1920, 1080, { num: 50, den: 1 })).toBeGreaterThan(7_000)
+  })
+
+  it('respeita piso e teto', () => {
+    expect(suggestedBitrateKbps(64, 64, { num: 25, den: 1 })).toBe(2_000)
+    expect(suggestedBitrateKbps(7680, 4320, { num: 60, den: 1 })).toBe(25_000)
+  })
+
+  /** Número redondo é o que alguém digita quando vai ajustar na mão. */
+  it('sai em múltiplo de 250', () => {
+    for (const [w, h, n] of [
+      [1920, 1080, 30],
+      [1280, 720, 60],
+      [720, 480, 30],
+    ] as const) {
+      expect(suggestedBitrateKbps(w, h, { num: n, den: 1 }) % 250).toBe(0)
+    }
   })
 })

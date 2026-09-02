@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm'
 import {
   framesSinceMidnight,
   secondsToFrames,
+  suggestedBitrateKbps,
   type Channel,
   type GraphicTemplate,
   type ItemGraphic,
@@ -21,7 +22,7 @@ import { ensureDefaultGraphics, Graphics } from './domain/graphics.js'
 import { History } from './domain/history.js'
 import {
   ENGINE_BINARY,
-  ENGINE_BITRATE_KBPS,
+  ENGINE_BITRATE_KBPS_EXPLICITO,
   ENGINE_OUTPUTS,
   MEDIAMTX_BINARY,
   MEDIAMTX_BIND,
@@ -94,7 +95,14 @@ export class ChannelRuntime {
           binary: ENGINE_BINARY,
           outputs: engineOutputs,
           preview: previewOutput,
-          bitrateKbps: ENGINE_BITRATE_KBPS,
+          // O padrão sai do formato do canal, não de um número fixo: 4 Mbps
+          // eram folgados num 480p30 e pobres num 1080p50, que tem oito vezes
+          // mais pixel por segundo -- e imagem pobre com bloco em movimento de
+          // câmera foi o que o operador viu. `RPLAYOUT_ENGINE_BITRATE` ainda
+          // manda, para quem tem motivo para mandar; cada saída pode ter o seu.
+          bitrateKbps:
+            ENGINE_BITRATE_KBPS_EXPLICITO ??
+            suggestedBitrateKbps(channel.width, channel.height, channel.rate),
         })
       : new SimulatedTransport(channel.id, () => this.view)
 

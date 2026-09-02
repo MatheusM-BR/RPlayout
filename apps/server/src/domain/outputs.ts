@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { and, asc, eq } from 'drizzle-orm'
-import type { Channel, Scan } from '@rplayout/protocol'
+import { suggestedBitrateKbps, type Channel, type Scan } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
 import { outputProfiles } from '../db/schema.js'
 import { MediaMtx, type ChannelPaths } from './mediamtx.js'
@@ -71,12 +71,18 @@ export async function ensureManagedOutputs(
     {
       role: 'PREVIEW',
       name: 'Preview',
-      // Metade do tamanho e um terço do bitrate: é um monitor, não uma saída.
-      defaults: {
-        width: Math.max(2, (channel.width / 2) & ~1),
-        height: Math.max(2, (channel.height / 2) & ~1),
-        bitrateKbps: 1500,
-      },
+      // Metade do tamanho: é um monitor, não uma saída. O bitrate sai da
+      // mesma conta do programa, só que sobre um quarto dos pixels -- número
+      // fixo aqui envelhecia junto com o formato do canal.
+      defaults: (() => {
+        const largura = Math.max(2, (channel.width / 2) & ~1)
+        const altura = Math.max(2, (channel.height / 2) & ~1)
+        return {
+          width: largura,
+          height: altura,
+          bitrateKbps: suggestedBitrateKbps(largura, altura, channel.rate),
+        }
+      })(),
     },
   ]
 

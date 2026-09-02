@@ -16,7 +16,17 @@ export const ENGINE_OUTPUTS = (process.env.RPLAYOUT_ENGINE_OUTPUT ?? 'null')
   .map((entry) => entry.trim())
   .filter((entry) => entry !== '')
 
-export const ENGINE_BITRATE_KBPS = Number(process.env.RPLAYOUT_ENGINE_BITRATE ?? 4000)
+/**
+ * Bitrate forçado por variável de ambiente, quando alguém tem motivo.
+ *
+ * Nulo quer dizer "calcule pelo formato do canal", que é o certo na maioria
+ * esmagadora dos casos: um número fixo era generoso num 480p30 e pobre num
+ * 1080p50, e imagem com bloco não se resolve mudando de placa.
+ */
+export const ENGINE_BITRATE_KBPS_EXPLICITO =
+  process.env.RPLAYOUT_ENGINE_BITRATE === undefined
+    ? null
+    : Number(process.env.RPLAYOUT_ENGINE_BITRATE)
 
 /** Binário do MediaMTX. Vazio desliga o servidor local por completo. */
 export const MEDIAMTX_BINARY = process.env.RPLAYOUT_MEDIAMTX ?? ''

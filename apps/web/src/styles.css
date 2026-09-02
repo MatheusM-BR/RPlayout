@@ -1240,3 +1240,21 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
   background: rgba(255, 59, 59, 0.16);
   color: var(--onair);
 }
+
+/* Qualidade por saída, dentro da linha do perfil. */
+.qualidade { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.qualidade label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.qualidade input {
+  /* Cabe "automático (8250)" inteiro: placeholder cortado esconde justamente
+     o número que a pessoa precisa ver para decidir se muda. */
+  width: 168px;
+  padding: 4px 7px;
+  font-size: 11px;
+}
+.qualidade .unidade { font-family: var(--mono); font-size: 10px; color: var(--dim); }

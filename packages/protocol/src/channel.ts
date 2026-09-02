@@ -1,4 +1,4 @@
-import type { Rate } from './rate.js'
+import { fps, type Rate } from './rate.js'
 
 export type SourceKind = 'SDI' | 'NDI' | 'SRT' | 'RTMP' | 'FILE' | 'SLATE'
 
@@ -112,4 +112,33 @@ export function formatVideoFormat(
       : String(Math.round(fps))
 
   return `${channel.height}${interlaced ? 'i' : 'p'}${label}`
+}
+
+/**
+ * Bitrate que um formato pede para não aparecer bloco na imagem.
+ *
+ * Um número fixo mente sobre o custo: 4 Mbps são folgados num 480p30 e ficam
+ * pobres num 1080p50, que tem oito vezes mais pixels por segundo. A conta é a
+ * clássica de bits por pixel: quanto pixel entra por segundo, vezes quanto bit
+ * cada um custa.
+ *
+ * 0,08 bit por pixel é o que o x264 em `veryfast` -- que é o preset de quem
+ * codifica ao vivo -- precisa para um conteúdo normal de TV não mostrar bloco
+ * em movimento de câmera. Preset rápido paga em bitrate o que economiza em
+ * CPU, e num playout a CPU é do ar.
+ *
+ * O piso de 2 Mbps existe porque abaixo disso nem um 360p se segura; o teto de
+ * 25 Mbps porque acima disso a rede é o gargalo, não a imagem.
+ */
+export function suggestedBitrateKbps(
+  width: number,
+  height: number,
+  rate: Rate,
+): number {
+  const pixelsPorSegundo = Math.max(1, width) * Math.max(1, height) * fps(rate)
+  const kbps = (pixelsPorSegundo * 0.08) / 1000
+  // Arredonda para múltiplo de 250: número redondo é o que alguém digita, e a
+  // diferença é invisível na imagem.
+  const redondo = Math.round(kbps / 250) * 250
+  return Math.min(25_000, Math.max(2_000, redondo))
 }

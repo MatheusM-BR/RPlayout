@@ -9,6 +9,7 @@ import {
   framesSinceMidnight,
   isStill,
   secondsToFrames,
+  suggestedBitrateKbps,
   STILL_DEFAULT_SECONDS,
   trimDuration,
   type Anchor,
@@ -1444,11 +1445,24 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const { id } = request.params as { id: string }
     const path = app.paths.find((entry) => entry.channelId === id)
     const rows = await listOutputs(app.db, id)
+    const canal = await getChannel(app.db, id)
     return {
       outputs: rows.map((row) => ({
         ...row,
         // Destino efetivo: derivado nos gerenciados, guardado nos demais.
         resolvedTarget: targetOf(row, path),
+        // Quanto esta saída usaria se ninguém escrevesse um número. Mostrar
+        // isso é o que deixa a escolha ser uma escolha: "automático" sozinho
+        // não diz se são 4 Mbps ou 12.
+        suggestedBitrateKbps: canal
+          ? suggestedBitrateKbps(
+              row.width ?? canal.width,
+              row.height ?? canal.height,
+              row.rateNum !== null && row.rateDen !== null
+                ? { num: row.rateNum, den: row.rateDen }
+                : canal.rate,
+            )
+          : null,
       })),
     }
   })

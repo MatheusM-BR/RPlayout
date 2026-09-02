@@ -81,6 +81,13 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [destName, setDestName] = useState('')
   const [destUrl, setDestUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
+  /**
+   * O que está digitado no campo de qualidade, por saída.
+   *
+   * A lista se recarrega a cada dois segundos; sem guardar o que a pessoa está
+   * escrevendo, o número sumiria do campo no meio da digitação.
+   */
+  const [rascunho, setRascunho] = useState<Record<string, string>>({})
 
   const refresh = useCallback(async () => {
     try {
@@ -109,6 +116,37 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Não consegui aplicar.')
     }
+  }
+
+  /** Grava o que foi digitado. Campo vazio quer dizer "volte ao automático". */
+  const salvarBitrate = (output: OutputProfile): void => {
+    const digitado = rascunho[output.id]
+    if (digitado === undefined) return
+
+    const limpo = digitado.trim()
+    const valor = limpo === '' ? null : Number(limpo)
+    if (valor !== null && (!Number.isFinite(valor) || valor < 500)) {
+      setError('Qualidade em kbps, de 500 para cima.')
+      return
+    }
+    if (valor === output.bitrateKbps) {
+      setRascunho((atual) => {
+        const proximo = { ...atual }
+        delete proximo[output.id]
+        return proximo
+      })
+      return
+    }
+
+    void guard(async () => {
+      await api.patchOutput(output.id, { bitrateKbps: valor === null ? null : Math.round(valor) })
+      setRascunho((atual) => {
+        const proximo = { ...atual }
+        delete proximo[output.id]
+        return proximo
+      })
+      onMessage('Qualidade guardada. Vale no próximo início do canal.')
+    })
   }
 
   const channel = data?.channels.find((entry) => entry.channelId === channelId) ?? data?.channels[0]
@@ -213,6 +251,65 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                     </div>
                     <div className="d mono">{output.resolvedTarget ?? '(sem destino)'}</div>
                     <div className="d">{profileSummary(output)}</div>
+                    {/* Qualidade por saída, escrita à mão.
+                        O mesmo canal costuma ir para lugares com fôlego
+                        diferente: a transmissão principal aguenta o que o
+                        arquivo de gravação nem precisa, e o YouTube tem outro
+                        teto que a operadora do estúdio. Um número só para todas
+                        obriga a escolher entre imagem pobre onde sobra banda e
+                        travamento onde falta. */}
+                    <div className="qualidade">
+                      <label htmlFor={`br-${output.id}`}>qualidade</label>
+                      <input
+                        id={`br-${output.id}`}
+                        type="number"
+                        min={500}
+                        max={80000}
+                        step={250}
+                        value={rascunho[output.id] ?? output.bitrateKbps ?? ''}
+                        placeholder={
+                          output.suggestedBitrateKbps === null
+                            ? 'automático'
+                            : `automático (${output.suggestedBitrateKbps})`
+                        }
+                        onChange={(event) =>
+                          setRascunho((atual) => ({ ...atual, [output.id]: event.target.value }))
+                        }
+                        onBlur={() => salvarBitrate(output)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') event.currentTarget.blur()
+                          if (event.key === 'Escape') {
+                            setRascunho((atual) => {
+                              const proximo = { ...atual }
+                              delete proximo[output.id]
+                              return proximo
+                            })
+                          }
+                        }}
+                      />
+                      <span className="unidade">kbps</span>
+                      {/* Apagar o campo volta ao automático, que acompanha o
+                          formato do canal quando ele muda. */}
+                      {output.bitrateKbps !== null && (
+                        <button
+                          className="btn small"
+                          onClick={() =>
+                            void guard(async () => {
+                              setRascunho((atual) => {
+                                const proximo = { ...atual }
+                                delete proximo[output.id]
+                                return proximo
+                              })
+                              await api.patchOutput(output.id, { bitrateKbps: null })
+                              onMessage('Qualidade no automático. Vale no próximo início do canal.')
+                            })
+                          }
+                          title="Volta a acompanhar o formato do canal"
+                        >
+                          AUTO
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="actions">
                     <button

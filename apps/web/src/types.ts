@@ -74,6 +74,8 @@ export interface OutputProfile {
   rateDen: number | null
   scan: 'PROGRESSIVE' | 'INTERLACED' | null
   bitrateKbps: number | null
+  /** Quanto esta saída usaria sem número escrito. Nulo quando não dá para saber. */
+  suggestedBitrateKbps: number | null
   enabled: boolean
 }
 
