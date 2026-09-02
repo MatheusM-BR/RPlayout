@@ -37,6 +37,14 @@ dizendo que não achou `link.exe`, faltam as ferramentas de C++
 (`winget install Microsoft.VisualStudio.2022.BuildTools`, marcando *Desktop
 development with C++*). O instalador do rustup costuma oferecer isso sozinho.
 
+**MSVC, não MinGW.** A página de download oferece as duas famílias. O Rust no
+Windows usa o toolchain `x86_64-pc-windows-msvc` por padrão e o engine linka
+contra as bibliotecas do GStreamer: biblioteca MinGW não linka com toolchain
+MSVC, e o erro só aparece no fim da compilação, como símbolo não resolvido --
+longe da causa. Confira com `rustc -vV`: a linha `host:` tem de terminar em
+`-msvc`. O instalador MinGW também define outra variável de ambiente
+(`GSTREAMER_1_0_ROOT_MINGW_X86_64`), que o build não procura.
+
 Instale os **dois** pacotes MSI do GStreamer (runtime *e* development) e escolha
 *Complete*. Faltando o development, o `cargo build` não acha as bibliotecas;
 faltando *Complete*, faltam plugins que só dão erro na hora do ar.
