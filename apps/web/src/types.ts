@@ -251,3 +251,12 @@ export interface ScheduleRule {
   categories: string[]
   avoidHours: number
 }
+
+/** Categoria do acervo com a cor que pinta as linhas dela. */
+export interface Categoria {
+  id: string
+  /** Hex `#rrggbb`. */
+  color: string
+  /** Quantos arquivos do acervo estão nela. */
+  items: number
+}

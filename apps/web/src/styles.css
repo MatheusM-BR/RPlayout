@@ -1258,3 +1258,67 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
   font-size: 11px;
 }
 .qualidade .unidade { font-family: var(--mono); font-size: 10px; color: var(--dim); }
+
+/* ---------- cor por categoria ---------- */
+
+/*
+ * A cor da categoria entra como uma faixa na borda esquerda mais um fundo
+ * fraquíssimo. Fraco de propósito: numa grade de cem linhas a cor serve para
+ * achar o bloco de longe, não para competir com o texto que se lê de perto --
+ * e num monitor mal calibrado uma cor forte tira a legibilidade do nome do VT.
+ *
+ * O `:where` zera a especificidade da regra. Sem ele, o seletor com atributo
+ * pesaria mais que `.rd tr.live` e a linha no ar perderia o vermelho dela para
+ * uma cor de categoria -- estado de ar tem que ganhar de organização sempre.
+ */
+.rd tbody tr:where([style*='--cat']) {
+  background: color-mix(in srgb, var(--cat) 9%, transparent);
+}
+.rd tbody tr:where([style*='--cat']) td:first-child {
+  box-shadow: inset 3px 0 0 var(--cat);
+}
+
+.file:where([style*='--cat']) {
+  background: color-mix(in srgb, var(--cat) 8%, transparent);
+  box-shadow: inset 3px 0 0 var(--cat);
+}
+
+/* Categorias na engrenagem: cor, nome, quantos arquivos e a paleta. */
+.categorias { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.categorias li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--raised);
+  border-radius: 2px;
+  padding: 6px 9px;
+}
+.categorias li.vazio { color: var(--dim); font-size: 12px; justify-content: center; padding: 12px; }
+.categorias .amostra {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  flex: 0 0 auto;
+}
+.categorias .nome { font-size: 13px; }
+.categorias .quantos {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+}
+.paleta { display: flex; gap: 3px; }
+.paleta .tinta {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  padding: 0;
+}
+.paleta .tinta:hover { transform: scale(1.15); }
+/* A escolhida ganha um anel claro: sem isso, com nove quadradinhos lado a
+   lado, não dá para saber qual está valendo. */
+.paleta .tinta.escolhida { box-shadow: 0 0 0 2px var(--text); }

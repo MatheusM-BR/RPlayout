@@ -13,6 +13,7 @@ import type {
   Monitors as MonitorFeeds,
   RundownView,
   Snapshot,
+  Categoria,
 } from './types.js'
 import { AddItemDialog, type NewItem } from './components/AddItemDialog.js'
 import { StillDialog } from './components/StillDialog.js'
@@ -48,6 +49,7 @@ export function App() {
   const [view, setView] = useState<RundownView | null>(null)
   const [live, setLive] = useState<Live | null>(null)
   const [folders, setFolders] = useState<LibraryFolder[]>([])
+  const [categorias, setCategorias] = useState<Categoria[]>([])
   const [dialog, setDialog] = useState<Dialog>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -144,9 +146,14 @@ export function App() {
   )
 
   const refreshLibrary = useCallback(async () => {
-    const [library, status] = await Promise.all([api.library(), api.scanStatus()])
+    const [library, status, cats] = await Promise.all([
+      api.library(),
+      api.scanStatus(),
+      api.categories(),
+    ])
     setFolders(library.folders)
     setScan(status)
+    setCategorias(cats.categories)
     return status
   }, [])
 
@@ -537,6 +544,17 @@ export function App() {
     })
   }
 
+  /**
+   * A cor de cada categoria, para a grade e o explorador pintarem a linha.
+   *
+   * Cor é o que faz o operador achar o bloco comercial no meio de uma grade de
+   * cem linhas sem ler nome nenhum.
+   */
+  const coresDeCategoria = useMemo(
+    () => new Map(categorias.map((categoria) => [categoria.id, categoria.color])),
+    [categorias],
+  )
+
   /** Categorias que já existem no acervo, para o explorador oferecer. */
   const categories = useMemo(
     () =>
@@ -763,6 +781,7 @@ export function App() {
             rate={rate}
             openAssetId={openAssetId}
             categories={categories}
+            categoryColors={coresDeCategoria}
             onPreview={(assetId) => void command('cue', { assetId })}
             // O caminho de todo dia é pôr no fim da grade. Quem precisa de hora
             // marcada usa INSERIR ITEM, que é onde as âncoras moram.
@@ -809,6 +828,7 @@ export function App() {
               onOpenGraphics={(item) => setDialog({ kind: 'itemGraphics', view: item })}
               onDropAsset={inserirEm}
               onRemove={removerItem}
+              categoryColors={coresDeCategoria}
               onNotes={saveNotes}
             />
           </div>

@@ -32,6 +32,7 @@ import { backupDatabase, listBackups } from './domain/backup.js'
 import { syncDistribution } from './app.js'
 import { PORTS } from './domain/mediamtx.js'
 import {
+  categories,
   channels,
   destinations,
   rundowns,
@@ -61,6 +62,14 @@ import type { RundownView } from './domain/plan.js'
  * `<video>` recusa na hora, que é o sinal para a interface cair na régua de
  * quadros em vez de fingir que vai tocar.
  */
+/**
+ * Cor de categoria que ninguém escolheu ainda.
+ *
+ * Cinza-azulado do próprio painel: não chama atenção, e é o que faz a cor
+ * escolhida significar alguma coisa quando aparece ao lado.
+ */
+const COR_PADRAO = '#5570ab'
+
 const MIME: Record<string, string> = {
   '.mp4': 'video/mp4',
   '.m4v': 'video/mp4',
@@ -542,11 +551,76 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   /** As categorias que existem no acervo, para a interface oferecer. */
+  /**
+   * Categorias do acervo, com a cor e quantos arquivos cada uma tem.
+   *
+   * A lista é a união de duas fontes: o que a tabela guarda e o que os
+   * arquivos dizem. Categoria digitada no explorador antes de alguém escolher
+   * cor aparece assim mesmo, com a cor padrão -- sumir dela seria perder o que
+   * o operador já classificou.
+   */
   server.get('/api/categories', async () => {
     const assets = await listAssets(app.db)
-    const found = new Set<string>()
-    for (const asset of assets) if (asset.categoryId) found.add(asset.categoryId)
-    return { categories: [...found].sort() }
+    const contagem = new Map<string, number>()
+    for (const asset of assets) {
+      if (!asset.categoryId) continue
+      contagem.set(asset.categoryId, (contagem.get(asset.categoryId) ?? 0) + 1)
+    }
+
+    const salvas = await app.db.select().from(categories)
+    const cores = new Map(salvas.map((linha) => [linha.id, linha.color]))
+    const nomes = new Set([...contagem.keys(), ...cores.keys()])
+
+    return {
+      categories: [...nomes]
+        .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+        .map((id) => ({
+          id,
+          color: cores.get(id) ?? COR_PADRAO,
+          items: contagem.get(id) ?? 0,
+        })),
+    }
+  })
+
+  const corValida = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Cor em #rrggbb.')
+
+  /** Cria a categoria ou troca a cor dela. O nome é a chave. */
+  server.put('/api/categories/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z.object({ color: corValida }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Cor em #rrggbb.' })
+    if (id.trim() === '') return reply.code(400).send({ error: 'A categoria precisa de nome.' })
+
+    const [existente] = await app.db.select().from(categories).where(eq(categories.id, id))
+    if (existente) {
+      await app.db.update(categories).set({ color: body.data.color }).where(eq(categories.id, id))
+    } else {
+      await app.db.insert(categories).values({
+        id,
+        color: body.data.color,
+        createdAt: new Date().toISOString(),
+      })
+    }
+    onChange()
+    return { ok: true }
+  })
+
+  /**
+   * Apaga a categoria e tira a marca dos arquivos dela.
+   *
+   * Deixar a marca em arquivo cuja categoria não existe mais daria uma cor
+   * fantasma na grade e uma opção que não aparece em lista nenhuma.
+   */
+  server.delete('/api/categories/:id', async (request) => {
+    const { id } = request.params as { id: string }
+    await app.db.delete(categories).where(eq(categories.id, id))
+    const soltos = await app.db
+      .update(mediaAssets)
+      .set({ categoryId: null })
+      .where(eq(mediaAssets.categoryId, id))
+    for (const runtime of app.runtimes.values()) await runtime.refresh()
+    onChange()
+    return { ok: true, soltos: soltos.changes ?? 0 }
   })
 
   /**

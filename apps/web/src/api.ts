@@ -14,6 +14,7 @@ import type {
   ScheduleRule,
   LibraryFolder,
   OutputProfile,
+  Categoria,
   ScanStatus,
   Snapshot,
   SourceList,
@@ -148,6 +149,17 @@ export const api = {
       avoidHours: number
     },
   ) => post<{ rule: ScheduleRule }>(`/api/channels/${channelId}/rules`, body),
+  categories: () => send<{ categories: Categoria[] }>('/api/categories'),
+  setCategoryColor: (id: string, color: string) =>
+    send<{ ok: true }>(`/api/categories/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ color }),
+    }),
+  removeCategory: (id: string) =>
+    send<{ ok: true; soltos: number }>(`/api/categories/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+
   removeRule: (id: string) => send<{ ok: true }>(`/api/rules/${id}`, { method: 'DELETE' }),
   autoFillDay: (rundownId: string) =>
     post<Snapshot & { bands: { rule: string; items: number; leftover: number }[] }>(

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { isStill } from '@rplayout/protocol'
 import type { Channel, Fit, ItemType, Rate, ResolvedItem } from '@rplayout/protocol'
 import type { ItemView } from '../types.js'
@@ -28,6 +28,8 @@ interface Props {
   onDropAsset: (assetId: string, atIndex: number) => void
   /** Tira o item da grade. */
   onRemove: (id: string) => void
+  /** Cor de cada categoria, para pintar a linha do item. */
+  categoryColors: Map<string, string>
   onNotes: (id: string, notes: string) => void
 }
 
@@ -158,6 +160,12 @@ export function Rundown(props: Props) {
             .filter(Boolean)
             .join(' ')
 
+          // Cor da categoria do arquivo, fraca o bastante para o texto continuar
+          // legível por cima. Sem categoria, sem cor: linha pintada sem motivo
+          // é ruído, e a cor só significa alguma coisa quando nem todas têm.
+          const categoria = view.asset?.categoryId ?? null
+          const cor = categoria === null ? null : props.categoryColors.get(categoria) ?? null
+
           const progress =
             live && scheduled.duration > 0
               ? Math.min(1, Math.max(0, 1 - props.remainingOnAir / scheduled.duration))
@@ -186,6 +194,10 @@ export function Rundown(props: Props) {
               <tr
                 ref={live ? liveRow : null}
                 className={classes}
+                // A cor entra como variável, e o CSS decide a força dela por
+                // estado: no ar e armado têm cor própria e mandam mais.
+                style={cor ? ({ '--cat': cor } as CSSProperties) : undefined}
+                title={categoria ? `Categoria: ${categoria}` : undefined}
                 draggable
                 onDragStart={(event) => {
                   setDragId(id)

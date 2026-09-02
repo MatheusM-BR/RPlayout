@@ -253,3 +253,17 @@ export const destinations = sqliteTable('destinations', {
   enabled: integer('enabled', { mode: 'boolean' }).notNull(),
   createdAt: text('created_at').notNull(),
 })
+
+/**
+ * Categorias do acervo, com a cor que pinta a linha na grade.
+ *
+ * O `id` é o próprio nome. Antes desta tabela, `media_assets.category_id` já
+ * guardava texto livre digitado pelo operador; usar o nome como chave faz o
+ * que já estava lá continuar valendo sem migração nenhuma.
+ */
+export const categories = sqliteTable('categories', {
+  id: text('id').primaryKey(),
+  /** Cor em hex, `#rrggbb`. */
+  color: text('color').notNull(),
+  createdAt: text('created_at').notNull(),
+})

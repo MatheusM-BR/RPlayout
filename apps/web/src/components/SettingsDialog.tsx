@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { formatVideoFormat, type Channel } from '@rplayout/protocol'
 import { api } from '../api.js'
 import { BUILD_COMMIT, buildDate } from '../build.js'
+import { CategoriasPanel } from './CategoriasPanel.js'
 
 interface Props {
   channel: Channel
@@ -123,6 +124,8 @@ export function SettingsDialog({
             é isso que faz um cair sem levar o outro — e é isso que faz vários canais somarem CPU.
           </div>
 
+          <CategoriasPanel onMessage={onMessage} onChanged={onChanged} />
+
           <div className="field">
             <label>Ajustes deste canal</label>
             <div className="atalhos">
@@ -131,7 +134,7 @@ export function SettingsDialog({
                 <i>{formatVideoFormat(channel)}</i>
               </button>
               <button className="btn" onClick={onOpenDistribution}>
-                distribuição
+                stream
                 <i>saídas, convidados e destinos</i>
               </button>
               <button className="btn" onClick={onOpenGraphics}>

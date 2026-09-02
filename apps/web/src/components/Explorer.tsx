@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type CSSProperties } from 'react'
 import { durationIn, type Rate } from '@rplayout/protocol'
 import type { LibraryFolder, ScanStatus } from '../types.js'
 import { dur, lufs } from '../format.js'
@@ -10,6 +10,8 @@ interface Props {
   openAssetId: string | null
   /** Categorias que já existem no acervo. */
   categories: string[]
+  /** Cor de cada categoria, para pintar a linha do arquivo. */
+  categoryColors: Map<string, string>
   onPreview: (assetId: string) => void
   /** Põe o arquivo no fim da grade, sem diálogo: é o caminho de todo dia. */
   onInsert: (assetId: string) => void
@@ -32,6 +34,7 @@ export function Explorer({
   rate,
   openAssetId,
   categories,
+  categoryColors,
   onPreview,
   onInsert,
   onRemove,
@@ -149,6 +152,13 @@ export function Explorer({
                       // algo com sentido em vez de nada.
                       event.dataTransfer.setData('text/plain', asset.title)
                     }}
+                    // Mesma cor da grade: o arquivo é reconhecido no
+                    // explorador antes de entrar na programação.
+                    style={
+                      asset.categoryId && categoryColors.get(asset.categoryId)
+                        ? ({ '--cat': categoryColors.get(asset.categoryId) } as CSSProperties)
+                        : undefined
+                    }
                     onClick={() => !asset.probeError && onPreview(asset.id)}
                     title={
                       asset.probeError

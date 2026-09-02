@@ -166,6 +166,15 @@ CREATE TABLE IF NOT EXISTS as_run (
 );
 CREATE INDEX IF NOT EXISTS as_run_channel ON as_run (channel_id, started_at);
 
+-- Categorias do acervo. O id é o próprio nome, que é o que já estava gravado
+-- em media_assets.category_id antes desta tabela existir: assim o que o
+-- operador digitou continua valendo, e a tabela só acrescenta a cor.
+CREATE TABLE IF NOT EXISTS categories (
+  id TEXT PRIMARY KEY,
+  color TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS operator_decisions (
   id TEXT PRIMARY KEY,
   rundown_id TEXT NOT NULL,
