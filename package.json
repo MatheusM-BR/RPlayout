@@ -4,13 +4,17 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.33.0",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "pnpm -r --parallel run typecheck",
     "lint": "eslint .",
-    "dev": "pnpm -r --parallel run dev"
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm --filter @rplayout/web build",
+    "start": "pnpm --filter @rplayout/server start"
   },
   "devDependencies": {
     "@eslint/js": "^9.14.0",

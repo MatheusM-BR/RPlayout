@@ -109,9 +109,53 @@ material, e nenhum daqueles arquivos existe em disco.
 E se o banco estiver vazio -- sem seed nenhum --, a interface abre pedindo o
 nome do primeiro canal, em vez de ficar carregando para sempre.
 
+## Em produção, com a interface na mesma porta
+
+O bloco acima é desenvolvimento: dois processos, e o `vite` não é feito para
+ficar meses no ar. Para operar de verdade, construa a interface uma vez -- o
+servidor passa a servi-la:
+
+```powershell
+cd C:\RPlayout
+pnpm build
+
+$env:RPLAYOUT_ENGINE   = 'C:\RPlayout\apps\engine\target\release\rplayout-engine.exe'
+$env:RPLAYOUT_PROBE    = 'C:\RPlayout\apps\engine\target\release\rplayout-probe.exe'
+$env:RPLAYOUT_DEVICES  = 'C:\RPlayout\apps\engine\target\release\rplayout-devices.exe'
+$env:RPLAYOUT_RELAY    = 'C:\RPlayout\apps\engine\target\release\rplayout-relay.exe'
+$env:RPLAYOUT_MEDIAMTX = 'C:\RPlayout\mediamtx\mediamtx.exe'
+$env:RPLAYOUT_MEDIA    = 'C:\RPlayout\midia'
+pnpm start
+```
+
+A tela abre em <http://localhost:4000> -- ou pelo IP da máquina, de outro
+computador da rede. Repetir `pnpm build` só é necessário quando a interface
+mudar.
+
+### Subir sozinho quando a máquina ligar
+
+Sem instalar nada, pelo Agendador de Tarefas. Crie `C:\RPlayout\subir.cmd`:
+
+```bat
+@echo off
+cd /d C:\RPlayout
+set RPLAYOUT_ENGINE=C:\RPlayout\apps\engine\target\release\rplayout-engine.exe
+set RPLAYOUT_PROBE=C:\RPlayout\apps\engine\target\release\rplayout-probe.exe
+set RPLAYOUT_DEVICES=C:\RPlayout\apps\engine\target\release\rplayout-devices.exe
+set RPLAYOUT_RELAY=C:\RPlayout\apps\engine\target\release\rplayout-relay.exe
+set RPLAYOUT_MEDIAMTX=C:\RPlayout\mediamtx\mediamtx.exe
+set RPLAYOUT_MEDIA=C:\RPlayout\midia
+pnpm start
+```
+
+e uma tarefa que o execute **ao iniciar o computador**, com "executar mesmo sem
+usuário conectado" e "reiniciar em caso de falha". O canal anda com ou sem
+navegador aberto: fechar a tela não para a programação.
+
 ## Firewall
 
-O Windows vai perguntar na primeira publicação. Libere **1935** (RTMP, onde os
+O Windows vai perguntar na primeira publicação. Libere **4000** (a interface e a
+API, se outro computador da rede for abrir a tela), **1935** (RTMP, onde os
 convidados publicam), **8890/udp** (SRT) e **8889** (WebRTC, que é como os
 monitores da interface recebem imagem). Não libere **9997** nem **8554**: são a
 API de controle e o RTSP interno, ficam em loopback de propósito.

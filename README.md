@@ -110,6 +110,32 @@ descobriria no primeiro take.
 Banco vazio, sem seed nenhum, também tem caminho: a interface abre pedindo o
 nome do primeiro canal em vez de ficar carregando para sempre.
 
+### Em produção
+
+Os comandos acima são de desenvolvimento: dois processos, e o `vite` não é feito
+para ficar meses no ar. Numa máquina de playout constrói-se a interface uma vez
+e o próprio servidor a serve, de uma porta só:
+
+```bash
+pnpm build                                    # gera apps/web/dist
+RPLAYOUT_ENGINE=apps/engine/target/release/rplayout-engine \
+RPLAYOUT_PROBE=apps/engine/target/release/rplayout-probe \
+RPLAYOUT_DEVICES=apps/engine/target/release/rplayout-devices \
+RPLAYOUT_MEDIAMTX=/caminho/para/mediamtx \
+RPLAYOUT_MEDIA=/caminho/para/midia \
+pnpm start
+```
+
+A interface abre em `http://<a-máquina>:4000` -- a mesma porta da API e do
+WebSocket, sem `vite` nenhum. Achando `apps/web/dist`, o servidor a serve e
+devolve `index.html` para qualquer caminho que não seja `/api` nem `/ws`, para
+recarregar numa rota interna não dar 404. Sem a pasta construída ele sobe do
+mesmo jeito, e aí quem serve a interface é o `vite` em desenvolvimento.
+
+O servidor escuta em todas as interfaces (`HOST` e `PORT` mudam isso), então
+outro operador na mesma rede abre a mesma tela -- o estado ao vivo é o mesmo
+para todos.
+
 `pnpm test` roda a suíte; `pnpm typecheck` e `pnpm lint` cobrem o resto.
 A grade semeada nasce a partir do relógio da máquina, então as âncoras fecham a
 qualquer hora do dia.

@@ -1,4 +1,8 @@
+import { existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import cors from '@fastify/cors'
+import fastifyStatic from '@fastify/static'
 import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
 import { createApp, runtimeFor, syncDistribution } from './app.js'
@@ -16,6 +20,32 @@ async function main(): Promise<void> {
 
   await server.register(cors, { origin: true })
   await server.register(websocket)
+
+  /**
+   * A interface construída, servida pelo próprio servidor.
+   *
+   * Numa máquina de playout não se roda servidor de desenvolvimento: são dois
+   * processos para o operador cuidar, e o `vite` não é feito para ficar meses
+   * no ar. Com `pnpm build` feito, tudo sai de uma porta só.
+   *
+   * Sem a pasta construída o servidor sobe do mesmo jeito -- é o modo de
+   * desenvolvimento, em que quem serve a interface é o `vite` na 5173.
+   */
+  const web = resolve(dirname(fileURLToPath(import.meta.url)), '../../web/dist')
+  if (existsSync(join(web, 'index.html'))) {
+    await server.register(fastifyStatic, { root: web })
+
+    // A interface é uma página só: qualquer caminho que não seja da API nem
+    // arquivo existente devolve o `index.html`, senão recarregar numa rota
+    // interna daria 404.
+    server.setNotFoundHandler((request, reply) => {
+      if (request.url.startsWith('/api') || request.url.startsWith('/ws')) {
+        return reply.code(404).send({ error: 'Rota não existe.' })
+      }
+      return reply.sendFile('index.html')
+    })
+    server.log.info(`RPlayout · interface servida de ${web}`)
+  }
 
   const sockets = new Set<{ send: (data: string) => void }>()
 
