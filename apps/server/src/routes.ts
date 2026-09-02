@@ -1739,11 +1739,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const body = z
       .object({
         name: z.string().min(1),
-        kind: z.enum(['RTMP', 'SRT', 'FILE']),
+        kind: z.enum(['RTMP', 'SRT', 'FILE', 'SDI']),
         target: z.string().min(1),
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Dê um nome e um destino.' })
+    // Na placa o destino é o número do conector, e só isso.
+    if (body.data.kind === 'SDI' && !/^\d+$/.test(body.data.target.trim())) {
+      return reply.code(400).send({ error: 'Na SDI o destino é o número do conector: 0, 1, 2…' })
+    }
 
     const row = await createOutput(app.db, id, body.data)
     // Saída nova só existe no engine no próximo start do canal: mexer no
@@ -1758,7 +1762,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .object({
         name: z.string().min(1).optional(),
         target: z.string().min(1).optional(),
-        kind: z.enum(['RTMP', 'SRT', 'FILE']).optional(),
+        kind: z.enum(['RTMP', 'SRT', 'FILE', 'SDI']).optional(),
         width: z.number().int().positive().nullable().optional(),
         height: z.number().int().positive().nullable().optional(),
         rateNum: z.number().int().positive().nullable().optional(),

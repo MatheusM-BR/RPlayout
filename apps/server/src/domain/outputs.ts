@@ -6,7 +6,14 @@ import { outputProfiles } from '../db/schema.js'
 import { MediaMtx, type ChannelPaths } from './mediamtx.js'
 
 export type OutputRole = 'PROGRAM' | 'PREVIEW' | 'MONITOR' | 'EXTRA'
-export type OutputKind = 'RTMP' | 'SRT' | 'FILE'
+/**
+ * Para onde uma saída vai.
+ *
+ * `SDI` é diferente das outras três: não passa por codificador nem por rede,
+ * sai crua no formato do canal e quem faz o relógio é a placa. O que se
+ * escolhe nela é o conector, não o bitrate.
+ */
+export type OutputKind = 'RTMP' | 'SRT' | 'FILE' | 'SDI'
 
 export interface OutputProfileRow {
   id: string
@@ -132,6 +139,8 @@ export function targetOf(row: OutputProfileRow, path: ChannelPaths | undefined):
   if (row.role === 'PROGRAM') return path ? MediaMtx.loopback(path.program) : null
   if (row.role === 'PREVIEW') return path ? MediaMtx.loopback(path.preview) : null
   if (row.role === 'MONITOR') return path ? MediaMtx.loopback(path.monitor) : null
+  // Na placa o "destino" é o número do conector, guardado no alvo.
+  if (row.kind === 'SDI') return row.target || null
   return row.target || null
 }
 
@@ -139,9 +148,14 @@ export function targetOf(row: OutputProfileRow, path: ChannelPaths | undefined):
 export function toEngineProfile(
   row: OutputProfileRow,
   path: ChannelPaths | undefined,
-): EngineProfile | null {
+): EngineProfile | string | null {
   const target = targetOf(row, path)
   if (!target || !row.enabled) return null
+
+  // A saída por placa não tem perfil: ela sai crua, no formato do canal, e o
+  // que existe para escolher é qual conector. Vai pelo atalho `sdi:N`, que o
+  // engine entende sem passar por JSON.
+  if (row.kind === 'SDI') return `sdi:${target}`
 
   return {
     kind: row.kind.toLowerCase() as EngineProfile['kind'],
@@ -160,7 +174,9 @@ export function toEngineProfile(
   }
 }
 
-export const encodeProfile = (profile: EngineProfile): string => JSON.stringify(profile)
+/** Atalho sai como está; perfil vira JSON. */
+export const encodeProfile = (profile: EngineProfile | string): string =>
+  typeof profile === 'string' ? profile : JSON.stringify(profile)
 
 export async function createOutput(
   db: Db,

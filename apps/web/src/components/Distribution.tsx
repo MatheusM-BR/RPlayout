@@ -79,7 +79,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [outputs, setOutputs] = useState<OutputProfile[]>([])
   const [outName, setOutName] = useState('')
   const [outTarget, setOutTarget] = useState('')
-  const [outKind, setOutKind] = useState<'RTMP' | 'SRT' | 'FILE'>('RTMP')
+  const [outKind, setOutKind] = useState<'RTMP' | 'SRT' | 'FILE' | 'SDI'>('RTMP')
   const [guestLabel, setGuestLabel] = useState('')
   const [destName, setDestName] = useState('')
   const [destUrl, setDestUrl] = useState('')
@@ -361,10 +361,17 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                 <option value="RTMP">RTMP</option>
                 <option value="SRT">SRT</option>
                 <option value="FILE">Arquivo</option>
+                <option value="SDI">SDI (placa)</option>
               </select>
               <input
                 type="text"
-                placeholder={outKind === 'FILE' ? 'caminho do arquivo' : 'rtmp://...'}
+                placeholder={
+                  outKind === 'FILE'
+                    ? 'caminho do arquivo'
+                    : outKind === 'SDI'
+                      ? 'número do conector: 0, 1, 2…'
+                      : 'rtmp://...'
+                }
                 value={outTarget}
                 onChange={(event) => setOutTarget(event.target.value)}
               />

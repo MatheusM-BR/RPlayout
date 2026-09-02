@@ -884,3 +884,104 @@ mod testes_monitor {
         assert_eq!(p.report().health, Health::Retrying);
     }
 }
+
+/// O nome que o Decklink dá ao formato de vídeo do canal.
+///
+/// A placa não aceita largura, altura e cadência soltas: ela tem uma lista
+/// fechada de modos, e o `decklinkvideosink` quer o nome exato de um deles.
+/// Errar aqui não dá imagem torta -- dá pipeline que não liga, e a saída
+/// simplesmente não existe.
+///
+/// A cadência do canal é sempre de **quadros**. Um 1080i59,94 tem 29,97
+/// quadros e 59,94 campos, e é por isso que a linha entrelaçada de 29,97
+/// aponta para `1080i5994`: o número no nome do modo é de campos.
+///
+/// Nulo quer dizer "esta placa não tem modo para este formato", e é melhor
+/// dizer isso do que escolher um parecido: sair em 1080i quando o canal é
+/// 1080p muda o que vai ao ar.
+pub fn decklink_mode(width: i32, height: i32, fps_n: i32, fps_d: i32, interlaced: bool) -> Option<&'static str> {
+    // Milésimos de quadro por segundo: 29,97 vira 29970 e cabe num inteiro,
+    // sem a comparação de ponto flutuante que erra por um bit.
+    let milesimos = (fps_n as i64 * 1000 / fps_d.max(1) as i64) as i32;
+
+    match (width, height, interlaced) {
+        (1920, 1080, false) => Some(match milesimos {
+            23976 => "1080p2398",
+            24000 => "1080p24",
+            25000 => "1080p25",
+            29970 => "1080p2997",
+            30000 => "1080p30",
+            50000 => "1080p50",
+            59940 => "1080p5994",
+            60000 => "1080p60",
+            _ => return None,
+        }),
+        (1920, 1080, true) => Some(match milesimos {
+            // O nome conta campos: 25 quadros entrelaçados são 50 campos.
+            25000 => "1080i50",
+            29970 => "1080i5994",
+            30000 => "1080i60",
+            _ => return None,
+        }),
+        (1280, 720, false) => Some(match milesimos {
+            50000 => "720p50",
+            59940 => "720p5994",
+            60000 => "720p60",
+            _ => return None,
+        }),
+        // Definição padrão, que ainda existe em muita ilha de exibição.
+        (720, 486, true) | (720, 480, true) if milesimos == 29970 => Some("ntsc"),
+        (720, 576, true) if milesimos == 25000 => Some("pal"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod testes_decklink {
+    use super::decklink_mode;
+
+    /// O formato padrão daqui. Se este errar, não sai imagem pela placa.
+    #[test]
+    fn o_formato_da_casa() {
+        assert_eq!(decklink_mode(1920, 1080, 30000, 1001, false), Some("1080p2997"));
+    }
+
+    /// O nome do modo conta campos, não quadros: 29,97 quadros entrelaçados
+    /// são 59,94 campos. Confundir os dois é escolher o modo errado.
+    #[test]
+    fn entrelacado_conta_campos() {
+        assert_eq!(decklink_mode(1920, 1080, 30000, 1001, true), Some("1080i5994"));
+        assert_eq!(decklink_mode(1920, 1080, 25, 1, true), Some("1080i50"));
+    }
+
+    /// 29,97 e 30 são modos diferentes na placa, e a diferença é de 0,1%: em
+    /// meia hora é um quadro de deriva.
+    #[test]
+    fn ntsc_nao_e_trinta_exatos() {
+        assert_ne!(
+            decklink_mode(1920, 1080, 30000, 1001, false),
+            decklink_mode(1920, 1080, 30, 1, false)
+        );
+    }
+
+    #[test]
+    fn setecentos_e_vinte() {
+        assert_eq!(decklink_mode(1280, 720, 60000, 1001, false), Some("720p5994"));
+        assert_eq!(decklink_mode(1280, 720, 50, 1, false), Some("720p50"));
+    }
+
+    #[test]
+    fn definicao_padrao() {
+        assert_eq!(decklink_mode(720, 486, 30000, 1001, true), Some("ntsc"));
+        assert_eq!(decklink_mode(720, 576, 25, 1, true), Some("pal"));
+    }
+
+    /// Formato sem modo na placa devolve nulo, e quem chama recusa a saída --
+    /// escolher um parecido mudaria o que vai ao ar sem avisar.
+    #[test]
+    fn formato_sem_modo_e_nulo() {
+        assert_eq!(decklink_mode(1920, 1080, 48, 1, false), None);
+        assert_eq!(decklink_mode(1024, 768, 30, 1, false), None);
+        assert_eq!(decklink_mode(1280, 720, 25, 1, false), None);
+    }
+}

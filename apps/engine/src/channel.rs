@@ -34,6 +34,12 @@ pub enum Output {
     Snapshot(String),
     /// Saída codificada, com perfil próprio.
     Encoded(OutputSpec),
+    /// Saída por placa SDI. `sdi:0` é o primeiro sub-dispositivo da placa.
+    ///
+    /// Não passa por codificador: o sinal sai cru, no formato do canal, e é a
+    /// placa que faz o relógio. Por isso ela não tem bitrate nem perfil -- o
+    /// que existe para escolher é qual conector.
+    Sdi { device: i32 },
 }
 
 /// Perfil de uma saída codificada.
@@ -102,6 +108,9 @@ impl Output {
             Some(("rtmp", _)) => Ok(shorthand(Kind::Rtmp, text.to_string())),
             Some(("srt", _)) => Ok(shorthand(Kind::Srt, text.to_string())),
             Some(("snapshot", pattern)) => Ok(Output::Snapshot(pattern.to_string())),
+            Some(("sdi", index)) => Ok(Output::Sdi {
+                device: index.parse().context("índice de SDI inválido")?,
+            }),
             _ => Err(anyhow!("saída desconhecida: {text}")),
         }
     }
@@ -367,6 +376,8 @@ pub struct Channel {
     frames_out: Arc<AtomicU64>,
     /// Saídas de rede. Cada uma tem pipeline próprio e cai sozinha.
     publishers: Vec<Publisher>,
+    /// Conectores SDI usados como saída. Vazio quando não há nenhuma.
+    sdi_devices: Vec<i32>,
     /// Barramento de preview: nomes do par `inter` e o que estiver aberto nele.
     preview_channels: Option<(String, String)>,
     previewing: Option<Item>,
@@ -418,7 +429,24 @@ fn open_failure(spec: &ItemSpec, where_: &str) -> String {
 /// `uridecodebin` do arquivo -- é o mesmo pipeline, e é por isso que um estúdio
 /// ao vivo e um VT são a mesma coisa para o resto do canal. Placa e NDI têm
 /// elemento próprio.
-fn source_for(spec: &ItemSpec) -> Result<gst::Element> {
+/// A entrada de um item ao vivo.
+///
+/// Placa entrega vídeo e áudio por elementos separados -- são dois fluxos
+/// diferentes do mesmo conector --, enquanto arquivo e rede entregam os dois
+/// pelo mesmo decodificador. Quem monta o item precisa saber a diferença.
+pub struct LiveInput {
+    pub video: gst::Element,
+    /// Fonte de áudio separada, quando existe.
+    pub audio: Option<gst::Element>,
+    /// Os pads aparecem depois (decodificador) ou já existem (placa)?
+    ///
+    /// Não é detalhe: quem tem pad estático nunca dispara `pad-added`, e uma
+    /// montagem que só espera por esse sinal deixa a entrada sem imagem e sem
+    /// som -- que era o que acontecia com a SDI.
+    pub dynamic: bool,
+}
+
+fn source_for(spec: &ItemSpec) -> Result<LiveInput> {
     let Some(source) = spec.source.as_deref() else {
         let src = make("uridecodebin")?;
         let uri = if spec.path.contains("://") {
@@ -427,7 +455,7 @@ fn source_for(spec: &ItemSpec) -> Result<gst::Element> {
             gst::glib::filename_to_uri(&spec.path, None)?.to_string()
         };
         src.set_property("uri", &uri);
-        return Ok(src);
+        return Ok(LiveInput { video: src, audio: None, dynamic: true });
     };
 
     if source.contains("://") {
@@ -436,27 +464,41 @@ fn source_for(spec: &ItemSpec) -> Result<gst::Element> {
         // Fonte ao vivo não pode ficar remoendo: o buffer que interessa é o
         // mínimo que segura o jitter da rede, e o resto é atraso no ar.
         src.set_property("buffer-duration", 500_000_000i64);
-        return Ok(src);
+        return Ok(LiveInput { video: src, audio: None, dynamic: true });
     }
 
     match source.split_once(':') {
         Some(("sdi", index)) => {
+            let device = index.parse::<i32>().context("índice de SDI inválido")?;
             let src = make("decklinkvideosrc")?;
-            src.set_property(
-                "device-number",
-                index.parse::<i32>().context("índice de SDI inválido")?,
-            );
+            src.set_property("device-number", device);
             // `auto` deixa a placa detectar o formato do sinal que chegou, que
             // é o que o operador espera de uma entrada.
             src.set_property_from_str("mode", "auto");
-            Ok(src)
+
+            // O áudio embutido no SDI vem por elemento próprio, no mesmo
+            // dispositivo. Sem ele a entrada ao vivo entra muda -- e mudo no
+            // ar é o defeito que só quem está de fone descobre.
+            let audio = make("decklinkaudiosrc")
+                .inspect(|a| a.set_property("device-number", device))
+                .ok();
+            if audio.is_none() {
+                eprintln!("[engine] sem `decklinkaudiosrc`: a entrada SDI vai entrar muda");
+            }
+
+            Ok(LiveInput { video: src, audio, dynamic: false })
         }
         Some(("ndi", name)) => {
             let src = make("ndisrc").context(
                 "a entrada NDI precisa do plugin `ndisrc`, que não está nesta instalação",
             )?;
             src.set_property("ndi-name", name);
-            Ok(src)
+            // O `ndisrc` entrega um fluxo combinado; quem separa vídeo de áudio
+            // é o demux, e é dele que os pads nascem.
+            let demux = make("ndisrcdemux").context(
+                "a entrada NDI precisa do `ndisrcdemux`, que vem no mesmo plugin",
+            )?;
+            Ok(LiveInput { video: src, audio: Some(demux), dynamic: true })
         }
         _ => Err(anyhow!("fonte ao vivo desconhecida: {source}")),
     }
@@ -831,6 +873,7 @@ impl Channel {
             armed: None,
             frames_out,
             publishers: Vec::new(),
+            sdi_devices: Vec::new(),
             preview_channels: None,
             previewing: None,
             meter: Meter::new(48_000, 2),
@@ -911,6 +954,10 @@ impl Channel {
             Output::Encoded(spec) => {
                 self.attach_encoded(index, spec, &vqueue, &aqueue)?;
             }
+            Output::Sdi { device } => {
+                self.attach_sdi(*device, &vqueue, &aqueue)?;
+                self.sdi_devices.push(*device);
+            }
         }
 
         tee_video
@@ -930,6 +977,97 @@ impl Channel {
                     .ok_or_else(|| anyhow!("queue de áudio sem sink"))?,
             )?;
 
+        Ok(())
+    }
+
+    /// Saída por placa SDI.
+    ///
+    /// Ao contrário das saídas de rede, esta fica **dentro** do pipeline do
+    /// canal: não há codificador, não há muxer e não há reconexão -- o sinal
+    /// sai cru e quem faz o relógio é a placa. Pôr isso num pipeline à parte
+    /// só acrescentaria uma travessia de `inter` entre o compositor e o
+    /// conector, com o jitter que vem junto.
+    ///
+    /// Vídeo e áudio vão para o mesmo `device-number`: é assim que a placa
+    /// entende que são o mesmo sinal e embute o áudio no SDI. Numa Duo 2 os
+    /// quatro conectores são sub-dispositivos 0 a 3, e cada um precisa estar
+    /// configurado como saída no Desktop Video -- a placa é meio-duplex, e um
+    /// conector configurado como entrada não vira saída por software.
+    fn attach_sdi(
+        &mut self,
+        device: i32,
+        vqueue: &gst::Element,
+        aqueue: &gst::Element,
+    ) -> Result<()> {
+        let modo = crate::output::decklink_mode(
+            self.config.width,
+            self.config.height,
+            self.config.fps_n,
+            self.config.fps_d,
+            self.config.scan == Scan::Interlaced,
+        )
+        .ok_or_else(|| {
+            anyhow!(
+                "a placa não tem modo para {}x{} a {}/{}{}: escolha um formato de canal que \
+                 a SDI aceite",
+                self.config.width,
+                self.config.height,
+                self.config.fps_n,
+                self.config.fps_d,
+                if self.config.scan == Scan::Interlaced {
+                    " entrelaçado"
+                } else {
+                    ""
+                }
+            )
+        })?;
+
+        let vconv = make("videoconvert")?;
+        // A placa quer UYVY ou v210; UYVY é 8 bits e é o que todo modo aceita.
+        let vcaps = make("capsfilter")?;
+        vcaps.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("format", "UYVY")
+                .build(),
+        );
+        let vsink = make("decklinkvideosink").context(
+            "a saída por SDI precisa do plugin `decklinkvideosink`, que não está nesta \
+             instalação do GStreamer",
+        )?;
+        vsink.set_property("device-number", device);
+        vsink.set_property_from_str("mode", modo);
+        // Sem isto o sink recusa o primeiro buffer que chega adiantado, e a
+        // saída fica esperando um relógio que nunca combina.
+        vsink.set_property("sync", true);
+
+        let aconv = make("audioconvert")?;
+        let ares = make("audioresample")?;
+        let acaps = make("capsfilter")?;
+        // O SDI embute áudio em 48 kHz e 16 ou 32 bits. 16 bits inteiro é o
+        // que toda placa aceita, e é o que a norma manda no par embutido.
+        acaps.set_property(
+            "caps",
+            gst::Caps::builder("audio/x-raw")
+                .field("format", "S16LE")
+                .field("layout", "interleaved")
+                .field("rate", 48_000i32)
+                .field("channels", 2i32)
+                .build(),
+        );
+        let asink = make("decklinkaudiosink").context(
+            "a saída por SDI precisa do plugin `decklinkaudiosink`, que não está nesta \
+             instalação do GStreamer",
+        )?;
+        asink.set_property("device-number", device);
+        asink.set_property("sync", true);
+
+        self.pipeline
+            .add_many([&vconv, &vcaps, &vsink, &aconv, &ares, &acaps, &asink])?;
+        gst::Element::link_many([vqueue, &vconv, &vcaps, &vsink])?;
+        gst::Element::link_many([aqueue, &aconv, &ares, &acaps, &asink])?;
+
+        eprintln!("[engine] saída SDI no dispositivo {device}, modo {modo}");
         Ok(())
     }
 
@@ -1137,10 +1275,39 @@ impl Channel {
 
     /// Sobe o canal e só volta quando ele está de fato no ar.
     pub fn start(&self) -> Result<()> {
-        self.pipeline.set_state(gst::State::Playing)?;
+        // A dica vale nas duas falhas: a placa pode recusar já na mudança de
+        // estado, e foi o que aconteceu -- pôr a explicação só no segundo
+        // ponto deixava a mensagem útil fora justamente do caso comum.
+        self.pipeline
+            .set_state(gst::State::Playing)
+            .with_context(|| self.porque_nao_subiu())?;
         let (result, _, _) = self.pipeline.state(gst::ClockTime::from_seconds(10));
-        result.context("o canal não chegou a entrar em execução")?;
+        result.with_context(|| self.porque_nao_subiu())?;
         Ok(())
+    }
+
+    /// O que dizer quando o canal não sobe.
+    fn porque_nao_subiu(&self) -> String {
+        {
+            // Placa é a causa mais comum, e a mais difícil de adivinhar: o
+            // conector precisa estar configurado como saída no Desktop Video,
+            // e numa Duo 2 eles vêm em pares meio-duplex. Sem esta dica, o que
+            // sobra é "não entrou em execução" e uma tarde de procura.
+            match self.sdi_devices.as_slice() {
+                [] => "o canal não chegou a entrar em execução".to_string(),
+                devices => format!(
+                    "o canal não chegou a entrar em execução — há saída SDI configurada \
+                     (conector {}). Confira no Desktop Video se ele está como saída: numa \
+                     Duo 2 os conectores vêm em pares meio-duplex, e um configurado como \
+                     entrada não vira saída por software",
+                    devices
+                        .iter()
+                        .map(i32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }
+        }
     }
 
     /// Dá uma volta nas saídas de rede: colhe falha, reconecta o que caiu e
@@ -1354,7 +1521,15 @@ impl Channel {
         let audio_sink = make("interaudiosink")?;
         audio_sink.set_property("channel", audio_channel);
 
-        pipeline.add(&src)?;
+        pipeline.add(&src.video)?;
+        if let Some(extra) = src.audio.as_ref() {
+            pipeline.add(extra)?;
+            // No NDI o segundo elemento é o demux, e ele vem depois da fonte.
+            // Na placa é uma segunda fonte, que não se liga a nada.
+            if src.dynamic {
+                gst::Element::link(&src.video, extra)?;
+            }
+        }
 
         let mut video_elements = vec![vconv, vdeint];
         if let Some(crop) = vcrop {
@@ -1413,7 +1588,11 @@ impl Channel {
         let audio_pipeline = pipeline.clone();
         let seen_audio = Arc::new(AtomicUsize::new(0));
         let wanted_track = spec.audio_track;
-        src.connect_pad_added(move |_, pad| {
+        // Quem entrega os pads: o demux quando existe, senão a própria fonte.
+        let porta = src.audio.clone().filter(|_| src.dynamic).unwrap_or_else(|| src.video.clone());
+        // A montagem é compartilhada entre os dois caminhos -- o pad que
+        // aparece depois e o que já existe --, e por isso mora num `Arc`.
+        let montar: Arc<dyn Fn(&gst::Pad) + Send + Sync> = Arc::new(move |pad: &gst::Pad| {
             // Pad recém-nascido nem sempre traz caps prontas; perguntar ao pad
             // evita descartar o fluxo em silêncio e deixar o item sem áudio.
             let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
@@ -1458,6 +1637,21 @@ impl Channel {
                 eprintln!("[engine] não montei o áudio do item: {error}");
             }
         });
+
+        let dinamico = Arc::clone(&montar);
+        porta.connect_pad_added(move |_, pad| dinamico(pad));
+
+        // Fonte de pad estático nunca dispara `pad-added`: a placa entrega o
+        // pad já pronto, e uma montagem que só espera pelo sinal deixava a
+        // entrada SDI sem imagem e sem som. Aqui os pads que já existem são
+        // montados na hora.
+        if !src.dynamic {
+            for elemento in [Some(&src.video), src.audio.as_ref()].into_iter().flatten() {
+                if let Some(pad) = elemento.static_pad("src") {
+                    montar(&pad);
+                }
+            }
+        }
 
         Ok(Item {
             spec: spec.clone(),
