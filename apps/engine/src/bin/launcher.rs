@@ -31,6 +31,8 @@ fn main() -> Result<()> {
         return Err(anyhow!("apps/web/dist não existe"));
     }
 
+    conferir_carimbo(&raiz);
+
     let mut servidor = subir_servidor(&raiz)?;
 
     match esperar_porta() {
@@ -52,6 +54,63 @@ fn main() -> Result<()> {
     let saida = servidor.wait().context("o servidor encerrou de forma inesperada")?;
     println!("O servidor encerrou ({saida}).");
     Ok(())
+}
+
+/// Avisa quando a interface construída é de outro commit que o código na pasta.
+///
+/// Este é o erro que ninguém desconfia: a tela antiga funciona perfeitamente,
+/// com todos os botões no lugar -- só que são os botões de duas semanas atrás.
+/// Quem atualiza o código e esquece de reconstruir passa horas procurando um
+/// problema que não existe. Comparar leva um milissegundo.
+///
+/// Só avisa; não impede de subir. Rodar uma build antiga de propósito é uma
+/// decisão legítima, e derrubar o canal por causa dela seria pior.
+fn conferir_carimbo(raiz: &Path) {
+    let Some(construido) = commit_da_build(raiz) else { return };
+    let Some(codigo) = commit_do_codigo(raiz) else { return };
+    if construido == codigo {
+        return;
+    }
+
+    eprintln!();
+    eprintln!("  ATENÇÃO: a tela não é a deste código.");
+    eprintln!("  interface construída: {construido}");
+    eprintln!("  código nesta pasta:   {codigo}");
+    eprintln!();
+    eprintln!("  Rode, nesta pasta:");
+    eprintln!("      pnpm install");
+    eprintln!("      pnpm build");
+    eprintln!("      cargo build --release --manifest-path apps/engine/Cargo.toml");
+    eprintln!();
+}
+
+/// O commit que o `pnpm build` carimbou em `apps/web/dist/build.json`.
+fn commit_da_build(raiz: &Path) -> Option<String> {
+    let bruto = std::fs::read_to_string(raiz.join("apps/web/dist/build.json")).ok()?;
+    // Um JSON de três campos não justifica uma dependência: procura-se o valor
+    // de "commit" na mão, e qualquer surpresa no formato vira `None` -- que
+    // significa "não sei", e não um aviso errado.
+    let depois = bruto.split("\"commit\"").nth(1)?;
+    let inicio = depois.find('"')? + 1;
+    let resto = &depois[inicio..];
+    let fim = resto.find('"')?;
+    let commit = resto[..fim].trim().to_string();
+    (!commit.is_empty() && commit != "sem git").then_some(commit)
+}
+
+/// O commit que está na pasta agora, perguntando ao git.
+fn commit_do_codigo(raiz: &Path) -> Option<String> {
+    let saida = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(raiz)
+        .output()
+        .ok()?;
+    if !saida.status.success() {
+        // Cópia sem git: não há com o que comparar, e calar é o certo.
+        return None;
+    }
+    let commit = String::from_utf8_lossy(&saida.stdout).trim().to_string();
+    (!commit.is_empty()).then_some(commit)
 }
 
 /// A pasta onde o RPlayout está instalado.
