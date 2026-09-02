@@ -361,8 +361,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
   font-size: 13px;
   font-weight: 700;
   line-height: 1;
-  padding: 7px 11px;
+  /* Mesma altura dos botões do transporte: o sino fica na mesma fila que
+     eles, e altura diferente aparece na hora. */
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 11px;
   margin-left: auto;
+  flex: 0 0 auto;
 }
 .problemas b { font-size: 11px; font-weight: 500; }
 .problemas:hover { border-color: var(--next); }
@@ -533,7 +540,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .transport {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 0 12px;
   background: var(--sunk);
   border-top: 1px solid var(--border);
@@ -546,8 +553,11 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
  */
 .transport .meta {
   margin-left: auto;
-  width: 300px;
-  flex: 0 0 300px;
+  /* Nunca cresce -- é isso que impede o nome do arquivo de empurrar os botões.
+     Encolher, encolhe: numa tela estreita é melhor o texto ficar mais apertado
+     do que a barra inteira transbordar e levar os botões para fora. */
+  flex: 0 1 300px;
+  min-width: 190px;
   text-align: right;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -556,6 +566,51 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   overflow: hidden;
 }
 .transport .meta + .meta { margin-left: 0; }
+
+/*
+ * Todos os botões do transporte com a mesma altura e o mesmo mínimo de
+ * largura.
+ *
+ * Sem isso o rótulo mandava no tamanho: "inserir item" quebrava em duas
+ * linhas e ficava mais alto que os vizinhos, "gc" ficava metade da largura
+ * de "preparar", e a fila inteira parecia desalinhada. Numa mesa de playout
+ * a barra do transporte é onde a mão vai sem os olhos -- botão que muda de
+ * tamanho é botão que se erra.
+ */
+.transport .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  min-width: 84px;
+  padding: 0 11px;
+  /* Nada quebra linha: quebrar é o que fazia a altura variar. */
+  white-space: nowrap;
+  /* Nem encolhe nem estica: o botão tem o tamanho do que ele diz, com piso. */
+  flex: 0 0 auto;
+}
+/* A dica de atalho não pode empurrar o rótulo para fora do centro: ela fica
+   presa na direita, dentro do mesmo botão. */
+.transport .btn kbd {
+  margin-left: 8px;
+  padding: 1px 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  line-height: 1.3;
+  color: var(--dim);
+}
+
+/*
+ * Tela estreita: a fila de botões não cabe inteira com folga, e transbordar
+ * levaria o estado do ar para fora da vista. Aperta-se o espaçamento e
+ * escondem-se as dicas de atalho -- a tecla continua funcionando e o texto
+ * segue na dica do botão.
+ */
+@media (max-width: 1500px) {
+  .transport { gap: 4px; }
+  .transport .btn { min-width: 72px; padding: 0 9px; }
+  .transport .btn kbd { display: none; }
+}
 
 .btn {
   border: 1px solid var(--border);

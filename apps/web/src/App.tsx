@@ -828,6 +828,7 @@ export function App() {
           className="btn take"
           disabled={!selectedId}
           onClick={() => selectedId && void command('take', { itemId: selectedId })}
+          title="Põe o item selecionado no ar (barra de espaço)"
         >
           <span className="glifo" aria-hidden="true">▶</span>
           take<kbd>espaço</kbd>
@@ -847,6 +848,7 @@ export function App() {
           className="btn"
           disabled={!selected?.asset}
           onClick={() => selected && setDialog({ kind: 'trim', view: selected })}
+          title="Marcação de entrada e saída (tecla I)"
         >
           in/out<kbd>i</kbd>
         </button>
@@ -854,6 +856,7 @@ export function App() {
           className="btn"
           disabled={!selected?.asset}
           onClick={() => selected && setDialog({ kind: 'audio', view: selected })}
+          title="Nível de áudio do item (tecla N)"
         >
           nível<kbd>n</kbd>
         </button>
@@ -901,7 +904,9 @@ export function App() {
           onClick={() => void undo('undo')}
           title={history.undoLabel ? `Desfazer: ${history.undoLabel}` : 'Nada para desfazer'}
         >
-          desfazer<kbd>ctrl z</kbd>
+          {/* Ctrl+Z todo mundo já sabe; escrever custava quarenta e cinco
+              pixels de uma barra que precisa caber inteira. Fica na dica. */}
+          desfazer
         </button>
         <button
           className="btn"
