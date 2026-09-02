@@ -24,6 +24,8 @@ interface Props {
   onOpenAudio: (view: ItemView) => void
   onSetFit: (id: string, fit: Fit) => void
   onOpenGraphics: (view: ItemView) => void
+  /** Arquivo do acervo largado na grade, na posição indicada. */
+  onDropAsset: (assetId: string, atIndex: number) => void
   onNotes: (id: string, notes: string) => void
 }
 
@@ -189,6 +191,13 @@ export function Rundown(props: Props) {
                 }}
                 onDragOver={(event) => {
                   event.preventDefault()
+                  // Arquivo vindo do acervo é cópia; linha da grade é mudança
+                  // de lugar. O cursor diz qual dos dois vai acontecer.
+                  event.dataTransfer.dropEffect = event.dataTransfer.types.includes(
+                    'application/x-rplayout-asset',
+                  )
+                    ? 'copy'
+                    : 'move'
                   setDropIndex(index)
                 }}
                 onDragEnd={() => {
@@ -197,7 +206,9 @@ export function Rundown(props: Props) {
                 }}
                 onDrop={(event) => {
                   event.preventDefault()
-                  if (dragId && dragId !== id) props.onMove(dragId, index)
+                  const assetId = event.dataTransfer.getData('application/x-rplayout-asset')
+                  if (assetId) props.onDropAsset(assetId, index)
+                  else if (dragId && dragId !== id) props.onMove(dragId, index)
                   setDragId(null)
                   setDropIndex(null)
                 }}
@@ -218,7 +229,7 @@ export function Rundown(props: Props) {
                   {live ? (
                     <span className="state air">NO AR</span>
                   ) : armed ? (
-                    <span className="state nxt">CUE</span>
+                    <span className="state nxt">PREP</span>
                   ) : id === nextId ? (
                     <span className="state next">PRÓX</span>
                   ) : null}
@@ -385,6 +396,30 @@ export function Rundown(props: Props) {
             </Fragment>
           )
         })}
+        {/* Soltar no fim precisa de alvo: sem esta faixa, arrastar para depois
+            do último item não tem onde cair, e o gesto falha em silêncio. */}
+        <tr
+          className={`dropzone${dropIndex === props.items.length ? ' over' : ''}`}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes('application/x-rplayout-asset')) return
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'copy'
+            setDropIndex(props.items.length)
+          }}
+          onDragLeave={() => setDropIndex(null)}
+          onDrop={(event) => {
+            event.preventDefault()
+            const assetId = event.dataTransfer.getData('application/x-rplayout-asset')
+            if (assetId) props.onDropAsset(assetId, props.items.length)
+            setDropIndex(null)
+          }}
+        >
+          <td colSpan={COLUMNS}>
+            {props.items.length === 0
+              ? 'grade vazia — arraste um arquivo para cá'
+              : 'arraste um arquivo para o fim da grade'}
+          </td>
+        </tr>
       </tbody>
     </table>
   )

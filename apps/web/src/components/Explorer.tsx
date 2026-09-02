@@ -138,6 +138,17 @@ export function Explorer({
                     className={`file${openAssetId === asset.id ? ' open' : ''}${
                       asset.probeError ? ' broken' : ''
                     }`}
+                    // Arrastar para a grade é o gesto que o operador já tem na
+                    // mão de outros programas. O que não abre não arrasta: não
+                    // faz sentido pôr no ar o que nem toca.
+                    draggable={!asset.probeError}
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = 'copy'
+                      event.dataTransfer.setData('application/x-rplayout-asset', asset.id)
+                      // Texto puro junto, para quem largar fora da grade ver
+                      // algo com sentido em vez de nada.
+                      event.dataTransfer.setData('text/plain', asset.title)
+                    }}
                     onClick={() => !asset.probeError && onPreview(asset.id)}
                     title={
                       asset.probeError

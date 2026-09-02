@@ -946,6 +946,8 @@ impl Channel {
             bitrate_kbps: spec.bitrate_kbps.unwrap_or(self.config.bitrate_kbps),
             interlaced,
             top_field_first: self.config.top_field_first,
+            // O programa é o que vai ao ar: se há placa, é dele.
+            prefer_software: false,
         }));
         Ok(())
     }
@@ -984,6 +986,9 @@ impl Channel {
             // navegador, não num monitor de referência.
             interlaced: false,
             top_field_first: self.config.top_field_first,
+            // O preview sai em metade do tamanho e não gasta sessão de placa:
+            // com quatro canais no ar, é a diferença entre caber e não caber.
+            prefer_software: true,
         }));
 
         self.preview_channels = Some((video_channel, audio_channel));

@@ -104,6 +104,14 @@ export function channelPaths(
  */
 export class MediaMtx {
   private child: ChildProcess | null = null
+  /**
+   * Por que o servidor de mídia não está de pé.
+   *
+   * Sem isso o operador vê "a saída caiu e está tentando voltar" e não tem como
+   * saber que a causa é a porta 1935 ocupada por outro programa -- que é o
+   * caso mais comum numa máquina que já teve OBS ou vMix.
+   */
+  lastError: string | null = null
 
   constructor(private readonly options: MediaMtxOptions) {}
 
@@ -175,8 +183,14 @@ export class MediaMtx {
         process.stderr.write(`[mediamtx] ${chunk.toString()}`)
       })
     }
-    this.child.on('exit', () => {
+    this.child.on('exit', (code) => {
       this.child = null
+      if (code !== 0 && code !== null) {
+        this.lastError = `o servidor de mídia encerrou com código ${code} (porta ocupada?)`
+      }
+    })
+    this.child.on('error', (erro) => {
+      this.lastError = `não consegui executar o servidor de mídia: ${erro.message}`
     })
   }
 
@@ -198,12 +212,16 @@ export class MediaMtx {
     while (Date.now() < deadline) {
       try {
         const response = await fetch(`http://127.0.0.1:${PORTS.api}/v3/paths/list`)
-        if (response.ok) return true
+        if (response.ok) {
+          this.lastError = null
+          return true
+        }
       } catch {
         // Ainda subindo.
       }
       await new Promise((done) => setTimeout(done, 200))
     }
+    this.lastError ??= 'o servidor de mídia não respondeu na API de controle'
     return false
   }
 

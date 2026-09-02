@@ -20,6 +20,7 @@ import { AudioDialog } from './components/AudioDialog.js'
 import { Distribution } from './components/Distribution.js'
 import { Explorer } from './components/Explorer.js'
 import { AsRunPanel } from './components/AsRunPanel.js'
+import { Problemas, type Problema } from './components/Problemas.js'
 import { AutoFillDialog } from './components/AutoFillDialog.js'
 import { ChannelDialog } from './components/ChannelDialog.js'
 import { SettingsDialog } from './components/SettingsDialog.js'
@@ -67,6 +68,11 @@ export function App() {
   const [newChannel, setNewChannel] = useState<string | null>(null)
   /** Enquanto a primeira consulta não voltou, não dá para dizer que não há canal. */
   const [loading, setLoading] = useState(true)
+  /** Tudo que deu errado nesta sessão, venha de onde vier. */
+  const [problemas, setProblemas] = useState<Problema[]>([])
+  const proximoProblema = useRef(1)
+  /** O que já foi anotado, para não repetir a cada releitura. */
+  const vistos = useRef(new Set<string>())
   /** Linhas marcadas para agrupar. Marcar não é armar: o PGM não muda. */
   const [marked, setMarked] = useState<Set<string>>(new Set())
   const lastClicked = useRef<string | null>(null)
@@ -98,14 +104,44 @@ export function App() {
     setMonitors(snapshot.monitors)
   }, [])
 
-  const guard = useCallback(async (action: () => Promise<void>) => {
-    try {
-      await action()
-      setError(null)
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Falha inesperada.')
-    }
+  /**
+   * Registra um problema no sino do canto.
+   *
+   * Erro que aparece por três segundos e some não existe para quem estava
+   * olhando o monitor -- e num playout, o operador está olhando o monitor.
+   */
+  const anotar = useCallback((origem: Problema['origem'], texto: string) => {
+    // O mesmo problema não vira cem linhas: a lista do acervo é relida a cada
+    // varredura, e sem isto cada leitura repetiria os arquivos quebrados
+    // inteiros. Guardar o que já foi anotado é o que mantém a lista legível.
+    const chave = `${origem}:${texto}`
+    if (vistos.current.has(chave)) return
+    vistos.current.add(chave)
+
+    setProblemas((atuais) => {
+      const novo: Problema = {
+        id: proximoProblema.current++,
+        quando: new Date().toLocaleTimeString('pt-BR'),
+        origem,
+        texto,
+      }
+      return [novo, ...atuais].slice(0, 200)
+    })
   }, [])
+
+  const guard = useCallback(
+    async (action: () => Promise<void>) => {
+      try {
+        await action()
+        setError(null)
+      } catch (failure) {
+        const texto = failure instanceof Error ? failure.message : 'Falha inesperada.'
+        setError(texto)
+        anotar('SERVIDOR', texto)
+      }
+    },
+    [anotar],
+  )
 
   const refreshLibrary = useCallback(async () => {
     const [library, status] = await Promise.all([api.library(), api.scanStatus()])
@@ -171,6 +207,32 @@ export function App() {
     window.addEventListener('hashchange', sync)
     return () => window.removeEventListener('hashchange', sync)
   }, [])
+
+  // Erro de JavaScript na própria tela também é problema do operador: sem
+  // isto ele só existiria no console do navegador, que ninguém abre no ar.
+  useEffect(() => {
+    const naTela = (evento: ErrorEvent): void => anotar('TELA', evento.message)
+    const promessa = (evento: PromiseRejectionEvent): void =>
+      anotar('TELA', String(evento.reason))
+    window.addEventListener('error', naTela)
+    window.addEventListener('unhandledrejection', promessa)
+    return () => {
+      window.removeEventListener('error', naTela)
+      window.removeEventListener('unhandledrejection', promessa)
+    }
+  }, [anotar])
+
+  // Saída que caiu vem no estado ao vivo; entra no sino uma vez por motivo.
+  useEffect(() => {
+    for (const alerta of live?.alerts ?? []) anotar('SAÍDA', alerta.message)
+  }, [live?.alerts, anotar])
+
+  // Arquivo que não abriu é problema de acervo, e o motivo é acionável.
+  useEffect(() => {
+    for (const asset of assets) {
+      if (asset.probeError) anotar('ARQUIVO', `${asset.title}: ${asset.probeError}`)
+    }
+  }, [assets, anotar])
 
   useEffect(() => {
     const socket = new WebSocket(`ws://${window.location.host}/ws`)
@@ -453,6 +515,24 @@ export function App() {
     [assets],
   )
 
+  /** Arquivo largado na grade: entra na posição em que caiu. */
+  const inserirEm = (assetId: string, atIndex: number): void => {
+    if (!view) return
+    const asset = assets.find((candidate) => candidate.id === assetId)
+    void guard(async () => {
+      absorb(
+        await api.addItem(view.rundown.id, {
+          mediaId: assetId,
+          type: 'VT',
+          title: asset?.title,
+          anchor: { kind: 'FLOW' },
+          atIndex,
+        }),
+      )
+      say(`${asset?.title ?? 'Arquivo'} inserido na posição ${atIndex + 1}.`)
+    })
+  }
+
   const inserirNoFim = (assetId: string): void => {
     if (!view) return
     const asset = assets.find((candidate) => candidate.id === assetId)
@@ -593,7 +673,7 @@ export function App() {
           <span className="dot" />
           {onAirId ? 'NO AR' : 'FORA DO AR'}
         </div>
-        {live.transport.standby && <div className="standby">ARMADO</div>}
+        {live.transport.standby && <div className="standby">PREPARADO</div>}
         <div className="canais">
           {/* Abas em vez de lista suspensa: com dois ou três canais, ver todos
               de uma vez é a diferença entre olhar e procurar. */}
@@ -698,6 +778,7 @@ export function App() {
               onOpenAudio={(item) => setDialog({ kind: 'audio', view: item })}
               onSetFit={setFit}
               onOpenGraphics={(item) => setDialog({ kind: 'itemGraphics', view: item })}
+              onDropAsset={inserirEm}
               onNotes={saveNotes}
             />
           </div>
@@ -748,13 +829,19 @@ export function App() {
           disabled={!selectedId}
           onClick={() => selectedId && void command('take', { itemId: selectedId })}
         >
+          <span className="glifo" aria-hidden="true">▶</span>
           take<kbd>espaço</kbd>
         </button>
         <button className="btn stop" disabled={!onAirId} onClick={() => void command('stop')}>
+          <span className="glifo" aria-hidden="true">■</span>
           parar
         </button>
-        <button className="btn" onClick={() => void command('park')} title="Arma o primeiro item, parado, pronto para entrar">
-          armar no topo
+        <button
+          className="btn"
+          onClick={() => void command('park')}
+          title="Prepara o primeiro item, parado, pronto para entrar"
+        >
+          preparar
         </button>
         <button
           className="btn"
@@ -800,7 +887,7 @@ export function App() {
             setDialog({ kind: 'distribution' })
           }}
         >
-          distribuição
+          stream
         </button>
         {marked.size >= 2 && (
           <button className="btn take" onClick={group}>
@@ -829,14 +916,21 @@ export function App() {
             {error}
           </div>
         )}
-        <div className="meta">
+        <Problemas
+          problemas={problemas}
+          onLimpar={() => {
+            vistos.current.clear()
+            setProblemas([])
+          }}
+        />
+        <div className="meta" title={previewCard?.title ?? ''}>
           {previewCard ? (
             <>
-              {previewCard.fromExplorer ? 'no preview: ' : 'armado: '}
+              {previewCard.fromExplorer ? 'no preview: ' : 'preparado: '}
               <b>{previewCard.title}</b>
             </>
           ) : (
-            'nada armado — clique numa linha ou num arquivo'
+            'nada preparado — clique numa linha ou num arquivo'
           )}
         </div>
       </footer>

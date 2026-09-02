@@ -110,6 +110,7 @@ export const api = {
       title?: string
       anchor?: Anchor
       durationOverride?: number | null
+      atIndex?: number
     },
   ) => post<Snapshot>(`/api/rundowns/${rundownId}/items`, body),
 

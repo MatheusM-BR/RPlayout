@@ -287,11 +287,17 @@ export class ChannelRuntime {
 
     for (const publisher of this.transport.publishers()) {
       if (publisher.health === 'onAir' || publisher.health === 'connecting') continue
+
+      // O motivo vai junto. "Caiu e está tentando voltar" sozinho manda o
+      // operador procurar no escuro -- a causa quase sempre está na primeira
+      // linha do erro do GStreamer.
+      const motivo = publisher.error?.split('\n')[0]?.trim()
       found.push({
         kind: 'OUTPUT',
-        message: `saída ${short(publisher.url)} ${
-          publisher.health === 'retrying' ? 'caiu e está tentando voltar' : 'parou'
-        }`,
+        message:
+          `saída ${short(publisher.url)} ${
+            publisher.health === 'retrying' ? 'caiu e está tentando voltar' : 'parou'
+          }` + (motivo ? `: ${motivo.slice(0, 120)}` : ''),
       })
     }
 

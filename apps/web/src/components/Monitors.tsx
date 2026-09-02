@@ -75,10 +75,10 @@ export function Monitors({
             </div>
           ) : monitors?.preview ? (
             <div className="over">
-              <div className="what dim">nada armado</div>
+              <div className="what dim">nada preparado</div>
             </div>
           ) : (
-            <div className="idle">NADA ARMADO</div>
+            <div className="idle">NADA PREPARADO</div>
           )}
         </div>
         <Meter reading={live.meters.preview} channel={channel} />

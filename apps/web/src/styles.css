@@ -161,6 +161,22 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .rd tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 /* O degradê é da linha, não da célula: pintado na célula ele recomeça em cada
    coluna e a linha no ar aparece listrada. */
+.rd tr.dropzone { cursor: default; }
+.rd tr.dropzone td {
+  text-align: center;
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  padding: 14px 10px;
+  border-bottom: 0;
+  border-top: 1px dashed transparent;
+}
+.rd tr.dropzone.over td {
+  color: var(--accent);
+  border-top-color: var(--accent);
+  background: rgba(91, 155, 255, 0.07);
+}
+
 .rd tr.live { background: linear-gradient(90deg, rgba(255, 59, 59, 0.16), rgba(255, 59, 59, 0.02) 60%); }
 .rd tr.live td { background: transparent; }
 .rd tr.live:hover td { background: rgba(255, 59, 59, 0.05); }
@@ -326,6 +342,30 @@ button { font: inherit; color: inherit; cursor: pointer; }
   margin: 0 3px;
 }
 
+/* Sino de problemas, no canto de baixo. */
+.problemas {
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--next);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 7px 11px;
+  margin-left: auto;
+}
+.problemas b { font-size: 11px; font-weight: 500; }
+.problemas:hover { border-color: var(--next); }
+.problemas.quieto { color: var(--dim); border-color: var(--border-soft); cursor: default; }
+/* Com o sino presente, quem empurra para a direita é ele. */
+.transport .problemas + .meta { margin-left: 8px; }
+
+.chip.srv { background: #2a1e33; border-color: #5b3d6e; color: #d9b8ee; }
+.chip.tela { background: #2a2417; border-color: #6b5a2a; color: #e8d59a; }
+.chip.arq { background: #172a2a; border-color: #2a6b6b; color: #9ae0e0; }
+.chip.saida { background: #2a1717; border-color: #6b2a2a; color: #f0aaaa; }
+
 /* Aviso do que está quebrado, na barra de cima. */
 .alerts {
   display: flex;
@@ -489,6 +529,24 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   background: var(--sunk);
   border-top: 1px solid var(--border);
 }
+/*
+ * O texto de estado fica com largura fixa e quebra em duas linhas.
+ *
+ * Sem isso ele estica com o nome do arquivo e empurra os botões do transporte
+ * para o lado -- num playout, botão que muda de lugar é botão que se erra.
+ */
+.transport .meta {
+  margin-left: auto;
+  width: 300px;
+  flex: 0 0 300px;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  max-height: 2.7em;
+  overflow: hidden;
+}
+.transport .meta + .meta { margin-left: 0; }
 
 .btn {
   border: 1px solid var(--border);
@@ -505,6 +563,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .btn:hover:not(:disabled) { border-color: var(--accent); background: rgba(27, 58, 143, 0.3); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn.take { background: var(--deep); border-color: var(--accent); font-weight: 600; }
+/* Símbolo antes do rótulo: o operador acha o play sem ler. */
+.glifo { font-size: 13px; line-height: 1; margin-right: 7px; }
+.btn.stop .glifo { color: var(--onair); }
 /* Botão de estado ligado: o GC no ar precisa ser visível sem olhar o monitor. */
 .btn.on { background: var(--deep); border-color: var(--accent); color: var(--text); }
 .btn.take:hover:not(:disabled) { background: #2450b8; }

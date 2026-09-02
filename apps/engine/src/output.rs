@@ -19,7 +19,7 @@ use anyhow::{anyhow, Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -111,6 +111,11 @@ pub struct PublisherSpec {
     /// canal em 1080i5994 entrega a gravação em campos e a rede progressiva.
     pub interlaced: bool,
     pub top_field_first: bool,
+    /// Codificar em software mesmo havendo placa.
+    ///
+    /// Sessão de placa é recurso escasso e contado: o preview, que sai em
+    /// metade do tamanho, não gasta uma -- ela fica para o programa.
+    pub prefer_software: bool,
 }
 
 pub struct Publisher {
@@ -205,6 +210,11 @@ impl Publisher {
 
     /// Derruba o pipeline e marca a próxima tentativa.
     fn fall(&mut self, reason: String) {
+        // Placa que recusou sessão não melhora tentando de novo: o processo
+        // inteiro passa a software, e a próxima tentativa já sobe assim.
+        if e_do_hardware(&reason) {
+            desistir_do_hardware(&reason);
+        }
         self.close();
         self.health = Health::Retrying;
         self.error = Some(reason);
@@ -307,6 +317,7 @@ impl Publisher {
             spec.fps_n,
             spec.fps_d,
             spec.kind.stream_format(),
+            spec.prefer_software,
         )?;
 
         let (mux, sink) = match spec.kind {
@@ -407,14 +418,52 @@ impl Publisher {
 /// tempo. Havendo placa, ela faz isso sem tirar CPU de ninguém.
 const ENCODERS: &[&str] = &["nvh264enc", "qsvh264enc", "mfh264enc", "x264enc"];
 
+/// Se ainda vale tentar o codificador de hardware neste processo.
+///
+/// Placa de consumo limita quantas sessões de codificação existem ao mesmo
+/// tempo -- três em muitas GeForce, cinco nas mais novas. Um playout com
+/// quatro canais pede oito (programa e preview de cada), estoura o limite, e o
+/// que se vê é a saída caindo e subindo em laço sem explicação.
+///
+/// Estourou uma vez, o processo inteiro passa a codificar em software. Insistir
+/// na placa quando ela já disse não é o que transforma um limite conhecido numa
+/// tempestade de reconexões.
+static HARDWARE_DISPONIVEL: AtomicBool = AtomicBool::new(true);
+
+/// Marca a placa como indisponível. Devolve `true` se foi a primeira vez.
+pub fn desistir_do_hardware(motivo: &str) -> bool {
+    if !HARDWARE_DISPONIVEL.swap(false, Ordering::Relaxed) {
+        return false;
+    }
+    eprintln!("[engine] a placa recusou mais uma sessão de codificação ({motivo}); daqui em diante, software");
+    true
+}
+
+/// O erro veio do codificador de hardware?
+///
+/// A mensagem do GStreamer traz o nome do elemento, e é por ele que se sabe --
+/// tratar qualquer queda como culpa da placa desligaria o hardware por causa de
+/// um cabo de rede solto.
+fn e_do_hardware(erro: &str) -> bool {
+    let baixo = erro.to_lowercase();
+    ["nvh264enc", "qsvh264enc", "mfh264enc", "nvenc", "cuda", "session"]
+        .iter()
+        .any(|marca| baixo.contains(marca))
+}
+
 /// Monta o codificador de vídeo, preferindo o que a máquina tiver de hardware.
 ///
 /// `RPLAYOUT_ENCODER` força um: é a saída para quando a placa existe e mente
 /// sobre estar pronta, que acontece com driver desatualizado.
-fn video_encoder(bitrate_kbps: u32, key_int_max: u32) -> Result<gst::Element> {
+fn video_encoder(bitrate_kbps: u32, key_int_max: u32, prefer_software: bool) -> Result<gst::Element> {
     let forced = std::env::var("RPLAYOUT_ENCODER").ok();
     let candidates: Vec<&str> = match forced.as_deref() {
         Some(name) => vec![name],
+        // Sessão de placa é recurso escasso: o preview, que sai em metade do
+        // tamanho, não gasta uma. Sobra para o programa, que é o que vai ao ar.
+        None if prefer_software || !HARDWARE_DISPONIVEL.load(Ordering::Relaxed) => {
+            vec!["x264enc"]
+        }
         None => ENCODERS.to_vec(),
     };
 
@@ -444,7 +493,9 @@ fn video_encoder(bitrate_kbps: u32, key_int_max: u32) -> Result<gst::Element> {
             }
         }
 
-        eprintln!("[engine] codificando com {name}");
+        // Log só quando a escolha muda: um publisher que reconecta imprimiria
+        // a mesma linha para sempre e afogaria o que importa no terminal.
+        anunciar_encoder(name);
         return Ok(encoder);
     }
 
@@ -452,6 +503,19 @@ fn video_encoder(bitrate_kbps: u32, key_int_max: u32) -> Result<gst::Element> {
         "nenhum codificador de H.264 disponível: instale o GStreamer completo (x264enc) \
          ou verifique a placa"
     ))
+}
+
+/// Diz qual codificador entrou, uma vez por escolha.
+fn anunciar_encoder(nome: &str) {
+    use std::sync::Mutex;
+    static ULTIMO: Mutex<Option<String>> = Mutex::new(None);
+
+    let Ok(mut ultimo) = ULTIMO.lock() else { return };
+    if ultimo.as_deref() == Some(nome) {
+        return;
+    }
+    eprintln!("[engine] codificando com {nome}");
+    *ultimo = Some(nome.to_string());
 }
 
 /// Ajusta uma propriedade só se o elemento tiver.
@@ -474,6 +538,7 @@ pub fn encode_chain(
     fps_n: i32,
     fps_d: i32,
     stream_format: &str,
+    prefer_software: bool,
 ) -> Result<(
     gst::Element,
     gst::Element,
@@ -482,7 +547,7 @@ pub fn encode_chain(
     gst::Element,
     gst::Element,
 )> {
-    let venc = video_encoder(bitrate_kbps, (fps_n / fps_d.max(1)) as u32 * 2)?;
+    let venc = video_encoder(bitrate_kbps, (fps_n / fps_d.max(1)) as u32 * 2, prefer_software)?;
 
     let vparse = make("h264parse")?;
     // Parâmetros do codec voltam de tempos em tempos: quem sintoniza no meio
