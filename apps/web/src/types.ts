@@ -260,3 +260,24 @@ export interface Categoria {
   /** Quantos arquivos do acervo estão nela. */
   items: number
 }
+
+/** Uma lista de reprodução achada na pasta do acervo. */
+export interface PlaylistFile {
+  path: string
+  name: string
+  /** Dia a que a lista pertence, lido do nome. Nulo quando o nome não diz. */
+  date: string | null
+  entries: number
+  /** Quantas entradas acharam arquivo no acervo. */
+  matched: number
+  modifiedAt: string
+}
+
+/** Uma entrada da lista, já confrontada com o acervo. */
+export interface PlaylistEntryView {
+  ref: string
+  title: string | null
+  seconds: number | null
+  mediaId: string | null
+  matchedBy: 'path' | 'name' | null
+}

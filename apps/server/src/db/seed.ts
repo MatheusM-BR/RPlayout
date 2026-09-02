@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { createHash } from 'node:crypto'
+import { RATE_PADRAO } from '@rplayout/protocol'
 import type { Anchor, AudioLevel, LoudnessMeasurement, Trim } from '@rplayout/protocol'
 import { openDatabase } from './client.js'
 import { channels, mediaAssets, rundownItems, rundowns } from './schema.js'
@@ -254,8 +255,8 @@ async function seed(): Promise<void> {
   await db.insert(channels).values({
     id: channelId,
     name: 'Canal 1',
-    rateNum: 50,
-    rateDen: 1,
+    rateNum: RATE_PADRAO.num,
+    rateDen: RATE_PADRAO.den,
     width: 1920,
     height: 1080,
     scan: 'PROGRESSIVE',

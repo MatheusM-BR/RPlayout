@@ -62,6 +62,20 @@ const SETTLE_MS = 5_000
 const SKIP = new Set(['.git', 'node_modules', '.thumbs'])
 
 /**
+ * Extensões que não são mídia e não entram no acervo.
+ *
+ * Lista de reprodução mora na mesma pasta dos vídeos, e a sonda não abre uma:
+ * antes disto, cada `.m3u` virava um arquivo "não abriu" no explorador, ao
+ * lado dos que de fato estão quebrados. Lista tem lugar próprio.
+ */
+const PLAYLIST_EXT = new Set(['.m3u', '.m3u8'])
+
+/** Este arquivo é uma lista de reprodução? */
+export function isPlaylist(path: string): boolean {
+  return PLAYLIST_EXT.has(extname(path).toLowerCase())
+}
+
+/**
  * Ingest do acervo.
  *
  * Não existe lista de extensões, de propósito: quem decide se um arquivo abre é
@@ -164,6 +178,7 @@ export class Ingest {
         await this.absorb(file)
       }
       await this.markVanished(resolve(root), files)
+      await this.tirarListas()
       this.patch({ running: false, current: null, finishedAt: new Date().toISOString() })
       this.onFinished?.()
     } catch (failure) {
@@ -198,6 +213,22 @@ export class Ingest {
         .update(mediaAssets)
         .set({ probeError: VANISHED })
         .where(eq(mediaAssets.id, row.id))
+    }
+  }
+
+  /**
+   * Tira do acervo as listas de reprodução que entraram antes de existir lugar
+   * para elas.
+   *
+   * Sem isto, quem já varreu a pasta continuaria com um `.m3u` marcado como
+   * "não abriu" para sempre -- e um arquivo quebrado que não dá para consertar
+   * é pior que nenhum, porque some no meio dos que dão.
+   */
+  private async tirarListas(): Promise<void> {
+    const linhas = await this.db.select().from(mediaAssets)
+    for (const linha of linhas) {
+      if (!isPlaylist(linha.path)) continue
+      await this.db.delete(mediaAssets).where(eq(mediaAssets.id, linha.id))
     }
   }
 
@@ -456,7 +487,8 @@ async function walk(root: string): Promise<string[]> {
       if (entry.name.startsWith('.') || SKIP.has(entry.name)) continue
       const full = join(dir, entry.name)
       if (entry.isDirectory()) pending.push(full)
-      else if (entry.isFile()) found.push(full)
+      // Lista de reprodução não é mídia: ela é lida em outro lugar.
+      else if (entry.isFile() && !isPlaylist(full)) found.push(full)
     }
   }
 

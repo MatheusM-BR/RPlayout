@@ -21,6 +21,19 @@ export const RATE = {
   '60': { num: 60, den: 1 },
 } as const satisfies Record<string, Rate>
 
+/**
+ * Cadência de quem não disse qual quer.
+ *
+ * 29,97 (30000/1001) é a cadência da televisão brasileira, e é a do material
+ * que entra aqui. Um canal em 50 Hz tocando arquivo de 30 fps faz o
+ * `videorate` duplicar e descartar quadros num padrão que se vê como
+ * travadinha rítmica -- e era 50 o padrão antes desta constante existir.
+ *
+ * Não confundir com 30 exatos: NTSC é 30000/1001, e a diferença de 0,1% vira
+ * um quadro de deriva a cada meia hora quando alguém arredonda.
+ */
+export const RATE_PADRAO: Rate = RATE['29.97']
+
 export type RateName = keyof typeof RATE
 
 /** Frames, sempre inteiro. */

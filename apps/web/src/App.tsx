@@ -30,9 +30,11 @@ import { ItemGraphicsDialog } from './components/ItemGraphicsDialog.js'
 import { Monitors } from './components/Monitors.js'
 import { Rundown } from './components/Rundown.js'
 import { TrimDialog } from './components/TrimDialog.js'
+import { PlaylistsDialog } from './components/PlaylistsDialog.js'
 
 type Dialog =
   | { kind: 'trim'; view: ItemView }
+  | { kind: 'playlists' }
   | { kind: 'still'; view: ItemView }
   | { kind: 'audio'; view: ItemView }
   | { kind: 'add'; assetId?: string }
@@ -914,6 +916,13 @@ export function App() {
           inserir item
         </button>
         <button
+          className="btn"
+          onClick={() => setDialog({ kind: 'playlists' })}
+          title="Listas .m3u da pasta do acervo — a do dia vem aberta"
+        >
+          listas
+        </button>
+        <button
           className={`btn${live?.graphic ? ' on' : ''}`}
           onClick={() => setDialog({ kind: 'graphics' })}
           title="Gerador de caracteres"
@@ -990,6 +999,18 @@ export function App() {
         </div>
       </footer>
 
+      {dialog?.kind === 'playlists' && (
+        <PlaylistsDialog
+          rundownId={view.rundown.id}
+          onCancel={() => setDialog(null)}
+          onLoaded={(snapshot, message) => {
+            absorb(snapshot)
+            setDialog(null)
+            say(message)
+          }}
+          onMessage={say}
+        />
+      )}
       {dialog?.kind === 'trim' && (
         <TrimDialog
           view={dialog.view}

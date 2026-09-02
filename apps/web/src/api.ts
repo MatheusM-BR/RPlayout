@@ -15,6 +15,8 @@ import type {
   LibraryFolder,
   OutputProfile,
   Categoria,
+  PlaylistEntryView,
+  PlaylistFile,
   ScanStatus,
   Snapshot,
   SourceList,
@@ -152,6 +154,18 @@ export const api = {
   /** "Estou com este monitor aberto." O engine só codifica enquanto há aviso. */
   watching: (channelId: string, bus: 'pvw' | 'mon') =>
     post<{ ok: true }>(`/api/channels/${channelId}/watching`, { bus }),
+
+  playlists: () =>
+    send<{ playlists: PlaylistFile[]; today: string | null; date: string }>('/api/playlists'),
+  playlistEntries: (path: string) =>
+    send<{ entries: PlaylistEntryView[] }>(
+      `/api/playlists/entries?path=${encodeURIComponent(path)}`,
+    ),
+  loadPlaylist: (rundownId: string, path: string, replace: boolean) =>
+    post<Snapshot & { loaded: number; skipped: number }>(
+      `/api/rundowns/${rundownId}/playlist`,
+      { path, replace },
+    ),
 
   categories: () => send<{ categories: Categoria[] }>('/api/categories'),
   setCategoryColor: (id: string, color: string) =>

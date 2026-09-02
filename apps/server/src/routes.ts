@@ -8,6 +8,7 @@ import {
   formatVideoFormat,
   framesSinceMidnight,
   isStill,
+  RATE_PADRAO,
   secondsToFrames,
   suggestedBitrateKbps,
   STILL_DEFAULT_SECONDS,
@@ -46,7 +47,7 @@ import {
 import { asRun, operatorDecisions } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
-import { extname, resolve as resolvePath } from 'node:path'
+import { extname, resolve as resolvePath, sep } from 'node:path'
 import {
   createOutput,
   deleteOutput,
@@ -55,6 +56,7 @@ import {
   updateOutput,
 } from './domain/outputs.js'
 import { thumbnailSvg } from './domain/thumbnail.js'
+import * as Playlists from './domain/playlists.js'
 import type { RundownView } from './domain/plan.js'
 
 /**
@@ -184,6 +186,20 @@ const snapshot = (app: App, runtime: ChannelRuntime) => ({
  * qual endereço chegou até aqui, e o servidor não sabe. Deduzir o IP daqui é
  * como o monitor fica preto quando alguém acessa por outro nome.
  */
+/**
+ * O caminho está dentro da pasta do acervo?
+ *
+ * A lista vem por parâmetro, e parâmetro é de quem chama. Sem esta trava,
+ * pedir `../../../etc/passwd` faria o servidor ler e devolver qualquer arquivo
+ * da máquina -- a rota existe para ler listas da pasta configurada, e é só
+ * isso que ela vai ler.
+ */
+function dentroDoAcervo(root: string, candidato: string): boolean {
+  const raiz = resolvePath(root)
+  const alvo = resolvePath(candidato)
+  return alvo === raiz || alvo.startsWith(raiz + sep)
+}
+
 function monitors(app: App, channelId: string) {
   const path = app.paths.find((entry) => entry.channelId === channelId)
   if (!app.mediamtx?.running || !path) return null
@@ -237,8 +253,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     await app.db.insert(channels).values({
       id,
       name: body.data.name,
-      rateNum: body.data.rateNum ?? reference?.rate.num ?? 50,
-      rateDen: body.data.rateDen ?? reference?.rate.den ?? 1,
+      rateNum: body.data.rateNum ?? reference?.rate.num ?? RATE_PADRAO.num,
+      rateDen: body.data.rateDen ?? reference?.rate.den ?? RATE_PADRAO.den,
       width: body.data.width ?? reference?.width ?? 1920,
       height: body.data.height ?? reference?.height ?? 1080,
       scan: body.data.scan ?? reference?.scan ?? 'PROGRESSIVE',
@@ -389,7 +405,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
 
     const [channel] = await listChannels(app.db)
-    const rate = channel?.rate ?? { num: 50, den: 1 }
+    const rate = channel?.rate ?? RATE_PADRAO
     return reply
       .type('image/svg+xml')
       .header('cache-control', 'public, max-age=3600')
@@ -490,6 +506,147 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .type('image/jpeg')
       .header('cache-control', 'public, max-age=604800, immutable')
       .send(createReadStream(destino))
+  })
+
+  // ---- listas de reprodução ---------------------------------------------
+
+  /**
+   * As listas de reprodução que estão na pasta do acervo.
+   *
+   * O modelo é o que o operador já usa: uma lista por dia, com a data no nome
+   * ("Playlist Programação 08-02-2026.m3u"), salva na mesma pasta dos vídeos.
+   * Aqui elas são só lidas -- nada é copiado para o banco, então editar a
+   * lista por fora e recarregar continua funcionando.
+   */
+  server.get('/api/playlists', async () => {
+    const assets = await listAssets(app.db)
+    const arquivos = await Playlists.findPlaylists(app.mediaRoot)
+    const listas = []
+    for (const caminho of arquivos) {
+      const lista = await Playlists.describe(caminho, assets)
+      if (lista) listas.push(lista)
+    }
+
+    // A do dia é a que tem a data de hoje. Não havendo, não há lista do dia:
+    // adivinhar "a mais recente" poria a programação de ontem no ar hoje.
+    const hoje = new Date().toISOString().slice(0, 10)
+    return {
+      playlists: listas.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)),
+      today: Playlists.playlistOfDay(listas, hoje)?.path ?? null,
+      date: hoje,
+    }
+  })
+
+  /** As entradas de uma lista, já confrontadas com o acervo. */
+  server.get('/api/playlists/entries', async (request, reply) => {
+    const { path } = request.query as { path?: string }
+    if (!path) return reply.code(400).send({ error: 'Diga qual lista.' })
+    if (!dentroDoAcervo(app.mediaRoot, path)) {
+      return reply.code(400).send({ error: 'Essa lista não está na pasta do acervo.' })
+    }
+    if (!existsSync(path)) return reply.code(404).send({ error: 'Lista não encontrada.' })
+
+    const assets = await listAssets(app.db)
+    return { entries: await Playlists.entriesOf(path, assets) }
+  })
+
+  /**
+   * Põe a lista na grade.
+   *
+   * `replace` limpa a grade antes; sem ele, a lista entra no fim. Entrada que
+   * não achou arquivo no acervo é pulada e contada na resposta -- entrar com
+   * um item sem mídia poria um buraco no ar que só apareceria na hora.
+   *
+   * O item no ar nunca sai, mesmo em `replace`: apagar a linha do que está
+   * tocando não tira a imagem da tela, só faz a grade mentir.
+   */
+  server.post('/api/rundowns/:id/playlist', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z
+      .object({ path: z.string().min(1), replace: z.boolean().default(false) })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Diga qual lista.' })
+    if (!dentroDoAcervo(app.mediaRoot, body.data.path)) {
+      return reply.code(400).send({ error: 'Essa lista não está na pasta do acervo.' })
+    }
+
+    const runtime = await runtimeForRundown(app, id)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Grade não encontrada.' })
+
+    const assets = await listAssets(app.db)
+    const entradas = await Playlists.entriesOf(body.data.path, assets)
+    const aproveitadas = entradas.filter((entrada) => entrada.mediaId !== null)
+
+    await app.history.capture(app.db, runtime.view.rundown.id, 'carregar lista', {
+      wholeRundown: true,
+    })
+
+    if (body.data.replace) {
+      const noAr = runtime.transport.state().onAir?.itemId ?? null
+      for (const entrada of runtime.view.items) {
+        if (entrada.item.id === noAr) continue
+        await app.db.delete(rundownItems).where(eq(rundownItems.id, entrada.item.id))
+      }
+    }
+
+    // A ordem é recalculada no fim: os itens que ficaram (o que está no ar,
+    // ou a grade inteira quando não é substituição) vêm antes da lista.
+    const ficaram = runtime.view.items
+      .map((entrada) => entrada.item.id)
+      .filter((itemId) => !body.data.replace || itemId === runtime.transport.state().onAir?.itemId)
+    const novos: string[] = []
+
+    for (const entrada of aproveitadas) {
+      const asset = assets.find((candidate) => candidate.id === entrada.mediaId)
+      if (!asset) continue
+
+      const parada = isStill(asset)
+        ? secondsToFrames(STILL_DEFAULT_SECONDS, runtime.channel.rate)
+        : null
+      const duracao =
+        parada ??
+        trimDuration(asset.defaultTrim ?? { in: 0, out: durationIn(asset, runtime.channel.rate) })
+
+      const itemId = randomUUID()
+      novos.push(itemId)
+      await app.db.insert(rundownItems).values({
+        id: itemId,
+        rundownId: runtime.view.rundown.id,
+        sortOrder: 0,
+        type: 'VT',
+        // O título da lista manda quando ela dá um: é o nome que o operador
+        // escreveu, e ele diz mais que o nome do arquivo.
+        title: entrada.title ?? asset.title,
+        mediaId: asset.id,
+        sourceRef: null,
+        trim: null,
+        audio: null,
+        durationOverride: parada,
+        minDuration: duracao,
+        anchor: { kind: 'FLOW' as const },
+        onOverrun: 'PUSH',
+        elastic: null,
+        locked: false,
+        autoNext: true,
+        loop: false,
+        notes: null,
+      })
+    }
+
+    for (const [posicao, itemId] of [...ficaram, ...novos].entries()) {
+      await app.db
+        .update(rundownItems)
+        .set({ sortOrder: (posicao + 1) * 10 })
+        .where(eq(rundownItems.id, itemId))
+    }
+
+    await runtime.refresh()
+    onChange()
+    return {
+      ...snapshot(app, runtime),
+      loaded: aproveitadas.length,
+      skipped: entradas.length - aproveitadas.length,
+    }
   })
 
   // ---- acervo -----------------------------------------------------------
