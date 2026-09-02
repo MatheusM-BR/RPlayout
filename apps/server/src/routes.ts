@@ -77,6 +77,19 @@ const MIME: Record<string, string> = {
   '.webm': 'video/webm',
   '.mkv': 'video/x-matroska',
   '.ogv': 'video/ogg',
+  // Contêineres de broadcast. Nem todos o navegador decodifica, mas mandar o
+  // tipo certo faz a recusa dele ser honesta: com `octet-stream` ele recusa
+  // até o que decodificaria, e o operador vê imagem parada num arquivo que
+  // tocaria sem problema.
+  '.ts': 'video/mp2t',
+  '.m2ts': 'video/mp2t',
+  '.mts': 'video/mp2t',
+  '.mpg': 'video/mpeg',
+  '.mpeg': 'video/mpeg',
+  '.avi': 'video/x-msvideo',
+  '.wmv': 'video/x-ms-wmv',
+  '.mxf': 'application/mxf',
+  '.3gp': 'video/3gpp',
   '.mp3': 'audio/mpeg',
   '.m4a': 'audio/mp4',
   '.wav': 'audio/wav',

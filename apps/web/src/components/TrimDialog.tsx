@@ -44,13 +44,40 @@ const MIME: Record<string, string> = {
   ogv: 'video/ogg',
 }
 
-/** O navegador daqui decodifica este arquivo? */
+/**
+ * Vale a pena tentar tocar este arquivo no navegador?
+ *
+ * Só responde "não" quando a resposta é sabida: extensão conhecida cujo tipo o
+ * navegador recusa de saída, como Matroska. Extensão que não está na tabela
+ * ganha o benefício da dúvida e vai para o `<video>` -- errar para o "não"
+ * aqui custava caro: `.ts`, `.avi` e `.mxf` não estavam na lista, então o
+ * player nem era montado e o operador via uma imagem parada sem entender por
+ * quê. Tentar e falhar custa um erro imediato, e o `onError` já sabe cair na
+ * imagem parada.
+ */
 function podeTocar(path: string | undefined): boolean {
   if (path === undefined) return false
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
   const tipo = MIME[ext]
-  if (tipo === undefined) return false
+  if (tipo === undefined) return true
   return document.createElement('video').canPlayType(tipo) !== ''
+}
+
+/** O que o navegador disse sobre o arquivo, quando ele desistiu. */
+function motivoDoErro(video: HTMLVideoElement | null): string {
+  const erro = video?.error
+  if (!erro) return 'o navegador não conseguiu abrir o arquivo'
+  switch (erro.code) {
+    case MediaError.MEDIA_ERR_DECODE:
+    case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+      return 'o navegador não decodifica este formato'
+    case MediaError.MEDIA_ERR_NETWORK:
+      return 'a leitura do arquivo foi interrompida'
+    case MediaError.MEDIA_ERR_ABORTED:
+      return 'a leitura foi cancelada'
+    default:
+      return 'o navegador não conseguiu abrir o arquivo'
+  }
 }
 
 /**
@@ -83,6 +110,8 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
   const [tocando, setTocando] = useState(false)
   /** O navegador aceitou decodificar este arquivo? */
   const [tocável, setTocável] = useState(() => podeTocar(asset?.path))
+  /** O que ele disse quando recusou, para a tela não ficar só com um sumiço. */
+  const [motivo, setMotivo] = useState<string | null>(null)
 
   /** O que o dedo está segurando agora. Nulo quando ninguém está arrastando. */
   const [pegando, setPegando] = useState<Alça>(null)
@@ -236,6 +265,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                     src={`/api/assets/${asset.id}/media`}
                     preload="metadata"
                     onError={() => {
+                      setMotivo(motivoDoErro(video.current))
                       setTocável(false)
                       setTocando(false)
                     }}
@@ -247,8 +277,8 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                 <div className="tc">{formatTimecode(cabeça, rate)}</div>
                 {!tocável && (
                   <div className="aviso">
-                    o navegador não toca este formato · arrastando, a imagem
-                    mostra o quadro mais próximo
+                    {motivo ?? 'o navegador não toca este formato'} · arrastando,
+                    a imagem mostra o quadro mais próximo
                   </div>
                 )}
               </div>
