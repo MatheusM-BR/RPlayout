@@ -30,6 +30,14 @@ export interface ChannelPaths {
   readonly clean: string
   /** Caminho do preview: o que o operador olha sem estar no ar. */
   readonly preview: string
+  /**
+   * Caminho do monitor do programa: o mesmo conteúdo do ar, em 480p.
+   *
+   * Existe para o navegador não ter que decodificar o programa inteiro numa
+   * janela de trezentos pixels. Com quatro canais abertos, eram quatro fluxos
+   * grandes decodificando ao mesmo tempo na mesma máquina.
+   */
+  readonly monitor: string
 }
 
 export interface MediaMtxOptions {
@@ -88,6 +96,7 @@ export function channelPaths(
       program: `${app}/pgm`,
       clean: `${app}/clean`,
       preview: `${app}/pvw`,
+      monitor: `${app}/mon`,
     }
   })
 }
@@ -130,7 +139,12 @@ export class MediaMtx {
    */
   async apply(channels: readonly ChannelPaths[], guests: readonly GuestPath[]): Promise<void> {
     const paths = [
-      ...channels.flatMap((channel) => [channel.program, channel.clean, channel.preview]),
+      ...channels.flatMap((channel) => [
+        channel.program,
+        channel.clean,
+        channel.preview,
+        channel.monitor,
+      ]),
       ...guests.map((guest) => `guest/${guest.streamKey}`),
     ]
 

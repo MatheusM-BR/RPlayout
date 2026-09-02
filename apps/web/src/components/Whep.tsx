@@ -5,6 +5,14 @@ interface Props {
   path: string | null
   /** Porta WebRTC do servidor de mídia. */
   port: number
+  /**
+   * Avisa que esta janela está aberta, enquanto ela existir.
+   *
+   * O engine só codifica o monitor enquanto alguém avisa: janela fechada não
+   * deve custar uma codificação, e numa máquina com quatro canais isso são
+   * quatro codificações que passam a existir só quando há alguém olhando.
+   */
+  onWatching?: () => void
 }
 
 type Status = 'off' | 'connecting' | 'live' | 'failed'
@@ -21,13 +29,28 @@ type Status = 'off' | 'connecting' | 'live' | 'failed'
  * nunca com um IP que o servidor ache que tem: quem abre por `localhost` e quem
  * abre pela rede precisam ver a mesma coisa.
  */
-export function Whep({ path, port }: Props) {
+export function Whep({ path, port, onWatching }: Props) {
   const video = useRef<HTMLVideoElement>(null)
   const [status, setStatus] = useState<Status>('off')
   const [reason, setReason] = useState<string | null>(null)
 
   /** Sobe a cada falha e é o que faz o monitor tentar de novo. */
   const [attempt, setAttempt] = useState(0)
+
+  /**
+   * Bate o ponto enquanto a janela existe.
+   *
+   * O primeiro aviso é imediato -- senão o monitor levaria o intervalo inteiro
+   * para acender na primeira vez --, e os seguintes são folgados: o servidor
+   * só desliga depois de vinte segundos de silêncio, então avisar de cinco em
+   * cinco dá margem para uma resposta perdida sem apagar a imagem.
+   */
+  useEffect(() => {
+    if (!path || !onWatching) return undefined
+    onWatching()
+    const relogio = window.setInterval(onWatching, 5_000)
+    return () => window.clearInterval(relogio)
+  }, [path, onWatching])
 
   useEffect(() => {
     if (!path) {

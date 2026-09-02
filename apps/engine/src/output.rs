@@ -43,6 +43,11 @@ pub enum Health {
     OnAir,
     /// Caiu e está esperando a próxima tentativa.
     Retrying,
+    /// Parada de propósito, esperando alguém pedir.
+    ///
+    /// Diferente de `Retrying`: não é falha, não conta tentativa e não vira
+    /// alerta na tela. É o monitor que ninguém abriu.
+    Idle,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,6 +121,18 @@ pub struct PublisherSpec {
     /// Sessão de placa é recurso escasso e contado: o preview, que sai em
     /// metade do tamanho, não gasta uma -- ela fica para o programa.
     pub prefer_software: bool,
+    /// Nome pelo qual esta saída é comandada de fora: "pgm", "pvw", "mon".
+    ///
+    /// Sem um nome, ligar e desligar um monitor exigiria endereçá-lo pela URL,
+    /// que muda quando o canal é renomeado.
+    pub role: String,
+    /// Nasce parada, esperando alguém pedir.
+    ///
+    /// É o caso dos monitores: encodar para uma janela que ninguém abriu é
+    /// gastar CPU do ar com nada. Numa máquina com quatro canais isso são
+    /// quatro codificações que só passam a existir quando alguém está de fato
+    /// assistindo.
+    pub on_demand: bool,
 }
 
 pub struct Publisher {
@@ -132,14 +149,44 @@ pub struct Publisher {
 impl Publisher {
     pub fn new(spec: PublisherSpec) -> Self {
         Self {
-            spec,
             pipeline: None,
             bus: None,
             delivered: Arc::new(AtomicU64::new(0)),
-            health: Health::Retrying,
+            health: if spec.on_demand { Health::Idle } else { Health::Retrying },
             attempts: 0,
-            retry_at: Some(Instant::now()),
+            retry_at: if spec.on_demand { None } else { Some(Instant::now()) },
             error: None,
+            spec,
+        }
+    }
+
+    /// Nome pelo qual esta saída é comandada de fora.
+    pub fn role(&self) -> &str {
+        &self.spec.role
+    }
+
+    /// Liga ou desliga uma saída sob demanda, sem tocar no resto do canal.
+    ///
+    /// Os pipelines de saída são independentes do pipeline do canal -- eles
+    /// puxam do `intervideosrc` --, então parar um não interrompe o programa.
+    /// É isso que permite o monitor existir só enquanto alguém olha.
+    pub fn set_wanted(&mut self, on: bool) {
+        if !self.spec.on_demand {
+            return;
+        }
+        if on {
+            if self.health != Health::Idle {
+                return;
+            }
+            self.health = Health::Retrying;
+            self.attempts = 0;
+            self.retry_at = Some(Instant::now());
+            self.error = None;
+        } else {
+            self.close();
+            self.health = Health::Idle;
+            self.retry_at = None;
+            self.error = None;
         }
     }
 
@@ -777,5 +824,63 @@ mod tests {
             liga_com(&formato_do_encoder(&certo), &certo),
             "o formato pedido ao próprio codificador tem que ligar"
         );
+    }
+}
+
+#[cfg(test)]
+mod testes_monitor {
+    use super::*;
+
+    fn spec(on_demand: bool) -> PublisherSpec {
+        PublisherSpec {
+            kind: Kind::File,
+            url: "/dev/null".to_string(),
+            video_channel: "v".to_string(),
+            audio_channel: "a".to_string(),
+            width: 854,
+            height: 480,
+            fps_n: 30,
+            fps_d: 1,
+            bitrate_kbps: 2000,
+            interlaced: false,
+            top_field_first: true,
+            prefer_software: true,
+            role: "mon".to_string(),
+            on_demand,
+        }
+    }
+
+    /// Monitor nasce parado: sem isso ele codificaria para uma janela fechada
+    /// desde o instante em que o canal sobe.
+    #[test]
+    fn sob_demanda_nasce_parado() {
+        let p = Publisher::new(spec(true));
+        assert_eq!(p.report().health, Health::Idle);
+    }
+
+    /// Saída de verdade nasce querendo subir: quem publica para o mundo não
+    /// pode depender de alguém estar olhando.
+    #[test]
+    fn saida_de_verdade_nasce_tentando() {
+        let p = Publisher::new(spec(false));
+        assert_eq!(p.report().health, Health::Retrying);
+    }
+
+    #[test]
+    fn liga_e_desliga_sob_demanda() {
+        let mut p = Publisher::new(spec(true));
+        p.set_wanted(true);
+        assert_eq!(p.report().health, Health::Retrying, "ligado, vai tentar subir");
+        p.set_wanted(false);
+        assert_eq!(p.report().health, Health::Idle, "desligado, volta a esperar");
+    }
+
+    /// `set_wanted` não encosta em saída que não é sob demanda -- desligar o
+    /// programa porque ninguém está olhando seria tirar o canal do ar.
+    #[test]
+    fn nao_desliga_saida_de_verdade() {
+        let mut p = Publisher::new(spec(false));
+        p.set_wanted(false);
+        assert_eq!(p.report().health, Health::Retrying);
     }
 }

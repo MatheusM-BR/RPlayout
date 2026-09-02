@@ -55,6 +55,15 @@ import { resolve as resolvePath } from 'node:path'
 /** O fim do endereço, que é a parte que identifica a saída para quem opera. */
 const short = (url: string): string => url.split('/').slice(-2).join('/')
 
+/**
+ * Quanto tempo um monitor sobrevive sem ninguém dizendo que está olhando.
+ *
+ * Folgado de propósito: recarregar a página não pode derrubar e resubir a
+ * codificação, porque subir custa abrir pipeline e reconectar ao servidor de
+ * mídia -- piscar isso a cada F5 seria pior do que deixar ligado.
+ */
+const MONITOR_OCIOSO_MS = 20_000
+
 export class ChannelRuntime {
   view: RundownView | null = null
   readonly transport: Transport
@@ -290,11 +299,52 @@ export class ChannelRuntime {
    * ou seja, para quem já desconfiava. Num playout, o que está quebrado tem de
    * aparecer na tela em que o operador já está olhando.
    */
+  /**
+   * Quando cada monitor foi visto por último, por barramento.
+   *
+   * A interface avisa que está olhando enquanto a janela existe. Passado o
+   * silêncio, o monitor desliga: quem fechou a aba, ou quem foi almoçar com o
+   * navegador fechado, não deve custar uma codificação.
+   */
+  private readonly olhando = new Map<'pvw' | 'mon', number>()
+  private readonly monitorLigado = new Map<'pvw' | 'mon', boolean>()
+
+  /** A interface diz que alguém está com este monitor aberto. */
+  watching(bus: 'pvw' | 'mon'): void {
+    this.olhando.set(bus, Date.now())
+    if (this.monitorLigado.get(bus) !== true) {
+      this.monitorLigado.set(bus, true)
+      console.info(`[monitor] ligando ${bus}: alguém abriu a janela`)
+      this.transport.setMonitor(bus, true)
+    }
+  }
+
+  /**
+   * Desliga o que ninguém está olhando há um tempo.
+   *
+   * A folga existe para recarregar a página não derrubar e resubir a
+   * codificação: subir custa abrir pipeline e reconectar ao servidor de mídia,
+   * e piscar isso a cada F5 seria pior que deixar ligado.
+   */
+  private podarMonitores(): void {
+    const limite = Date.now() - MONITOR_OCIOSO_MS
+    for (const bus of ['pvw', 'mon'] as const) {
+      if (this.monitorLigado.get(bus) !== true) continue
+      if ((this.olhando.get(bus) ?? 0) > limite) continue
+      this.monitorLigado.set(bus, false)
+      console.info(`[monitor] desligando ${bus}: ninguém olhando há mais de 20s`)
+      this.transport.setMonitor(bus, false)
+    }
+  }
+
   alerts(): { kind: 'OUTPUT' | 'ENGINE'; message: string }[] {
     const found: { kind: 'OUTPUT' | 'ENGINE'; message: string }[] = []
 
     for (const publisher of this.transport.publishers()) {
       if (publisher.health === 'onAir' || publisher.health === 'connecting') continue
+      // Monitor desligado não é falha: é uma janela que ninguém abriu, e
+      // alarme para isso encheria o sino com o funcionamento normal.
+      if (publisher.health === 'idle') continue
 
       // O motivo vai junto. "Caiu e está tentando voltar" sozinho manda o
       // operador procurar no escuro -- a causa quase sempre está na primeira
@@ -362,6 +412,7 @@ export class ChannelRuntime {
 
   /** Estado que vai para a interface a cada frame de atualização. */
   live() {
+    this.podarMonitores()
     this.phase += 0.12
     const state = this.transport.state()
     return {
@@ -467,7 +518,7 @@ export async function runtimeFor(app: App, channelId: string): Promise<ChannelRu
   // máquina que só tem o engine.
   const program = forRole('PROGRAM')
   const extras = profiles
-    .filter((entry) => entry.role === 'EXTRA')
+    .filter((entry) => entry.role === 'EXTRA' || entry.role === 'MONITOR')
     .map((entry) => toEngineProfile(entry, path))
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
     .map(encodeProfile)

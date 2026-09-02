@@ -1,4 +1,6 @@
+import { useCallback, useMemo } from 'react'
 import type { Channel } from '@rplayout/protocol'
+import { api } from '../api.js'
 import type { ItemView, Live, Monitors as MonitorFeeds } from '../types.js'
 import { Meter } from './Meter.js'
 import { Whep } from './Whep.js'
@@ -30,6 +32,18 @@ export function Monitors({
 }: Props) {
   const ending = onAirRemaining > 0 && onAirRemaining <= 10 * (channel.rate.num / channel.rate.den)
 
+  // Bater o ponto por monitor. Falha aqui não faz nada visível de propósito: o
+  // pior que acontece é o monitor apagar sozinho, e encher a tela de erro por
+  // causa de um aviso perdido seria pior que a imagem sumir.
+  const avisar = useCallback(
+    (bus: 'pvw' | 'mon') => () => {
+      void api.watching(channel.id, bus).catch(() => {})
+    },
+    [channel.id],
+  )
+  const avisarPgm = useMemo(() => avisar('mon'), [avisar])
+  const avisarPvw = useMemo(() => avisar('pvw'), [avisar])
+
   return (
     <>
       <div className="monitor">
@@ -41,7 +55,9 @@ export function Monitors({
             do que o impede de aparecer; a tarja de baixo diz o que está no ar.
             Um texto de cada, senão os dois se escrevem por cima. */}
         <div className="screen">
-          {monitors && <Whep path={monitors.program} port={monitors.port} />}
+          {monitors && (
+            <Whep path={monitors.program} port={monitors.port} onWatching={avisarPgm} />
+          )}
           {onAirItem ? (
             <div className="over">
               <div className="what">{onAirItem.item.title}</div>
@@ -66,7 +82,9 @@ export function Monitors({
           <span>preview</span>
         </div>
         <div className="screen">
-          {monitors?.preview && <Whep path={monitors.preview} port={monitors.port} />}
+          {monitors?.preview && (
+            <Whep path={monitors.preview} port={monitors.port} onWatching={avisarPvw} />
+          )}
           {preview ? (
             <div className="over">
               <div className="what">{preview.title}</div>

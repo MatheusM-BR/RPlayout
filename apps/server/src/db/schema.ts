@@ -49,7 +49,7 @@ export const outputProfiles = sqliteTable('output_profiles', {
   kind: text('kind').$type<'RTMP' | 'SRT' | 'FILE'>().notNull(),
   /** URL de rede ou caminho de arquivo. Vazio nos gerenciados: vem do servidor. */
   target: text('target').notNull().default(''),
-  role: text('role').$type<'PROGRAM' | 'PREVIEW' | 'EXTRA'>().notNull().default('EXTRA'),
+  role: text('role').$type<'PROGRAM' | 'PREVIEW' | 'MONITOR' | 'EXTRA'>().notNull().default('EXTRA'),
   width: integer('width'),
   height: integer('height'),
   rateNum: integer('rate_num'),

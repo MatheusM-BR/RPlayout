@@ -10,7 +10,7 @@ import type { MeterReading } from './meters.js'
 /** Situação de uma saída de rede do canal, como o engine reporta. */
 export interface PublisherState {
   readonly url: string
-  readonly health: 'connecting' | 'onAir' | 'retrying'
+  readonly health: 'connecting' | 'onAir' | 'retrying' | 'idle'
   /** Tentativas desde a última entrega. Zera quando volta a entregar. */
   readonly attempts: number
   readonly delivered: number
@@ -48,6 +48,13 @@ export interface Transport {
   previewMeter(): MeterReading | null
   /** Saídas de rede do canal. Vazio no simulado, que não sai para lugar nenhum. */
   publishers(): readonly PublisherState[]
+  /**
+   * Liga ou desliga um monitor ("pvw", "mon") sem encostar no programa.
+   *
+   * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
+   * e com quatro canais são quatro codificações desperdiçadas.
+   */
+  setMonitor(bus: 'pvw' | 'mon', on: boolean): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */
@@ -180,6 +187,10 @@ export class SimulatedTransport implements Transport {
   /** O simulado não sai para lugar nenhum: quem publica é o engine. */
   publishers(): readonly PublisherState[] {
     return []
+  }
+
+  setMonitor(): void {
+    // Sem engine não há codificação para ligar nem desligar.
   }
 
   /** Sem engine não há o que desenhar; o estado do grafismo mora no servidor. */

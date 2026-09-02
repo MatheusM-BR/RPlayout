@@ -187,7 +187,11 @@ const snapshot = (app: App, runtime: ChannelRuntime) => ({
 function monitors(app: App, channelId: string) {
   const path = app.paths.find((entry) => entry.channelId === channelId)
   if (!app.mediamtx?.running || !path) return null
-  return { port: PORTS.webrtc, program: path.program, preview: path.preview }
+  // O monitor do programa é o caminho `mon`, em 480p -- e não o `pgm`, que é
+  // o que vai ao ar. Assistir ao programa inteiro numa janela de trezentos
+  // pixels fazia o navegador decodificar quatro fluxos grandes ao mesmo tempo
+  // numa máquina com quatro canais.
+  return { port: PORTS.webrtc, program: path.monitor, preview: path.preview }
 }
 
 /**
@@ -1524,6 +1528,25 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (runtime) await runtime.refresh()
     onChange()
     return { cues: runtime?.cuesOf(cue.itemId) ?? [] }
+  })
+
+  /**
+   * "Estou com este monitor aberto."
+   *
+   * O engine só codifica o monitor enquanto alguém avisa. Sem isto, uma
+   * máquina com quatro canais gastava quatro codificações para janelas que
+   * podiam estar fechadas -- e era a CPU do ar que pagava.
+   */
+  server.post('/api/channels/:id/watching', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z.object({ bus: z.enum(['pvw', 'mon']) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Barramento inválido.' })
+
+    const runtime = await runtimeFor(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+
+    runtime.watching(body.data.bus)
+    return { ok: true }
   })
 
   // ---- perfis de saída ---------------------------------------------------

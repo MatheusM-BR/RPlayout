@@ -79,6 +79,12 @@ pub enum Command {
     Stop,
     /// Muda o ganho do item no ar sem interromper nada.
     SetGain { gain_db: f64 },
+    /// Liga ou desliga um monitor ("pvw", "mon") sob demanda.
+    ///
+    /// Os pipelines de saída são independentes do do canal, então parar um
+    /// monitor não encosta no programa. É o que permite não codificar para uma
+    /// janela que ninguém abriu.
+    Monitor { bus: String, on: bool },
     Status,
     Shutdown,
 }

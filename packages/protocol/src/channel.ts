@@ -142,3 +142,25 @@ export function suggestedBitrateKbps(
   const redondo = Math.round(kbps / 250) * 250
   return Math.min(25_000, Math.max(2_000, redondo))
 }
+
+/**
+ * Tamanho de um monitor: o do canal reduzido até caber em 480 de altura.
+ *
+ * Monitor é janela de navegador, não saída. A proporção do canal importa --
+ * monitor esticado engana quem confere enquadramento --, mas a resolução não:
+ * 1080p numa janela de trezentos pixels é banda e CPU jogadas fora nas duas
+ * pontas, e com quatro canais abertos era o navegador que engasgava.
+ *
+ * Sai em números pares porque a subamostragem de croma do H.264 exige.
+ */
+export function monitorSize(width: number, height: number): [number, number] {
+  const TETO = 480
+  if (height <= TETO || height <= 0 || width <= 0) {
+    return [width - (width % 2), height - (height % 2)]
+  }
+  // Arredonda para cima até o par seguinte: 1920x1080 em 480 de altura dá
+  // 853,33, e o valor consagrado é 854. Arredondar para baixo daria 852, que
+  // não está errado mas foge do número que todo mundo reconhece.
+  const escalada = Math.ceil((width * TETO) / height)
+  return [escalada + (escalada % 2), TETO]
+}

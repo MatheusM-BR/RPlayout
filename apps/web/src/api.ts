@@ -149,6 +149,10 @@ export const api = {
       avoidHours: number
     },
   ) => post<{ rule: ScheduleRule }>(`/api/channels/${channelId}/rules`, body),
+  /** "Estou com este monitor aberto." O engine só codifica enquanto há aviso. */
+  watching: (channelId: string, bus: 'pvw' | 'mon') =>
+    post<{ ok: true }>(`/api/channels/${channelId}/watching`, { bus }),
+
   categories: () => send<{ categories: Categoria[] }>('/api/categories'),
   setCategoryColor: (id: string, color: string) =>
     send<{ ok: true }>(`/api/categories/${encodeURIComponent(id)}`, {

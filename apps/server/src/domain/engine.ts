@@ -593,6 +593,11 @@ export class EngineTransport implements Transport {
     return [...this.publisherStates.values()]
   }
 
+  /** Liga ou desliga um monitor. O engine faz isso sem tocar no programa. */
+  setMonitor(bus: 'pvw' | 'mon', on: boolean): void {
+    this.send({ cmd: 'monitor', bus, on })
+  }
+
   close(): void {
     this.send({ cmd: 'shutdown' })
     this.alive = false

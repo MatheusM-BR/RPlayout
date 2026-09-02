@@ -168,7 +168,7 @@ export interface RelayStatus {
 /** Saída de rede do canal, como o engine reporta. */
 export interface PublisherStatus {
   url: string
-  health: 'connecting' | 'onAir' | 'retrying'
+  health: 'connecting' | 'onAir' | 'retrying' | 'idle'
   attempts: number
   delivered: number
   error?: string

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatVideoFormat, suggestedBitrateKbps } from './channel.js'
+import { formatVideoFormat, monitorSize, suggestedBitrateKbps } from './channel.js'
 import { RATE } from './rate.js'
 
 describe('nome do formato de vídeo', () => {
@@ -74,6 +74,35 @@ describe('suggestedBitrateKbps', () => {
       [720, 480, 30],
     ] as const) {
       expect(suggestedBitrateKbps(w, h, { num: n, den: 1 }) % 250).toBe(0)
+    }
+  })
+})
+
+describe('monitorSize', () => {
+  /** 1080p vira 480p mantendo o 16:9: monitor esticado engana enquadramento. */
+  it('reduz 1080p para 480p sem deformar', () => {
+    expect(monitorSize(1920, 1080)).toEqual([854, 480])
+  })
+
+  it('mantém a proporção 4:3', () => {
+    expect(monitorSize(1440, 1080)).toEqual([640, 480])
+  })
+
+  /** O que já é pequeno não é ampliado: monitor não inventa resolução. */
+  it('não amplia o que já cabe', () => {
+    expect(monitorSize(640, 360)).toEqual([640, 360])
+  })
+
+  it('sai sempre em números pares', () => {
+    for (const [w, h] of [
+      [1920, 1080],
+      [1280, 720],
+      [1001, 563],
+      [4096, 2160],
+    ] as const) {
+      const [largura, altura] = monitorSize(w, h)
+      expect(largura % 2).toBe(0)
+      expect(altura % 2).toBe(0)
     }
   })
 })

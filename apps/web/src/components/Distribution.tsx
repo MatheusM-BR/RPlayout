@@ -24,12 +24,15 @@ const PUBLISHER_TONE: Record<PublisherStatus['health'], string> = {
   onAir: 'ok',
   connecting: 'warn',
   retrying: 'bad',
+  // Monitor parado não é falha: é uma janela que ninguém abriu.
+  idle: '',
 }
 
 const PUBLISHER_LABEL: Record<PublisherStatus['health'], string> = {
   onAir: 'NO AR',
   connecting: 'CONECTANDO',
   retrying: 'RECONECTANDO',
+  idle: 'EM ESPERA',
 }
 
 /** Copia e avisa. Endereço que o operador precisa digitar à mão é endereço errado. */

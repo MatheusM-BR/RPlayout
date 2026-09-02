@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { and, asc, eq } from 'drizzle-orm'
-import { suggestedBitrateKbps, type Channel, type Scan } from '@rplayout/protocol'
+import { monitorSize, suggestedBitrateKbps, type Channel, type Scan } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
 import { outputProfiles } from '../db/schema.js'
 import { MediaMtx, type ChannelPaths } from './mediamtx.js'
 
-export type OutputRole = 'PROGRAM' | 'PREVIEW' | 'EXTRA'
+export type OutputRole = 'PROGRAM' | 'PREVIEW' | 'MONITOR' | 'EXTRA'
 export type OutputKind = 'RTMP' | 'SRT' | 'FILE'
 
 export interface OutputProfileRow {
@@ -41,6 +41,8 @@ interface EngineProfile {
   rateDen?: number
   scan?: 'progressive' | 'interlaced'
   bitrateKbps?: number
+  /** "mon" marca um monitor: o engine sobe sob demanda e codifica em software. */
+  role?: 'mon'
 }
 
 export async function listOutputs(db: Db, channelId: string): Promise<OutputProfileRow[]> {
@@ -86,6 +88,21 @@ export async function ensureManagedOutputs(
     },
   ]
 
+  managed.push({
+    role: 'MONITOR',
+    name: 'Monitor do programa',
+    // Mesmo conteúdo do ar, em 480p, para a janela do navegador. O engine só
+    // liga esta saída quando alguém abre o monitor -- ver `on_demand` lá.
+    defaults: (() => {
+      const [largura, altura] = monitorSize(channel.width, channel.height)
+      return {
+        width: largura,
+        height: altura,
+        bitrateKbps: suggestedBitrateKbps(largura, altura, channel.rate),
+      }
+    })(),
+  })
+
   for (const entry of managed) {
     if (existing.some((row) => row.role === entry.role)) continue
     await db.insert(outputProfiles).values({
@@ -114,6 +131,7 @@ export async function ensureManagedOutputs(
 export function targetOf(row: OutputProfileRow, path: ChannelPaths | undefined): string | null {
   if (row.role === 'PROGRAM') return path ? MediaMtx.loopback(path.program) : null
   if (row.role === 'PREVIEW') return path ? MediaMtx.loopback(path.preview) : null
+  if (row.role === 'MONITOR') return path ? MediaMtx.loopback(path.monitor) : null
   return row.target || null
 }
 
@@ -136,6 +154,9 @@ export function toEngineProfile(
       ? { scan: row.scan === 'INTERLACED' ? ('interlaced' as const) : ('progressive' as const) }
       : {}),
     ...(row.bitrateKbps !== null ? { bitrateKbps: row.bitrateKbps } : {}),
+    // O engine trata "mon" como monitor: sobe sob demanda e codifica em
+    // software, para não gastar sessão de placa numa janela de navegador.
+    ...(row.role === 'MONITOR' ? { role: 'mon' as const } : {}),
   }
 }
 

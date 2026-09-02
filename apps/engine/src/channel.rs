@@ -60,6 +60,12 @@ pub struct OutputSpec {
     pub scan: Option<String>,
     #[serde(default)]
     pub bitrate_kbps: Option<u32>,
+    /// Papel desta saída. "mon" marca um monitor: sob demanda e em software.
+    ///
+    /// Monitor não é destino -- é a janela que o operador abre no navegador.
+    /// Codificar para uma janela fechada é gastar CPU do ar com nada.
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 impl Output {
@@ -87,6 +93,7 @@ impl Output {
                 rate_den: None,
                 scan: None,
                 bitrate_kbps: None,
+                role: None,
             })
         };
 
@@ -502,6 +509,28 @@ fn meter_branch() -> Result<(gst::Element, gst::Element, gst::Element, gst::Elem
     sink.set_property("drop", true);
 
     Ok((queue, convert, caps, sink))
+}
+
+/// Tamanho de um monitor: o do canal reduzido até caber em 480 de altura.
+///
+/// Monitor é janela de navegador, não saída. Manter a proporção do canal
+/// importa -- monitor esticado engana quem confere enquadramento --, mas a
+/// resolução não: 1080p numa janela de trezentos pixels é banda e CPU jogadas
+/// fora nas duas pontas.
+///
+/// Largura e altura saem pares porque a subamostragem de croma do H.264 exige.
+pub fn monitor_size(width: i32, height: i32) -> (i32, i32) {
+    const TETO: i32 = 480;
+    if height <= TETO || height <= 0 || width <= 0 {
+        return (width - width % 2, height - height % 2);
+    }
+    // Para cima até o par seguinte, igual ao lado TypeScript: 1920x1080 em 480
+    // de altura dá 853,33 e o valor consagrado é 854. As duas contas precisam
+    // bater, porque o servidor calcula o tamanho do perfil e o engine calcula
+    // as caps do preview -- divergir aqui daria escala no meio do caminho.
+    let alto = height as i64;
+    let escalada = ((width as i64 * TETO as i64 + alto - 1) / alto) as i32;
+    (escalada + escalada % 2, TETO)
 }
 
 /// Caps de vídeo do canal.
@@ -946,8 +975,22 @@ impl Channel {
             bitrate_kbps: spec.bitrate_kbps.unwrap_or(self.config.bitrate_kbps),
             interlaced,
             top_field_first: self.config.top_field_first,
-            // O programa é o que vai ao ar: se há placa, é dele.
-            prefer_software: false,
+            // O programa é o que vai ao ar: se há placa, é dele. Monitor sai
+            // em software para não gastar sessão de placa, que é contada.
+            prefer_software: spec.role.as_deref() == Some("mon"),
+            // A primeira saída é o programa; as outras são destinos extras --
+            // menos o monitor, que se identifica no perfil.
+            role: spec.role.clone().unwrap_or_else(|| {
+                if index == 0 {
+                    "pgm".to_string()
+                } else {
+                    format!("saida{index}")
+                }
+            }),
+            // Saída de verdade sobe junto com o canal e fica: quem publica
+            // para o mundo não pode depender de alguém estar olhando. Monitor
+            // é o contrário: só existe enquanto alguém olha.
+            on_demand: spec.role.as_deref() == Some("mon"),
         }));
         Ok(())
     }
@@ -969,9 +1012,13 @@ impl Channel {
         let video_channel = format!("{}-pvw-video", self.config.channel_id);
         let audio_channel = format!("{}-pvw-audio", self.config.channel_id);
 
-        // Metade da altura e um terço do bitrate: é um monitor, não uma saída.
-        // Codificar o preview em 1080p50 dobraria o custo do canal para nada.
-        let (width, height) = (self.config.width / 2, self.config.height / 2);
+        // Monitor não passa de 480p, e o bitrate acompanha.
+        //
+        // Quem olha o preview está numa janela de trezentos pixels dentro de
+        // um navegador: 1080p ali é banda e CPU jogadas fora nas duas pontas
+        // -- e com quatro canais abertos era o navegador que engasgava,
+        // decodificando quatro fluxos grandes ao mesmo tempo.
+        let (width, height) = monitor_size(self.config.width, self.config.height);
         self.publishers.push(Publisher::new(PublisherSpec {
             kind: spec.kind,
             url: spec.target.clone(),
@@ -986,18 +1033,21 @@ impl Channel {
             // navegador, não num monitor de referência.
             interlaced: false,
             top_field_first: self.config.top_field_first,
-            // O preview sai em metade do tamanho e não gasta sessão de placa:
-            // com quatro canais no ar, é a diferença entre caber e não caber.
+            // O preview sai pequeno e não gasta sessão de placa: com quatro
+            // canais no ar, é a diferença entre caber e não caber.
             prefer_software: true,
+            role: "pvw".to_string(),
+            // Só existe enquanto alguém está com a janela aberta.
+            on_demand: true,
         }));
 
         self.preview_channels = Some((video_channel, audio_channel));
         Ok(())
     }
 
-    /// Caps do preview: mesma cadência do canal, metade do tamanho.
+    /// Caps do preview: mesma cadência do canal, tamanho de monitor.
     fn preview_caps(&self) -> gst::Caps {
-        let (width, height) = (self.config.width / 2, self.config.height / 2);
+        let (width, height) = monitor_size(self.config.width, self.config.height);
         gst::Caps::builder("video/x-raw")
             .field("format", "I420")
             .field("width", width - width % 2)
@@ -1095,6 +1145,18 @@ impl Channel {
 
     /// Dá uma volta nas saídas de rede: colhe falha, reconecta o que caiu e
     /// devolve só o que mudou de estado.
+    /// Liga ou desliga um monitor pelo nome. Devolve `false` se não existe.
+    pub fn set_monitor(&mut self, bus: &str, on: bool) -> bool {
+        let mut achou = false;
+        for publisher in &mut self.publishers {
+            if publisher.role() == bus {
+                publisher.set_wanted(on);
+                achou = true;
+            }
+        }
+        achou
+    }
+
     pub fn service_outputs(&mut self) -> Vec<Report> {
         self.publishers
             .iter_mut()
@@ -1533,5 +1595,35 @@ impl Channel {
 fn discard(item: Item) {
     if let Err(error) = item.pipeline.set_state(gst::State::Null) {
         eprintln!("[engine] item {} não encerrou limpo: {error}", item.spec.item_id);
+    }
+}
+
+#[cfg(test)]
+mod testes_monitor_size {
+    use super::monitor_size;
+
+    /// As duas contas -- esta e a do pacote `protocol` -- têm que dar o mesmo
+    /// número. O servidor calcula o tamanho do perfil da saída de monitor e o
+    /// engine calcula as caps do preview: divergir aqui poria uma escala no
+    /// meio do caminho, que é custo de CPU por causa de um pixel de diferença.
+    #[test]
+    fn bate_com_o_lado_typescript() {
+        assert_eq!(monitor_size(1920, 1080), (854, 480));
+        assert_eq!(monitor_size(1440, 1080), (640, 480));
+        assert_eq!(monitor_size(1280, 720), (854, 480));
+    }
+
+    #[test]
+    fn nao_amplia_o_que_ja_cabe() {
+        assert_eq!(monitor_size(640, 360), (640, 360));
+    }
+
+    #[test]
+    fn sai_sempre_par() {
+        for (w, h) in [(1920, 1080), (1001, 563), (4096, 2160)] {
+            let (largura, altura) = monitor_size(w, h);
+            assert_eq!(largura % 2, 0, "{w}x{h} deu largura ímpar");
+            assert_eq!(altura % 2, 0, "{w}x{h} deu altura ímpar");
+        }
     }
 }

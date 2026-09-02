@@ -147,6 +147,19 @@ fn run_command(channel: &mut Channel, command: Command) -> Result<bool> {
             channel.set_gain(gain_db)?;
             Ok(true)
         }
+        Command::Monitor { bus, on } => {
+            if !channel.set_monitor(&bus, on) {
+                return Err(anyhow::anyhow!("não existe monitor chamado {bus}"));
+            }
+            // O relatório sai daqui, e não do laço de serviço: ligar e desligar
+            // acontece fora dele, e sem este anúncio o servidor ficava com a
+            // leitura velha -- o painel mostrava um monitor "caído" que na
+            // verdade tinha sido desligado de propósito.
+            for report in channel.outputs_report() {
+                Event::Publisher { report }.emit();
+            }
+            Ok(true)
+        }
         Command::Status => {
             announce(channel);
             Event::Output {
