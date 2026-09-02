@@ -73,7 +73,7 @@ sintoma.
 ```powershell
 cd C:\RPlayout
 
-# um canal, uma grade de noite e o acervo apontando para a sua pasta
+# um canal e uma grade vazia; o acervo vem da sua pasta, lido pela varredura
 $env:RPLAYOUT_MEDIA_DIR = 'C:\RPlayout\midia'
 pnpm --filter @rplayout/server seed
 
@@ -95,6 +95,19 @@ pnpm --filter @rplayout/web dev
 ```
 
 A interface abre em <http://localhost:5173>.
+
+Se você semeou com a pasta apontada, a grade nasce vazia: clique em **LER
+PASTA** para o acervo ser lido do disco -- duração, loudness e miniatura de cada
+arquivo -- e monte a grade com **inserir item** ou **montar**. Semear doze nomes
+inventados produziria uma grade bonita em que nenhum item toca, e você só
+descobriria no primeiro take.
+
+Sem `RPLAYOUT_MEDIA_DIR`, o seed cria um acervo de demonstração com loudness
+deliberadamente desigual: serve para ver a interface funcionando antes de ter
+material, e nenhum daqueles arquivos existe em disco.
+
+E se o banco estiver vazio -- sem seed nenhum --, a interface abre pedindo o
+nome do primeiro canal, em vez de ficar carregando para sempre.
 
 ## Firewall
 

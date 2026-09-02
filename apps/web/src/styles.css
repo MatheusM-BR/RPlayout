@@ -215,6 +215,31 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .asrun td.bad { color: var(--next); }
 
 /* Caixa de marcar com rótulo à direita. */
+/* Primeira vez: banco sem canal nenhum. */
+.firstrun {
+  max-width: 620px;
+  margin: 12vh auto;
+  padding: 0 24px;
+  display: grid;
+  gap: 16px;
+}
+.firstrun h1 { font-family: var(--display); font-size: 34px; margin: 0; }
+.firstrun h1 span { color: var(--accent); }
+.firstrun p { margin: 0; color: var(--muted); line-height: 1.6; }
+.firstrun .row { display: flex; gap: 8px; }
+.firstrun input { flex: 1; }
+.firstrun .hint { font-size: 12px; color: var(--dim); }
+.firstrun .hint.bad { color: var(--next); }
+.firstrun code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--raised);
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  padding: 1px 5px;
+  margin: 0 3px;
+}
+
 /* Aviso do que está quebrado, na barra de cima. */
 .alerts {
   display: flex;

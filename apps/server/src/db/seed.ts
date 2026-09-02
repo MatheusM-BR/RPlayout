@@ -55,6 +55,15 @@ const FOLDER: Record<string, string> = {
  */
 const MEDIA_DIR = process.env.RPLAYOUT_MEDIA_DIR ?? ''
 
+/**
+ * Força o acervo de demonstração mesmo com pasta apontada.
+ *
+ * Só faz sentido quando os arquivos da pasta têm exatamente os nomes que este
+ * seed inventa -- que é o caso de quem gerou material de teste para exercitar
+ * o engine, e de mais ninguém.
+ */
+const DEMO = process.env.RPLAYOUT_SEED_DEMO === '1'
+
 interface AssetSeed {
   key: string
   title: string
@@ -257,6 +266,31 @@ async function seed(): Promise<void> {
     programSdiDeviceId: 'decklink:0',
     createdAt: now,
   })
+
+  // Pasta de verdade apontada: o acervo é o que está no disco, lido pela
+  // varredura com duração, loudness e miniatura de cada arquivo. Semear doze
+  // nomes inventados aqui produziria uma grade bonita em que nenhum item toca
+  // -- e o operador só descobriria no primeiro take.
+  if (MEDIA_DIR && !DEMO) {
+    await db.insert(rundowns).values({
+      id: randomUUID(),
+      channelId,
+      name: 'Grade',
+      plannedStart: START,
+      loop: true,
+      date: new Date().toISOString().slice(0, 10),
+      createdAt: now,
+      updatedAt: now,
+    })
+    console.log(
+      `Semeado: canal ${channelId} e uma grade vazia.\n` +
+        `Agora leia ${MEDIA_DIR} pela interface (botão LER PASTA) e monte a grade ` +
+        `com "inserir item" ou "montar".\n` +
+        'Para o acervo de demonstração em vez disto, rode com RPLAYOUT_SEED_DEMO=1.',
+    )
+    sqlite.close()
+    return
+  }
 
   const assetIds = new Map<string, string>()
   for (const asset of ASSETS) {

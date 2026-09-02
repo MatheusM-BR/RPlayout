@@ -99,8 +99,16 @@ o RTSP interno (8554) ficam em loopback e nunca são abertos no firewall.
 `RPLAYOUT_MEDIAMTX_LOGLEVEL=info` faz o servidor dizer **por que** fechou uma
 conexão -- é a única fonte que explica uma publicação recusada.
 
-Para exercitar sem acervo, semeie apontando para uma pasta de arquivos reais:
-`RPLAYOUT_MEDIA_DIR=/caminho/para/midia pnpm --filter @rplayout/server seed`.
+`pnpm --filter @rplayout/server seed` sem mais nada cria um acervo de
+demonstração com loudness desigual -- serve para ver a interface antes de ter
+material, e nenhum daqueles arquivos existe em disco. Com
+`RPLAYOUT_MEDIA_DIR` apontado para uma pasta de verdade, o seed cria só o canal
+e uma grade vazia: o acervo é o que a varredura ler do disco. Inventar nomes de
+arquivo ali produziria uma grade bonita em que nenhum item toca, e o operador só
+descobriria no primeiro take.
+
+Banco vazio, sem seed nenhum, também tem caminho: a interface abre pedindo o
+nome do primeiro canal em vez de ficar carregando para sempre.
 
 `pnpm test` roda a suíte; `pnpm typecheck` e `pnpm lint` cobrem o resto.
 A grade semeada nasce a partir do relógio da máquina, então as âncoras fecham a

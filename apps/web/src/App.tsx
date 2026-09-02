@@ -61,6 +61,8 @@ export function App() {
   const [rundownOf, setRundownOf] = useState<Record<string, string>>({})
   /** Nome do canal sendo criado, ou nulo quando ninguém está criando. */
   const [newChannel, setNewChannel] = useState<string | null>(null)
+  /** Enquanto a primeira consulta não voltou, não dá para dizer que não há canal. */
+  const [loading, setLoading] = useState(true)
   /** Linhas marcadas para agrupar. Marcar não é armar: o PGM não muda. */
   const [marked, setMarked] = useState<Set<string>>(new Set())
   const lastClicked = useRef<string | null>(null)
@@ -122,6 +124,8 @@ export function App() {
         if (start) absorb(await api.rundown(start.id))
       } catch (failure) {
         setError(failure instanceof Error ? failure.message : 'Servidor fora do ar.')
+      } finally {
+        setLoading(false)
       }
     })()
   }, [absorb, refreshLibrary])
@@ -421,6 +425,23 @@ export function App() {
     })
   }
 
+  /** Cria um canal e abre a grade dele. Serve à barra e à tela de primeira vez. */
+  const createChannel = (): void => {
+    const name = (newChannel ?? '').trim()
+    if (name === '') return
+    setNewChannel(null)
+    void guard(async () => {
+      const created = await api.addChannel(name)
+      const state = await api.state()
+      setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+      const map: Record<string, string> = {}
+      for (const rundown of state.rundowns) map[rundown.channelId] ??= rundown.id
+      setRundownOf(map)
+      absorb(await api.rundown(created.rundownId))
+      say(`${name} criado, com grade vazia.`)
+    })
+  }
+
   const setTrack = (id: string, audioTrack: number): void => {
     void guard(async () => {
       absorb(await api.patchItem(id, { audioTrack }))
@@ -443,6 +464,44 @@ export function App() {
     void guard(async () => {
       absorb(await api.patchItem(id, { notes: notes.trim() === '' ? null : notes }))
     })
+  }
+
+  // Instalação nova: banco sem canal nenhum. Antes disto a tela ficava em
+  // "carregando" para sempre, que é a pior primeira impressão possível --
+  // parece defeito e é só falta de canal.
+  if (!view && channels.length === 0 && !loading) {
+    return (
+      <div className="app">
+        <div className="firstrun">
+          <h1>
+            RPlayout<span>.</span>
+          </h1>
+          <p>
+            Nenhum canal ainda. Um canal é o que tem grade, saídas e monitores — sem ele não há
+            o que operar.
+          </p>
+          <div className="row">
+            <input
+              type="text"
+              autoFocus
+              placeholder="nome do canal"
+              value={newChannel ?? ''}
+              onChange={(event) => setNewChannel(event.target.value)}
+              onKeyDown={(event) => event.key === 'Enter' && createChannel()}
+            />
+            <button className="btn take" onClick={createChannel}>
+              criar canal
+            </button>
+          </div>
+          <p className="hint">
+            O canal nasce em 1920×1080 a 50 quadros, com uma grade vazia. Depois aponte
+            <code>RPLAYOUT_MEDIA</code> para a sua pasta de vídeos e use <b>LER PASTA</b>: o
+            acervo é lido do disco, com duração, loudness e miniatura de cada arquivo.
+          </p>
+          {error && <p className="hint bad">{error}</p>}
+        </div>
+      </div>
+    )
   }
 
   if (!view || !live) {
@@ -506,19 +565,7 @@ export function App() {
               onBlur={() => setNewChannel(null)}
               onKeyDown={(event) => {
                 if (event.key === 'Escape') setNewChannel(null)
-                if (event.key !== 'Enter' || newChannel.trim() === '') return
-                const name = newChannel.trim()
-                setNewChannel(null)
-                void guard(async () => {
-                  const created = await api.addChannel(name)
-                  const state = await api.state()
-                  setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
-                  const map: Record<string, string> = {}
-                  for (const rundown of state.rundowns) map[rundown.channelId] ??= rundown.id
-                  setRundownOf(map)
-                  absorb(await api.rundown(created.rundownId))
-                  say(`${name} criado, com grade vazia.`)
-                })
+                if (event.key === 'Enter') createChannel()
               }}
             />
           )}
