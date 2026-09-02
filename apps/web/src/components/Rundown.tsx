@@ -237,9 +237,16 @@ export function Rundown(props: Props) {
                   ) : null}
                 </td>
                 <td className="title">
-                  {/* A miniatura na grade responde a pergunta que o nome do
-                      arquivo às vezes não responde: é este VT mesmo? */}
-                  {view.item.mediaId && (
+                  {/* A grade fica dentro de uma `div`, não na célula.
+                      `display: grid` num `<td>` tira ele do fluxo de tabela: o
+                      navegador embrulha o conteúdo numa célula anônima e a
+                      borda de baixo da linha para de atravessar a fileira --
+                      a régua da grade aparece cortada no meio, que foi
+                      exatamente o que o operador viu. */}
+                  <div className="titulo">
+                    {/* A miniatura na grade responde a pergunta que o nome do
+                        arquivo às vezes não responde: é este VT mesmo? */}
+                    {view.item.mediaId && (
                     <img
                       className="mini"
                       src={`/api/assets/${view.item.mediaId}/thumbnail.svg`}
@@ -277,6 +284,7 @@ export function Rundown(props: Props) {
                         TRILHA {(view.item.audioTrack ?? 0) + 1}/{trackCount}
                       </span>
                     )}
+                    </div>
                   </div>
                 </td>
                 <td>

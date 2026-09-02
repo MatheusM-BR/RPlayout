@@ -41,7 +41,7 @@ import {
   rundownItems,
   scheduleRules,
 } from './db/schema.js'
-import { operatorDecisions } from './db/schema.js'
+import { asRun, operatorDecisions } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, resolve as resolvePath } from 'node:path'
@@ -570,6 +570,27 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       runtime.transport.close()
       app.runtimes.delete(id)
     }
+
+    // O que pende do canal sai antes dele, à mão.
+    //
+    // Saídas, convidados, destinos, grafismo e regras caem por cascata, mas
+    // `rundowns` foi declarada sem `ON DELETE CASCADE` -- e o banco de quem já
+    // instalou continua assim, porque o SQLite não altera restrição sem
+    // reconstruir a tabela. Confiar na cascata dava
+    // `FOREIGN KEY constraint failed` e um 500 no rosto do operador. Apagar
+    // aqui funciona nos dois bancos, o velho e o novo, e deixa à vista o que a
+    // operação destrói.
+    const grades = await app.db.select().from(rundowns).where(eq(rundowns.channelId, id))
+    for (const grade of grades) {
+      // Histórico de desfazer de uma grade que deixou de existir é lixo.
+      await app.db.delete(operatorDecisions).where(eq(operatorDecisions.rundownId, grade.id))
+    }
+    // Itens e grafismo de item caem por cascata a partir da grade.
+    await app.db.delete(rundowns).where(eq(rundowns.channelId, id))
+    // O as-run não tem chave estrangeira nenhuma: ficaria para sempre, sem
+    // canal a que pertencer e sem tela que o mostre. A caixa de confirmação já
+    // avisa que a grade vai junto.
+    await app.db.delete(asRun).where(eq(asRun.channelId, id))
 
     await app.db.delete(channels).where(eq(channels.id, id))
     await syncDistribution(app)

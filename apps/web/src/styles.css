@@ -191,6 +191,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
   /* Com a miniatura ao lado, o nome precisa de espaço para não quebrar em
      todas as linhas -- e é o nome que o operador lê para reconhecer o VT. */
   min-width: 340px;
+}
+/* A grade mora aqui dentro, e não na célula: `display: grid` num `<td>` tira
+   ele do fluxo de tabela, e a borda de baixo da linha deixa de atravessar a
+   fileira inteira -- a régua da grade sai cortada no meio. */
+.rd .title .titulo {
   display: grid;
   grid-template-columns: 56px 1fr;
   grid-template-rows: auto auto;
@@ -209,8 +214,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* Sem miniatura, o texto ocupa a linha inteira em vez de deixar buraco. */
 .rd .title .nome { grid-column: 2; }
 .rd .title .mini + .nome { grid-column: 2; }
-.rd .title > .nome:first-child,
-.rd .title > .nome:first-child + .tags { grid-column: 1 / -1; }
+.rd .title .titulo > .nome:first-child,
+.rd .title .titulo > .nome:first-child + .tags { grid-column: 1 / -1; }
 .rd .num { color: var(--dim); }
 .rd .right { text-align: right; }
 
