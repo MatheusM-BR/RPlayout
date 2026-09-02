@@ -6,7 +6,7 @@ import type {
   ItemGraphic,
   Trim,
 } from '@rplayout/protocol'
-import type { MediaAsset, Rundown } from '@rplayout/protocol'
+import type { Channel, MediaAsset, Rundown } from '@rplayout/protocol'
 import type {
   AsRunEntry,
   Distribution,
@@ -38,7 +38,9 @@ const post = <T>(path: string, body: unknown): Promise<T> =>
   send<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
 export const api = {
-  state: () => send<{ rundowns: Rundown[] }>('/api/state'),
+  state: () => send<{ channels: Channel[]; rundowns: Rundown[] }>('/api/state'),
+  addChannel: (name: string) =>
+    post<{ channelId: string; rundownId: string }>('/api/channels', { name }),
   assets: () => send<{ assets: MediaAsset[] }>('/api/assets'),
   library: () => send<{ folders: LibraryFolder[] }>('/api/library'),
   scanStatus: () => send<ScanStatus>('/api/library/scan'),

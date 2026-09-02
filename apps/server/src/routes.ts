@@ -6,6 +6,7 @@ import {
   durationIn,
   fieldsUsedIn,
   formatVideoFormat,
+  framesSinceMidnight,
   isStill,
   secondsToFrames,
   STILL_DEFAULT_SECONDS,
@@ -30,6 +31,7 @@ import { PORTS } from './domain/mediamtx.js'
 import {
   channels,
   destinations,
+  rundowns,
   graphicTemplates,
   guestKeys,
   itemGraphics,
@@ -159,6 +161,64 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const channels = await listChannels(app.db)
     const rundowns = await listRundowns(app.db)
     return { channels, rundowns }
+  })
+
+  const channelSchema = z.object({
+    name: z.string().min(1),
+    width: z.number().int().min(160).max(7680).optional(),
+    height: z.number().int().min(120).max(4320).optional(),
+    rateNum: z.number().int().min(1).optional(),
+    rateDen: z.number().int().min(1).optional(),
+    scan: z.enum(['PROGRESSIVE', 'INTERLACED']).optional(),
+    fieldOrder: z.enum(['TFF', 'BFF']).optional(),
+  })
+
+  server.post('/api/channels', async (request, reply) => {
+    const body = channelSchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    // O canal novo nasce igual ao primeiro: numa emissora, o segundo canal é
+    // quase sempre o mesmo formato do primeiro, e copiar poupa o operador de
+    // redigitar geometria e cadência.
+    const [reference] = await listChannels(app.db)
+    const id = randomUUID()
+    await app.db.insert(channels).values({
+      id,
+      name: body.data.name,
+      rateNum: body.data.rateNum ?? reference?.rate.num ?? 50,
+      rateDen: body.data.rateDen ?? reference?.rate.den ?? 1,
+      width: body.data.width ?? reference?.width ?? 1920,
+      height: body.data.height ?? reference?.height ?? 1080,
+      scan: body.data.scan ?? reference?.scan ?? 'PROGRESSIVE',
+      fieldOrder: body.data.fieldOrder ?? reference?.fieldOrder ?? 'TFF',
+      targetLufs: reference?.targetLufs ?? -23,
+      ceilingDbtp: reference?.ceilingDbtp ?? -1,
+      limiterLookaheadMs: reference?.limiterLookaheadMs ?? 5,
+      programSdiDeviceId: null,
+      slateTemplateId: null,
+      createdAt: new Date().toISOString(),
+    })
+
+    // Canal sem grade não tem o que operar: ele nasce com uma, começando agora.
+    const rundownId = randomUUID()
+    const rate = { num: body.data.rateNum ?? reference?.rate.num ?? 50, den: body.data.rateDen ?? reference?.rate.den ?? 1 }
+    await app.db.insert(rundowns).values({
+      id: rundownId,
+      channelId: id,
+      name: `Grade — ${body.data.name}`,
+      plannedStart: framesSinceMidnight(new Date(), rate),
+      loop: true,
+      date: new Date().toISOString().slice(0, 10),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })
+
+    // O servidor de mídia ganha o caminho do canal novo, e o canal ganha suas
+    // saídas gerenciadas: sem isto ele existiria na tela e em lugar nenhum.
+    await syncDistribution(app)
+    await runtimeFor(app, id)
+    onChange()
+    return { channelId: id, rundownId }
   })
 
   server.get('/api/assets', async () => ({ assets: await listAssets(app.db) }))

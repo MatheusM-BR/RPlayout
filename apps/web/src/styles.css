@@ -215,6 +215,16 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .asrun td.bad { color: var(--next); }
 
 /* Caixa de marcar com rótulo à direita. */
+.channel {
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  padding: 3px 6px;
+}
+
 .check {
   display: flex;
   align-items: center;

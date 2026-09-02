@@ -56,9 +56,22 @@ export function App() {
   const [monitors, setMonitors] = useState<MonitorFeeds | null>(null)
   /** Situação da varredura do acervo. */
   const [scan, setScan] = useState<ScanStatus | null>(null)
+  /** Canais existentes e a grade de cada um, para a troca de canal. */
+  const [channels, setChannels] = useState<{ id: string; name: string }[]>([])
+  const [rundownOf, setRundownOf] = useState<Record<string, string>>({})
+  /** Nome do canal sendo criado, ou nulo quando ninguém está criando. */
+  const [newChannel, setNewChannel] = useState<string | null>(null)
   /** Linhas marcadas para agrupar. Marcar não é armar: o PGM não muda. */
   const [marked, setMarked] = useState<Set<string>>(new Set())
   const lastClicked = useRef<string | null>(null)
+  /**
+   * Canal que a tela está mostrando.
+   *
+   * Numa `ref` porque o ouvinte do WebSocket é montado uma vez e precisa
+   * enxergar a troca de canal sem ser remontado -- reconectar a cada troca
+   * perderia eventos justamente no instante em que o operador está olhando.
+   */
+  const channelRef = useRef<string | null>(null)
   const toastTimer = useRef<number | null>(null)
 
   const assets = useMemo<LibraryAsset[]>(
@@ -99,8 +112,14 @@ export function App() {
     void (async () => {
       try {
         const [state] = await Promise.all([api.state(), refreshLibrary()])
-        const first = state.rundowns[0]
-        if (first) absorb(await api.rundown(first.id))
+        setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+        // Uma grade por canal: a primeira de cada um é a que a troca abre.
+        const first: Record<string, string> = {}
+        for (const rundown of state.rundowns) first[rundown.channelId] ??= rundown.id
+        setRundownOf(first)
+
+        const start = state.rundowns[0]
+        if (start) absorb(await api.rundown(start.id))
       } catch (failure) {
         setError(failure instanceof Error ? failure.message : 'Servidor fora do ar.')
       }
@@ -149,8 +168,13 @@ export function App() {
     const socket = new WebSocket(`ws://${window.location.host}/ws`)
     socket.addEventListener('message', (event: MessageEvent<string>) => {
       const payload = JSON.parse(event.data) as
-        | { type: 'view'; view: RundownView | null }
-        | ({ type: 'live' } & Live)
+        | { type: 'view'; channelId: string; view: RundownView | null }
+        | ({ type: 'live'; channelId: string } & Live)
+
+      // O servidor transmite todos os canais; a tela mostra um. Sem este
+      // filtro, dois canais no ar fazem a interface piscar entre os dois.
+      if (payload.channelId !== channelRef.current) return
+
       if (payload.type === 'view') {
         if (payload.view) setView(payload.view)
       } else {
@@ -164,6 +188,8 @@ export function App() {
     })
     return () => socket.close()
   }, [])
+
+  channelRef.current = view?.channel.id ?? null
 
   const schedule = useMemo(
     () => new Map((view?.schedule.items ?? []).map((item) => [item.id, item])),
@@ -443,7 +469,58 @@ export function App() {
         </div>
         {live.transport.standby && <div className="standby">ARMADO</div>}
         <div className="meta">
-          <b>{view.channel.name}</b>
+          {/* Trocar de canal é trocar de tudo: grade, monitores, medidores.
+              Só aparece quando há mais de um -- seletor de um item só é
+              enfeite que ocupa espaço na barra. */}
+          {channels.length > 1 ? (
+            <select
+              className="channel"
+              value={view.channel.id}
+              onChange={(event) => {
+                const rundownId = rundownOf[event.target.value]
+                if (!rundownId) return
+                void guard(async () => absorb(await api.rundown(rundownId)))
+              }}
+            >
+              {channels.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <b>{view.channel.name}</b>
+          )}
+          {newChannel === null ? (
+            <button className="btn small" title="Novo canal" onClick={() => setNewChannel('')}>
+              +
+            </button>
+          ) : (
+            <input
+              className="channel"
+              autoFocus
+              placeholder="nome do canal"
+              value={newChannel}
+              onChange={(event) => setNewChannel(event.target.value)}
+              onBlur={() => setNewChannel(null)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setNewChannel(null)
+                if (event.key !== 'Enter' || newChannel.trim() === '') return
+                const name = newChannel.trim()
+                setNewChannel(null)
+                void guard(async () => {
+                  const created = await api.addChannel(name)
+                  const state = await api.state()
+                  setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+                  const map: Record<string, string> = {}
+                  for (const rundown of state.rundowns) map[rundown.channelId] ??= rundown.id
+                  setRundownOf(map)
+                  absorb(await api.rundown(created.rundownId))
+                  say(`${name} criado, com grade vazia.`)
+                })
+              }}
+            />
+          )}
         </div>
 
         {commitment && (

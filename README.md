@@ -411,6 +411,24 @@ Verificado: proposta de oito minutos fechando com nove frames de sobra, aplicada
 na grade pela interface; e uma janela de vinte minutos dizendo honestamente que
 o acervo acabou antes.
 
+## Mais de um canal
+
+Cada canal tem processo de engine próprio, caminho próprio no servidor de mídia
+e saídas gerenciadas próprias -- e é isso que faz um canal cair sem levar o
+outro. Um canal novo nasce com a geometria e a cadência do primeiro, porque o
+segundo canal de uma emissora é quase sempre o mesmo formato do primeiro, e já
+vem com uma grade vazia: canal sem grade não tem o que operar.
+
+**O servidor transmite todos os canais; a tela mostra um.** A interface filtra
+pelo canal que está aberto -- sem isso, dois canais no ar fazem a tela piscar
+entre os dois. E o filtro lê o canal de uma referência, não do estado: remontar
+o WebSocket a cada troca perderia eventos justamente no instante em que o
+operador está olhando.
+
+Verificado com dois canais no ar ao mesmo tempo: dois engines, caminhos
+`canal-1/*` e `canal-2/*` separados no servidor de mídia, medidores próprios, e
+a troca de canal na barra levando grade, monitores e medidores junto.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino
