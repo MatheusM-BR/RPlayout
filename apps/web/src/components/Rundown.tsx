@@ -23,6 +23,7 @@ interface Props {
   onOpenTrim: (view: ItemView) => void
   onOpenAudio: (view: ItemView) => void
   onSetFit: (id: string, fit: Fit) => void
+  onOpenGraphics: (view: ItemView) => void
   onNotes: (id: string, notes: string) => void
 }
 
@@ -334,7 +335,17 @@ export function Rundown(props: Props) {
                     title="Nivelar áudio"
                   >
                     dB
-                  </button>
+                  </button>{' '}
+                  <button
+                    className="btn small"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      props.onOpenGraphics(view)
+                    }}
+                    title="Grafismo que entra sozinho neste item"
+                  >
+                    GC
+                  </button>{' '}
                   {/* Só existe quando a proporção do arquivo não é a do canal:
                       o operador escolhe entre ver tudo e encher a tela. */}
                   {aspect && (

@@ -1,8 +1,16 @@
 import { eq } from 'drizzle-orm'
-import { framesSinceMidnight, type Channel, type MediaAsset, type PreviewTarget } from '@rplayout/protocol'
+import {
+  framesSinceMidnight,
+  secondsToFrames,
+  type Channel,
+  type GraphicTemplate,
+  type ItemGraphic,
+  type MediaAsset,
+  type PreviewTarget,
+} from '@rplayout/protocol'
 import { openDatabase, type Db } from './db/client.js'
 import { assetMap, getChannel, getRundown, listChannels, listItems } from './db/repo.js'
-import { rundownItems } from './db/schema.js'
+import { graphicTemplates, itemGraphics, rundownItems } from './db/schema.js'
 import { buildView, type RundownView } from './domain/plan.js'
 import { simulateMeter, SILENCE, type MeterReading } from './domain/meters.js'
 import { SimulatedTransport, type Transport } from './domain/transport.js'
@@ -47,6 +55,12 @@ export class ChannelRuntime {
   readonly graphics: Graphics
   /** Acervo em memória: o medidor do preview precisa dele a cada tick. */
   private assets: Map<string, MediaAsset> = new Map()
+  /** Grafismo preso a item, por item, e as artes que eles usam. */
+  private cues: Map<string, ItemGraphic[]> = new Map()
+  private templates: Map<string, GraphicTemplate> = new Map()
+  /** Qual item o disparo automático está acompanhando e o que já disparou. */
+  private cuesFor: string | null = null
+  private fired = new Set<string>()
   private phase = 0
 
   constructor(
@@ -80,6 +94,29 @@ export class ChannelRuntime {
       assetMap(this.db),
     ])
     this.assets = assets
+
+    // Grafismo preso a item anda junto com a grade: recarregar a grade e
+    // deixar as deixas velhas em memória é como um crédito antigo volta ao ar.
+    const [templates, cues] = await Promise.all([
+      this.db.select().from(graphicTemplates),
+      this.db
+        .select()
+        .from(itemGraphics)
+        .innerJoin(rundownItems, eq(itemGraphics.itemId, rundownItems.id))
+        .where(eq(rundownItems.rundownId, rundownId)),
+    ])
+    this.templates = new Map(templates.map((row) => [row.id, row]))
+    this.cues = new Map()
+    for (const row of cues) {
+      const cue = row.item_graphics
+      const list = this.cues.get(cue.itemId) ?? []
+      list.push({
+        ...cue,
+        templateName: this.templates.get(cue.templateId)?.name ?? 'arte removida',
+      })
+      this.cues.set(cue.itemId, list)
+    }
+    for (const list of this.cues.values()) list.sort((a, b) => a.atSeconds - b.atSeconds)
 
     this.view = buildView(
       rundown,
@@ -127,6 +164,42 @@ export class ChannelRuntime {
   private meterForPreview(target: PreviewTarget | null): MeterReading {
     if (!target) return SILENCE
     return target.kind === 'ITEM' ? this.meterForItem(target.id) : this.meterForAsset(target.id)
+  }
+
+  /** As deixas de grafismo de um item, para a interface listar. */
+  cuesOf(itemId: string): ItemGraphic[] {
+    return this.cues.get(itemId) ?? []
+  }
+
+  /**
+   * Dispara o grafismo preso ao item no ar quando chega a hora dele.
+   *
+   * O que já disparou é lembrado por passagem do item: o mesmo VT indo ao ar
+   * de novo, mais tarde na grade, dispara de novo -- que é o comportamento
+   * esperado de uma reprise.
+   */
+  fireDueGraphics(): boolean {
+    const onAir = this.transport.state().onAir
+    if (!onAir) {
+      this.cuesFor = null
+      return false
+    }
+    if (this.cuesFor !== onAir.itemId) {
+      this.cuesFor = onAir.itemId
+      this.fired = new Set()
+    }
+
+    let changed = false
+    for (const cue of this.cues.get(onAir.itemId) ?? []) {
+      if (this.fired.has(cue.id)) continue
+      if (onAir.elapsed < secondsToFrames(cue.atSeconds, this.channel.rate)) continue
+      const template = this.templates.get(cue.templateId)
+      this.fired.add(cue.id)
+      if (!template) continue
+      this.graphics.show(template, cue.values)
+      changed = true
+    }
+    return changed
   }
 
   /** Estado que vai para a interface a cada frame de atualização. */

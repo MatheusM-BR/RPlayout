@@ -25,7 +25,7 @@ import {
 import { listAssets, listChannels, listRundowns } from './db/repo.js'
 import { syncDistribution } from './app.js'
 import { PORTS } from './domain/mediamtx.js'
-import { destinations, graphicTemplates, guestKeys } from './db/schema.js'
+import { destinations, graphicTemplates, guestKeys, itemGraphics } from './db/schema.js'
 import { operatorDecisions, rundownItems } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync } from 'node:fs'
@@ -665,6 +665,52 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     runtime.graphics.hide()
     onChange()
     return snapshot(app, runtime)
+  })
+
+  server.get('/api/items/:id/graphics', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const runtime = await runtimeForItem(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Item não encontrado.' })
+    return { cues: runtime.cuesOf(id) }
+  })
+
+  const cueSchema = z.object({
+    templateId: z.string(),
+    values: z.record(z.string(), z.string()).optional(),
+    atSeconds: z.number().int().min(0).max(86_400),
+  })
+
+  server.post('/api/items/:id/graphics', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = cueSchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    const runtime = await runtimeForItem(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Item não encontrado.' })
+
+    await app.db.insert(itemGraphics).values({
+      id: randomUUID(),
+      itemId: id,
+      templateId: body.data.templateId,
+      values: body.data.values ?? {},
+      atSeconds: body.data.atSeconds,
+      createdAt: new Date().toISOString(),
+    })
+    await runtime.refresh()
+    onChange()
+    return { cues: runtime.cuesOf(id) }
+  })
+
+  server.delete('/api/item-graphics/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const [cue] = await app.db.select().from(itemGraphics).where(eq(itemGraphics.id, id))
+    if (!cue) return reply.code(404).send({ error: 'Deixa não existe.' })
+
+    await app.db.delete(itemGraphics).where(eq(itemGraphics.id, id))
+    const runtime = await runtimeForItem(app, cue.itemId)
+    if (runtime) await runtime.refresh()
+    onChange()
+    return { cues: runtime?.cuesOf(cue.itemId) ?? [] }
   })
 
   // ---- perfis de saída ---------------------------------------------------

@@ -20,6 +20,7 @@ import { AudioDialog } from './components/AudioDialog.js'
 import { Distribution } from './components/Distribution.js'
 import { Explorer } from './components/Explorer.js'
 import { GraphicsPanel } from './components/GraphicsPanel.js'
+import { ItemGraphicsDialog } from './components/ItemGraphicsDialog.js'
 import { Monitors } from './components/Monitors.js'
 import { Rundown } from './components/Rundown.js'
 import { TrimDialog } from './components/TrimDialog.js'
@@ -31,6 +32,7 @@ type Dialog =
   | { kind: 'add'; assetId?: string }
   | { kind: 'distribution' }
   | { kind: 'graphics' }
+  | { kind: 'itemGraphics'; view: ItemView }
   | null
 
 export function App() {
@@ -501,6 +503,7 @@ export function App() {
               }
               onOpenAudio={(item) => setDialog({ kind: 'audio', view: item })}
               onSetFit={setFit}
+              onOpenGraphics={(item) => setDialog({ kind: 'itemGraphics', view: item })}
               onNotes={saveNotes}
             />
           </div>
@@ -676,6 +679,14 @@ export function App() {
         />
       )}
 
+      {dialog?.kind === 'itemGraphics' && (
+        <ItemGraphicsDialog
+          view={dialog.view}
+          channelId={view.channel.id}
+          onClose={() => setDialog(null)}
+          onMessage={say}
+        />
+      )}
       {dialog?.kind === 'graphics' && (
         <GraphicsPanel
           channelId={view.channel.id}

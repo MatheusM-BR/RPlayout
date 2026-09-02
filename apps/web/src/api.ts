@@ -1,4 +1,11 @@
-import type { AudioLevel, Anchor, EditScope, GraphicTemplate, Trim } from '@rplayout/protocol'
+import type {
+  AudioLevel,
+  Anchor,
+  EditScope,
+  GraphicTemplate,
+  ItemGraphic,
+  Trim,
+} from '@rplayout/protocol'
 import type { MediaAsset, Rundown } from '@rplayout/protocol'
 import type {
   Distribution,
@@ -82,6 +89,20 @@ export const api = {
     post<Snapshot>(`/api/channels/${channelId}/graphic`, { templateId, values }),
   hideGraphic: (channelId: string) =>
     send<Snapshot>(`/api/channels/${channelId}/graphic`, { method: 'DELETE' }),
+
+  itemGraphics: (itemId: string) => send<{ cues: ItemGraphic[] }>(`/api/items/${itemId}/graphics`),
+  addItemGraphic: (
+    itemId: string,
+    templateId: string,
+    values: Record<string, string>,
+    atSeconds: number,
+  ) => post<{ cues: ItemGraphic[] }>(`/api/items/${itemId}/graphics`, {
+    templateId,
+    values,
+    atSeconds,
+  }),
+  removeItemGraphic: (id: string) =>
+    send<{ cues: ItemGraphic[] }>(`/api/item-graphics/${id}`, { method: 'DELETE' }),
 
   addGuest: (channelId: string, label: string) =>
     post<{ streamKey: string; publishUrl: string }>(`/api/channels/${channelId}/guests`, { label }),

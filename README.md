@@ -318,6 +318,19 @@ número com valor mágico.
 Verificado ponta a ponta: crédito com `&` no nome entra sobre o VT, aparece na
 gravação do programa e sai sozinho no tempo do template.
 
+### Grafismo preso ao item
+
+É o que tira o GC do improviso. A deixa fica no item -- arte, campos e o
+segundo em que entra --, e o servidor dispara sozinho quando o item está no ar
+naquele ponto. O mesmo VT indo ao ar de novo mais tarde na grade dispara de
+novo: reprise leva o crédito junto.
+
+O que já disparou é lembrado **por passagem**, não por item, e é isso que
+separa "não repetir agora" de "nunca mais". Sair do ar limpa a lembrança.
+
+Verificado com a deixa marcada aos quatro segundos: entrou aos quatro, aparece
+na gravação do programa e saiu no tempo do template, sem ninguém no teclado.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino

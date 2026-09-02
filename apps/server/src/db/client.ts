@@ -123,6 +123,16 @@ CREATE TABLE IF NOT EXISTS graphic_templates (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS item_graphics (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES rundown_items (id) ON DELETE CASCADE,
+  template_id TEXT NOT NULL REFERENCES graphic_templates (id) ON DELETE CASCADE,
+  field_values TEXT NOT NULL,
+  at_seconds INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS item_graphics_item ON item_graphics (item_id);
+
 CREATE TABLE IF NOT EXISTS operator_decisions (
   id TEXT PRIMARY KEY,
   rundown_id TEXT NOT NULL,

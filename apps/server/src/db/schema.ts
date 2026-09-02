@@ -148,6 +148,23 @@ export const graphicTemplates = sqliteTable('graphic_templates', {
   createdAt: text('created_at').notNull(),
 })
 
+/** Grafismo preso a um item: entra sozinho no tempo marcado. */
+export const itemGraphics = sqliteTable('item_graphics', {
+  id: text('id').primaryKey(),
+  itemId: text('item_id')
+    .notNull()
+    .references(() => rundownItems.id, { onDelete: 'cascade' }),
+  templateId: text('template_id')
+    .notNull()
+    .references(() => graphicTemplates.id, { onDelete: 'cascade' }),
+  // `values` é palavra reservada no SQLite: a coluna tem outro nome, o campo
+  // continua sendo `values` para quem lê o código.
+  values: text('field_values', { mode: 'json' }).$type<Record<string, string>>().notNull(),
+  /** Segundos desde o início do item. */
+  atSeconds: integer('at_seconds').notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
 /**
  * Log de decisões do operador. É a matéria-prima do aprendizado: a diferença
  * entre o que foi proposto e o que realmente foi ao ar.

@@ -29,6 +29,24 @@ export interface GraphicTemplate {
   readonly createdAt: string
 }
 
+/**
+ * Grafismo preso a um item da grade.
+ *
+ * É o que transforma o GC de coisa manual em coisa de playout: o crédito do
+ * entrevistado entra sozinho aos cinco segundos do VT, toda vez que aquele VT
+ * for ao ar, sem ninguém de plantão no teclado.
+ */
+export interface ItemGraphic {
+  readonly id: string
+  readonly itemId: string
+  readonly templateId: string
+  /** Nome do template, para a interface não ter de cruzar as listas. */
+  readonly templateName: string
+  readonly values: Record<string, string>
+  /** Segundos desde o início do item. */
+  readonly atSeconds: number
+}
+
 /** O que está no ar agora, para a interface mostrar sem adivinhar. */
 export interface GraphicOnAir {
   readonly templateId: string

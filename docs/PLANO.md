@@ -562,7 +562,7 @@ Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 | F2.5 | **Ingest de arquivo de verdade** (varredura, SHA-256, sonda, sem lista de extensões) e **perfil de saída por destino**, com varredura entrelaçada e 1080i5994 — seção 13 | Formatos |
 | F3a | **Fonte ao vivo como item da grade**: SRT, RTMP e convidado do servidor local. Fonte que cai não anda com a grade; quem marca a hora de sair é a grade. **Descoberta de fontes** (`rplayout-devices`) e seletor no diálogo de inserir item, com o motivo de cada família vazia | Ao vivo |
 | F3 | Ao vivo: **Decklink entrada e saída** com alocação de sub-dispositivos, clock da placa e detecção de sinal; NDI discovery; SRT in/out; chaves e painel de convidados | Ao vivo |
-| F4 | Grafismo: camada de SVG em linha (`rsvgoverlay`), templates com campos, painel de GC. **Feito**, menos o rundown de GC preso a item | Grafismo |
+| F4 | Grafismo: camada de SVG em linha (`rsvgoverlay`), templates com campos, painel de GC. **Feito**: artes com campos, painel de GC e deixa presa a item | Grafismo |
 | F5 | Multicanal e perfis de saída, monitoramento e alertas | Escala |
 | F6 | Automação: regras, geração de grade, log de decisões, Claude opcional | Automação |
 | F7 | Robustez: watchdog, failover slate, as-run log, relatórios, backup | Produção |
