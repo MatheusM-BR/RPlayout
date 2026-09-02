@@ -26,7 +26,6 @@ Conferir 'node'  'node'  'roda o servidor e a interface' 'winget install OpenJS.
 Conferir 'pnpm'  'pnpm'  'gerenciador de pacotes'        'corepack enable pnpm'
 Conferir 'git'   'git'   'baixar e atualizar o projeto'  'winget install Git.Git'
 Conferir 'cargo' 'cargo' 'compila o engine de vídeo'     'winget install Rustlang.Rustup'
-Conferir 'pkg-config' 'pkg-config' 'o cargo acha o GStreamer por ele' 'winget install pkgconfiglite'
 
 Write-Host ''
 Write-Host 'GStreamer' -ForegroundColor Cyan
@@ -42,17 +41,35 @@ if (Test-Path (Join-Path $raiz 'bin\gst-launch-1.0.exe')) {
     $faltando++
 }
 
-if (Test-Path (Join-Path $raiz 'lib\pkgconfig\gstreamer-1.0.pc')) {
-    Write-Host ("  OK    development  {0}lib\pkgconfig" -f $raiz) -ForegroundColor Green
+$pkgconfig = Join-Path $raiz 'lib\pkgconfig'
+$binario = Join-Path $raiz 'bin'
+
+if (Test-Path (Join-Path $pkgconfig 'gstreamer-1.0.pc')) {
+    Write-Host ("  OK    development  {0}" -f $pkgconfig) -ForegroundColor Green
 } else {
     Write-Host '  FALTA development  sem ele o cargo build nao compila' -ForegroundColor Red
     Write-Host '        baixe gstreamer-1.0-devel-msvc-x86_64-<versao>.msi, mesma versao e mesma pasta' -ForegroundColor DarkGray
     $faltando++
 }
 
-$variaveis = @{
-    'GSTREAMER_1_0_ROOT_MSVC_X86_64' = 'C:\gstreamer\1.0\msvc_x86_64\'
-    'PKG_CONFIG_PATH'                = 'C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig'
+# O `pkg-config` costuma vir dentro do próprio GStreamer. Quando vem, o que
+# falta é PATH, não instalação -- e mandar instalar de novo seria mentira.
+if (Get-Command 'pkg-config' -ErrorAction SilentlyContinue) {
+    Write-Host '  OK    pkg-config   o cargo acha o GStreamer por ele' -ForegroundColor Green
+} elseif (Test-Path (Join-Path $binario 'pkg-config.exe')) {
+    Write-Host ("  quase pkg-config   existe em {0}, falta so o PATH abaixo" -f $binario) -ForegroundColor Yellow
+} else {
+    Write-Host '  FALTA pkg-config   o cargo acha o GStreamer por ele' -ForegroundColor Red
+    Write-Host '        procure o pacote: winget search pkg-config' -ForegroundColor DarkGray
+    Write-Host '        ou: choco install pkgconfiglite   /   scoop install pkg-config' -ForegroundColor DarkGray
+    $faltando++
+}
+
+Write-Host ''
+Write-Host 'Variaveis de ambiente' -ForegroundColor Cyan
+$variaveis = [ordered]@{
+    'GSTREAMER_1_0_ROOT_MSVC_X86_64' = $raiz
+    'PKG_CONFIG_PATH'                = $pkgconfig
 }
 $semVariavel = $false
 foreach ($variavel in $variaveis.Keys) {
@@ -65,16 +82,17 @@ foreach ($variavel in $variaveis.Keys) {
     }
 }
 
-if ($semVariavel) {
+if ($semVariavel -or (Test-Path (Join-Path $binario 'pkg-config.exe'))) {
     Write-Host ''
-    Write-Host '        Num PowerShell como administrador:' -ForegroundColor DarkGray
+    Write-Host '        Cole num PowerShell aberto como administrador --' -ForegroundColor DarkGray
+    Write-Host '        no Prompt de Comando (cmd) esta sintaxe nao funciona:' -ForegroundColor DarkGray
     foreach ($variavel in $variaveis.Keys) {
         if (-not [Environment]::GetEnvironmentVariable($variavel)) {
             Write-Host ("        [Environment]::SetEnvironmentVariable('{0}', '{1}', 'Machine')" -f $variavel, $variaveis[$variavel]) -ForegroundColor DarkGray
         }
     }
     Write-Host "        `$p = [Environment]::GetEnvironmentVariable('Path','Machine')" -ForegroundColor DarkGray
-    Write-Host "        [Environment]::SetEnvironmentVariable('Path', `"`$p;C:\gstreamer\1.0\msvc_x86_64\bin`", 'Machine')" -ForegroundColor DarkGray
+    Write-Host ("        [Environment]::SetEnvironmentVariable('Path', `"`$p;{0}`", 'Machine')" -f $binario) -ForegroundColor DarkGray
 }
 
 Write-Host ''

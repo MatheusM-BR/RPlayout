@@ -28,7 +28,8 @@ comando que instala. Instalou alguma coisa? Feche e reabra o PowerShell (o
 | Node | 22 ou mais novo | nodejs.org |
 | pnpm | 10 | `corepack enable` já resolve |
 | Rust | estável, toolchain **MSVC** | `winget install Rustlang.Rustup` |
-| GStreamer | 1.24+, **runtime e development**, instalação *Complete* | gstreamer.freedesktop.org/download |
+| pkg-config | qualquer | costuma vir com o GStreamer; senão `winget search pkg-config` |
+| GStreamer | 1.24+, **runtime e development**, instalação *Complete*, MSVC | gstreamer.freedesktop.org/download |
 | MediaMTX | binário do Windows | github.com/bluenviron/mediamtx/releases |
 | Plugin NDI | opcional, só se você for usar NDI | teltek/gst-plugin-ndi |
 
@@ -49,14 +50,27 @@ Instale os **dois** pacotes MSI do GStreamer (runtime *e* development) e escolha
 *Complete*. Faltando o development, o `cargo build` não acha as bibliotecas;
 faltando *Complete*, faltam plugins que só dão erro na hora do ar.
 
-Depois, em PowerShell **como administrador** (vale para o sistema inteiro):
+Depois, em **PowerShell como administrador** -- no Prompt de Comando esta
+sintaxe não existe, e o erro que aparece é "a sintaxe do nome do arquivo está
+incorreta", que não ajuda ninguém. Troque o caminho se o instalador tiver posto
+o GStreamer noutro lugar (em Program Files, por exemplo): o conferidor imprime
+os comandos já com a pasta que achou na sua máquina.
 
 ```powershell
-[Environment]::SetEnvironmentVariable('GSTREAMER_1_0_ROOT_MSVC_X86_64', 'C:\gstreamer\1.0\msvc_x86_64\', 'Machine')
-[Environment]::SetEnvironmentVariable('PKG_CONFIG_PATH', 'C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig', 'Machine')
+$gst = 'C:\gstreamer\1.0\msvc_x86_64'
+[Environment]::SetEnvironmentVariable('GSTREAMER_1_0_ROOT_MSVC_X86_64', "$gst\", 'Machine')
+[Environment]::SetEnvironmentVariable('PKG_CONFIG_PATH', "$gst\lib\pkgconfig", 'Machine')
 $path = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-[Environment]::SetEnvironmentVariable('Path', "$path;C:\gstreamer\1.0\msvc_x86_64\bin", 'Machine')
+[Environment]::SetEnvironmentVariable('Path', "$path;$gst\bin", 'Machine')
 ```
+
+Não use `setx` para o `Path`: ele corta em 1024 caracteres e destrói o que
+estava lá.
+
+O `pkg-config` costuma vir dentro do próprio GStreamer, em `bin`. Se vier, o
+comando de `Path` acima já resolve e não há o que instalar. Se não vier,
+`winget search pkg-config` mostra o pacote disponível na sua máquina --
+`choco install pkgconfiglite` e `scoop install pkg-config` também servem.
 
 Feche e reabra o PowerShell. O `cargo build` do engine precisa do
 `pkg-config` no caminho; se ele reclamar de não achar `gstreamer-1.0`, é isto
