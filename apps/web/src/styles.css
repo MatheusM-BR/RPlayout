@@ -314,7 +314,16 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 /* Atalhos das configurações. */
 .atalhos { display: grid; gap: 6px; }
-.atalhos .btn { justify-content: space-between; text-align: left; padding: 10px 12px; }
+/* Sem `flex` o `space-between` não faz nada, e o rótulo colava na descrição:
+   saía "FORMATO DE VÍDEO1080P50". */
+.atalhos .btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  padding: 10px 12px;
+}
 .atalhos .btn i { font-style: normal; color: var(--dim); font-size: 11px; }
 
 /* Primeira vez: banco sem canal nenhum. */
@@ -1151,3 +1160,14 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
 }
 
 .controles { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* O rodapé das configurações empurra o carimbo para a esquerda e o botão fica
+   onde sempre esteve. */
+.dialog footer .carimbo {
+  margin-right: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  align-self: center;
+}

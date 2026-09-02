@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { formatVideoFormat, type Channel } from '@rplayout/protocol'
 import { api } from '../api.js'
+import { BUILD_COMMIT, buildDate } from '../build.js'
 
 interface Props {
   channel: Channel
@@ -142,6 +143,14 @@ export function SettingsDialog({
         </div>
 
         <footer>
+          {/* De qual código esta tela saiu. Numa máquina de playout a interface
+              é um arquivo estático: uma build velha continua funcionando
+              perfeitamente com o código de ontem, e sem isto a única forma de
+              descobrir é procurar botão que deveria estar lá. */}
+          <div className="carimbo" title="Versão da interface que está rodando">
+            build {BUILD_COMMIT}
+            {buildDate() !== '' && ` · ${buildDate()}`}
+          </div>
           <button className="btn" onClick={onClose}>
             fechar
           </button>
