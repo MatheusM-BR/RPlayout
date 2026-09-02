@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
+import { anchorTarget, durationIn, formatVideoFormat, isStill } from '@rplayout/protocol'
 import type { AudioLevel, EditScope, Fit, Trim } from '@rplayout/protocol'
 import { api } from './api.js'
 import { clock, dur } from './format.js'
@@ -21,6 +21,7 @@ import { Distribution } from './components/Distribution.js'
 import { Explorer } from './components/Explorer.js'
 import { AsRunPanel } from './components/AsRunPanel.js'
 import { AutoFillDialog } from './components/AutoFillDialog.js'
+import { ChannelDialog } from './components/ChannelDialog.js'
 import { GraphicsPanel } from './components/GraphicsPanel.js'
 import { ItemGraphicsDialog } from './components/ItemGraphicsDialog.js'
 import { Monitors } from './components/Monitors.js'
@@ -37,6 +38,7 @@ type Dialog =
   | { kind: 'itemGraphics'; view: ItemView }
   | { kind: 'asrun' }
   | { kind: 'autofill' }
+  | { kind: 'channel' }
   | null
 
 export function App() {
@@ -137,9 +139,9 @@ export function App() {
    * áudio de cada arquivo --, então quem informa o andamento é a consulta, não
    * a resposta do disparo.
    */
-  const startScan = useCallback(async () => {
+  const startScan = useCallback(async (measure: boolean) => {
     try {
-      setScan(await api.scan())
+      setScan(await api.scan(measure))
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Não consegui ler a pasta.')
       return
@@ -608,7 +610,7 @@ export function App() {
             onPreview={(assetId) => void command('cue', { assetId })}
             onInsert={(assetId) => setDialog({ kind: 'add', assetId })}
             scan={scan}
-            onScan={() => void startScan()}
+            onScan={(measure) => void startScan(measure)}
           />
         </aside>
 
@@ -729,6 +731,13 @@ export function App() {
         <button className="btn" onClick={() => setDialog({ kind: 'autofill' })}>
           montar
         </button>
+        <button
+          className="btn"
+          onClick={() => setDialog({ kind: 'channel' })}
+          title={`Formato do canal — hoje em ${formatVideoFormat(view.channel)}`}
+        >
+          canal
+        </button>
         <button className="btn" onClick={() => setDialog({ kind: 'asrun' })}>
           as-run
         </button>
@@ -831,6 +840,17 @@ export function App() {
           channelId={view.channel.id}
           onClose={() => setDialog(null)}
           onMessage={say}
+        />
+      )}
+      {dialog?.kind === 'channel' && (
+        <ChannelDialog
+          channel={view.channel}
+          onCancel={() => setDialog(null)}
+          onSaved={(message) => {
+            setDialog(null)
+            say(message)
+            void guard(async () => absorb(await api.rundown(view.rundown.id)))
+          }}
         />
       )}
       {dialog?.kind === 'autofill' && (

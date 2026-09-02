@@ -224,6 +224,68 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { channelId: id, rundownId }
   })
 
+  const channelPatch = z.object({
+    name: z.string().min(1).optional(),
+    width: z.number().int().min(160).max(7680).optional(),
+    height: z.number().int().min(120).max(4320).optional(),
+    rateNum: z.number().int().min(1).optional(),
+    rateDen: z.number().int().min(1).optional(),
+    scan: z.enum(['PROGRESSIVE', 'INTERLACED']).optional(),
+    fieldOrder: z.enum(['TFF', 'BFF']).optional(),
+    targetLufs: z.number().min(-40).max(0).optional(),
+    ceilingDbtp: z.number().min(-20).max(0).optional(),
+  })
+
+  /**
+   * Muda o formato do canal.
+   *
+   * Geometria, cadência e varredura são a espinha do pipeline: o engine é
+   * construído em volta delas e não há como trocá-las com ele de pé. Então o
+   * canal é derrubado e reconstruído -- alguns segundos de preto, e é honesto
+   * dizer isso na interface em vez de fingir que a troca é instantânea.
+   */
+  server.patch('/api/channels/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = channelPatch.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    const current = await getChannel(app.db, id)
+    if (!current) return reply.code(404).send({ error: 'Canal não encontrado.' })
+
+    await app.db.update(channels).set(body.data).where(eq(channels.id, id))
+
+    // Formato mudou: o engine tem de nascer de novo. Trocar só o registro
+    // deixaria o banco dizendo uma coisa e o ar fazendo outra.
+    const antes = {
+      width: current.width,
+      height: current.height,
+      rateNum: current.rate.num,
+      rateDen: current.rate.den,
+      scan: current.scan,
+      fieldOrder: current.fieldOrder,
+    }
+    const formatChanged = Object.entries(antes).some(
+      ([field, valor]) =>
+        body.data[field as keyof typeof antes] !== undefined &&
+        body.data[field as keyof typeof antes] !== valor,
+    )
+
+    const previous = app.runtimes.get(id)
+    const rundownId = previous?.view?.rundown.id ?? null
+    if (previous) {
+      previous.transport.close()
+      app.runtimes.delete(id)
+    }
+
+    // Nome mudou, caminho no servidor de mídia muda junto.
+    if (body.data.name && body.data.name !== current.name) await syncDistribution(app)
+
+    const runtime = await runtimeFor(app, id)
+    if (runtime && rundownId) await runtime.load(rundownId)
+    onChange()
+    return { ok: true, restarted: previous !== undefined, formatChanged }
+  })
+
   server.get('/api/assets', async () => ({ assets: await listAssets(app.db) }))
 
   /**
@@ -298,9 +360,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return reply.code(409).send({ error: 'A sonda de mídia não está configurada.' })
     }
     const body = z
-      .object({ root: z.string().min(1).optional() })
+      .object({ root: z.string().min(1).optional(), measure: z.boolean().optional() })
       .safeParse(request.body ?? {})
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    // Medir loudness é o que demora numa varredura. Poder ler sem medir é o
+    // que torna um acervo grande utilizável no mesmo dia.
+    app.ingest.measure = body.data.measure ?? true
 
     if (!app.ingest.start(body.data.root ?? app.mediaRoot)) {
       return reply.code(409).send({ error: 'A varredura já está em andamento.' })

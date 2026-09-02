@@ -398,6 +398,76 @@ impl Publisher {
     }
 }
 
+/// Codificadores de H.264 que sabemos configurar, do mais rápido para o mais
+/// lento.
+///
+/// A ordem não é gosto: é o que a máquina aguenta. Um canal 1080p50 em x264
+/// come um punhado de núcleos, e três canais numa estação comum começam a
+/// engasgar -- o programa pisca preto porque o encoder não entrega o quadro a
+/// tempo. Havendo placa, ela faz isso sem tirar CPU de ninguém.
+const ENCODERS: &[&str] = &["nvh264enc", "qsvh264enc", "mfh264enc", "x264enc"];
+
+/// Monta o codificador de vídeo, preferindo o que a máquina tiver de hardware.
+///
+/// `RPLAYOUT_ENCODER` força um: é a saída para quando a placa existe e mente
+/// sobre estar pronta, que acontece com driver desatualizado.
+fn video_encoder(bitrate_kbps: u32, key_int_max: u32) -> Result<gst::Element> {
+    let forced = std::env::var("RPLAYOUT_ENCODER").ok();
+    let candidates: Vec<&str> = match forced.as_deref() {
+        Some(name) => vec![name],
+        None => ENCODERS.to_vec(),
+    };
+
+    for name in candidates {
+        let Ok(encoder) = make(name) else { continue };
+
+        // Cada um chama as coisas pelo seu nome. Ajustar só o que existe evita
+        // um `set_property` que derruba o processo por propriedade ausente.
+        match name {
+            "x264enc" => {
+                encoder.set_property("bitrate", bitrate_kbps);
+                encoder.set_property_from_str("tune", "zerolatency");
+                encoder.set_property_from_str("speed-preset", "veryfast");
+                encoder.set_property("key-int-max", key_int_max);
+            }
+            "nvh264enc" => {
+                // NVENC fala em bits por segundo, não em kbps.
+                set_if_exists(&encoder, "bitrate", bitrate_kbps);
+                set_if_exists(&encoder, "gop-size", key_int_max as i32);
+                encoder.set_property_from_str("preset", "low-latency-hq");
+                set_if_exists(&encoder, "zerolatency", true);
+            }
+            _ => {
+                set_if_exists(&encoder, "bitrate", bitrate_kbps);
+                set_if_exists(&encoder, "gop-size", key_int_max as i32);
+                set_if_exists(&encoder, "low-latency", true);
+            }
+        }
+
+        eprintln!("[engine] codificando com {name}");
+        return Ok(encoder);
+    }
+
+    Err(anyhow!(
+        "nenhum codificador de H.264 disponível: instale o GStreamer completo (x264enc) \
+         ou verifique a placa"
+    ))
+}
+
+/// Ajusta uma propriedade só se o elemento tiver.
+///
+/// Os codificadores de hardware mudam de nome de propriedade entre versões, e
+/// um `set_property` em propriedade que não existe derruba o processo -- num
+/// playout, derrubar por causa de um ajuste opcional é o pior negócio possível.
+fn set_if_exists<V>(element: &gst::Element, name: &str, value: V)
+where
+    V: Into<gst::glib::Value>,
+{
+    if element.find_property(name).is_some() {
+        element.set_property_from_value(name, &value.into());
+    }
+}
+
 /// Cadeia de codificação de um destino.
 pub fn encode_chain(
     bitrate_kbps: u32,
@@ -412,11 +482,7 @@ pub fn encode_chain(
     gst::Element,
     gst::Element,
 )> {
-    let venc = make("x264enc")?;
-    venc.set_property("bitrate", bitrate_kbps);
-    venc.set_property_from_str("tune", "zerolatency");
-    venc.set_property_from_str("speed-preset", "veryfast");
-    venc.set_property("key-int-max", (fps_n / fps_d) as u32 * 2);
+    let venc = video_encoder(bitrate_kbps, (fps_n / fps_d.max(1)) as u32 * 2)?;
 
     let vparse = make("h264parse")?;
     // Parâmetros do codec voltam de tempos em tempos: quem sintoniza no meio

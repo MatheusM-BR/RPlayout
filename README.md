@@ -513,6 +513,35 @@ Verificado com dois canais no ar ao mesmo tempo: dois engines, caminhos
 `canal-1/*` e `canal-2/*` separados no servidor de mídia, medidores próprios, e
 a troca de canal na barra levando grade, monitores e medidores junto.
 
+### O formato do canal é editável, e trocá-lo derruba o canal
+
+Geometria, cadência e varredura são a espinha do pipeline: o engine é
+construído em volta delas e não há como trocá-las com ele de pé. Então trocar
+derruba e reconstrói o canal -- alguns segundos de preto --, e a interface diz
+isso antes de aplicar, em vez de fingir que a troca é instantânea.
+
+Cadência custa CPU de forma direta: 1080p50 é o dobro do trabalho de 1080p25, e
+vários canais na mesma máquina somam. Um playout que engasga e pisca preto
+quase sempre está pedindo mais quadros do que o encoder entrega.
+
+### Placa de vídeo quando existir
+
+O codificador é escolhido na subida, na ordem `nvh264enc`, `qsvh264enc`,
+`mfh264enc`, `x264enc` -- e a ordem não é gosto, é o que a máquina aguenta.
+Havendo placa, ela codifica sem tirar CPU de ninguém; sem placa, o x264 faz o
+trabalho e o número de canais passa a ser limitado pelo processador.
+
+`RPLAYOUT_ENCODER` força um deles pelo nome. É a saída para quando a placa
+existe e mente sobre estar pronta, o que acontece com driver desatualizado.
+
+### A varredura nunca disputa CPU com o ar
+
+A sonda roda em prioridade baixa: pode demorar o dobro, mas o programa não pode
+engasgar um quadro por causa dela. E medir loudness custa decodificar o áudio
+inteiro de cada arquivo -- num acervo grande são horas --, então a leitura tem
+dois modos: **LER PASTA** mede, **RÁPIDO** não. Sem medição o nivelamento
+automático fica sem base, e a linha do arquivo mostra isso.
+
 ### Relatório e cópia de segurança
 
 O as-run sai em CSV -- formato feio de propósito, porque é o que abre em

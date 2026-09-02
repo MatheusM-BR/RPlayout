@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { mkdir, readdir, stat } from 'node:fs/promises'
+import { constants, setPriority } from 'node:os'
 import { basename, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
@@ -98,6 +99,14 @@ export class Ingest {
    * até alguém mexer em qualquer outra coisa.
    */
   onFinished: (() => void) | null = null
+  /**
+   * Medir loudness na varredura.
+   *
+   * Ligado, o acervo já chega nivelável -- o modo automático tem de onde tirar
+   * o ganho. Desligado, a leitura é muitas vezes mais rápida e o nivelamento
+   * automático fica sem base até alguém medir.
+   */
+  measure = true
 
   constructor(
     private readonly db: Db,
@@ -303,7 +312,20 @@ export class Ingest {
   /** Roda a sonda e lê a linha de JSON. Falha dela nunca derruba a varredura. */
   private probe(path: string, thumbnail: string): Promise<ProbeResult> {
     return new Promise((done) => {
-      const child = spawn(this.probeBinary, [path, '--thumbnail', thumbnail])
+      const args = [path, '--thumbnail', thumbnail]
+      // Medir loudness custa decodificar o áudio inteiro de cada arquivo. Num
+      // acervo grande isso são horas de CPU -- e o canal está no ar ao lado.
+      if (!this.measure) args.push('--no-loudness')
+
+      const child = spawn(this.probeBinary, args)
+
+      // A sonda nunca disputa CPU com o ar. Ela pode demorar o dobro; o
+      // programa não pode engasgar um frame.
+      try {
+        if (child.pid) setPriority(child.pid, constants.priority.PRIORITY_LOW)
+      } catch {
+        // Sistema que não deixa mudar prioridade: a varredura roda igual.
+      }
       let out = ''
       child.stdout?.on('data', (chunk: Buffer) => {
         out += chunk.toString()

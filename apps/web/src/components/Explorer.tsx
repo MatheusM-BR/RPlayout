@@ -12,7 +12,7 @@ interface Props {
   onInsert: (assetId: string) => void
   /** Situação da varredura do acervo. Nulo esconde o botão. */
   scan: ScanStatus | null
-  onScan: () => void
+  onScan: (measure: boolean) => void
 }
 
 /**
@@ -66,9 +66,24 @@ export function Explorer({
           onChange={(event) => setQuery(event.target.value)}
         />
         {scan?.available && (
-          <button className="btn small" onClick={onScan} disabled={scan.running}>
-            {scan.running ? `${scan.seen}/${scan.total}` : 'LER PASTA'}
-          </button>
+          <>
+            <button className="btn small" onClick={() => onScan(true)} disabled={scan.running}>
+              {scan.running ? `${scan.seen}/${scan.total}` : 'LER PASTA'}
+            </button>
+            {/* Medir loudness é o que demora: decodifica o áudio inteiro de
+                cada arquivo. Num acervo grande, poder ler sem medir é o que
+                torna o dia utilizável -- e o nivelamento automático fica sem
+                base até alguém medir, o que a linha do arquivo mostra. */}
+            {!scan.running && (
+              <button
+                className="btn small"
+                onClick={() => onScan(false)}
+                title="Lê muito mais rápido, sem medir loudness"
+              >
+                RÁPIDO
+              </button>
+            )}
+          </>
         )}
       </div>
       {scan?.running && (

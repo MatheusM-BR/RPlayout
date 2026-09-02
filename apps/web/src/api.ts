@@ -40,6 +40,22 @@ const post = <T>(path: string, body: unknown): Promise<T> =>
 
 export const api = {
   state: () => send<{ channels: Channel[]; rundowns: Rundown[] }>('/api/state'),
+  patchChannel: (
+    id: string,
+    body: {
+      name?: string
+      width?: number
+      height?: number
+      rateNum?: number
+      rateDen?: number
+      scan?: string
+      fieldOrder?: string
+    },
+  ) =>
+    send<{ ok: boolean; restarted: boolean; formatChanged: boolean }>(`/api/channels/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
   addChannel: (name: string) =>
     post<{ channelId: string; rundownId: string }>('/api/channels', { name }),
   assets: () => send<{ assets: MediaAsset[] }>('/api/assets'),
@@ -55,7 +71,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
   removeOutput: (id: string) => send<{ ok: boolean }>(`/api/outputs/${id}`, { method: 'DELETE' }),
-  scan: () => send<ScanStatus>('/api/library/scan', { method: 'POST', body: '{}' }),
+  /** `measure` desligado lê muito mais rápido e deixa a loudness para depois. */
+  scan: (measure = true) =>
+    send<ScanStatus>('/api/library/scan', {
+      method: 'POST',
+      body: JSON.stringify({ measure }),
+    }),
   /** `refresh` força uma varredura nova em vez de usar o resultado guardado. */
   sources: (refresh = false) => send<SourceList>(`/api/sources${refresh ? '?refresh=1' : ''}`),
   rundown: (id: string) => send<Snapshot>(`/api/rundowns/${id}`),
