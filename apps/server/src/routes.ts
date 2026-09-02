@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { asc, eq } from 'drizzle-orm'
+import { asc, eq, isNotNull } from 'drizzle-orm'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
 import {
@@ -37,9 +37,11 @@ import {
   graphicTemplates,
   guestKeys,
   itemGraphics,
+  mediaAssets,
+  rundownItems,
   scheduleRules,
 } from './db/schema.js'
-import { operatorDecisions, rundownItems } from './db/schema.js'
+import { operatorDecisions } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
@@ -348,6 +350,117 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   // ---- acervo -----------------------------------------------------------
+
+  const assetPatch = z.object({
+    title: z.string().min(1).optional(),
+    categoryId: z.string().min(1).nullable().optional(),
+  })
+
+  server.patch('/api/assets/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = assetPatch.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    await app.db.update(mediaAssets).set(body.data).where(eq(mediaAssets.id, id))
+    for (const runtime of app.runtimes.values()) await runtime.refresh()
+    onChange()
+    return { ok: true }
+  })
+
+  /**
+   * Tira o arquivo do acervo. O arquivo em disco não é tocado.
+   *
+   * Arquivo em uso não sai calado: a grade que aponta para ele perderia a
+   * referência e o operador descobriria no ar. A resposta diz quantos itens o
+   * usam, e quem decide é ele.
+   */
+  server.delete('/api/assets/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { force } = request.query as { force?: string }
+
+    const usos = await app.db.select().from(rundownItems).where(eq(rundownItems.mediaId, id))
+    if (usos.length > 0 && force !== '1') {
+      return reply.code(409).send({
+        error: `Este arquivo está em ${usos.length} item${usos.length > 1 ? 's' : ''} da grade.`,
+        items: usos.length,
+      })
+    }
+
+    if (usos.length > 0) {
+      await app.db.delete(rundownItems).where(eq(rundownItems.mediaId, id))
+    }
+    await app.db.delete(mediaAssets).where(eq(mediaAssets.id, id))
+    for (const runtime of app.runtimes.values()) await runtime.refresh()
+    onChange()
+    return { ok: true, removedItems: usos.length }
+  })
+
+  /**
+   * Limpa do acervo tudo que não abriu.
+   *
+   * Arquivo que não abre fica na lista com o motivo à vista -- é informação
+   * acionável enquanto alguém pode agir. Depois que o operador viu e decidiu
+   * que não vai agir, a mesma lista vira ruído, e limpar é o que devolve a
+   * tela para o material que serve.
+   */
+  server.post('/api/assets/prune', async () => {
+    const quebrados = await app.db
+      .select()
+      .from(mediaAssets)
+      .where(isNotNull(mediaAssets.probeError))
+
+    let itensRemovidos = 0
+    for (const asset of quebrados) {
+      const usos = await app.db.select().from(rundownItems).where(eq(rundownItems.mediaId, asset.id))
+      itensRemovidos += usos.length
+      if (usos.length > 0) {
+        await app.db.delete(rundownItems).where(eq(rundownItems.mediaId, asset.id))
+      }
+      await app.db.delete(mediaAssets).where(eq(mediaAssets.id, asset.id))
+    }
+
+    for (const runtime of app.runtimes.values()) await runtime.refresh()
+    onChange()
+    return { removed: quebrados.length, removedItems: itensRemovidos }
+  })
+
+  /** As categorias que existem no acervo, para a interface oferecer. */
+  server.get('/api/categories', async () => {
+    const assets = await listAssets(app.db)
+    const found = new Set<string>()
+    for (const asset of assets) if (asset.categoryId) found.add(asset.categoryId)
+    return { categories: [...found].sort() }
+  })
+
+  /**
+   * Apaga um canal inteiro.
+   *
+   * O último não sai: um playout sem canal nenhum não tem o que operar, e a
+   * tela de primeira vez existe para o caso de banco vazio, não para o
+   * operador cair nela por engano.
+   */
+  server.delete('/api/channels/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const todos = await listChannels(app.db)
+    if (todos.length <= 1) {
+      return reply.code(409).send({ error: 'Este é o único canal. Crie outro antes de apagar.' })
+    }
+    if (!todos.some((channel) => channel.id === id)) {
+      return reply.code(404).send({ error: 'Canal não encontrado.' })
+    }
+
+    const runtime = app.runtimes.get(id)
+    if (runtime) {
+      runtime.transport.close()
+      app.runtimes.delete(id)
+    }
+
+    await app.db.delete(channels).where(eq(channels.id, id))
+    await syncDistribution(app)
+    onChange()
+    return { ok: true }
+  })
+
 
   server.get('/api/library/scan', async () => ({
     ...app.ingest.status(),

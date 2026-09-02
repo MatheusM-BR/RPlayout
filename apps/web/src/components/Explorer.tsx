@@ -8,8 +8,15 @@ interface Props {
   rate: Rate
   /** Arquivo aberto no preview agora, se for do explorador. */
   openAssetId: string | null
+  /** Categorias que já existem no acervo. */
+  categories: string[]
   onPreview: (assetId: string) => void
+  /** Põe o arquivo no fim da grade, sem diálogo: é o caminho de todo dia. */
   onInsert: (assetId: string) => void
+  onRemove: (assetId: string) => void
+  onCategorize: (assetId: string, categoryId: string | null) => void
+  /** Tira do acervo tudo que não abriu. */
+  onPrune: () => void
   /** Situação da varredura do acervo. Nulo esconde o botão. */
   scan: ScanStatus | null
   onScan: (measure: boolean) => void
@@ -24,13 +31,25 @@ export function Explorer({
   folders,
   rate,
   openAssetId,
+  categories,
   onPreview,
   onInsert,
+  onRemove,
+  onCategorize,
+  onPrune,
   scan,
   onScan,
 }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
+  /** Arquivo com a caixa de categoria aberta. */
+  const [categorizando, setCategorizando] = useState<string | null>(null)
+  const [novaCategoria, setNovaCategoria] = useState<string | null>(null)
+
+  const quebrados = useMemo(
+    () => folders.reduce((total, folder) => total + folder.assets.filter((a) => a.probeError).length, 0),
+    [folders],
+  )
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -66,7 +85,7 @@ export function Explorer({
           onChange={(event) => setQuery(event.target.value)}
         />
         {scan?.available && (
-          <>
+          <div className="acoes-acervo">
             <button className="btn small" onClick={() => onScan(true)} disabled={scan.running}>
               {scan.running ? `${scan.seen}/${scan.total}` : 'LER PASTA'}
             </button>
@@ -83,7 +102,18 @@ export function Explorer({
                 RÁPIDO
               </button>
             )}
-          </>
+            {/* Enquanto alguém pode agir, arquivo que não abriu é informação.
+                Depois que o operador viu e decidiu que não vai agir, é ruído. */}
+            {!scan.running && quebrados > 0 && (
+              <button
+                className="btn small"
+                onClick={onPrune}
+                title={`Tira do acervo ${quebrados} arquivo(s) que não abriram`}
+              >
+                LIMPAR {quebrados}
+              </button>
+            )}
+          </div>
         )}
       </div>
       {scan?.running && (
@@ -134,17 +164,76 @@ export function Explorer({
                         </div>
                       )}
                     </div>
-                    {!asset.probeError && (
+                    <div className="acoes" onClick={(event) => event.stopPropagation()}>
+                      {!asset.probeError && (
+                        <>
+                          <button
+                            className="add"
+                            title="Põe no fim da grade"
+                            onClick={() => onInsert(asset.id)}
+                          >
+                            +
+                          </button>
+                          <button
+                            className="marca"
+                            title={asset.categoryId ? `Categoria: ${asset.categoryId}` : 'Sem categoria'}
+                            onClick={() =>
+                              setCategorizando(categorizando === asset.id ? null : asset.id)
+                            }
+                          >
+                            {asset.categoryId ? asset.categoryId.slice(0, 3) : '—'}
+                          </button>
+                        </>
+                      )}
                       <button
-                        className="add"
-                        title="Inserir na grade"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onInsert(asset.id)
-                        }}
+                        className="tira"
+                        title="Tira do acervo (não apaga o arquivo em disco)"
+                        onClick={() => onRemove(asset.id)}
                       >
-                        +
+                        ×
                       </button>
+                    </div>
+
+                    {categorizando === asset.id && (
+                      <div className="categoria" onClick={(event) => event.stopPropagation()}>
+                        {novaCategoria === null ? (
+                          <select
+                            autoFocus
+                            value={asset.categoryId ?? ''}
+                            onChange={(event) => {
+                              if (event.target.value === '__nova__') {
+                                setNovaCategoria('')
+                                return
+                              }
+                              onCategorize(asset.id, event.target.value || null)
+                              setCategorizando(null)
+                            }}
+                          >
+                            <option value="">sem categoria</option>
+                            {categories.map((categoria) => (
+                              <option key={categoria} value={categoria}>
+                                {categoria}
+                              </option>
+                            ))}
+                            <option value="__nova__">nova categoria…</option>
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            autoFocus
+                            placeholder="nome da categoria"
+                            value={novaCategoria}
+                            onChange={(event) => setNovaCategoria(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Escape') setNovaCategoria(null)
+                              if (event.key !== 'Enter' || novaCategoria.trim() === '') return
+                              onCategorize(asset.id, novaCategoria.trim())
+                              setNovaCategoria(null)
+                              setCategorizando(null)
+                            }}
+                          />
+                        )}
+                      </div>
                     )}
                   </div>
                 ))}

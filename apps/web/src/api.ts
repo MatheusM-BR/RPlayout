@@ -60,6 +60,26 @@ export const api = {
     post<{ channelId: string; rundownId: string }>('/api/channels', { name }),
   assets: () => send<{ assets: MediaAsset[] }>('/api/assets'),
   library: () => send<{ folders: LibraryFolder[] }>('/api/library'),
+
+  patchAsset: (id: string, body: { title?: string; categoryId?: string | null }) =>
+    send<{ ok: true }>(`/api/assets/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  /**
+   * Tira do acervo. Arquivo em uso responde conflito em vez de sair calado --
+   * a grade que aponta para ele perderia a referência.
+   */
+  removeAsset: async (id: string, force = false) => {
+    const response = await fetch(`/api/assets/${id}${force ? '?force=1' : ''}`, {
+      method: 'DELETE',
+    })
+    const corpo = (await response.json()) as { error?: string; items?: number }
+    if (response.status === 409) return { conflito: corpo.error, items: corpo.items }
+    if (!response.ok) throw new Error(corpo.error ?? 'Não consegui tirar o arquivo.')
+    return { conflito: null }
+  },
+  pruneAssets: () =>
+    post<{ removed: number; removedItems: number }>('/api/assets/prune', {}),
+  removeChannel: (id: string) =>
+    send<{ ok: true }>(`/api/channels/${id}`, { method: 'DELETE' }),
   scanStatus: () => send<ScanStatus>('/api/library/scan'),
   outputs: (channelId: string) =>
     send<{ outputs: OutputProfile[] }>(`/api/channels/${channelId}/outputs`),

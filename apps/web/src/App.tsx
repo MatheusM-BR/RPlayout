@@ -22,6 +22,7 @@ import { Explorer } from './components/Explorer.js'
 import { AsRunPanel } from './components/AsRunPanel.js'
 import { AutoFillDialog } from './components/AutoFillDialog.js'
 import { ChannelDialog } from './components/ChannelDialog.js'
+import { SettingsDialog } from './components/SettingsDialog.js'
 import { GraphicsPanel } from './components/GraphicsPanel.js'
 import { ItemGraphicsDialog } from './components/ItemGraphicsDialog.js'
 import { Monitors } from './components/Monitors.js'
@@ -39,6 +40,7 @@ type Dialog =
   | { kind: 'asrun' }
   | { kind: 'autofill' }
   | { kind: 'channel' }
+  | { kind: 'settings' }
   | null
 
 export function App() {
@@ -444,6 +446,68 @@ export function App() {
     })
   }
 
+  /** Categorias que já existem no acervo, para o explorador oferecer. */
+  const categories = useMemo(
+    () =>
+      [...new Set(assets.map((asset) => asset.categoryId).filter((id): id is string => !!id))].sort(),
+    [assets],
+  )
+
+  const inserirNoFim = (assetId: string): void => {
+    if (!view) return
+    const asset = assets.find((candidate) => candidate.id === assetId)
+    void guard(async () => {
+      absorb(
+        await api.addItem(view.rundown.id, {
+          mediaId: assetId,
+          type: 'VT',
+          title: asset?.title,
+          anchor: { kind: 'FLOW' },
+        }),
+      )
+      say(`${asset?.title ?? 'Arquivo'} no fim da grade.`)
+    })
+  }
+
+  const removerDoAcervo = (assetId: string): void => {
+    const asset = assets.find((candidate) => candidate.id === assetId)
+    void guard(async () => {
+      const resultado = await api.removeAsset(assetId)
+      if (resultado.conflito) {
+        // Arquivo em uso não sai calado: a grade que aponta para ele perderia a
+        // referência, e quem decide isso é o operador.
+        const quantos = resultado.items ?? 0
+        if (!window.confirm(`${resultado.conflito}\n\nTirar mesmo assim remove ${quantos} item(ns) da grade.`)) {
+          return
+        }
+        await api.removeAsset(assetId, true)
+      }
+      await refreshLibrary()
+      absorb(await api.rundown(view!.rundown.id))
+      say(`${asset?.title ?? 'Arquivo'} saiu do acervo. O arquivo em disco não foi tocado.`)
+    })
+  }
+
+  const categorizar = (assetId: string, categoryId: string | null): void => {
+    void guard(async () => {
+      await api.patchAsset(assetId, { categoryId })
+      await refreshLibrary()
+      say(categoryId ? `Categoria: ${categoryId}.` : 'Categoria removida.')
+    })
+  }
+
+  const limparQuebrados = (): void => {
+    void guard(async () => {
+      const resultado = await api.pruneAssets()
+      await refreshLibrary()
+      if (view) absorb(await api.rundown(view.rundown.id))
+      say(
+        `${resultado.removed} arquivo(s) que não abriram saíram do acervo` +
+          (resultado.removedItems > 0 ? `, e ${resultado.removedItems} item(ns) da grade.` : '.'),
+      )
+    })
+  }
+
   const setTrack = (id: string, audioTrack: number): void => {
     void guard(async () => {
       absorb(await api.patchItem(id, { audioTrack }))
@@ -530,47 +594,29 @@ export function App() {
           {onAirId ? 'NO AR' : 'FORA DO AR'}
         </div>
         {live.transport.standby && <div className="standby">ARMADO</div>}
-        <div className="meta">
-          {/* Trocar de canal é trocar de tudo: grade, monitores, medidores.
-              Só aparece quando há mais de um -- seletor de um item só é
-              enfeite que ocupa espaço na barra. */}
-          {channels.length > 1 ? (
-            <select
-              className="channel"
-              value={view.channel.id}
-              onChange={(event) => {
-                const rundownId = rundownOf[event.target.value]
-                if (!rundownId) return
+        <div className="canais">
+          {/* Abas em vez de lista suspensa: com dois ou três canais, ver todos
+              de uma vez é a diferença entre olhar e procurar. */}
+          {channels.map((entrada) => (
+            <button
+              key={entrada.id}
+              className={`aba${entrada.id === view.channel.id ? ' on' : ''}`}
+              onClick={() => {
+                const rundownId = rundownOf[entrada.id]
+                if (!rundownId || entrada.id === view.channel.id) return
                 void guard(async () => absorb(await api.rundown(rundownId)))
               }}
             >
-              {channels.map((entry) => (
-                <option key={entry.id} value={entry.id}>
-                  {entry.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <b>{view.channel.name}</b>
-          )}
-          {newChannel === null ? (
-            <button className="btn small" title="Novo canal" onClick={() => setNewChannel('')}>
-              +
+              {entrada.name}
             </button>
-          ) : (
-            <input
-              className="channel"
-              autoFocus
-              placeholder="nome do canal"
-              value={newChannel}
-              onChange={(event) => setNewChannel(event.target.value)}
-              onBlur={() => setNewChannel(null)}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') setNewChannel(null)
-                if (event.key === 'Enter') createChannel()
-              }}
-            />
-          )}
+          ))}
+          <button
+            className="aba engrenagem"
+            title="Configurações e canais"
+            onClick={() => setDialog({ kind: 'settings' })}
+          >
+            ⚙
+          </button>
         </div>
 
         {commitment && (
@@ -607,8 +653,14 @@ export function App() {
             folders={folders}
             rate={rate}
             openAssetId={openAssetId}
+            categories={categories}
             onPreview={(assetId) => void command('cue', { assetId })}
-            onInsert={(assetId) => setDialog({ kind: 'add', assetId })}
+            // O caminho de todo dia é pôr no fim da grade. Quem precisa de hora
+            // marcada usa INSERIR ITEM, que é onde as âncoras moram.
+            onInsert={inserirNoFim}
+            onRemove={removerDoAcervo}
+            onCategorize={categorizar}
+            onPrune={limparQuebrados}
             scan={scan}
             onScan={(measure) => void startScan(measure)}
           />
@@ -840,6 +892,28 @@ export function App() {
           channelId={view.channel.id}
           onClose={() => setDialog(null)}
           onMessage={say}
+        />
+      )}
+      {dialog?.kind === 'settings' && (
+        <SettingsDialog
+          channel={view.channel}
+          channels={channels}
+          onClose={() => setDialog(null)}
+          onMessage={say}
+          onChanged={() => {
+            void guard(async () => {
+              const state = await api.state()
+              setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+              const map: Record<string, string> = {}
+              for (const rundown of state.rundowns) map[rundown.channelId] ??= rundown.id
+              setRundownOf(map)
+              const alvo = map[view.channel.id] ?? state.rundowns[0]?.id
+              if (alvo) absorb(await api.rundown(alvo))
+            })
+          }}
+          onOpenFormat={() => setDialog({ kind: 'channel' })}
+          onOpenDistribution={() => setDialog({ kind: 'distribution' })}
+          onOpenGraphics={() => setDialog({ kind: 'graphics' })}
         />
       )}
       {dialog?.kind === 'channel' && (

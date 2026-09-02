@@ -349,6 +349,30 @@ Verificado ponta a ponta: o cartaz fica no ar exatamente o tempo da grade e sai
 sozinho, aparece na gravação do programa (antes: dez segundos de preto), e o
 arquivo só de áudio toca com a tela no preto do canal.
 
+### A tela de operação e a de configuração são separadas
+
+O que o operador usa no ar fica na barra; o que muda o comportamento do sistema
+fica atrás da engrenagem. Misturar as duas coisas é como alguém apaga um canal
+com a mão no take.
+
+Os canais são abas, não lista suspensa: com dois ou três, ver todos de uma vez é
+a diferença entre olhar e procurar.
+
+### Contraste medido, não escolhido no olho
+
+Playout se opera em monitor de estúdio ruim, com luz de sala na tela e às vezes
+de longe. Cada par de cores da paleta foi conferido pela razão de contraste da
+WCAG: texto acima de 12:1, informação secundária acima de 7:1, o texto mais
+apagado acima de 4.5:1, e a borda acima de 3:1 sobre a superfície -- painel cuja
+divisa some vira uma mancha preta só.
+
+### O caminho de todo dia não passa por diálogo
+
+O `+` do arquivo põe no fim da grade e pronto. Hora marcada, tolerância e fonte
+ao vivo moram em **inserir item**, que é para quando a decisão é essa -- fazer
+todo mundo passar pela tela de âncoras para pôr um VT na sequência é cobrar de
+todos o preço do caso raro.
+
 ## Grafismo
 
 ### O engine não sabe o que é um template

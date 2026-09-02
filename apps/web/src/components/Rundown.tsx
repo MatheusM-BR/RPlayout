@@ -224,7 +224,17 @@ export function Rundown(props: Props) {
                   ) : null}
                 </td>
                 <td className="title">
-                  {view.item.title}
+                  {/* A miniatura na grade responde a pergunta que o nome do
+                      arquivo às vezes não responde: é este VT mesmo? */}
+                  {view.item.mediaId && (
+                    <img
+                      className="mini"
+                      src={`/api/assets/${view.item.mediaId}/thumbnail.svg`}
+                      alt=""
+                      loading="lazy"
+                    />
+                  )}
+                  <span className="nome">{view.item.title}</span>
                   <div className="tags">
                     <span className="chip src">{TYPE_LABEL[view.item.type]}</span>
                     {view.item.sourceRef && <span className="chip src">{view.item.sourceRef}</span>}

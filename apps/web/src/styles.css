@@ -1,18 +1,29 @@
+/*
+ * Paleta medida, não escolhida no olho.
+ *
+ * Playout se opera em monitor de estúdio ruim, com luz de sala em cima da tela
+ * e às vezes de longe. Cada par abaixo foi conferido pela razão de contraste da
+ * WCAG: texto passa de 12:1, informação secundária de 7:1, o texto mais apagado
+ * de 4.5:1, e a borda passa de 3:1 sobre a superfície -- painel cuja divisa
+ * some vira uma mancha preta só.
+ */
 :root {
-  --bg: #080b12;
-  --surface: #0f141f;
-  --raised: #161e2e;
-  --sunk: #0b1018;
-  --border: #212c42;
-  --border-soft: #192236;
-  --deep: #1b3a8f;
-  --accent: #4c8dff;
-  --text: #dce3f0;
-  --muted: #8492ac;
-  --dim: #5c6880;
-  --onair: #ff3b3b;
-  --next: #f0a020;
-  --ok: #2ecc8f;
+  --bg: #05070e;
+  --surface: #121a2b;
+  --raised: #1d2941;
+  --sunk: #0a101c;
+  /* 3.55:1 sobre a superfície: divisa que aparece em monitor ruim. */
+  --border: #5570ab;
+  --border-soft: #35456e;
+  --deep: #204ab5;
+  --accent: #5b9bff;
+  --text: #eef2fb;
+  --muted: #a7b4ce;
+  /* 4.78:1 no fundo mais claro que usamos: apagado, nunca ilegível. */
+  --dim: #8794b2;
+  --onair: #ff5f5f;
+  --next: #ffb340;
+  --ok: #3ddba0;
 
   --display: 'Barlow Condensed', 'Arial Narrow', Helvetica, sans-serif;
   --body: 'IBM Plex Sans', 'Segoe UI', Helvetica, Arial, sans-serif;
@@ -148,12 +159,42 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .rd tr:hover td { background: rgba(76, 141, 255, 0.05); }
 .rd tr.sel td { background: rgba(27, 58, 143, 0.26); }
 .rd tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-.rd tr.live td { background: linear-gradient(90deg, rgba(255, 59, 59, 0.15), rgba(255, 59, 59, 0.02) 60%); }
+/* O degradê é da linha, não da célula: pintado na célula ele recomeça em cada
+   coluna e a linha no ar aparece listrada. */
+.rd tr.live { background: linear-gradient(90deg, rgba(255, 59, 59, 0.16), rgba(255, 59, 59, 0.02) 60%); }
+.rd tr.live td { background: transparent; }
+.rd tr.live:hover td { background: rgba(255, 59, 59, 0.05); }
 .rd tr.live td:first-child { box-shadow: inset 3px 0 0 var(--onair); }
 .rd tr.done td { color: var(--dim); }
 .rd tr.dropped td { color: var(--dim); text-decoration: line-through; opacity: 0.65; }
 .rd tr.err td { background: rgba(255, 59, 59, 0.09); }
-.rd .title { font-family: var(--body); font-size: 13px; white-space: normal; min-width: 220px; }
+.rd .title {
+  font-family: var(--body);
+  font-size: 13px;
+  white-space: normal;
+  /* Com a miniatura ao lado, o nome precisa de espaço para não quebrar em
+     todas as linhas -- e é o nome que o operador lê para reconhecer o VT. */
+  min-width: 340px;
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  grid-template-rows: auto auto;
+  gap: 2px 10px;
+  align-items: center;
+}
+.rd .title .mini {
+  grid-row: 1 / span 2;
+  width: 56px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 2px;
+  background: var(--sunk);
+  border: 1px solid var(--border-soft);
+}
+/* Sem miniatura, o texto ocupa a linha inteira em vez de deixar buraco. */
+.rd .title .nome { grid-column: 2; }
+.rd .title .mini + .nome { grid-column: 2; }
+.rd .title > .nome:first-child,
+.rd .title > .nome:first-child + .tags { grid-column: 1 / -1; }
 .rd .num { color: var(--dim); }
 .rd .right { text-align: right; }
 
@@ -215,6 +256,51 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .asrun td.bad { color: var(--next); }
 
 /* Caixa de marcar com rótulo à direita. */
+/* Abas de canal: todas visíveis, sem lista suspensa. */
+.canais { display: flex; align-items: center; gap: 4px; }
+.aba {
+  background: var(--sunk);
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 6px 12px;
+}
+.aba:hover { border-color: var(--border); color: var(--text); }
+.aba.on {
+  background: var(--deep);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+.aba.engrenagem { font-size: 14px; padding: 5px 10px; letter-spacing: 0; }
+
+/* Ações de um arquivo do acervo. */
+.file .acoes { display: flex; gap: 3px; align-items: center; opacity: 0; }
+.file:hover .acoes, .file.open .acoes { opacity: 1; }
+.file .acoes button {
+  background: var(--raised);
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 7px;
+}
+.file .acoes button:hover { border-color: var(--accent); color: var(--text); }
+.file .acoes .tira:hover { border-color: var(--onair); color: var(--onair); }
+.file .categoria { grid-column: 1 / -1; padding: 6px 0 2px; }
+.file .categoria select, .file .categoria input { width: 100%; }
+
+/* Atalhos das configurações. */
+.atalhos { display: grid; gap: 6px; }
+.atalhos .btn { justify-content: space-between; text-align: left; padding: 10px 12px; }
+.atalhos .btn i { font-style: normal; color: var(--dim); font-size: 11px; }
+
 /* Primeira vez: banco sem canal nenhum. */
 .firstrun {
   max-width: 620px;
@@ -606,14 +692,17 @@ input.bad { border-color: var(--onair); }
 .file .sub.bad { color: var(--onair); }
 
 .search {
-  display: flex;
+  /* Filtro numa linha, ações na de baixo: com três botões ao lado, a caixa de
+     filtrar encolhia até não caber uma palavra. */
+  display: grid;
   gap: 6px;
-  align-items: center;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border-soft);
 }
+.search .acoes-acervo { display: flex; gap: 6px; }
+.search .acoes-acervo .btn { flex: 1; }
 .search input {
-  flex: 1;
+  width: 100%;
   min-width: 0;
   padding: 6px 9px;
   font-family: var(--body);
@@ -645,6 +734,8 @@ input.bad { border-color: var(--onair); }
   grid-template-columns: 64px 1fr auto;
   gap: 9px;
   align-items: center;
+  /* A caixa de categoria abre numa segunda linha, ocupando a largura toda. */
+  grid-auto-rows: auto;
   padding: 7px 10px;
   border-bottom: 1px solid var(--border-soft);
   cursor: pointer;
