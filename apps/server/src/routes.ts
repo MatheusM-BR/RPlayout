@@ -24,6 +24,7 @@ import {
 } from './app.js'
 import { getChannel, listAssets, listChannels, listRundowns } from './db/repo.js'
 import { listAsRun } from './domain/asrun.js'
+import { buildCandidates, planFill } from './domain/autofill.js'
 import { syncDistribution } from './app.js'
 import { PORTS } from './domain/mediamtx.js'
 import {
@@ -334,7 +335,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         .where(eq(rundownItems.id, existingId))
     }
 
-    await logDecision(app, id, itemId, 'ITEM_ADDED', { anchor, index })
+    // O arquivo vai no registro, não só o item: é o arquivo que volta a ser
+    // oferecido na próxima montagem automática, e é sobre ele que se aprende.
+    await logDecision(app, id, itemId, 'ITEM_ADDED', {
+      anchor,
+      index,
+      mediaId: body.data.mediaId ?? null,
+    })
     await runtime.refresh()
     onChange()
     return snapshot(app, runtime)
@@ -382,8 +389,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     await app.history.capture(app.db, runtime.view.rundown.id, 'remover item', {
       wholeRundown: true,
     })
+    const removed = runtime.view.items.find((entry) => entry.item.id === id)
     await app.db.delete(rundownItems).where(eq(rundownItems.id, id))
-    await logDecision(app, runtime.view.rundown.id, id, 'ITEM_REMOVED', {})
+    await logDecision(app, runtime.view.rundown.id, id, 'ITEM_REMOVED', {
+      mediaId: removed?.item.mediaId ?? null,
+    })
     await runtime.refresh()
     onChange()
     return snapshot(app, runtime)
@@ -568,6 +578,86 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     runtime?.setSlate(body.data.templateId)
     onChange()
     return { ok: true }
+  })
+
+  // ---- montagem automática -----------------------------------------------
+
+  const fillSchema = z.object({
+    /** Quanto tempo preencher, em minutos. */
+    minutes: z.number().int().min(1).max(720),
+    categories: z.array(z.string()).optional(),
+    /** Não repetir o que foi ao ar nas últimas N horas. */
+    avoidHours: z.number().min(0).max(720).optional(),
+    /** Só planejar, sem gravar. É o que a interface mostra antes de aplicar. */
+    preview: z.boolean().optional(),
+  })
+
+  server.post('/api/rundowns/:id/autofill', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = fillSchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    const runtime = await runtimeForRundown(app, id)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
+
+    const assets = await listAssets(app.db)
+    const candidates = await buildCandidates(app.db, runtime.channel, assets)
+    const plan = planFill(
+      candidates,
+      runtime.channel,
+      secondsToFrames(body.data.minutes * 60, runtime.channel.rate),
+      body.data.categories ?? [],
+      (body.data.avoidHours ?? 6) * 60,
+    )
+
+    const byId = new Map(assets.map((asset) => [asset.id, asset]))
+    const chosen = plan.items.map((item) => ({
+      mediaId: item.id,
+      title: byId.get(item.id)?.title ?? 'arquivo',
+      durationFrames: item.durationFrames,
+    }))
+
+    // Planejar é de graça; aplicar mexe na grade, e por isso é pedido à parte.
+    if (body.data.preview) {
+      return { plan: { ...plan, items: chosen } }
+    }
+
+    await app.history.capture(app.db, id, 'montagem automática', { wholeRundown: true })
+
+    let order = (runtime.view.items.at(-1)?.item.order ?? 0) + 10
+    for (const item of plan.items) {
+      const asset = byId.get(item.id)
+      if (!asset) continue
+      const itemId = randomUUID()
+      await app.db.insert(rundownItems).values({
+        id: itemId,
+        rundownId: id,
+        sortOrder: order,
+        type: 'VT',
+        title: asset.title,
+        mediaId: asset.id,
+        sourceRef: null,
+        trim: null,
+        audio: null,
+        durationOverride: null,
+        minDuration: item.durationFrames,
+        anchor: { kind: 'FLOW' },
+        onOverrun: 'PUSH',
+        elastic: null,
+        locked: false,
+        autoNext: true,
+        loop: false,
+        notes: null,
+      })
+      // A montagem automática também vira decisão: o que ela propôs e o
+      // operador manteve é aprendizado tanto quanto o que ele inseriu na mão.
+      await logDecision(app, id, itemId, 'AUTO_FILLED', { mediaId: asset.id })
+      order += 10
+    }
+
+    await runtime.refresh()
+    onChange()
+    return { plan: { ...plan, items: chosen }, ...snapshot(app, runtime) }
   })
 
   // ---- as-run ------------------------------------------------------------

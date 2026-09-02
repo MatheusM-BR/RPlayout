@@ -20,6 +20,7 @@ import { AudioDialog } from './components/AudioDialog.js'
 import { Distribution } from './components/Distribution.js'
 import { Explorer } from './components/Explorer.js'
 import { AsRunPanel } from './components/AsRunPanel.js'
+import { AutoFillDialog } from './components/AutoFillDialog.js'
 import { GraphicsPanel } from './components/GraphicsPanel.js'
 import { ItemGraphicsDialog } from './components/ItemGraphicsDialog.js'
 import { Monitors } from './components/Monitors.js'
@@ -35,6 +36,7 @@ type Dialog =
   | { kind: 'graphics' }
   | { kind: 'itemGraphics'; view: ItemView }
   | { kind: 'asrun' }
+  | { kind: 'autofill' }
   | null
 
 export function App() {
@@ -588,6 +590,9 @@ export function App() {
         >
           gc{live?.graphic ? ' no ar' : ''}
         </button>
+        <button className="btn" onClick={() => setDialog({ kind: 'autofill' })}>
+          montar
+        </button>
         <button className="btn" onClick={() => setDialog({ kind: 'asrun' })}>
           as-run
         </button>
@@ -689,6 +694,19 @@ export function App() {
           view={dialog.view}
           channelId={view.channel.id}
           onClose={() => setDialog(null)}
+          onMessage={say}
+        />
+      )}
+      {dialog?.kind === 'autofill' && (
+        <AutoFillDialog
+          rundownId={view.rundown.id}
+          rate={rate}
+          onCancel={() => setDialog(null)}
+          onApplied={(snapshot, message) => {
+            absorb(snapshot)
+            setDialog(null)
+            say(message)
+          }}
           onMessage={say}
         />
       )}

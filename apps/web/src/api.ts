@@ -10,6 +10,7 @@ import type { MediaAsset, Rundown } from '@rplayout/protocol'
 import type {
   AsRunEntry,
   Distribution,
+  FillPlan,
   LibraryFolder,
   OutputProfile,
   ScanStatus,
@@ -83,6 +84,11 @@ export const api = {
     post<Snapshot & { result: { message: string } }>(`/api/items/${id}/audio`, { audio, scope }),
 
   distribution: () => send<Distribution>('/api/distribution'),
+
+  autoFill: (
+    rundownId: string,
+    body: { minutes: number; avoidHours: number; preview: boolean },
+  ) => post<Partial<Snapshot> & { plan: FillPlan }>(`/api/rundowns/${rundownId}/autofill`, body),
 
   asRun: (channelId: string) =>
     send<{ since: string; entries: AsRunEntry[] }>(`/api/channels/${channelId}/asrun`),

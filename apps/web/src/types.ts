@@ -226,3 +226,11 @@ export interface AsRunEntry {
   plannedFrames: number | null
   endedBy: string | null
 }
+
+/** O que a montagem automática propôs. */
+export interface FillPlan {
+  window: number
+  leftover: number
+  reason: 'FILLED' | 'OUT_OF_MATERIAL'
+  items: { mediaId: string; title: string; durationFrames: number }[]
+}

@@ -369,6 +369,48 @@ a programação voltando.
 
 Verificado: a arte entra com o canal parado, some no take e volta no stop.
 
+## Montagem automática
+
+### Nada é sorteado
+
+A escolha pesa três forças e nenhuma delas é aleatória: **encaixe** no tempo que
+falta, **frescor** (há quanto tempo o arquivo não vai ao ar) e **preferência**,
+que é o que o operador ensinou. Sorteio faria a grade parecer viva e tornaria
+impossível responder "por que isso foi ao ar?" -- pergunta que num playout
+sempre tem alguém para fazer.
+
+O algoritmo é guloso de propósito. Um otimizador exato encaixaria o tempo com
+perfeição e produziria uma sequência que ninguém consegue explicar, e a grade
+que o operador não entende é a grade que ele desmonta na mão.
+
+### O aprendizado sai do que já era gravado
+
+Duas fontes que já existiam: o log de decisões diz o que o operador escolheu, o
+as-run diz o que realmente foi ao ar. O peso é limitado nos dois sentidos --
+inserir cinquenta vezes não deixa um arquivo dominar a grade, e tirar uma vez
+não o bane para sempre. Aprendizado que vira dogma é pior do que aprendizado
+nenhum.
+
+O log guarda o **arquivo** junto do item, e não só o item: item morre com a
+grade, arquivo é o que volta a ser oferecido na montagem seguinte.
+
+### Propor e aplicar são dois passos
+
+Planejar é de graça; aplicar mexe na grade. O operador vê a proposta inteira --
+com o que sobrou da janela, ou o quanto faltou quando o acervo acabou -- antes
+de ela virar programação.
+
+### Arquivo que sumiu da pasta
+
+A varredura marca o que não está mais lá, com o motivo à vista, em vez de
+deixá-lo no acervo como se estivesse. Sumir com a linha seria pior: a grade que
+aponta para ele perderia a referência sem explicação. Marcado, ele sai
+automaticamente das propostas de montagem.
+
+Verificado: proposta de oito minutos fechando com nove frames de sobra, aplicada
+na grade pela interface; e uma janela de vinte minutos dizendo honestamente que
+o acervo acabou antes.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino

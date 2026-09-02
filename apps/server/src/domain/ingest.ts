@@ -71,6 +71,9 @@ const SKIP = new Set(['.git', 'node_modules', '.thumbs'])
  * O que não abre não some: fica no acervo com o motivo à vista, porque é
  * justamente o caso em que alguém precisa fazer alguma coisa.
  */
+/** Motivo de um arquivo que estava no acervo e não está mais na pasta. */
+const VANISHED = 'o arquivo não está mais na pasta'
+
 export class Ingest {
   private state: IngestStatus = {
     running: false,
@@ -151,6 +154,7 @@ export class Ingest {
         this.patch({ current: file, seen: this.state.seen + 1 })
         await this.absorb(file)
       }
+      await this.markVanished(resolve(root), files)
       this.patch({ running: false, current: null, finishedAt: new Date().toISOString() })
       this.onFinished?.()
     } catch (failure) {
@@ -162,6 +166,29 @@ export class Ingest {
       })
       // Mesmo tendo falhado no meio, o que já entrou tem que chegar à grade.
       this.onFinished?.()
+    }
+  }
+
+  /**
+   * Marca o que sumiu da pasta.
+   *
+   * Arquivo apagado continuava no acervo como se estivesse lá, e só ia dar
+   * defeito na hora do ar. Sumir com a linha seria pior: a grade que aponta
+   * para ele perderia a referência sem explicação. Ele fica, com o motivo à
+   * vista, como qualquer arquivo que não abre.
+   */
+  private async markVanished(root: string, seen: readonly string[]): Promise<void> {
+    const present = new Set(seen)
+    const rows = await this.db.select().from(mediaAssets)
+    for (const row of rows) {
+      // Só o que está sob a pasta varrida: acervo de outra pasta não é
+      // assunto desta varredura.
+      if (!row.path.startsWith(root) || present.has(row.path)) continue
+      if (row.probeError === VANISHED) continue
+      await this.db
+        .update(mediaAssets)
+        .set({ probeError: VANISHED })
+        .where(eq(mediaAssets.id, row.id))
     }
   }
 
