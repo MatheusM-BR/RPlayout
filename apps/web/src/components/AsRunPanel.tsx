@@ -94,6 +94,11 @@ export function AsRunPanel({ channelId, rate, onClose }: Props) {
           <button className="btn" onClick={onClose}>
             fechar
           </button>
+          {/* O relatório de veiculação acaba sempre numa planilha: o caminho
+              mais curto até lá é um CSV que o navegador baixa. */}
+          <a className="btn take" href={`/api/channels/${channelId}/asrun.csv`} download>
+            baixar csv
+          </a>
         </footer>
       </div>
     </div>

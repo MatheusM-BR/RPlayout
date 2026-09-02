@@ -26,6 +26,7 @@ import {
 import { getChannel, listAssets, listChannels, listRundowns } from './db/repo.js'
 import { listAsRun } from './domain/asrun.js'
 import { buildCandidates, planFill } from './domain/autofill.js'
+import { backupDatabase, listBackups } from './domain/backup.js'
 import { syncDistribution } from './app.js'
 import { PORTS } from './domain/mediamtx.js'
 import {
@@ -638,6 +639,60 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     runtime?.setSlate(body.data.templateId)
     onChange()
     return { ok: true }
+  })
+
+  /**
+   * As-run em CSV.
+   *
+   * Formato feio de propósito: é o que abre em qualquer planilha do mundo, que
+   * é onde o relatório de veiculação acaba indo parar.
+   */
+  server.get('/api/channels/:id/asrun.csv', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { since } = request.query as { since?: string }
+    const channel = await getChannel(app.db, id)
+    if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
+
+    const start = since ?? new Date(new Date().setHours(0, 0, 0, 0)).toISOString()
+    const entries = await listAsRun(app.db, id, start, 5000)
+
+    const head = 'entrou;saiu;item;tipo;previsto_frames;no_ar_frames;diferenca_frames;saiu_por'
+    const lines = entries.map((entry) => {
+      const drift =
+        entry.airedFrames !== null && entry.plannedFrames !== null
+          ? entry.airedFrames - entry.plannedFrames
+          : ''
+      return [
+        entry.startedAt,
+        entry.endedAt ?? '',
+        // Ponto e vírgula no título quebraria a coluna: vira vírgula.
+        entry.title.replace(/;/g, ','),
+        entry.type,
+        entry.plannedFrames ?? '',
+        entry.airedFrames ?? '',
+        drift,
+        entry.endedBy ?? '',
+      ].join(';')
+    })
+
+    void reply.header('content-type', 'text/csv; charset=utf-8')
+    void reply.header(
+      'content-disposition',
+      `attachment; filename="asrun-${channel.name.replace(/\W+/g, '-')}-${start.slice(0, 10)}.csv"`,
+    )
+    return [head, ...lines].join('\n')
+  })
+
+  // ---- cópia de segurança --------------------------------------------------
+
+  server.get('/api/backups', async () => ({
+    directory: app.backupDir,
+    files: await listBackups(app.backupDir),
+  }))
+
+  server.post('/api/backups', async () => {
+    const result = await backupDatabase(app.sqlite, app.backupDir)
+    return { ...result, files: await listBackups(app.backupDir) }
   })
 
   // ---- montagem automática -----------------------------------------------

@@ -44,5 +44,16 @@ export const MEDIA_ROOT = process.env.RPLAYOUT_MEDIA ?? resolve(process.cwd(), '
 /** Onde as miniaturas geradas ficam. Cache: pode ser apagada a qualquer hora. */
 export const THUMBNAIL_DIR = process.env.RPLAYOUT_THUMBS ?? resolve(process.cwd(), '.thumbs')
 
+/** Onde ficam as cópias de segurança do banco. */
+export const BACKUP_DIR = process.env.RPLAYOUT_BACKUPS ?? resolve(process.cwd(), 'backups')
+
+/**
+ * De quantas em quantas horas o banco é copiado sozinho. Zero desliga.
+ *
+ * O padrão é diário: um playout que roda meses sem ninguém olhar precisa de
+ * cópia sem depender de alguém lembrar de pedir.
+ */
+export const BACKUP_EVERY_HOURS = Number(process.env.RPLAYOUT_BACKUP_HOURS ?? '24')
+
 /** Binário de descoberta de fontes ao vivo. Vazio deixa só os convidados. */
 export const DEVICES_BINARY = process.env.RPLAYOUT_DEVICES ?? ''

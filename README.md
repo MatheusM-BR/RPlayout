@@ -429,6 +429,24 @@ Verificado com dois canais no ar ao mesmo tempo: dois engines, caminhos
 `canal-1/*` e `canal-2/*` separados no servidor de mídia, medidores próprios, e
 a troca de canal na barra levando grade, monitores e medidores junto.
 
+### Relatório e cópia de segurança
+
+O as-run sai em CSV -- formato feio de propósito, porque é o que abre em
+qualquer planilha, que é onde o relatório de veiculação acaba indo parar.
+
+A cópia do banco usa a API de backup do SQLite, que copia um banco em uso sem
+parar o servidor: parar para fazer backup é o mesmo que tirar do ar. Sai sozinha
+a cada 24 h (`RPLAYOUT_BACKUP_HOURS`, zero desliga), guarda as dez últimas em
+`backups/` e apaga as mais velhas. O que está ali dentro é meses de operação --
+grade, acervo medido, as-run e o que o sistema aprendeu --, não uma tarde de
+trabalho.
+
+Restaurar é copiar o arquivo por cima do banco com o servidor parado.
+
+E o as-run fecha a linha aberta quando o servidor desce: o item que estava no ar
+tem hora de saída, não um campo vazio. A escrita é esperada antes de o processo
+sair -- sem isso o registro se perde justamente no encerramento.
+
 ### Perfis de saída: o que não é dito, é herdado
 
 Cada canal nasce com dois perfis gerenciados -- programa e preview. O destino

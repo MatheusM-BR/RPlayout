@@ -8,6 +8,7 @@ import {
   type MediaAsset,
   type PreviewTarget,
 } from '@rplayout/protocol'
+import type Database from 'better-sqlite3'
 import { openDatabase, type Db } from './db/client.js'
 import { assetMap, getChannel, getRundown, listChannels, listItems } from './db/repo.js'
 import { graphicTemplates, itemGraphics, rundownItems } from './db/schema.js'
@@ -26,6 +27,7 @@ import {
   MEDIAMTX_BIND,
   DEVICES_BINARY,
   MEDIAMTX_LOGLEVEL,
+  BACKUP_DIR,
   MEDIA_ROOT,
   PROBE_BINARY,
   RELAY_BINARY,
@@ -301,6 +303,11 @@ export interface App {
   readonly thumbnailDir: string
   /** Caminho de cada canal no servidor local. */
   paths: ChannelPaths[]
+  /** Handle do SQLite, para a cópia de segurança sem parar o servidor. */
+  readonly sqlite: Database.Database
+  readonly backupDir: string
+  /** Fecha o que precisa de escrita antes de o processo sair. */
+  flush(): Promise<void>
   close(): void
 }
 
@@ -327,6 +334,18 @@ export async function createApp(file: string): Promise<App> {
     mediaRoot: MEDIA_ROOT,
     thumbnailDir: THUMBNAIL_DIR,
     paths: [],
+    sqlite,
+    backupDir: BACKUP_DIR,
+    /**
+     * Fecha as linhas de as-run abertas antes de o processo sair.
+     *
+     * Precisa ser esperado: o `close` é síncrono e o processo terminaria antes
+     * de a escrita chegar ao disco -- o item que estava no ar ficaria para
+     * sempre sem hora de saída.
+     */
+    flush: async () => {
+      for (const runtime of runtimes.values()) await runtime.asRun.finish('SHUTDOWN')
+    },
     close: () => {
       app.relays.closeAll()
       mediamtx?.stop()

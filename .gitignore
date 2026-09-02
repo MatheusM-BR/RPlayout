@@ -15,3 +15,5 @@ apps/server/mediamtx.yml
 apps/server/.thumbs/
 midia/
 apps/server/midia/
+backups/
+apps/server/backups/

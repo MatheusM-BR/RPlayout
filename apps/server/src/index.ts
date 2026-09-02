@@ -2,8 +2,9 @@ import cors from '@fastify/cors'
 import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
 import { createApp, runtimeFor, syncDistribution } from './app.js'
-import { DB_FILE, HOST, PORT } from './config.js'
+import { BACKUP_EVERY_HOURS, DB_FILE, HOST, PORT } from './config.js'
 import { listChannels, listRundowns } from './db/repo.js'
+import { backupDatabase } from './domain/backup.js'
 import { registerRoutes } from './routes.js'
 
 /** Cadência do estado ao vivo. Vinte por segundo já engana o olho no medidor. */
@@ -67,6 +68,22 @@ async function main(): Promise<void> {
     )
   }
 
+  // Cópia de segurança periódica. Um playout que roda meses sem ninguém olhar
+  // precisa de cópia sem depender de alguém lembrar de pedir.
+  const backupTimer =
+    BACKUP_EVERY_HOURS > 0
+      ? setInterval(
+          () => {
+            void backupDatabase(app.sqlite, app.backupDir)
+              .then((result) => console.log(`[rplayout] cópia de segurança em ${result.file}`))
+              .catch((failure: unknown) => {
+                console.error('[rplayout] a cópia de segurança falhou:', failure)
+              })
+          },
+          BACKUP_EVERY_HOURS * 3_600_000,
+        )
+      : null
+
   const timer = setInterval(() => {
     for (const runtime of app.runtimes.values()) {
       // O canal anda com ou sem interface aberta. Amarrar isto à presença de
@@ -98,7 +115,9 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     clearInterval(timer)
+    if (backupTimer) clearInterval(backupTimer)
     for (const runtime of app.runtimes.values()) runtime.transport.close()
+    await app.flush()
     await server.close()
     app.close()
     process.exit(0)
