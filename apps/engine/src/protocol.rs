@@ -164,6 +164,15 @@ pub enum Event {
     Error {
         message: String,
     },
+    /// Aviso que o operador precisa ver, não só o log.
+    ///
+    /// O caso que motivou isto: quando a máquina não dá conta, o sink começa a
+    /// descartar quadro e o GStreamer avisa -- no stderr, onde ninguém olha. Do
+    /// lado de fora aparece só imagem engasgando, sem explicação. Nem todo aviso
+    /// vira isto: só os que dizem alguma coisa a quem opera.
+    Warning {
+        message: String,
+    },
 }
 
 impl Event {

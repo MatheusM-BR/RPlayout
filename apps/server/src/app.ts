@@ -400,6 +400,11 @@ export class ChannelRuntime {
       }
     }
 
+    // Máquina apertada é a explicação de "a imagem está engasgando", e até
+    // agora ela só existia no stderr do engine.
+    const aviso = this.transport.warning()
+    if (aviso !== null) found.push({ kind: 'ENGINE', message: aviso })
+
     const health = this.transport.health()
     if (health.restarts > 0) {
       // O motivo vai junto. Um motor que morreu sozinho e um motor que nós

@@ -199,11 +199,26 @@ fn handle_message(message: &gst::Message) -> Option<Event> {
                 .src()
                 .map(|object| object.name().to_string())
                 .unwrap_or_else(|| "desconhecido".to_string());
+            let erro = warning.error();
             eprintln!(
-                "[engine] aviso de {source}: {} ({})",
-                warning.error(),
+                "[engine] aviso de {source}: {erro} ({})",
                 warning.debug().unwrap_or_else(|| "sem detalhe".into())
             );
+
+            // Aviso de relógio vindo de um sink é o jeito do GStreamer dizer
+            // que o buffer chegou tarde demais e foi descartado. Do lado de
+            // fora isso é a imagem engasgando, e até aqui o operador não tinha
+            // como saber a causa: a frase morria no stderr. É o único aviso
+            // que sobe -- os outros seguem sendo log, para o sino não virar
+            // ruído.
+            if erro.kind::<gst::CoreError>() == Some(gst::CoreError::Clock) {
+                return Some(Event::Warning {
+                    message: format!(
+                        "o computador não está dando conta e o canal está descartando \
+                         quadros ({source})"
+                    ),
+                });
+            }
             None
         }
         MessageView::Application(application) => {
@@ -411,4 +426,41 @@ fn main() -> Result<()> {
 
     channel.shutdown();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn aviso(erro: gst::glib::Error) -> gst::Message {
+        gst::message::Warning::builder_from_error(erro).build()
+    }
+
+    #[test]
+    fn aviso_de_relogio_vira_recado_para_o_operador() {
+        gst::init().unwrap();
+        // É assim que o GStreamer diz "cheguei tarde, joguei o quadro fora" --
+        // e é a explicação de "a imagem está engasgando".
+        let evento = handle_message(&aviso(gst::glib::Error::new(
+            gst::CoreError::Clock,
+            "A lot of buffers are being dropped.",
+        )));
+        match evento {
+            Some(Event::Warning { message }) => {
+                assert!(message.contains("descartando quadros"), "{message}");
+            }
+            outro => panic!("esperava um aviso para o operador, veio {outro:?}"),
+        }
+    }
+
+    #[test]
+    fn outros_avisos_seguem_sendo_so_log() {
+        gst::init().unwrap();
+        // O sino é caro: aviso que o operador não pode agir sobre fica no log.
+        let evento = handle_message(&aviso(gst::glib::Error::new(
+            gst::ResourceError::Read,
+            "não consegui ler",
+        )));
+        assert!(evento.is_none());
+    }
 }

@@ -56,6 +56,7 @@ type EngineEvent =
   | { event: 'output'; frames: number }
   | ({ event: 'publisher' } & PublisherState)
   | { event: 'error'; message: string }
+  | { event: 'warning'; message: string }
 
 export interface EngineOptions {
   /** Caminho do binário do engine. */
@@ -106,6 +107,15 @@ const BOOT_MS = 20_000
  * estava trabalhando. Tempo que não pudemos observar não conta.
  */
 const TIQUE_SADIO_MS = 250
+/**
+ * Por quanto tempo um aviso do motor continua valendo como alerta.
+ *
+ * Descarte de quadro é rajada: o aviso chega enquanto a máquina está apertada
+ * e some quando alivia. Segurar por meio minuto é o que faz o operador ver o
+ * recado mesmo tendo olhado para a tela depois -- e é curto o bastante para o
+ * alerta sumir sozinho quando o problema passa.
+ */
+const AVISO_VALE_MS = 30_000
 
 /** O que o watchdog sabe do motor entre um tique e o outro. */
 export interface Vigilia {
@@ -182,6 +192,9 @@ export class EngineTransport implements Transport {
   private stalls = 0
   /** Último erro do engine, para a interface não ficar adivinhando. */
   lastError: string | null = null
+  /** Último aviso e quando ele chegou. Caduca sozinho: veja `AVISO_VALE_MS`. */
+  private lastWarning: string | null = null
+  private warningAt = 0
 
   constructor(
     private readonly channel: Channel,
@@ -331,6 +344,14 @@ export class EngineTransport implements Transport {
       case 'error':
         this.fail(event.message)
         break
+      case 'warning':
+        // Aviso não é falha: não mexe em `lastError`, que é o que a interface
+        // mostra como "o motor está com problema". Vive por conta própria e
+        // caduca sozinho.
+        this.lastWarning = event.message
+        this.warningAt = Date.now()
+        this.dirty = true
+        break
       default:
         break
     }
@@ -410,6 +431,13 @@ export class EngineTransport implements Transport {
     this.semQuadroMs = 0
     this.matandoPorTravamento = true
     this.child.kill('SIGKILL')
+  }
+
+  /** Aviso recente do motor, ou nulo se não houve nenhum ou já caducou. */
+  warning(): string | null {
+    if (this.lastWarning === null) return null
+    if (Date.now() - this.warningAt > AVISO_VALE_MS) return null
+    return this.lastWarning
   }
 
   health(): { restarts: number; deaths: number; stalls: number; error: string | null } {

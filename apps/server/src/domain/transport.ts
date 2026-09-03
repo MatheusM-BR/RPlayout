@@ -65,6 +65,8 @@ export interface Transport {
    * diferentes, e o alerta que junta os dois não ajuda ninguém a procurar.
    */
   health(): { restarts: number; deaths: number; stalls: number; error: string | null }
+  /** Aviso recente do motor -- máquina apertada, por exemplo. Nulo se não há. */
+  warning(): string | null
   close(): void
 }
 
@@ -205,6 +207,11 @@ export class SimulatedTransport implements Transport {
 
   health(): { restarts: number; deaths: number; stalls: number; error: string | null } {
     return { restarts: 0, deaths: 0, stalls: 0, error: null }
+  }
+
+  /** O simulado não tem máquina apertada: ele não decodifica nada. */
+  warning(): string | null {
+    return null
   }
 
   /** O simulado não mede nada: quem mede é o engine. */
