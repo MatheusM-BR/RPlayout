@@ -4,6 +4,15 @@
 //! duas trilhas do mesmo arquivo, anota o instante em que a imagem clareia e o
 //! instante em que o som começa, e diz a diferença. Sem isso, "o áudio está
 //! dessincronizado" é uma impressão -- com isso é um número.
+//!
+//! Uma armadilha ao ler o que ela mede: material com cadência diferente da do
+//! canal (um arquivo a 30 num canal a 29,97) cai numa grade de quadros que não
+//! é a dele, e a sobra entre as duas grades passeia de zero a um quadro e volta
+//! ao zero. É um dente de serra, não uma deriva: o período é `den/num` da
+//! diferença -- 1001/30, ou uns 33 s, no caso de 30 contra 29,97. Medir por
+//! menos que um período inteiro mostra só a rampa, e a rampa parece uma deriva
+//! de 1 ms por segundo que na verdade nunca acumula. Meça por vários períodos
+//! antes de dizer que alguma coisa está derivando.
 
 use anyhow::{anyhow, Result};
 use gstreamer as gst;
