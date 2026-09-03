@@ -53,6 +53,8 @@ export function App() {
   const [folders, setFolders] = useState<LibraryFolder[]>([])
   const [categorias, setCategorias] = useState<Categoria[]>([])
   const [dialog, setDialog] = useState<Dialog>(null)
+  /** Uma lista .m3u está sendo arrastada por cima da janela. */
+  const [listaSobrevoando, setListaSobrevoando] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryState>({
@@ -712,8 +714,53 @@ export function App() {
   const rate = view.channel.rate
   const near = commitment !== null && commitment.left <= 60 * (rate.num / rate.den)
 
+  /**
+   * Lista arrastada de qualquer lugar da máquina para dentro da janela.
+   *
+   * O navegador não entrega o caminho de um arquivo arrastado -- só o nome e o
+   * conteúdo --, então quem lê é o servidor, a partir do texto. É por isso que
+   * dá para arrastar um `.m3u` que nem está numa pasta do acervo.
+   */
+  const soltarLista = (event: React.DragEvent): void => {
+    event.preventDefault()
+    setListaSobrevoando(false)
+    const arquivo = [...(event.dataTransfer.files ?? [])].find((entrada) =>
+      /\.m3u8?$/i.test(entrada.name),
+    )
+    if (!arquivo) return
+
+    void arquivo
+      .text()
+      .then(async (texto) => {
+        const resposta = await api.loadPlaylistText(view.rundown.id, texto, false)
+        absorb(resposta)
+        say(
+          resposta.skipped > 0
+            ? `"${arquivo.name}": ${resposta.loaded} item(ns) na grade, ${resposta.skipped} sem arquivo no acervo.`
+            : `"${arquivo.name}": ${resposta.loaded} item(ns) na grade.`,
+        )
+      })
+      .catch((falha: Error) => setError(falha.message))
+  }
+
   return (
-    <div className="app">
+    <div
+      className={`app${listaSobrevoando ? ' recebendo-lista' : ''}`}
+      onDragOver={(event) => {
+        // Só reage a arquivo vindo de fora: arrastar item dentro da grade não
+        // pode acender a tela inteira.
+        if (!event.dataTransfer.types.includes('Files')) return
+        event.preventDefault()
+        setListaSobrevoando(true)
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget === event.target) setListaSobrevoando(false)
+      }}
+      onDrop={soltarLista}
+    >
+      {listaSobrevoando && (
+        <div className="solta-aqui">solte a lista .m3u para carregar na grade</div>
+      )}
       <header className="topbar">
         <div className="brand">
           RPlayout<span>.</span>

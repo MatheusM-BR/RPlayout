@@ -104,6 +104,18 @@ export const api = {
     send<{ ok: true }>(`/api/channels/${id}`, { method: 'DELETE' }),
   scanStatus: () => send<ScanStatus>('/api/library/scan'),
   mediaRoots: () => send<{ roots: MediaRoot[] }>('/api/library/roots'),
+  /**
+   * Lê uma lista arrastada para a janela.
+   *
+   * Vai o conteúdo, não o caminho: o navegador não entrega o caminho de um
+   * arquivo arrastado, e é por isso que este caminho existe separado do que
+   * lê as listas que moram na pasta do acervo.
+   */
+  readPlaylist: (name: string, text: string) =>
+    post<{ name: string; date: string | null; entries: PlaylistEntryView[]; missing: number }>(
+      '/api/playlists/read',
+      { name, text },
+    ),
   addMediaRoot: (path: string, label?: string) =>
     post<{ root: MediaRoot; scanning: boolean }>('/api/library/roots', { path, label }),
   removeMediaRoot: (id: string) =>
@@ -189,6 +201,12 @@ export const api = {
     post<Snapshot & { loaded: number; skipped: number }>(
       `/api/rundowns/${rundownId}/playlist`,
       { path, replace },
+    ),
+  /** Lista arrastada para a janela: vai o conteúdo, porque não há caminho. */
+  loadPlaylistText: (rundownId: string, text: string, replace: boolean) =>
+    post<Snapshot & { loaded: number; skipped: number }>(
+      `/api/rundowns/${rundownId}/playlist`,
+      { text, replace },
     ),
 
   categories: () => send<{ categories: Categoria[] }>('/api/categories'),

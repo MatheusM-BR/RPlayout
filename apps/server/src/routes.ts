@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify'
 import {
   durationIn,
   fieldsUsedIn,
+  dateInName,
   formatVideoFormat,
   framesSinceMidnight,
   isStill,
@@ -594,6 +595,33 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   /**
+   * Lê uma lista arrastada para a janela.
+   *
+   * O navegador não entrega o caminho do arquivo arrastado -- por segurança,
+   * só o nome e o conteúdo. Então quem lê o texto é o servidor, e o casamento
+   * com o acervo é pelo nome do arquivo, igual ao de uma lista que mora na
+   * pasta. É o que permite arrastar um `.m3u` de qualquer lugar da máquina,
+   * inclusive de fora das pastas do acervo.
+   */
+  server.post('/api/playlists/read', async (request, reply) => {
+    const body = z
+      .object({ name: z.string().min(1), text: z.string().min(1).max(4_000_000) })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Mande o nome e o conteúdo da lista.' })
+
+    const assets = await listAssets(app.db)
+    const entries = Playlists.resolveEntries(body.data.text, assets)
+    return {
+      name: body.data.name,
+      date: dateInName(body.data.name),
+      entries,
+      // Quantas entradas não acharam arquivo no acervo. Entrar com item sem
+      // mídia poria um buraco no ar que só apareceria na hora.
+      missing: entries.filter((entry) => entry.mediaId === null).length,
+    }
+  })
+
+  /**
    * Põe a lista na grade.
    *
    * `replace` limpa a grade antes; sem ele, a lista entra no fim. Entrada que
@@ -606,18 +634,33 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.post('/api/rundowns/:id/playlist', async (request, reply) => {
     const { id } = request.params as { id: string }
     const body = z
-      .object({ path: z.string().min(1), replace: z.boolean().default(false) })
+      .object({
+        path: z.string().min(1).optional(),
+        /** Conteúdo de uma lista arrastada, quando não há caminho. */
+        text: z.string().min(1).max(4_000_000).optional(),
+        replace: z.boolean().default(false),
+      })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Diga qual lista.' })
-    if (!(await dentroDoAcervo(app, body.data.path))) {
+    // Ou o caminho de uma lista que mora numa pasta do acervo, ou o conteúdo
+    // de uma que foi arrastada para a janela -- o navegador não entrega o
+    // caminho de um arquivo arrastado, e sem isto arrastar não teria como
+    // chegar na grade.
+    if (body.data.path !== undefined && !(await dentroDoAcervo(app, body.data.path))) {
       return reply.code(400).send({ error: 'Essa lista não está numa pasta do acervo.' })
+    }
+    if (body.data.path === undefined && body.data.text === undefined) {
+      return reply.code(400).send({ error: 'Diga qual lista.' })
     }
 
     const runtime = await runtimeForRundown(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Grade não encontrada.' })
 
     const assets = await listAssets(app.db)
-    const entradas = await Playlists.entriesOf(body.data.path, assets)
+    const entradas =
+      body.data.path !== undefined
+        ? await Playlists.entriesOf(body.data.path, assets)
+        : Playlists.resolveEntries(body.data.text ?? '', assets)
     const aproveitadas = entradas.filter((entrada) => entrada.mediaId !== null)
 
     await app.history.capture(app.db, runtime.view.rundown.id, 'carregar lista', {

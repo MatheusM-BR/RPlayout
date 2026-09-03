@@ -941,6 +941,24 @@ input.bad { border-color: var(--onair); }
 /* Ações da grade no alto, à direita do título. O as-run é consulta, não
    edição: o afastamento existe para a mão não errar o alvo. */
 .acoes-grade { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+
+/* Arrastar uma lista para dentro da janela. O aviso cobre tudo de propósito:
+   o alvo do gesto é a janela inteira, e uma faixa pequena obrigaria a mirar. */
+.app.recebendo-lista { outline: 2px dashed var(--accent); outline-offset: -6px; }
+.solta-aqui {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
 .acoes-grade .afastado { margin-left: 14px; }
 
 .file {

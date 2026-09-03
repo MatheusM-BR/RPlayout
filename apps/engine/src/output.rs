@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::channel::make;
+use crate::protocol::Event;
 
 /// Espera máxima entre tentativas. Quinze segundos é curto o bastante para o
 /// destino voltar sozinho e longo o bastante para não inundar o log.
@@ -671,6 +672,38 @@ fn coletar_formatos(valor: &gst::glib::Value, saida: &mut Vec<String>) {
     }
 }
 
+/// Que codec de áudio esta saída vai usar.
+///
+/// Está numa função à parte porque é a decisão que decide se o monitor tem som
+/// -- e testá-la exige poder fingir uma instalação sem `opusenc`, o que só dá
+/// para fazer se a pergunta e a resposta estiverem separadas do pipeline.
+pub fn codec_do_monitor(quer_opus: bool, tem_opusenc: bool) -> &'static str {
+    if quer_opus && tem_opusenc {
+        "opus"
+    } else {
+        "aac"
+    }
+}
+
+/// Avisa que o monitor vai sair mudo, uma vez por processo.
+///
+/// Repetir a cada reconexão afogaria o log e o sino do operador; e o defeito
+/// não muda de estado sozinho -- ou o plugin está instalado, ou não está.
+fn avisar_sem_opus() {
+    use std::sync::atomic::AtomicBool;
+    static JA_DISSE: AtomicBool = AtomicBool::new(false);
+    if JA_DISSE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let recado = "o monitor vai sair mudo: falta o `opusenc` nesta instalação do GStreamer, \
+                  e o WebRTC não fala AAC. Instale o gst-plugins-base completo.";
+    eprintln!("[engine] {recado}");
+    Event::Warning {
+        message: recado.to_string(),
+    }
+    .emit();
+}
+
 /// Diz qual codificador entrou, uma vez por escolha.
 fn anunciar_encoder(nome: &str) {
     use std::sync::Mutex;
@@ -731,7 +764,15 @@ pub fn encode_chain(
 
     // Instalação sem `opusenc` continua saindo em AAC: monitor mudo é ruim,
     // monitor que não sobe é pior.
-    let (aenc, aparse, acaps) = if opus && gst::ElementFactory::find("opusenc").is_some() {
+    //
+    // Mas cair calado é pior ainda: do lado de fora vira "o monitor continua
+    // sem som" e ninguém tem como saber que faltou um elemento do GStreamer.
+    // Quem pediu Opus e não conseguiu, avisa.
+    let tem_opusenc = gst::ElementFactory::find("opusenc").is_some();
+    if opus && !tem_opusenc {
+        avisar_sem_opus();
+    }
+    let (aenc, aparse, acaps) = if codec_do_monitor(opus, tem_opusenc) == "opus" {
         let aenc = make("opusenc")?;
         aenc.set_property("bitrate", 96_000i32);
         let aparse = make("opusparse")?;
@@ -757,6 +798,31 @@ pub fn encode_chain(
     };
 
     Ok((venc, vparse, vcaps, aenc, aparse, acaps))
+}
+
+#[cfg(test)]
+mod testes_codec {
+    use super::codec_do_monitor;
+
+    #[test]
+    fn monitor_com_opusenc_sai_em_opus() {
+        // É o que faz o navegador ter som: o WebRTC não fala AAC.
+        assert_eq!(codec_do_monitor(true, true), "opus");
+    }
+
+    #[test]
+    fn sem_opusenc_cai_em_aac() {
+        // Monitor mudo é ruim; monitor que não sobe é pior. Mas cair calado é
+        // pior ainda, e é por isso que este caminho também avisa.
+        assert_eq!(codec_do_monitor(true, false), "aac");
+    }
+
+    #[test]
+    fn quem_nao_pediu_opus_segue_em_aac() {
+        // O programa vai para o mundo em AAC de propósito: destino de RTMP
+        // espera AAC, e os relays repassam sem recodificar.
+        assert_eq!(codec_do_monitor(false, true), "aac");
+    }
 }
 
 #[cfg(test)]
