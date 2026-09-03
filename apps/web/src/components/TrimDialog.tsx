@@ -117,6 +117,16 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
   const [pegando, setPegando] = useState<Alça>(null)
 
   const video = useRef<HTMLVideoElement | null>(null)
+  /**
+   * O som nasce desligado.
+   *
+   * Marcar entrada e saída é trabalho de tela cheia de janelas abertas; quatro
+   * delas somando som ao mesmo tempo não é monitoração, é barulho. Quem quer
+   * ouvir liga -- e o navegador só deixa tocar com som depois de um gesto,
+   * então nascer mudo também é o que faz a imagem aparecer sozinha.
+   */
+  const [mudo, setMudo] = useState(true)
+  const [volume, setVolume] = useState(0.8)
   const régua = useRef<HTMLDivElement | null>(null)
 
   const segundoPorFrame = 1 / fps(rate)
@@ -269,12 +279,57 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                       setTocável(false)
                       setTocando(false)
                     }}
-                    onLoadedMetadata={() => irPara(view.trim.in)}
+                    muted={mudo}
+                    onLoadedMetadata={(event) => {
+                      event.currentTarget.volume = volume
+                      irPara(view.trim.in)
+                    }}
                   />
                 ) : (
                   parado && <img src={parado} alt="" />
                 )}
                 <div className="tc">{formatTimecode(cabeça, rate)}</div>
+                {tocável && (
+                  <div className="som" onPointerDown={(event) => event.stopPropagation()}>
+                    <button
+                      className={`btn small${mudo ? '' : ' on'}`}
+                      title={mudo ? 'Ligar o som' : 'Cortar o som'}
+                      aria-label={mudo ? 'Ligar o som' : 'Cortar o som'}
+                      onClick={() => {
+                        const el = video.current
+                        setMudo((antes) => {
+                          const agora = !antes
+                          if (el) el.muted = agora
+                          return agora
+                        })
+                      }}
+                    >
+                      {mudo ? 'MUDO' : 'SOM'}
+                    </button>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.02}
+                      value={volume}
+                      aria-label="Volume"
+                      onChange={(event) => {
+                        const valor = Number(event.target.value)
+                        setVolume(valor)
+                        const el = video.current
+                        if (el) {
+                          el.volume = valor
+                          // Mexer no volume é dizer que se quer ouvir: destravar
+                          // o mudo aqui evita o "arrastei e não saiu som".
+                          if (valor > 0 && el.muted) {
+                            el.muted = false
+                            setMudo(false)
+                          }
+                        }
+                      }}
+                    />
+                  </div>
+                )}
                 {!tocável && (
                   <div className="aviso">
                     {motivo ?? 'o navegador não toca este formato'} · arrastando,

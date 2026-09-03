@@ -944,6 +944,21 @@ input.bad { border-color: var(--onair); }
 
 /* Arrastar uma lista para dentro da janela. O aviso cobre tudo de propósito:
    o alvo do gesto é a janela inteira, e uma faixa pequena obrigaria a mirar. */
+/* Som na marcação de entrada e saída. Fica sobre a imagem, do lado oposto ao
+   timecode, para não cobrir o que se está olhando. */
+.trim .tela .som {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+.trim .tela .som input[type='range'] { width: 96px; accent-color: var(--accent); }
+
 .app.recebendo-lista { outline: 2px dashed var(--accent); outline-offset: -6px; }
 .solta-aqui {
   position: fixed;

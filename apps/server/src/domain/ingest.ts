@@ -192,7 +192,16 @@ export class Ingest {
       // Anda por todas as pastas antes de absorver qualquer coisa: o total é o
       // que a interface mostra como progresso, e ele não pode crescer no meio.
       const files: string[] = []
-      for (const root of roots) files.push(...(await walk(root)))
+      for (const root of roots) {
+        // Procurar numa pasta de rede grande leva minutos, e até aqui a
+        // interface mostrava "0/0" e mais nada: do lado de fora isso é uma
+        // varredura que não termina. Agora ela diz onde está.
+        files.push(
+          ...(await walk(root, (dir, achados) =>
+            this.patch({ current: `procurando em ${dir} (${achados} até agora)` }),
+          )),
+        )
+      }
       // A mesma pasta apontada duas vezes não faz o arquivo entrar duas vezes.
       const unicos = [...new Set(files)].sort()
       this.patch({ total: unicos.length })
@@ -293,7 +302,11 @@ export class Ingest {
 
   private async absorb(path: string, ultimaChance = false): Promise<boolean> {
     const info = await stat(path)
-    if (Date.now() - info.mtimeMs < SETTLE_MS) {
+    // Data no futuro é relógio fora de hora -- uma pasta de rede com o relógio
+    // adiantado, por exemplo. Sem esta guarda o arquivo nunca "para de mudar"
+    // e a varredura fica esperando por ele até o limite, toda vez.
+    const idade = Date.now() - info.mtimeMs
+    if (idade >= 0 && idade < SETTLE_MS) {
       // Ainda mudando. Volta no fim da varredura, quando tiver parado.
       if (!ultimaChance) return false
       this.patch({ skipped: this.state.skipped + 1 })
@@ -535,13 +548,21 @@ function dentroDe(root: string, alvo: string): boolean {
   return caminho === raiz || caminho.startsWith(raiz + sep)
 }
 
-async function walk(root: string): Promise<string[]> {
+async function walk(root: string, aoEntrar?: (dir: string, achados: number) => void): Promise<string[]> {
   const found: string[] = []
   const pending = [root]
+  // Atalho que aponta para uma pasta acima fecha um ciclo, e o laço nunca
+  // acaba. Numa pasta de rede isso não é hipótese: é o caso do dia em que
+  // alguém cria um atalho para a raiz dentro de uma subpasta.
+  const visitados = new Set<string>()
 
   while (pending.length > 0) {
     const dir = pending.pop()
     if (dir === undefined) break
+    const real = resolve(dir)
+    if (visitados.has(real)) continue
+    visitados.add(real)
+    aoEntrar?.(dir, found.length)
 
     let entries
     try {
@@ -554,6 +575,9 @@ async function walk(root: string): Promise<string[]> {
     for (const entry of entries) {
       if (entry.name.startsWith('.') || SKIP.has(entry.name)) continue
       const full = join(dir, entry.name)
+      // Atalho não é pasta nem arquivo para a varredura: seguir um leva a
+      // percorrer duas vezes a mesma coisa, ou a sair da pasta do acervo.
+      if (entry.isSymbolicLink()) continue
       if (entry.isDirectory()) pending.push(full)
       // Lista de reprodução não é mídia: ela é lida em outro lugar.
       else if (entry.isFile() && !isPlaylist(full)) found.push(full)

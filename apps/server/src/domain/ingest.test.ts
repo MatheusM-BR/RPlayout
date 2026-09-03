@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -87,6 +87,45 @@ describe('varredura', () => {
       rmSync(outra, { recursive: true, force: true })
     }
   }, 120_000)
+
+  it('arquivo com data no futuro não trava a varredura', async () => {
+    // Pasta de rede com o relógio adiantado devolve mtime no futuro. Sem
+    // guarda, ele nunca "para de mudar": a varredura espera por ele até o
+    // limite, toda vez, e de fora isso é uma varredura que não termina.
+    const arquivo = join(pasta, 'do-futuro.mkv')
+    writeFileSync(arquivo, 'x'.repeat(1024))
+    const daqui2h = new Date(Date.now() + 2 * 60 * 60 * 1000)
+    utimesSync(arquivo, daqui2h, daqui2h)
+
+    const comecou = Date.now()
+    ingest.start(pasta)
+    await esperarFim()
+    // O limite da espera são 45 s. Terminar bem antes é a prova de que ele não
+    // foi tratado como "ainda copiando".
+    expect(Date.now() - comecou).toBeLessThan(20_000)
+
+    const linhas = await db.select().from(mediaAssets)
+    expect(linhas.map((linha) => linha.path)).toEqual([arquivo])
+  }, 70_000)
+
+  it('atalho que aponta para cima não faz a varredura girar para sempre', async () => {
+    // Um atalho para a raiz dentro de uma subpasta fecha um ciclo. Antes disto
+    // o laço nunca acabava.
+    writeFileSync(join(pasta, 'a.mkv'), 'x'.repeat(1024))
+    const dentro = join(pasta, 'dentro')
+    mkdirSync(dentro)
+    try {
+      symlinkSync(pasta, join(dentro, 'volta'), 'dir')
+    } catch {
+      // Sistema sem permissão para criar atalho: o teste não tem o que afirmar.
+      return
+    }
+
+    ingest.start(pasta)
+    await esperarFim(30_000)
+    const linhas = await db.select().from(mediaAssets)
+    expect(linhas).toHaveLength(1)
+  }, 40_000)
 
   it('marca como sumido o que saiu de uma pasta que foi varrida', async () => {
     const arquivo = join(pasta, 'some.mkv')
