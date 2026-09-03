@@ -136,8 +136,8 @@ export function SettingsDialog({
                 <i>{formatVideoFormat(channel)}</i>
               </button>
               <button className="btn" onClick={onOpenDistribution}>
-                stream
-                <i>saídas, convidados e destinos</i>
+                saídas
+                <i>RTMP, SRT, Decklink, convidados e destinos</i>
               </button>
               <button className="btn" onClick={onOpenGraphics}>
                 grafismo

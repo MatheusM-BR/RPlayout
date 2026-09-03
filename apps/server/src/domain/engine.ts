@@ -108,6 +108,14 @@ const BOOT_MS = 20_000
  */
 const TIQUE_SADIO_MS = 250
 /**
+ * Quanto esperamos um processo mandado matar de fato morrer.
+ *
+ * Passado disso, o problema deixou de ser o motor travado e passou a ser o
+ * nosso pedido de encerrar não ter surtido efeito -- e essas duas coisas
+ * pedem providências diferentes de quem opera.
+ */
+const MORTE_DEMORADA_MS = 10_000
+/**
  * Por quanto tempo um aviso do motor continua valendo como alerta.
  *
  * Descarte de quadro é rajada: o aviso chega enquanto a máquina está apertada
@@ -276,6 +284,7 @@ export class EngineTransport implements Transport {
         : `O engine encerrou com código ${code ?? 'desconhecido'}.`
       if (!this.matandoPorTravamento) this.deaths += 1
       this.matandoPorTravamento = false
+      this.mateiEm = null
       this.dirty = true
     })
 
@@ -290,6 +299,8 @@ export class EngineTransport implements Transport {
 
   /** Verdadeiro entre o nosso SIGKILL e o `exit` que ele provoca. */
   private matandoPorTravamento = false
+  /** Quando mandamos matar. Nulo quer dizer que não há morte pendente. */
+  private mateiEm: number | null = null
 
   private absorb(line: string): void {
     if (line.trim() === '') return
@@ -420,7 +431,11 @@ export class EngineTransport implements Transport {
     // A mensagem carrega a prova. "O motor precisou ser levantado 21x" sem
     // dizer o que foi visto manda o operador procurar uma queda que talvez
     // nunca tenha existido -- foi exatamente o que aconteceu aqui.
-    this.stalls += 1
+    // Uma travada é uma travada, mesmo que o processo demore a morrer -- ou não
+    // morra. Contar de novo a cada tentativa fazia o alerta dizer "levantado 1x
+    // (4 por ficar sem entregar quadro)", números que não fecham entre si e
+    // que mandam procurar quatro quedas onde houve uma.
+    if (this.mateiEm === null) this.stalls += 1
     this.fail(
       this.booted
         ? `O programa parou de produzir quadros: ${(this.semQuadroMs / 1000).toFixed(1)}s ` +
@@ -430,6 +445,16 @@ export class EngineTransport implements Transport {
     )
     this.semQuadroMs = 0
     this.matandoPorTravamento = true
+    // Processo que não morre depois de mandado matar é um caso à parte, e
+    // grave: o watchdog acha que levantou o motor e não levantou. Sem dizer
+    // isso, o canal fica preto para sempre com o log jurando que agiu.
+    if (this.mateiEm !== null && Date.now() - this.mateiEm > MORTE_DEMORADA_MS) {
+      this.fail(
+        `Mandei encerrar o engine há ${((Date.now() - this.mateiEm) / 1000).toFixed(0)}s e ` +
+          'ele não encerrou. O canal não vai voltar sozinho.',
+      )
+    }
+    this.mateiEm ??= Date.now()
     this.child.kill('SIGKILL')
   }
 

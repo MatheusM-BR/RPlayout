@@ -20,6 +20,19 @@ const RELAY_TONE: Record<RelayStatus['state'], string> = {
   FALHOU: 'bad',
 }
 
+/**
+ * Como cada tipo de saída se chama para quem opera.
+ *
+ * "SDI" é o nome da norma; quem está com a placa na mão chama de Decklink, e
+ * era em "Decklink" que se procurava na tela sem achar.
+ */
+const TIPO_LABEL: Record<string, string> = {
+  RTMP: 'RTMP',
+  SRT: 'SRT',
+  FILE: 'ARQUIVO',
+  SDI: 'DECKLINK',
+}
+
 const PUBLISHER_TONE: Record<PublisherStatus['health'], string> = {
   onAir: 'ok',
   connecting: 'warn',
@@ -155,11 +168,30 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
 
   const channel = data?.channels.find((entry) => entry.channelId === channelId) ?? data?.channels[0]
 
+  /**
+   * O tipo que a saída de fato usa.
+   *
+   * Preview e monitor guardam `RTMP` desde o tempo em que todo mundo saía por
+   * RTMP, mas hoje vão por SRT -- é o único caminho daqui até o servidor de
+   * mídia que carrega Opus. Mostrar o campo guardado fazia a tela dizer RTMP
+   * para uma saída que é SRT.
+   */
+  const tipoReal = (output: OutputProfile): string => {
+    const alvo = output.resolvedTarget ?? ''
+    if (alvo.startsWith('srt://')) return 'SRT'
+    if (alvo.startsWith('rtmp://')) return 'RTMP'
+    return TIPO_LABEL[output.kind] ?? output.kind
+  }
+
+  /** A saúde que o engine reporta para esta saída, quando há. */
+  const saudeDe = (output: OutputProfile) =>
+    channel?.publishers.find((publisher) => publisher.url === output.resolvedTarget) ?? null
+
   return (
     <div className="backdrop" onClick={onClose}>
       <div className="dialog wide" onClick={(event) => event.stopPropagation()}>
         <header>
-          <h2>Distribuição</h2>
+          <h2>Saídas do canal</h2>
           <div className="sub">
             {data?.server.running
               ? `servidor local no ar em ${data.server.host}`
@@ -209,52 +241,42 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
             </div>
           )}
 
-          {/* Saída do canal. Caminho existir no servidor não quer dizer que
-              alguém esteja publicando nele: quem responde por isso é o engine. */}
-          {channel && channel.publishers.length > 0 && (
-            <div className="field">
-              <label>Saída do canal</label>
-              <div className="rows">
-                {channel.publishers.map((publisher) => (
-                  <div key={publisher.url} className="row-item">
-                    <div>
-                      <div className="t">
-                        {outputs.find((entry) => entry.resolvedTarget === publisher.url)?.name ??
-                          'Saída'}
-                        <span className={`pill ${PUBLISHER_TONE[publisher.health]}`}>
-                          {PUBLISHER_LABEL[publisher.health]}
-                        </span>
-                      </div>
-                      <div className="d mono">{publisher.url}</div>
-                      <div className="d">
-                        {publisher.delivered > 0
-                          ? `${publisher.delivered.toLocaleString('pt-BR')} pacotes entregues`
-                          : 'nada entregue ainda'}
-                        {publisher.attempts > 1 && ` · ${publisher.attempts} tentativas`}
-                        {publisher.error && ` · ${publisher.error}`}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* ---- perfis de saída ---- */}
           <div className="field">
             <label>Perfis de saída</label>
             <div className="rows">
-              {outputs.map((output) => (
+              {outputs.map((output) => {
+                const saude = saudeDe(output)
+                return (
                 <div key={output.id} className="row-item">
                   <div>
                     <div className="t">
                       {output.name}
-                      <span className="pill">{output.kind}</span>
+                      <span className="pill">{tipoReal(output)}</span>
                       {output.role !== 'EXTRA' && <span className="pill">do sistema</span>}
                       {!output.enabled && <span className="pill bad">desligada</span>}
+                      {/* A saúde vinha numa seção à parte, e a mesma saída
+                          aparecia duas vezes na tela: uma com o que ela é,
+                          outra com como ela está. Quem opera precisa das duas
+                          juntas -- é olhando para a saída que se pergunta se
+                          ela está no ar. */}
+                      {saude && (
+                        <span className={`pill ${PUBLISHER_TONE[saude.health]}`}>
+                          {PUBLISHER_LABEL[saude.health]}
+                        </span>
+                      )}
                     </div>
                     <div className="d mono">{output.resolvedTarget ?? '(sem destino)'}</div>
                     <div className="d">{profileSummary(output)}</div>
+                    {saude && (
+                      <div className="d">
+                        {saude.delivered > 0
+                          ? `${saude.delivered.toLocaleString('pt-BR')} pacotes entregues`
+                          : 'nada entregue ainda'}
+                        {saude.attempts > 1 && ` · ${saude.attempts} tentativas`}
+                        {saude.error && ` · ${saude.error}`}
+                      </div>
+                    )}
                     {/* Qualidade por saída, escrita à mão.
                         O mesmo canal costuma ir para lugares com fôlego
                         diferente: a transmissão principal aguenta o que o
@@ -341,7 +363,8 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                     )}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
             {/* Mexer no conjunto de saídas de um pipeline que está no ar é o
                 tipo de cirurgia que este projeto já pagou caro para evitar. */}

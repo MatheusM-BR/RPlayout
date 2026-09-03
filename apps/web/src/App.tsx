@@ -1032,7 +1032,7 @@ export function App() {
             setDialog({ kind: 'distribution' })
           }}
         >
-          stream
+          saídas
         </button>
         {marked.size >= 2 && (
           <button className="btn take" onClick={group}>
