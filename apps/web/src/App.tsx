@@ -793,6 +793,19 @@ export function App() {
             onPrune={limparQuebrados}
             scan={scan}
             onScan={(measure) => void startScan(measure)}
+            // Acrescentar pasta mora aqui, e não só na engrenagem: é olhando a
+            // lista de arquivos que o operador percebe que falta uma pasta.
+            onAddRoot={async (path) => {
+              try {
+                await api.addMediaRoot(path)
+                await refreshLibrary()
+                void startScan(false)
+                return null
+              } catch (falha) {
+                return falha instanceof Error ? falha.message : 'Não consegui ler essa pasta.'
+              }
+            }}
+            onOpenInsert={() => setDialog({ kind: 'add' })}
           />
         </aside>
 
@@ -803,6 +816,35 @@ export function App() {
               {view.items.length} itens · {dur(totalDuration, rate)}
               {view.rundown.loop && ' · em loop'}
             </span>
+            {/* Desfazer, refazer e as-run moram em cima da grade, e não na barra
+                de baixo: são ações sobre a grade, e a mão que acabou de mexer
+                nela está aqui. As-run fica um pouco afastado -- é consulta, não
+                edição, e encostar nos outros dois convida ao clique errado. */}
+            <div className="acoes-grade">
+              <button
+                className="btn small"
+                disabled={!history.canUndo}
+                onClick={() => void undo('undo')}
+                title={history.undoLabel ? `Desfazer: ${history.undoLabel}` : 'Nada para desfazer'}
+              >
+                DESFAZER
+              </button>
+              <button
+                className="btn small"
+                disabled={!history.canRedo}
+                onClick={() => void undo('redo')}
+                title={history.redoLabel ? `Refazer: ${history.redoLabel}` : 'Nada para refazer'}
+              >
+                REFAZER
+              </button>
+              <button
+                className="btn small afastado"
+                onClick={() => setDialog({ kind: 'asrun' })}
+                title="O que realmente foi ao ar"
+              >
+                AS-RUN
+              </button>
+            </div>
           </div>
           <div className="pane-body">
             <Rundown
@@ -912,9 +954,6 @@ export function App() {
         >
           nível<kbd>n</kbd>
         </button>
-        <button className="btn" onClick={() => setDialog({ kind: 'add' })}>
-          inserir item
-        </button>
         <button
           className="btn"
           onClick={() => setDialog({ kind: 'playlists' })}
@@ -939,9 +978,6 @@ export function App() {
         >
           canal
         </button>
-        <button className="btn" onClick={() => setDialog({ kind: 'asrun' })}>
-          as-run
-        </button>
         <button
           className="btn"
           onClick={() => {
@@ -957,24 +993,6 @@ export function App() {
           </button>
         )}
         <div className="spacer" />
-        <button
-          className="btn"
-          disabled={!history.canUndo}
-          onClick={() => void undo('undo')}
-          title={history.undoLabel ? `Desfazer: ${history.undoLabel}` : 'Nada para desfazer'}
-        >
-          {/* Ctrl+Z todo mundo já sabe; escrever custava quarenta e cinco
-              pixels de uma barra que precisa caber inteira. Fica na dica. */}
-          desfazer
-        </button>
-        <button
-          className="btn"
-          disabled={!history.canRedo}
-          onClick={() => void undo('redo')}
-          title={history.redoLabel ? `Refazer: ${history.redoLabel}` : 'Nada para refazer'}
-        >
-          refazer
-        </button>
         {error && (
           <div className="meta" style={{ color: 'var(--onair)' }}>
             {error}

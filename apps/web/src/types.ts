@@ -113,6 +113,14 @@ export interface LibraryAsset extends MediaAsset {
 }
 
 export interface LibraryFolder {
+  /** Identidade estável da pasta: raiz + caminho de dentro dela. */
+  key: string
+  rootId: string
+  /** Nome da raiz a que esta pasta pertence. */
+  rootLabel: string
+  /** Caminho de dentro da raiz. Vazio é a própria raiz. */
+  path: string
+  /** O que aparece na tela. */
   name: string
   assets: LibraryAsset[]
 }

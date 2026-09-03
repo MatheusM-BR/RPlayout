@@ -365,27 +365,60 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.get('/api/library', async () => {
     const assets = await listAssets(app.db)
-    const folders = new Map<string, MediaAsset[]>()
+    const roots = await Roots.listRoots(app.db, app.mediaRoot)
 
+    // A pasta é o caminho inteiro de dentro da raiz, não o último pedaço dele.
+    //
+    // Antes a chave era só o nome da última pasta: `Programação/2026/Fevereiro`
+    // e `Comerciais/Fevereiro` viravam os dois "Fevereiro" e se misturavam, e
+    // toda a estrutura de subpastas sumia. Do lado de fora isso aparece como
+    // "a pasta não está sendo lida por completo" -- os arquivos estão no
+    // acervo, mas não onde o operador sabe procurar.
+    const grupos = new Map<string, { rootId: string; rel: string; assets: MediaAsset[] }>()
     for (const asset of assets) {
-      const parts = asset.path.replace(/\\/g, '/').split('/')
-      const folder = parts.slice(0, -1).slice(-1)[0] ?? 'Raiz'
-      const bucket = folders.get(folder)
-      if (bucket) bucket.push(asset)
-      else folders.set(folder, [asset])
+      const caminho = asset.path.replace(/\\/g, '/')
+      const root = roots.find((entry) => Roots.contem(entry.path, asset.path))
+      const raiz = root ? root.path.replace(/\\/g, '/').replace(/\/$/, '') : ''
+      const rel = root
+        ? caminho.slice(raiz.length + 1).split('/').slice(0, -1).join('/')
+        : caminho.split('/').slice(0, -1).join('/')
+      const chave = `${root?.id ?? 'fora'}::${rel}`
+      const grupo = grupos.get(chave)
+      if (grupo) grupo.assets.push(asset)
+      else grupos.set(chave, { rootId: root?.id ?? 'fora', rel, assets: [asset] })
     }
 
+    const rotulo = new Map(roots.map((root) => [root.id, root.label]))
     return {
-      folders: [...folders.entries()]
-        .sort(([a], [b]) => a.localeCompare(b, 'pt-BR'))
-        .map(([name, items]) => ({
-          name,
-          assets: items.map((asset) => ({
+      roots,
+      folders: [...grupos.entries()]
+        .map(([key, grupo]) => ({
+          key,
+          rootId: grupo.rootId,
+          // Vazio quer dizer a própria raiz, e "(na raiz)" é mais claro que uma
+          // linha sem nome nenhum.
+          path: grupo.rel,
+          rootLabel: rotulo.get(grupo.rootId) ?? 'fora do acervo',
+          // Arquivo de uma pasta que saiu do acervo não tem caminho relativo:
+          // mostrar o caminho absoluto inteiro estoura a coluna. Os dois
+          // últimos trechos bastam para reconhecer de onde ele veio.
+          name:
+            grupo.rootId === 'fora'
+              ? grupo.rel.split('/').slice(-2).join('/') || grupo.rel
+              : grupo.rel === ''
+                ? '(na raiz)'
+                : grupo.rel,
+          assets: grupo.assets.map((asset) => ({
             ...asset,
             fileName: asset.path.replace(/\\/g, '/').split('/').pop() ?? asset.path,
             thumbnailUrl: `/api/assets/${asset.id}/thumbnail.svg`,
           })),
-        })),
+        }))
+        .sort(
+          (a, b) =>
+            a.rootLabel.localeCompare(b.rootLabel, 'pt-BR') ||
+            a.path.localeCompare(b.path, 'pt-BR'),
+        ),
     }
   })
 

@@ -877,6 +877,72 @@ input.bad { border-color: var(--onair); }
 .folder .caret { color: var(--accent); font-size: 9px; }
 .folder .n { margin-left: auto; color: var(--dim); letter-spacing: 0.04em; }
 
+/* A pasta virou uma linha com dois botões: abrir e fixar. O de abrir ocupa
+   tudo que sobra, para o alvo do clique continuar sendo a linha inteira. */
+.folder { padding: 0; }
+.folder .abre {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+  padding: 7px 4px 7px 10px;
+  cursor: pointer;
+}
+.folder .abre > :not(.caret):not(.n) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder .alfinete {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--border);
+  font-size: 12px;
+  line-height: 1;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.folder .alfinete:hover { color: var(--muted); }
+.folder .alfinete.on { color: var(--accent); }
+.folder.fixa { background: color-mix(in srgb, var(--accent) 9%, var(--sunk)); }
+
+/* Uma seção por raiz do acervo: sem isso, duas pastas de nomes iguais em
+   raízes diferentes ficariam indistinguíveis na lista. */
+.raiz-nome {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+  padding: 9px 10px 4px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.nova-pasta { display: grid; grid-template-columns: 1fr auto; gap: 6px; padding: 7px 10px; }
+.nova-pasta .erro { grid-column: 1 / -1; color: var(--onair); font-size: 11px; }
+
+/* O botão de pôr na grade fica embaixo da lista, que é onde a mão está depois
+   de escolher o arquivo. */
+.explorador-rodape {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--sunk);
+}
+.file.escolhido { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* Ações da grade no alto, à direita do título. O as-run é consulta, não
+   edição: o afastamento existe para a mão não errar o alvo. */
+.acoes-grade { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+.acoes-grade .afastado { margin-left: 14px; }
+
 .file {
   display: grid;
   grid-template-columns: 64px 1fr auto;

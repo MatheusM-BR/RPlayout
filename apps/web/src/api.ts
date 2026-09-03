@@ -81,7 +81,7 @@ export const api = {
   addChannel: (name: string) =>
     post<{ channelId: string; rundownId: string }>('/api/channels', { name }),
   assets: () => send<{ assets: MediaAsset[] }>('/api/assets'),
-  library: () => send<{ folders: LibraryFolder[] }>('/api/library'),
+  library: () => send<{ folders: LibraryFolder[]; roots: MediaRoot[] }>('/api/library'),
 
   patchAsset: (id: string, body: { title?: string; categoryId?: string | null }) =>
     send<{ ok: true }>(`/api/assets/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
