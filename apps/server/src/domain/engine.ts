@@ -175,6 +175,21 @@ export class EngineTransport implements Transport {
     child.stderr?.on('data', (chunk: Buffer) => {
       process.stderr.write(`[engine ${this.channel.name}] ${chunk.toString()}`)
     })
+    // Cano quebrado não pode derrubar o servidor.
+    //
+    // Escrever na entrada de um processo que já morreu emite `error` no
+    // socket, e evento `error` sem ouvinte em Node **encerra o processo**. O
+    // caminho é curtíssimo: o engine cai (o que acontece), alguém apaga o
+    // canal, o `close()` escreve o `shutdown` no filho morto, e o servidor
+    // inteiro vai junto -- levando os outros canais, que não tinham nada com
+    // isso. Foi assim que apagar canal virou "Internal Server Error".
+    child.stdin?.on('error', (erro) => {
+      this.alive = false
+      this.lastError = `A entrada do engine fechou: ${erro.message}`
+    })
+    child.stdout?.on('error', () => {})
+    child.stderr?.on('error', () => {})
+
     child.on('exit', (code) => {
       this.alive = false
       this.lastError = `O engine encerrou com código ${code ?? 'desconhecido'}.`
@@ -319,7 +334,15 @@ export class EngineTransport implements Transport {
 
   private send(command: Record<string, unknown>): void {
     if (!this.alive) return
-    this.child.stdin?.write(`${JSON.stringify({ id: this.nextId++, ...command })}\n`)
+    try {
+      this.child.stdin?.write(`${JSON.stringify({ id: this.nextId++, ...command })}\n`)
+    } catch (falha) {
+      // O filho morreu entre a checagem e a escrita. Não há a quem mandar a
+      // ordem, e derrubar o servidor por causa disso seria trocar um canal
+      // perdido por todos eles.
+      this.alive = false
+      this.lastError = falha instanceof Error ? falha.message : 'O engine não aceitou a ordem.'
+    }
   }
 
   /** Traduz um item da grade para o que o engine sabe abrir. */

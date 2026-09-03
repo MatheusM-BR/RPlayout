@@ -575,14 +575,6 @@ pub fn monitor_size(width: i32, height: i32) -> (i32, i32) {
     (escalada + escalada % 2, TETO)
 }
 
-/// Latência que o canal promete a si mesmo.
-///
-/// Cem milissegundos: três quadros a 29,97, folga para o compositor e para a
-/// camada de grafismo sem virar espera entre o take e a imagem. Dita, e não
-/// negociada, pelo mesmo motivo das saídas -- o número negociado muda com a
-/// máquina, e o que se mede num lugar precisa valer no outro.
-const LATENCIA_DO_CANAL: gst::ClockTime = gst::ClockTime::from_mseconds(100);
-
 /// Fixa a latência de uma fonte `interaudiosrc`.
 ///
 /// O padrão dela é 100 ms anunciados sobre um anel de um segundo. Os dois
@@ -1346,10 +1338,14 @@ impl Channel {
 
     /// Sobe o canal e só volta quando ele está de fato no ar.
     pub fn start(&self) -> Result<()> {
-        // Latência do canal também é dita, e é pequena: aqui dentro não há
-        // rede a absorver, só o quadro que o compositor precisa segurar. Todo
-        // milissegundo posto aqui é milissegundo entre o take e a imagem.
-        self.pipeline.set_latency(LATENCIA_DO_CANAL);
+        // A latência do canal não é ditada.
+        //
+        // Tentei fixar 100 ms e o próprio GStreamer recusou: "Configured
+        // latency is lower than detected minimum latency: 0:00:00.100 <
+        // 0:00:00.151". O mínimo do canal depende do que está montado nele --
+        // compositor, camada de grafismo, filas -- e escrever um número abaixo
+        // dele não fixa nada: só imprime aviso a cada recálculo. Quem promete
+        // latência aqui é a saída, que é onde a promessa vale alguma coisa.
 
         // A dica vale nas duas falhas: a placa pode recusar já na mudança de
         // estado, e foi o que aconteceu -- pôr a explicação só no segundo
