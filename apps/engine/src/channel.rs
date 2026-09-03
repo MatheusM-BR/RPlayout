@@ -575,6 +575,27 @@ pub fn monitor_size(width: i32, height: i32) -> (i32, i32) {
     (escalada + escalada % 2, TETO)
 }
 
+/// Latência que o canal promete a si mesmo.
+///
+/// Cem milissegundos: três quadros a 29,97, folga para o compositor e para a
+/// camada de grafismo sem virar espera entre o take e a imagem. Dita, e não
+/// negociada, pelo mesmo motivo das saídas -- o número negociado muda com a
+/// máquina, e o que se mede num lugar precisa valer no outro.
+const LATENCIA_DO_CANAL: gst::ClockTime = gst::ClockTime::from_mseconds(100);
+
+/// Fixa a latência de uma fonte `interaudiosrc`.
+///
+/// O padrão dela é 100 ms anunciados sobre um anel de um segundo. Os dois
+/// números são grandes demais para playout: o primeiro vira descasamento entre
+/// imagem e som, e o segundo, começando com quantidade variável de áudio
+/// dentro, faz esse descasamento mudar a cada subida.
+pub fn aplicar_latencia_de_audio(src: &gst::Element) {
+    // Um período de áudio: menos de um terço de quadro a 29,97.
+    src.set_property("latency-time", 10_000_000u64);
+    // Folga contra soluço de disco, sem virar atraso perceptível.
+    src.set_property("buffer-time", 200_000_000u64);
+}
+
 /// Caps de vídeo do canal.
 ///
 /// Colorimetria e proporção de pixel ficam **fixas**. Sem isso elas seguem a
@@ -728,6 +749,18 @@ impl Channel {
 
         let program_audio = make("interaudiosrc")?;
         program_audio.set_property("channel", &audio_channel);
+        // Latência do áudio, dita e não herdada.
+        //
+        // O padrão do `interaudiosrc` é 100 ms de latência anunciada e um anel
+        // de um segundo. Cem milissegundos é justamente a ordem do
+        // descasamento que se mede entre imagem e som -- e o anel de um
+        // segundo, que começa com quantidade variável de áudio dentro, é o que
+        // fazia o erro mudar a cada subida do canal em vez de ser constante.
+        //
+        // Dez milissegundos é um período de áudio: menos que um terço de
+        // quadro, pequeno demais para se ver na tela. O anel de 200 ms
+        // continua absorvendo soluço de disco sem virar atraso.
+        aplicar_latencia_de_audio(&program_audio);
         let program_audio_convert = make("audioconvert")?;
         let program_audio_resample = make("audioresample")?;
         let program_audio_caps = make("capsfilter")?;
@@ -1313,6 +1346,11 @@ impl Channel {
 
     /// Sobe o canal e só volta quando ele está de fato no ar.
     pub fn start(&self) -> Result<()> {
+        // Latência do canal também é dita, e é pequena: aqui dentro não há
+        // rede a absorver, só o quadro que o compositor precisa segurar. Todo
+        // milissegundo posto aqui é milissegundo entre o take e a imagem.
+        self.pipeline.set_latency(LATENCIA_DO_CANAL);
+
         // A dica vale nas duas falhas: a placa pode recusar já na mudança de
         // estado, e foi o que aconteceu -- pôr a explicação só no segundo
         // ponto deixava a mensagem útil fora justamente do caso comum.

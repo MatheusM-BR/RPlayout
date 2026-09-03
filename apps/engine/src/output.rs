@@ -306,6 +306,18 @@ impl Publisher {
     fn open(&mut self) -> Result<()> {
         self.close();
         let pipeline = self.build()?;
+
+        // Latência dita, não negociada.
+        //
+        // Sem isto o GStreamer adota o máximo que os elementos anunciarem, e
+        // esse número muda com o que estiver instalado na máquina, com o
+        // codificador que entrou e com o humor da negociação. Num playout a
+        // latência é uma promessa que se faz ao destino: ela precisa ser a
+        // mesma hoje e amanhã, e a mesma nas quatro saídas do mesmo canal --
+        // duas saídas com latências diferentes são duas versões do mesmo
+        // programa saindo em tempos diferentes.
+        pipeline.set_latency(LATENCIA_DA_SAIDA);
+
         pipeline
             .set_state(gst::State::Playing)
             .context("a saída não entrou em execução")?;
@@ -362,6 +374,9 @@ impl Publisher {
 
         let asrc = make("interaudiosrc")?;
         asrc.set_property("channel", &spec.audio_channel);
+        // A mesma latência dita do lado do canal. Deixar o padrão aqui poria
+        // de volta os 100 ms que o canal acabou de tirar.
+        crate::channel::aplicar_latencia_de_audio(&asrc);
         let aconv = make("audioconvert")?;
         let ares = make("audioresample")?;
         let acapsf = make("capsfilter")?;
@@ -465,6 +480,15 @@ impl Publisher {
 /// come um punhado de núcleos, e três canais numa estação comum começam a
 /// engasgar -- o programa pisca preto porque o encoder não entrega o quadro a
 /// tempo. Havendo placa, ela faz isso sem tirar CPU de ninguém.
+/// Latência que toda saída promete.
+///
+/// Meio segundo é o que absorve um soluço de disco ou uma rajada de rede sem
+/// virar atraso perceptível numa transmissão. O número importa menos que o
+/// fato de ele ser fixo: latência negociada muda com a máquina, e duas saídas
+/// do mesmo canal com latências diferentes são o mesmo programa saindo em
+/// tempos diferentes.
+const LATENCIA_DA_SAIDA: gst::ClockTime = gst::ClockTime::from_mseconds(650);
+
 const ENCODERS: &[&str] = &["nvh264enc", "qsvh264enc", "mfh264enc", "x264enc"];
 
 /// Se ainda vale tentar o codificador de hardware neste processo.

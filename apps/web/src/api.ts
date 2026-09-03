@@ -22,6 +22,28 @@ import type {
   SourceList,
 } from './types.js'
 
+/**
+ * O motivo da falha, em texto que serve para alguém agir.
+ *
+ * O servidor responde de duas formas: `error`, que é nossa e já vem escrita
+ * para gente, e `message`, que é o que o Fastify põe quando algo estourou
+ * antes de chegar na rota -- é onde mora, por exemplo, a queixa do banco de
+ * dados. Ler só a primeira deixava o operador com "Falha em /api/…", que não
+ * diz nada e não dá para me mandar.
+ *
+ * Detalhe de validação vem como objeto; virar "[object Object]" na tela seria
+ * pior que não mostrar, então ele é serializado.
+ */
+function motivo(detalhe: unknown, path: string, status: number): string {
+  if (typeof detalhe === 'object' && detalhe !== null) {
+    const corpo = detalhe as { error?: unknown; message?: unknown }
+    const bruto = corpo.error ?? corpo.message
+    if (typeof bruto === 'string' && bruto.trim() !== '') return bruto
+    if (bruto !== undefined) return JSON.stringify(bruto)
+  }
+  return `Falha em ${path} (HTTP ${status})`
+}
+
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -29,11 +51,7 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const detail: unknown = await response.json().catch(() => null)
-    throw new Error(
-      typeof detail === 'object' && detail && 'error' in detail
-        ? String((detail as { error: unknown }).error)
-        : `Falha em ${path}`,
-    )
+    throw new Error(motivo(detail, path, response.status))
   }
   return (await response.json()) as T
 }

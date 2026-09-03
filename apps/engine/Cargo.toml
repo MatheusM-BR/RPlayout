@@ -35,3 +35,7 @@ path = "src/bin/devices.rs"
 [[bin]]
 name = "rplayout"
 path = "src/bin/launcher.rs"
+
+[[bin]]
+name = "rplayout-avsync"
+path = "src/bin/avsync.rs"
