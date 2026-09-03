@@ -201,8 +201,33 @@ CREATE TABLE IF NOT EXISTS operator_decisions (
 
 export type Db = ReturnType<typeof openDatabase>['db']
 
+/**
+ * Abre o SQLite, e explica quando o binário nativo não serve para este Node.
+ *
+ * O `better-sqlite3` é compilado, e o pacote traz um binário pronto por versão
+ * de Node. Rodando numa versão para a qual não há binário, ele não falha
+ * dizendo isso: despeja treze caminhos onde procurou e uma pilha de vinte
+ * linhas. Quem está numa máquina de playout às três da manhã não tem como
+ * concluir dali que o problema é a versão do Node -- e é sempre isso.
+ */
+function abrirSqlite(file: string): Database.Database {
+  try {
+    return new Database(file)
+  } catch (falha) {
+    const texto = falha instanceof Error ? falha.message : String(falha)
+    if (!texto.includes('bindings file')) throw falha
+    throw new Error(
+      `O SQLite não abriu: não há binário do better-sqlite3 para o Node ${process.version}.\n` +
+        'Este projeto roda em Node 22 ou 24. Rodando noutra versão (23, por exemplo),\n' +
+        'o pacote não acha binário pronto e tentaria compilar, o que exige as ferramentas\n' +
+        'de compilação do Visual Studio.\n' +
+        'Conserto: instale o Node 22 LTS ou o 24, apague node_modules e rode `pnpm install`.',
+    )
+  }
+}
+
 export function openDatabase(file: string) {
-  const sqlite = new Database(file)
+  const sqlite = abrirSqlite(file)
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
   sqlite.exec(DDL)

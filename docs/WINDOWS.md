@@ -25,7 +25,14 @@ comando que instala. Instalou alguma coisa? Feche e reabra o PowerShell (o
 
 | O quê | Versão | Onde |
 |---|---|---|
-| Node | 22 ou mais novo | nodejs.org |
+| Node | 22 LTS ou 24 | nodejs.org |
+
+> O Node precisa ser **22 ou 24**, não "22 ou mais novo". O banco usa
+> `better-sqlite3`, que é compilado e traz um binário pronto por versão de
+> Node -- e as versões ímpares (23, 25) não têm binário. Nelas o `pnpm install`
+> passa sem reclamar e o servidor só quebra ao subir, com uma lista de treze
+> caminhos onde procurou o binário. Se isso acontecer: instale o 22 LTS ou o
+> 24, apague `node_modules` e rode `pnpm install` de novo.
 | pnpm | 10 | `corepack enable` já resolve |
 | Rust | estável, toolchain **MSVC** | `winget install Rustlang.Rustup` |
 | pkg-config | qualquer | costuma vir com o GStreamer; senão `winget search pkg-config` |
