@@ -631,6 +631,14 @@ fn channel_video_caps(width: i32, height: i32, framerate: gst::Fraction) -> gst:
         .build()
 }
 
+/// O som do monitor pode sair em Opus?
+///
+/// Só em MPEG-TS. O FLV do RTMP não carrega Opus, e o monitor por RTMP
+/// continua saindo em AAC -- ou seja, mudo no navegador, como sempre foi.
+fn som_de_monitor(kind: Kind) -> bool {
+    kind == Kind::Srt
+}
+
 /// dB para o fator linear que o elemento `volume` espera.
 fn linear_gain(db: f64) -> f64 {
     10f64.powf(db / 20.0)
@@ -1192,6 +1200,9 @@ impl Channel {
             // para o mundo não pode depender de alguém estar olhando. Monitor
             // é o contrário: só existe enquanto alguém olha.
             on_demand: spec.role.as_deref() == Some("mon"),
+            // Só o monitor troca de codec de áudio: quem vai para o mundo sai
+            // em AAC, que é o que destino de RTMP e de SRT espera receber.
+            opus: spec.role.as_deref() == Some("mon") && som_de_monitor(spec.kind),
         }));
         Ok(())
     }
@@ -1240,6 +1251,8 @@ impl Channel {
             role: "pvw".to_string(),
             // Só existe enquanto alguém está com a janela aberta.
             on_demand: true,
+            // Quem olha isto é um navegador, e navegador não fala AAC.
+            opus: som_de_monitor(spec.kind),
         }));
 
         self.preview_channels = Some((video_channel, audio_channel));

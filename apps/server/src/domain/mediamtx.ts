@@ -276,6 +276,19 @@ export class MediaMtx {
     return `rtmp://127.0.0.1:${PORTS.rtmp}/${path}`
   }
 
+  /**
+   * Onde o engine publica um monitor: loopback também, mas por SRT.
+   *
+   * O monitor é olhado num navegador, e o navegador não fala AAC. O que chega
+   * por RTMP é FLV, que não carrega Opus -- então o monitor por RTMP é mudo,
+   * por construção. Em MPEG-TS o Opus passa, e a resposta do WHEP traz a
+   * trilha de som junto com a de imagem. O programa continua por RTMP: quem
+   * repassa para o mundo espera AAC.
+   */
+  static loopbackSrt(path: string): string {
+    return `srt://127.0.0.1:${PORTS.srt}?streamid=publish:${path}`
+  }
+
   /** De onde os relays leem: loopback também. */
   static internalRead(path: string): string {
     return `rtsp://127.0.0.1:${PORTS.rtsp}/${path}`

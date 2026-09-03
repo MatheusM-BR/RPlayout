@@ -764,13 +764,28 @@ O endereço é montado com o nome de máquina pelo qual a interface foi aberta -
 o servidor manda só a porta e o caminho. Deduzir o IP no servidor é exatamente
 como o monitor fica preto para quem acessa por outro nome.
 
-O monitor pede **só vídeo**. O WebRTC não fala AAC e o canal sai em AAC: pedir
-áudio faz o servidor recusar a sessão inteira em vez de mandar só a imagem.
-Quem responde pelo som na interface são os medidores, que vêm do próprio mix.
-Som nos monitores depende de um caminho em Opus, e nenhum dos dois jeitos de
-publicar Opus no MediaMTX existe nesta instalação do GStreamer
-(`whipclientsink` e `rtspclientsink` ausentes; RTMP e o `mpegtsmux` daqui não
-carregam Opus).
+O monitor tem som, e o caminho para isso é o codec. O WebRTC não fala AAC: com
+o monitor saindo em AAC o servidor de mídia até aceitava a trilha na entrada,
+mas a resposta do WHEP vinha com `m=audio 0` -- porta zero, trilha recusada --
+e o navegador recebia só imagem.
+
+A saída foi trocar o codec **e** a embalagem dos monitores: preview e monitor
+publicam por SRT em MPEG-TS com Opus, e aí a resposta traz
+`m=audio ... opus/48000/2 sendonly` junto com o vídeo. É medido, nos dois
+sentidos: no mesmo servidor, o caminho do programa (AAC por RTMP) continua
+respondendo com a porta zerada.
+
+Não é `whipclientsink` nem `rtspclientsink` -- os dois seguem ausentes. É o
+`mpegtsmux`, que aceita `audio/x-opus` no pedido de sink; a nota anterior de
+que ele não carregava Opus estava errada.
+
+O **programa** continua em AAC por RTMP de propósito: quem o repassa para o
+mundo o faz sem recodificar, e destino de RTMP espera AAC. Trocar o codec do
+programa por causa de um monitor sairia caro na ponta errada.
+
+O monitor nasce mudo. Autoplay com som é bloqueado sem gesto do operador, e com
+quatro monitores abertos quatro sons somados não é monitoração: quem quer ouvir
+escolhe qual, no botão sobre a imagem.
 
 Um navegador sem H.264 -- o Chromium de codecs abertos, por exemplo -- recebe
 `codecs not supported by client` do servidor. O monitor mostra isso como

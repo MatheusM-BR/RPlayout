@@ -134,11 +134,18 @@ export async function ensureManagedOutputs(
   }
 }
 
+/** Perfil olhado no navegador: preview e monitor do programa. */
+const ehMonitor = (row: OutputProfileRow): boolean =>
+  row.role === 'PREVIEW' || row.role === 'MONITOR'
+
 /** Destino real de um perfil: derivado para os gerenciados, guardado nos demais. */
 export function targetOf(row: OutputProfileRow, path: ChannelPaths | undefined): string | null {
   if (row.role === 'PROGRAM') return path ? MediaMtx.loopback(path.program) : null
-  if (row.role === 'PREVIEW') return path ? MediaMtx.loopback(path.preview) : null
-  if (row.role === 'MONITOR') return path ? MediaMtx.loopback(path.monitor) : null
+  // Preview e monitor são olhados no navegador, e por isso vão por SRT: é o
+  // único caminho daqui até o servidor de mídia que carrega Opus. Veja
+  // `MediaMtx.loopbackSrt`.
+  if (row.role === 'PREVIEW') return path ? MediaMtx.loopbackSrt(path.preview) : null
+  if (row.role === 'MONITOR') return path ? MediaMtx.loopbackSrt(path.monitor) : null
   // Na placa o "destino" é o número do conector, guardado no alvo.
   if (row.kind === 'SDI') return row.target || null
   return row.target || null
@@ -158,7 +165,9 @@ export function toEngineProfile(
   if (row.kind === 'SDI') return `sdi:${target}`
 
   return {
-    kind: row.kind.toLowerCase() as EngineProfile['kind'],
+    // O monitor sai por SRT independente do que o perfil diga: o `kind` dele é
+    // do tempo em que todo mundo saía por RTMP, e o destino agora é fixo.
+    kind: ehMonitor(row) ? 'srt' : (row.kind.toLowerCase() as EngineProfile['kind']),
     target,
     ...(row.width !== null ? { width: row.width } : {}),
     ...(row.height !== null ? { height: row.height } : {}),

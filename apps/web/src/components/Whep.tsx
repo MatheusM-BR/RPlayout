@@ -33,6 +33,17 @@ export function Whep({ path, port, onWatching }: Props) {
   const video = useRef<HTMLVideoElement>(null)
   const [status, setStatus] = useState<Status>('off')
   const [reason, setReason] = useState<string | null>(null)
+  /**
+   * Nasce mudo, e não é só por causa do navegador.
+   *
+   * Autoplay com som é bloqueado sem um gesto do operador, então começar mudo
+   * é o que faz a imagem aparecer. Mas mesmo sem isso seria o certo: com
+   * quatro monitores abertos, quatro sons somados não é monitoração, é
+   * barulho. Quem quer ouvir escolhe qual.
+   */
+  const [mudo, setMudo] = useState(true)
+  /** Chegou trilha de som nesta sessão? Sem ela o botão não teria o que fazer. */
+  const [temSom, setTemSom] = useState(false)
 
   /** Sobe a cada falha e é o que faz o monitor tentar de novo. */
   const [attempt, setAttempt] = useState(0)
@@ -62,14 +73,18 @@ export function Whep({ path, port, onWatching }: Props) {
     let retry: number | null = null
     let resource: string | null = null
     const peer = new RTCPeerConnection()
-    // Só vídeo. O WebRTC não fala AAC, e o canal sai em AAC: pedir áudio faz o
-    // servidor recusar a sessão inteira em vez de mandar só a imagem. Quem
-    // responde pelo som na interface são os medidores, que vêm do próprio mix.
     peer.addTransceiver('video', { direction: 'recvonly' })
+    // Som também. O monitor sai em Opus por MPEG-TS justamente para isto: em
+    // AAC o servidor respondia a trilha de áudio com porta zero -- recusada --
+    // e o navegador recebia só imagem. Pedir áudio de um caminho que não tem
+    // não custa a sessão: a resposta vem com a porta zerada e o vídeo passa
+    // igual, que é o que acontece num monitor ainda publicando por RTMP.
+    peer.addTransceiver('audio', { direction: 'recvonly' })
 
     const stream = new MediaStream()
     peer.ontrack = (event) => {
       stream.addTrack(event.track)
+      if (event.track.kind === 'audio') setTemSom(true)
       if (video.current) video.current.srcObject = stream
     }
     peer.onconnectionstatechange = () => {
@@ -148,7 +163,26 @@ export function Whep({ path, port, onWatching }: Props) {
 
   return (
     <>
-      <video ref={video} className="feed" autoPlay playsInline muted hidden={status !== 'live'} />
+      <video
+        ref={video}
+        className="feed"
+        autoPlay
+        playsInline
+        muted={mudo}
+        hidden={status !== 'live'}
+      />
+      {status === 'live' && temSom && (
+        <button
+          type="button"
+          className="som"
+          title={mudo ? 'Ouvir este monitor' : 'Silenciar'}
+          aria-label={mudo ? 'Ouvir este monitor' : 'Silenciar'}
+          aria-pressed={!mudo}
+          onClick={() => setMudo((antes) => !antes)}
+        >
+          {mudo ? '🔇' : '🔊'}
+        </button>
+      )}
       {status !== 'live' && (
         <div className="idle">
           {status === 'failed' ? (reason ?? 'SEM SINAL') : 'SINTONIZANDO'}

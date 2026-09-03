@@ -133,6 +133,14 @@ pub struct PublisherSpec {
     /// quatro codificações que só passam a existir quando alguém está de fato
     /// assistindo.
     pub on_demand: bool,
+    /// Som em Opus em vez de AAC.
+    ///
+    /// É o que faz o monitor ter áudio. O WebRTC não fala AAC: o MediaMTX
+    /// aceita a trilha AAC na entrada, mas na resposta do WHEP ela sai com
+    /// porta zero -- recusada --, e o navegador recebe só imagem. Em Opus a
+    /// resposta traz `m=audio ... opus/48000/2 sendonly`, medido. Só vale em
+    /// MPEG-TS: o FLV do RTMP não carrega Opus.
+    pub opus: bool,
 }
 
 pub struct Publisher {
@@ -338,6 +346,7 @@ impl Publisher {
             spec.fps_d,
             spec.kind.stream_format(),
             spec.prefer_software,
+            spec.opus,
         )?;
 
         // Mesma fixação de colorimetria do canal, e pelo mesmo motivo: o
@@ -696,6 +705,7 @@ pub fn encode_chain(
     fps_d: i32,
     stream_format: &str,
     prefer_software: bool,
+    opus: bool,
 ) -> Result<(
     gst::Element,
     gst::Element,
@@ -719,20 +729,32 @@ pub fn encode_chain(
             .build(),
     );
 
-    let aenc = make("avenc_aac")?;
-    aenc.set_property("bitrate", 128_000i32);
-    let aparse = make("aacparse")?;
-    let acaps = make("capsfilter")?;
-    acaps.set_property(
-        "caps",
-        gst::Caps::builder("audio/mpeg")
-            .field("mpegversion", 4i32)
-            .field(
-                "stream-format",
-                if stream_format == "avc" { "raw" } else { "adts" },
-            )
-            .build(),
-    );
+    // Instalação sem `opusenc` continua saindo em AAC: monitor mudo é ruim,
+    // monitor que não sobe é pior.
+    let (aenc, aparse, acaps) = if opus && gst::ElementFactory::find("opusenc").is_some() {
+        let aenc = make("opusenc")?;
+        aenc.set_property("bitrate", 96_000i32);
+        let aparse = make("opusparse")?;
+        let acaps = make("capsfilter")?;
+        acaps.set_property("caps", gst::Caps::builder("audio/x-opus").build());
+        (aenc, aparse, acaps)
+    } else {
+        let aenc = make("avenc_aac")?;
+        aenc.set_property("bitrate", 128_000i32);
+        let aparse = make("aacparse")?;
+        let acaps = make("capsfilter")?;
+        acaps.set_property(
+            "caps",
+            gst::Caps::builder("audio/mpeg")
+                .field("mpegversion", 4i32)
+                .field(
+                    "stream-format",
+                    if stream_format == "avc" { "raw" } else { "adts" },
+                )
+                .build(),
+        );
+        (aenc, aparse, acaps)
+    };
 
     Ok((venc, vparse, vcaps, aenc, aparse, acaps))
 }
@@ -871,6 +893,7 @@ mod testes_monitor {
             prefer_software: true,
             role: "mon".to_string(),
             on_demand,
+            opus: false,
         }
     }
 
