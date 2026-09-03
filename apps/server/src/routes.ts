@@ -1759,7 +1759,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
     runtime.watching(body.data.bus)
-    return { ok: true }
+    // Diz na resposta se o monitor existe. A interface precisa saber para
+    // mostrar o motivo em vez de uma janela preta esperando um sinal que não
+    // vem -- e para parar de pedir.
+    return { ok: true, available: runtime.temMonitor(body.data.bus) }
   })
 
   // ---- perfis de saída ---------------------------------------------------

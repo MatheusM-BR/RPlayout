@@ -96,6 +96,23 @@ export class ChannelRuntime {
     engineOutputs: readonly string[],
     /** Para onde o preview sai. Nulo deixa o canal sem barramento de preview. */
     previewOutput: string | null = null,
+    /**
+     * Quais monitores este canal tem de verdade.
+     *
+     * Sem servidor de mídia local não há caminho para publicar, então não há
+     * monitor nenhum -- e a interface, que não sabia disso, continuava pedindo
+     * para olhar. O engine respondia `não existe monitor chamado mon` a cada
+     * dois segundos, e o operador via uma janela preta sem explicação.
+     */
+    private readonly monitores: ReadonlySet<'pvw' | 'mon'> = new Set(['pvw', 'mon']),
+    /**
+     * Por que cada monitor ausente está ausente.
+     *
+     * Um texto por barramento, porque as causas pedem coisas diferentes: perfil
+     * desligado se resolve em Distribuição, servidor de mídia ausente se resolve
+     * na instalação. Um alerta que junta as duas manda procurar no lugar errado.
+     */
+    private readonly motivoSemMonitor: ReadonlyMap<'pvw' | 'mon', string> = new Map(),
   ) {
     // Sem engine configurado, a grade inteira continua operável no simulado:
     // é o que permite montar programação numa máquina sem GStreamer.
@@ -308,9 +325,22 @@ export class ChannelRuntime {
    */
   private readonly olhando = new Map<'pvw' | 'mon', number>()
   private readonly monitorLigado = new Map<'pvw' | 'mon', boolean>()
+  /** Monitores que alguém tentou abrir e que este canal não tem. */
+  private readonly monitorPedidoSemExistir = new Set<'pvw' | 'mon'>()
+
+  /** Este canal tem este monitor? */
+  temMonitor(bus: 'pvw' | 'mon'): boolean {
+    return this.monitores.has(bus)
+  }
 
   /** A interface diz que alguém está com este monitor aberto. */
   watching(bus: 'pvw' | 'mon'): void {
+    if (!this.monitores.has(bus)) {
+      // Mandar ligar o que não existe só rende erro no log. Guarda o pedido
+      // para o alerta poder dizer ao operador por que a janela está preta.
+      this.monitorPedidoSemExistir.add(bus)
+      return
+    }
     this.olhando.set(bus, Date.now())
     if (this.monitorLigado.get(bus) !== true) {
       this.monitorLigado.set(bus, true)
@@ -398,6 +428,18 @@ export class ChannelRuntime {
             'pode faltar o decodificador (AAC vem do gst-libav)',
         })
       }
+    }
+
+    // Janela de monitor aberta num canal que não tem monitor. Só reclama
+    // quando alguém de fato tentou olhar: um canal sem servidor de mídia numa
+    // máquina headless funciona bem assim, e alarme constante para isso seria
+    // ruído. Quem abriu a janela, esse sim precisa saber por que está preta.
+    for (const bus of this.monitorPedidoSemExistir) {
+      const onde = bus === 'pvw' ? 'preview' : 'monitor do programa'
+      found.push({
+        kind: 'ENGINE',
+        message: `o ${onde} não está no ar: ${this.motivoSemMonitor.get(bus) ?? 'este canal não tem esse barramento'}`,
+      })
     }
 
     // Máquina apertada é a explicação de "a imagem está engasgando", e até
@@ -540,7 +582,34 @@ export async function runtimeFor(app: App, channelId: string): Promise<ChannelRu
 
   const outputs = program ? [program, ...extras] : [...ENGINE_OUTPUTS, ...extras]
 
-  const runtime = new ChannelRuntime(channel, app.db, outputs, forRole('PREVIEW'))
+  // O canal só tem monitor quando existe um perfil vivo para ele -- e quando
+  // não existe, o motivo importa mais que o fato: perfil desligado se resolve
+  // em Distribuição, servidor de mídia ausente se resolve na instalação.
+  const previewOutput = forRole('PREVIEW')
+  const monitores = new Set<'pvw' | 'mon'>()
+  const motivos = new Map<'pvw' | 'mon', string>()
+  const conferir = (bus: 'pvw' | 'mon', role: 'PREVIEW' | 'MONITOR'): void => {
+    const row = profiles.find((entry) => entry.role === role)
+    if (row && toEngineProfile(row, path) !== null) {
+      monitores.add(bus)
+      return
+    }
+    if (!app.mediamtx) {
+      motivos.set(bus, 'esta instalação não tem servidor de mídia local (mediamtx)')
+    } else if (!path) {
+      motivos.set(bus, 'este canal não tem caminho no servidor de mídia')
+    } else if (!row) {
+      motivos.set(bus, 'o perfil dele não existe neste canal')
+    } else if (!row.enabled) {
+      motivos.set(bus, `o perfil "${row.name}" está desligado em Distribuição`)
+    } else {
+      motivos.set(bus, `o perfil "${row.name}" não tem destino`)
+    }
+  }
+  conferir('pvw', 'PREVIEW')
+  conferir('mon', 'MONITOR')
+
+  const runtime = new ChannelRuntime(channel, app.db, outputs, previewOutput, monitores, motivos)
   app.runtimes.set(channelId, runtime)
   return runtime
 }
