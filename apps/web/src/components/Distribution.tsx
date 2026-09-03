@@ -81,6 +81,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [outTarget, setOutTarget] = useState('')
   const [outKind, setOutKind] = useState<'RTMP' | 'SRT' | 'FILE' | 'SDI'>('RTMP')
   const [guestLabel, setGuestLabel] = useState('')
+  const [reiniciando, setReiniciando] = useState(false)
   const [destName, setDestName] = useState('')
   const [destUrl, setDestUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -344,8 +345,32 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
             </div>
             {/* Mexer no conjunto de saídas de um pipeline que está no ar é o
                 tipo de cirurgia que este projeto já pagou caro para evitar. */}
-            <div className="note">
-              Mudança em perfil de saída vale no próximo início do canal.
+            {/* Dizer que a mudança só vale no próximo início e não oferecer
+                como fazer é o que deixava o operador ligando o preview e
+                olhando a tela preta sem ter o que clicar. */}
+            <div className="note reiniciar">
+              <span>
+                Mudança em perfil de saída só vale quando o canal sobe de novo — ligar aqui
+                não põe a saída no ar sozinho.
+              </span>
+              <button
+                className="btn small"
+                disabled={reiniciando}
+                title="O canal sai do ar por um instante"
+                onClick={() => {
+                  if (!channelId) return
+                  if (!window.confirm('Levantar o canal de novo? Ele sai do ar por um instante.'))
+                    return
+                  setReiniciando(true)
+                  void api
+                    .restartChannel(channelId)
+                    .then(() => onMessage('Canal levantado de novo com os perfis de agora.'))
+                    .catch((falha: Error) => onMessage(falha.message))
+                    .finally(() => setReiniciando(false))
+                }}
+              >
+                {reiniciando ? 'LEVANTANDO…' : 'LEVANTAR O CANAL'}
+              </button>
             </div>
             <div className="add-row">
               <input
@@ -361,7 +386,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                 <option value="RTMP">RTMP</option>
                 <option value="SRT">SRT</option>
                 <option value="FILE">Arquivo</option>
-                <option value="SDI">SDI (placa)</option>
+                <option value="SDI">SDI / Decklink (placa)</option>
               </select>
               <input
                 type="text"
@@ -369,7 +394,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                   outKind === 'FILE'
                     ? 'caminho do arquivo'
                     : outKind === 'SDI'
-                      ? 'número do conector: 0, 1, 2…'
+                      ? 'conector da placa: 0, 1, 2… (Duo 2 = 0 a 3)'
                       : 'rtmp://...'
                 }
                 value={outTarget}

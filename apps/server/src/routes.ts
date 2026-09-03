@@ -945,6 +945,35 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
+  /**
+   * Levanta o canal de novo com os perfis de saída de agora.
+   *
+   * Ligar um perfil no banco não põe a saída no ar: o engine recebe a lista de
+   * saídas quando sobe, e não sabe de mudança feita depois. Até aqui a tela
+   * dizia isso numa nota de rodapé e não oferecia como fazer -- o operador
+   * ligava o preview, via a tela continuar preta, e não tinha o que clicar.
+   *
+   * Vale o mesmo aviso de sempre: o canal sai do ar por um instante.
+   */
+  server.post('/api/channels/:id/restart', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!(await getChannel(app.db, id))) {
+      return reply.code(404).send({ error: 'Canal não encontrado.' })
+    }
+
+    const anterior = app.runtimes.get(id)
+    const rundownId = anterior?.view?.rundown.id ?? null
+    if (anterior) {
+      anterior.transport.close()
+      app.runtimes.delete(id)
+    }
+
+    const runtime = await runtimeFor(app, id)
+    if (runtime && rundownId) await runtime.load(rundownId)
+    onChange()
+    return { ok: true }
+  })
+
   /** As pastas do acervo. */
   server.get('/api/library/roots', async () => ({
     roots: await Roots.listRoots(app.db, app.mediaRoot),

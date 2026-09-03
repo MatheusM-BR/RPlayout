@@ -100,6 +100,8 @@ export const api = {
   },
   pruneAssets: () =>
     post<{ removed: number; removedItems: number }>('/api/assets/prune', {}),
+  /** Levanta o canal de novo, para os perfis de saída de agora valerem. */
+  restartChannel: (id: string) => post<{ ok: true }>(`/api/channels/${id}/restart`, {}),
   removeChannel: (id: string) =>
     send<{ ok: true }>(`/api/channels/${id}`, { method: 'DELETE' }),
   scanStatus: () => send<ScanStatus>('/api/library/scan'),

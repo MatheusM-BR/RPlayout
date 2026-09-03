@@ -959,6 +959,9 @@ input.bad { border-color: var(--onair); }
 }
 .trim .tela .som input[type='range'] { width: 96px; accent-color: var(--accent); }
 
+.note.reiniciar { display: flex; align-items: center; gap: 10px; }
+.note.reiniciar span { flex: 1 1 auto; }
+
 .app.recebendo-lista { outline: 2px dashed var(--accent); outline-offset: -6px; }
 .solta-aqui {
   position: fixed;
