@@ -80,10 +80,21 @@ export interface OutputProfile {
 }
 
 /** Situação da varredura do acervo. */
+/** Uma pasta onde o acervo procura arquivo. */
+export interface MediaRoot {
+  id: string
+  path: string
+  label: string
+  /** A pasta existe agora? Unidade de rede desconectada some sem avisar. */
+  present: boolean
+}
+
 export interface ScanStatus {
   available: boolean
   running: boolean
   root: string | null
+  /** As pastas do acervo. Ausente nas respostas antigas do servidor. */
+  folders?: MediaRoot[]
   current: string | null
   seen: number
   total: number

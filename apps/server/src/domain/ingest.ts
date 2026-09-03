@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream, mkdirSync } from 'node:fs'
 import { mkdir, readdir, stat } from 'node:fs/promises'
 import { constants, setPriority } from 'node:os'
-import { basename, dirname, extname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import type { AudioTrack } from '@rplayout/protocol'
@@ -38,7 +38,10 @@ type ProbeResult =
 
 export interface IngestStatus {
   readonly running: boolean
+  /** Pasta sendo varrida agora, das que entraram nesta varredura. */
   readonly root: string | null
+  /** Todas as pastas desta varredura. */
+  readonly roots: readonly string[]
   /** Arquivo sendo lido agora, para a interface não parecer travada. */
   readonly current: string | null
   readonly seen: number
@@ -57,6 +60,19 @@ export interface IngestStatus {
  * mudar: mais barato do que ingerir errado e ter que reconhecer isso depois.
  */
 const SETTLE_MS = 5_000
+
+/**
+ * Quanto a varredura espera, no fim, pelos arquivos que ainda estavam mudando.
+ *
+ * Antes disto o arquivo novo era pulado e ficava "para a próxima varredura" --
+ * só que a próxima varredura é alguém clicando de novo, e ninguém clica duas
+ * vezes para achar um arquivo que está claramente na pasta. O resultado era
+ * "mandei procurar e ele não achou", com a lista dizendo que tinha terminado.
+ *
+ * Agora eles voltam no fim da mesma varredura: uma cópia que acabou de sair
+ * entra sozinha, e uma cópia que continua correndo é declarada, não engolida.
+ */
+const SETTLE_WAIT_MS = 45_000
 
 /** Pastas que a varredura nunca desce. */
 const SKIP = new Set(['.git', 'node_modules', '.thumbs'])
@@ -93,6 +109,7 @@ export class Ingest {
   private state: IngestStatus = {
     running: false,
     root: null,
+    roots: [],
     current: null,
     seen: 0,
     total: 0,
@@ -143,11 +160,14 @@ export class Ingest {
    * medir loudness custa decodificar o áudio de cada arquivo -- e segurar a
    * resposta HTTP por isso deixaria a interface pendurada.
    */
-  start(root: string): boolean {
+  start(roots: string | readonly string[]): boolean {
     if (this.state.running || !this.available) return false
+    const pastas = (typeof roots === 'string' ? [roots] : roots).map((entry) => resolve(entry))
+    if (pastas.length === 0) return false
     this.state = {
       running: true,
-      root,
+      root: pastas[0] ?? null,
+      roots: pastas,
       current: null,
       seen: 0,
       total: 0,
@@ -159,7 +179,7 @@ export class Ingest {
       finishedAt: null,
       error: null,
     }
-    void this.run(root)
+    void this.run(pastas)
     return true
   }
 
@@ -167,17 +187,24 @@ export class Ingest {
     this.state = { ...this.state, ...change }
   }
 
-  private async run(root: string): Promise<void> {
+  private async run(roots: readonly string[]): Promise<void> {
     try {
-      const files = await walk(resolve(root))
-      this.patch({ total: files.length })
+      // Anda por todas as pastas antes de absorver qualquer coisa: o total é o
+      // que a interface mostra como progresso, e ele não pode crescer no meio.
+      const files: string[] = []
+      for (const root of roots) files.push(...(await walk(root)))
+      // A mesma pasta apontada duas vezes não faz o arquivo entrar duas vezes.
+      const unicos = [...new Set(files)].sort()
+      this.patch({ total: unicos.length })
       await mkdir(this.thumbnailDir, { recursive: true })
 
-      for (const file of files) {
+      const mudando: string[] = []
+      for (const file of unicos) {
         this.patch({ current: file, seen: this.state.seen + 1 })
-        await this.absorb(file)
+        if (!(await this.absorb(file))) mudando.push(file)
       }
-      await this.markVanished(resolve(root), files)
+      await this.esperarOsQueMudavam(mudando)
+      await this.markVanished(roots, unicos)
       await this.tirarListas()
       this.patch({ running: false, current: null, finishedAt: new Date().toISOString() })
       this.onFinished?.()
@@ -194,6 +221,37 @@ export class Ingest {
   }
 
   /**
+   * Volta nos arquivos que ainda estavam sendo copiados.
+   *
+   * Uma cópia grande pela rede continua correndo enquanto a varredura anda; o
+   * arquivo é pulado na primeira passada de propósito, para não entrar pela
+   * metade. Só que "fica para a próxima varredura" quer dizer "fica para
+   * alguém clicar de novo", e ninguém clica duas vezes para achar um arquivo
+   * que está claramente na pasta. Então a varredura espera aqui, no fim, com
+   * hora para acabar: o que parou entra, e o que continua correndo é contado
+   * como pulado -- declarado, não engolido.
+   */
+  private async esperarOsQueMudavam(arquivos: readonly string[]): Promise<void> {
+    if (arquivos.length === 0) return
+    const limite = Date.now() + SETTLE_WAIT_MS
+    let pendentes = [...arquivos]
+
+    while (pendentes.length > 0 && Date.now() < limite) {
+      this.patch({ current: `${pendentes[0]} (esperando a cópia terminar)` })
+      await new Promise((pronto) => setTimeout(pronto, 2_000))
+      const restam: string[] = []
+      for (const arquivo of pendentes) {
+        if (!(await this.absorb(arquivo))) restam.push(arquivo)
+      }
+      pendentes = restam
+    }
+
+    // Passou da hora e ainda mudam: entram na conta de pulados, com a última
+    // chance marcada para o contador não ficar mentindo.
+    for (const arquivo of pendentes) await this.absorb(arquivo, true)
+  }
+
+  /**
    * Marca o que sumiu da pasta.
    *
    * Arquivo apagado continuava no acervo como se estivesse lá, e só ia dar
@@ -201,13 +259,14 @@ export class Ingest {
    * para ele perderia a referência sem explicação. Ele fica, com o motivo à
    * vista, como qualquer arquivo que não abre.
    */
-  private async markVanished(root: string, seen: readonly string[]): Promise<void> {
+  private async markVanished(roots: readonly string[], seen: readonly string[]): Promise<void> {
     const present = new Set(seen)
     const rows = await this.db.select().from(mediaAssets)
     for (const row of rows) {
-      // Só o que está sob a pasta varrida: acervo de outra pasta não é
-      // assunto desta varredura.
-      if (!row.path.startsWith(root) || present.has(row.path)) continue
+      // Só o que está sob alguma pasta varrida: acervo de pasta que ficou de
+      // fora desta varredura não é assunto dela. Varrer uma pasta só e marcar
+      // o resto do acervo como sumido seria apagar o que ninguém olhou.
+      if (!roots.some((root) => dentroDe(root, row.path)) || present.has(row.path)) continue
       if (row.probeError === VANISHED) continue
       await this.db
         .update(mediaAssets)
@@ -232,12 +291,13 @@ export class Ingest {
     }
   }
 
-  private async absorb(path: string): Promise<void> {
+  private async absorb(path: string, ultimaChance = false): Promise<boolean> {
     const info = await stat(path)
     if (Date.now() - info.mtimeMs < SETTLE_MS) {
-      // Ainda mudando: fica para a próxima varredura.
+      // Ainda mudando. Volta no fim da varredura, quando tiver parado.
+      if (!ultimaChance) return false
       this.patch({ skipped: this.state.skipped + 1 })
-      return
+      return true
     }
 
     const modifiedAt = info.mtime.toISOString()
@@ -263,7 +323,7 @@ export class Ingest {
       !faltaMedir
     ) {
       this.patch({ skipped: this.state.skipped + 1 })
-      return
+      return true
     }
 
     const contentHash = await hashFile(path)
@@ -298,7 +358,7 @@ export class Ingest {
       }
       await this.upsert(existing?.id ?? null, row)
       this.patch({ failed: this.state.failed + 1 })
-      return
+      return true
     }
 
     const row = {
@@ -338,6 +398,7 @@ export class Ingest {
     this.patch(
       existing ? { updated: this.state.updated + 1 } : { added: this.state.added + 1 },
     )
+    return true
   }
 
   private async upsert(id: string | null, values: Record<string, unknown>): Promise<void> {
@@ -467,6 +528,13 @@ export class Ingest {
 }
 
 /** Percorre a árvore inteira. A organização em disco é a que o operador vê. */
+/** O caminho está sob a pasta? Comparação por segmento, não por prefixo de texto. */
+function dentroDe(root: string, alvo: string): boolean {
+  const raiz = resolve(root)
+  const caminho = resolve(alvo)
+  return caminho === raiz || caminho.startsWith(raiz + sep)
+}
+
 async function walk(root: string): Promise<string[]> {
   const found: string[] = []
   const pending = [root]

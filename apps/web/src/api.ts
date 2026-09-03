@@ -13,6 +13,7 @@ import type {
   FillPlan,
   ScheduleRule,
   LibraryFolder,
+  MediaRoot,
   OutputProfile,
   Categoria,
   PlaylistEntryView,
@@ -102,6 +103,11 @@ export const api = {
   removeChannel: (id: string) =>
     send<{ ok: true }>(`/api/channels/${id}`, { method: 'DELETE' }),
   scanStatus: () => send<ScanStatus>('/api/library/scan'),
+  mediaRoots: () => send<{ roots: MediaRoot[] }>('/api/library/roots'),
+  addMediaRoot: (path: string, label?: string) =>
+    post<{ root: MediaRoot; scanning: boolean }>('/api/library/roots', { path, label }),
+  removeMediaRoot: (id: string) =>
+    send<{ ok: true }>(`/api/library/roots/${id}`, { method: 'DELETE' }),
   outputs: (channelId: string) =>
     send<{ outputs: OutputProfile[] }>(`/api/channels/${channelId}/outputs`),
   addOutput: (channelId: string, body: { name: string; kind: string; target: string }) =>

@@ -32,6 +32,7 @@ import { buildCandidates, planFill } from './domain/autofill.js'
 import { backupDatabase, listBackups } from './domain/backup.js'
 import { syncDistribution } from './app.js'
 import { PORTS } from './domain/mediamtx.js'
+import * as Roots from './domain/roots.js'
 import {
   categories,
   channels,
@@ -47,7 +48,7 @@ import {
 import { asRun, operatorDecisions } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
-import { extname, resolve as resolvePath, sep } from 'node:path'
+import { extname, resolve as resolvePath } from 'node:path'
 import {
   createOutput,
   deleteOutput,
@@ -194,10 +195,15 @@ const snapshot = (app: App, runtime: ChannelRuntime) => ({
  * da máquina -- a rota existe para ler listas da pasta configurada, e é só
  * isso que ela vai ler.
  */
-function dentroDoAcervo(root: string, candidato: string): boolean {
-  const raiz = resolvePath(root)
-  const alvo = resolvePath(candidato)
-  return alvo === raiz || alvo.startsWith(raiz + sep)
+/**
+ * O caminho está dentro de alguma pasta do acervo?
+ *
+ * É a guarda que impede um caminho vindo de fora de virar leitura de qualquer
+ * arquivo da máquina. Com mais de uma pasta ela passou a perguntar a todas.
+ */
+async function dentroDoAcervo(app: App, candidato: string): Promise<boolean> {
+  const roots = await Roots.listRoots(app.db, app.mediaRoot)
+  return Roots.dentroDasPastas(roots, candidato)
 }
 
 function monitors(app: App, channelId: string) {
@@ -520,7 +526,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.get('/api/playlists', async () => {
     const assets = await listAssets(app.db)
-    const arquivos = await Playlists.findPlaylists(app.mediaRoot)
+    const roots = await Roots.listRoots(app.db, app.mediaRoot)
+    const arquivos: string[] = []
+    for (const root of roots) {
+      if (root.present) arquivos.push(...(await Playlists.findPlaylists(root.path)))
+    }
     const listas = []
     for (const caminho of arquivos) {
       const lista = await Playlists.describe(caminho, assets)
@@ -541,8 +551,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/playlists/entries', async (request, reply) => {
     const { path } = request.query as { path?: string }
     if (!path) return reply.code(400).send({ error: 'Diga qual lista.' })
-    if (!dentroDoAcervo(app.mediaRoot, path)) {
-      return reply.code(400).send({ error: 'Essa lista não está na pasta do acervo.' })
+    if (!(await dentroDoAcervo(app, path))) {
+      return reply.code(400).send({ error: 'Essa lista não está numa pasta do acervo.' })
     }
     if (!existsSync(path)) return reply.code(404).send({ error: 'Lista não encontrada.' })
 
@@ -566,8 +576,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .object({ path: z.string().min(1), replace: z.boolean().default(false) })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Diga qual lista.' })
-    if (!dentroDoAcervo(app.mediaRoot, body.data.path)) {
-      return reply.code(400).send({ error: 'Essa lista não está na pasta do acervo.' })
+    if (!(await dentroDoAcervo(app, body.data.path))) {
+      return reply.code(400).send({ error: 'Essa lista não está numa pasta do acervo.' })
     }
 
     const runtime = await runtimeForRundown(app, id)
@@ -848,11 +858,46 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
 
-  server.get('/api/library/scan', async () => ({
-    ...app.ingest.status(),
-    available: app.ingest.available,
-    root: app.ingest.status().root ?? app.mediaRoot,
+  server.get('/api/library/scan', async () => {
+    const roots = await Roots.listRoots(app.db, app.mediaRoot)
+    const estado = app.ingest.status()
+    return {
+      ...estado,
+      available: app.ingest.available,
+      root: estado.root ?? roots[0]?.path ?? app.mediaRoot,
+      folders: roots,
+    }
+  })
+
+  /** As pastas do acervo. */
+  server.get('/api/library/roots', async () => ({
+    roots: await Roots.listRoots(app.db, app.mediaRoot),
   }))
+
+  server.post('/api/library/roots', async (request, reply) => {
+    const body = z
+      .object({ path: z.string().min(1), label: z.string().optional() })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Diga o caminho da pasta.' })
+
+    const resultado = await Roots.addRoot(app.db, body.data.path, body.data.label)
+    if (!resultado.ok) return reply.code(400).send({ error: resultado.error })
+
+    // Varre só a pasta nova: quem acabou de apontar para uma pasta quer ver o
+    // que tem nela, e revarrer o acervo inteiro faria isso levar minutos.
+    if (app.ingest.available) app.ingest.start([resultado.root.path])
+    return { root: resultado.root, scanning: app.ingest.status().running }
+  })
+
+  server.delete('/api/library/roots/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!(await Roots.removeRoot(app.db, id))) {
+      return reply
+        .code(400)
+        .send({ error: 'Não deu para tirar essa pasta. O acervo precisa de pelo menos uma.' })
+    }
+    return { ok: true }
+  })
 
   server.post('/api/library/scan', async (request, reply) => {
     if (!app.ingest.available) {
@@ -867,7 +912,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     // que torna um acervo grande utilizável no mesmo dia.
     app.ingest.measure = body.data.measure ?? true
 
-    if (!app.ingest.start(body.data.root ?? app.mediaRoot)) {
+    // Sem pasta escolhida, varre todas -- que é o que "procurar arquivos"
+    // significa para quem tem o acervo espalhado em mais de um lugar. Pasta
+    // que não existe agora (rede caída) fica de fora: varrê-la marcaria o
+    // acervo inteiro dela como sumido.
+    const roots = await Roots.listRoots(app.db, app.mediaRoot)
+    const alvo = body.data.root
+      ? [body.data.root]
+      : roots.filter((root) => root.present).map((root) => root.path)
+    if (alvo.length === 0) {
+      return reply.code(409).send({ error: 'Nenhuma pasta do acervo está acessível agora.' })
+    }
+    if (!app.ingest.start(alvo)) {
       return reply.code(409).send({ error: 'A varredura já está em andamento.' })
     }
     return app.ingest.status()

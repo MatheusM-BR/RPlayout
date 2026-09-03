@@ -261,6 +261,20 @@ export const destinations = sqliteTable('destinations', {
  * guardava texto livre digitado pelo operador; usar o nome como chave faz o
  * que já estava lá continuar valendo sem migração nenhuma.
  */
+/**
+ * Pastas onde o acervo procura arquivo.
+ *
+ * O caminho é a chave: apontar duas vezes para a mesma pasta é a mesma pasta,
+ * e o banco recusa em vez de varrer duas vezes.
+ */
+export const mediaRoots = sqliteTable('media_roots', {
+  id: text('id').primaryKey(),
+  path: text('path').notNull().unique(),
+  /** Nome que o operador vê. Vazio nunca: cai no nome da última pasta. */
+  label: text('label').notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
 export const categories = sqliteTable('categories', {
   id: text('id').primaryKey(),
   /** Cor em hex, `#rrggbb`. */

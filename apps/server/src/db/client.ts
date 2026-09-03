@@ -175,6 +175,20 @@ CREATE TABLE IF NOT EXISTS categories (
   created_at TEXT NOT NULL
 );
 
+-- Pastas do acervo.
+--
+-- Antes disto havia uma só, fixada por variável de ambiente na hora de subir:
+-- trocar de pasta exigia mexer no atalho do Windows e reiniciar, e apontar
+-- para duas pastas era impossível. Numa emissora o material chega em mais de
+-- um lugar -- programação, comerciais, avulsos --, e obrigar tudo a morar sob
+-- a mesma raiz é obrigar a mover arquivo.
+CREATE TABLE IF NOT EXISTS media_roots (
+  id TEXT PRIMARY KEY,
+  path TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS operator_decisions (
   id TEXT PRIMARY KEY,
   rundown_id TEXT NOT NULL,

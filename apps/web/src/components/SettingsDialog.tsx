@@ -3,6 +3,7 @@ import { formatVideoFormat, type Channel } from '@rplayout/protocol'
 import { api } from '../api.js'
 import { BUILD_COMMIT, buildDate } from '../build.js'
 import { CategoriasPanel } from './CategoriasPanel.js'
+import { PastasPanel } from './PastasPanel.js'
 
 interface Props {
   channel: Channel
@@ -124,6 +125,7 @@ export function SettingsDialog({
             é isso que faz um cair sem levar o outro — e é isso que faz vários canais somarem CPU.
           </div>
 
+          <PastasPanel onMessage={onMessage} onChanged={onChanged} />
           <CategoriasPanel onMessage={onMessage} onChanged={onChanged} />
 
           <div className="field">
