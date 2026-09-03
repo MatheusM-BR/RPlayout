@@ -684,6 +684,38 @@ impl Channel {
         let silence_caps = make("capsfilter")?;
         silence_caps.set_property("caps", &audio_caps);
 
+        // Fila antes de cada entrada de agregador.
+        //
+        // Sem elas o GStreamer reclamava a cada recálculo de latência:
+        // "Impossible to configure latency: max 0 < min 33,366 ms. Add queues
+        // or other buffering elements." O mínimo é exatamente um quadro --
+        // o compositor precisa segurar um para compor --, e as fontes ao vivo
+        // (`intervideosrc`, `videotestsrc is-live`) anunciam máximo zero: elas
+        // não seguram nada. Agregador que não consegue configurar latência não
+        // tem folga nenhuma para buffer atrasado, e quadro que chega tarde é
+        // quadro descartado -- que é como a travadinha rítmica aparece.
+        //
+        // A fila é o que dá essa folga: ela anuncia a capacidade dela como
+        // latência máxima, e aí máximo passa a ser maior que mínimo.
+        let fila = |nome: &str| -> Result<gst::Element> {
+            let q = make("queue")?;
+            // Meio segundo de folga. Menos que isso não cobre um soluço de
+            // disco; muito mais seria atraso de verdade no ar.
+            q.set_property("max-size-time", 500_000_000u64);
+            q.set_property("max-size-buffers", 0u32);
+            q.set_property("max-size-bytes", 0u32);
+            // Descarte para a frente: entrada de agregador que enche e bloqueia
+            // trava o canal inteiro, e um canal parado é pior que um quadro
+            // perdido.
+            q.set_property_from_str("leaky", "downstream");
+            q.set_property("name", nome);
+            Ok(q)
+        };
+        let black_queue = fila("fila-fundo")?;
+        let silence_queue = fila("fila-silencio")?;
+        let program_video_queue = fila("fila-video")?;
+        let program_audio_queue = fila("fila-audio")?;
+
         // Entrada do programa: o que estiver publicando neste canal `inter`.
         let program_video = make("intervideosrc")?;
         program_video.set_property("channel", &video_channel);
@@ -751,6 +783,10 @@ impl Channel {
         pipeline.add_many([
             &black,
             &black_caps,
+            &black_queue,
+            &silence_queue,
+            &program_video_queue,
+            &program_audio_queue,
             &silence,
             &silence_caps,
             &program_video,
@@ -782,20 +818,22 @@ impl Channel {
             &meter_sink,
         ])?;
 
-        gst::Element::link_many([&black, &black_caps])?;
-        gst::Element::link_many([&silence, &silence_caps])?;
+        gst::Element::link_many([&black, &black_caps, &black_queue])?;
+        gst::Element::link_many([&silence, &silence_caps, &silence_queue])?;
         gst::Element::link_many([
             &program_video,
             &program_video_convert,
             &program_video_scale,
             &program_video_rate,
             &program_video_caps,
+            &program_video_queue,
         ])?;
         gst::Element::link_many([
             &program_audio,
             &program_audio_convert,
             &program_audio_resample,
             &program_audio_caps,
+            &program_audio_queue,
         ])?;
         gst::Element::link_many([
             &compositor,
@@ -822,34 +860,34 @@ impl Channel {
             .request_pad_simple("sink_%u")
             .ok_or_else(|| anyhow!("compositor recusou o pad do fundo"))?;
         background_pad.set_property("zorder", 0u32);
-        black_caps
+        black_queue
             .static_pad("src")
-            .ok_or_else(|| anyhow!("capsfilter do fundo sem src"))?
+            .ok_or_else(|| anyhow!("fila do fundo sem src"))?
             .link(&background_pad)?;
 
         let program_pad = compositor
             .request_pad_simple("sink_%u")
             .ok_or_else(|| anyhow!("compositor recusou o pad do programa"))?;
         program_pad.set_property("zorder", 1u32);
-        program_video_caps
+        program_video_queue
             .static_pad("src")
-            .ok_or_else(|| anyhow!("capsfilter do programa sem src"))?
+            .ok_or_else(|| anyhow!("fila do programa sem src"))?
             .link(&program_pad)?;
 
         let silence_pad = mixer
             .request_pad_simple("sink_%u")
             .ok_or_else(|| anyhow!("audiomixer recusou o pad do silêncio"))?;
-        silence_caps
+        silence_queue
             .static_pad("src")
-            .ok_or_else(|| anyhow!("capsfilter do silêncio sem src"))?
+            .ok_or_else(|| anyhow!("fila do silêncio sem src"))?
             .link(&silence_pad)?;
 
         let program_audio_pad = mixer
             .request_pad_simple("sink_%u")
             .ok_or_else(|| anyhow!("audiomixer recusou o áudio do programa"))?;
-        program_audio_caps
+        program_audio_queue
             .static_pad("src")
-            .ok_or_else(|| anyhow!("capsfilter do áudio do programa sem src"))?
+            .ok_or_else(|| anyhow!("fila do áudio do programa sem src"))?
             .link(&program_audio_pad)?;
 
         // Contador de frames na saída do compositor: prova objetiva de que o
