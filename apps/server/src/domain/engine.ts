@@ -77,12 +77,67 @@ export interface EngineOptions {
 /** Espera entre tentativas de subir o engine de novo. */
 const RESTART_DELAY_MS = 1_000
 /**
- * Quanto tempo sem quadro novo é considerado congelamento.
+ * Quanto tempo **observado** sem quadro novo é considerado congelamento.
  *
  * O engine reporta o contador a cada segundo; três segundos sem andar é longe
  * demais de um soluço e perto o bastante para o ar não ficar preto meio minuto.
  */
 const STALL_MS = 3_000
+/**
+ * Prazo para o primeiro quadro depois de subir o processo.
+ *
+ * Montar o pipeline não é instantâneo: há codificador para inicializar (NVENC
+ * demora), placa para abrir e estado para chegar em PLAYING. Enquanto isso o
+ * contador está em zero, e cobrar do processo recém-nascido o mesmo prazo de
+ * um canal em regime é o que fecha o laço mais cruel deste arquivo -- matar
+ * porque não subiu a tempo, e a morte custar mais uma montagem, para sempre.
+ */
+const BOOT_MS = 20_000
+/**
+ * Maior intervalo entre dois tiques que ainda conta como tempo observado.
+ *
+ * O tique nominal é de 50 ms. Um intervalo muito maior que isso quer dizer que
+ * o laço de eventos do Node ficou preso -- varredura de acervo, uma resposta
+ * grande, o que for. E aqui está a armadilha: o relatório de quadros chega
+ * pelo **mesmo** laço. Quando ele destrava, o Node roda a fase de temporizador
+ * antes da de entrada e saída, então o watchdog acorda primeiro e vê um vão de
+ * vários segundos com o contador parado -- só que parado porque ninguém leu, e
+ * não porque ninguém produziu. Contar esse vão contra o engine é acusar quem
+ * estava trabalhando. Tempo que não pudemos observar não conta.
+ */
+const TIQUE_SADIO_MS = 250
+
+/** O que o watchdog sabe do motor entre um tique e o outro. */
+export interface Vigilia {
+  /** Milissegundos desde o tique anterior. */
+  vao: number
+  /** O contador de quadros mudou desde o último tique? */
+  andou: boolean
+  /** Silêncio já observado, em milissegundos. */
+  semQuadroMs: number
+  /** O contador já andou alguma vez desde que este processo subiu? */
+  booted: boolean
+}
+
+/**
+ * A decisão do watchdog, sem processo nenhum por perto.
+ *
+ * Está separada porque é a única parte que dá para testar sem subir um engine
+ * de verdade -- e é justamente a parte que errava.
+ */
+export function decidirVigilia(v: Vigilia): {
+  semQuadroMs: number
+  booted: boolean
+  matar: boolean
+} {
+  if (v.andou) return { semQuadroMs: 0, booted: true, matar: false }
+  const semQuadroMs = v.semQuadroMs + (v.vao <= TIQUE_SADIO_MS ? v.vao : 0)
+  return {
+    semQuadroMs,
+    booted: v.booted,
+    matar: semQuadroMs >= (v.booted ? STALL_MS : BOOT_MS),
+  }
+}
 
 export class EngineTransport implements Transport {
   private child: ChildProcess
@@ -110,13 +165,21 @@ export class EngineTransport implements Transport {
   private alive = true
   private readonly args: string[]
   private readonly binary: string
-  /** Watchdog: quadros do programa e quando eles andaram pela última vez. */
+  /** Watchdog: quadros do programa e há quanto tempo observado eles não andam. */
   private framesOut = 0
   private lastFrames = 0
-  private lastProgress = Date.now()
+  /** Milissegundos de silêncio que o watchdog de fato conseguiu observar. */
+  private semQuadroMs = 0
+  /** Instante do tique anterior, para saber quanto do vão pôde ser observado. */
+  private lastTick = Date.now()
+  /** O contador já andou desde que este processo subiu? */
+  private booted = false
   private restartAt: number | null = null
   /** Quantas vezes o engine já teve de ser ressuscitado neste canal. */
   restarts = 0
+  /** Dessas, quantas foram morte do processo e quantas foram nós que matamos. */
+  private deaths = 0
+  private stalls = 0
   /** Último erro do engine, para a interface não ficar adivinhando. */
   lastError: string | null = null
 
@@ -190,18 +253,30 @@ export class EngineTransport implements Transport {
     child.stdout?.on('error', () => {})
     child.stderr?.on('error', () => {})
 
-    child.on('exit', (code) => {
+    child.on('exit', (code, signal) => {
       this.alive = false
-      this.lastError = `O engine encerrou com código ${code ?? 'desconhecido'}.`
+      // Sinal e código separados: quem morreu por SIGKILL nosso não é o mesmo
+      // caso de quem morreu por conta própria, e a mensagem tem de deixar isso
+      // legível para quem está lendo o log às três da manhã.
+      this.lastError = signal
+        ? `O engine foi encerrado por ${signal}.`
+        : `O engine encerrou com código ${code ?? 'desconhecido'}.`
+      if (!this.matandoPorTravamento) this.deaths += 1
+      this.matandoPorTravamento = false
       this.dirty = true
     })
 
     this.alive = true
     this.framesOut = 0
     this.lastFrames = 0
-    this.lastProgress = Date.now()
+    this.semQuadroMs = 0
+    this.lastTick = Date.now()
+    this.booted = false
     return child
   }
+
+  /** Verdadeiro entre o nosso SIGKILL e o `exit` que ele provoca. */
+  private matandoPorTravamento = false
 
   private absorb(line: string): void {
     if (line.trim() === '') return
@@ -290,11 +365,15 @@ export class EngineTransport implements Transport {
    * acorda mudo é tão inútil quanto um canal morto.
    */
   watchdog(): void {
+    const agora = Date.now()
+    const vao = agora - this.lastTick
+    this.lastTick = agora
+
     if (!this.alive) {
       // Espera curta entre tentativas: se o engine não sobe, insistir sem
       // pausa transforma um defeito em tempestade de processos.
-      this.restartAt ??= Date.now() + RESTART_DELAY_MS
-      if (Date.now() < this.restartAt) return
+      this.restartAt ??= agora + RESTART_DELAY_MS
+      if (agora < this.restartAt) return
 
       this.restartAt = null
       this.restarts += 1
@@ -303,22 +382,43 @@ export class EngineTransport implements Transport {
       return
     }
 
-    if (this.framesOut !== this.lastFrames) {
-      this.lastFrames = this.framesOut
-      this.lastProgress = Date.now()
-      return
-    }
-    if (Date.now() - this.lastProgress < STALL_MS) return
+    const decisao = decidirVigilia({
+      vao,
+      andou: this.framesOut !== this.lastFrames,
+      semQuadroMs: this.semQuadroMs,
+      booted: this.booted,
+    })
+    this.lastFrames = this.framesOut
+    this.semQuadroMs = decisao.semQuadroMs
+    this.booted = decisao.booted
+    if (!decisao.matar) return
 
     // Vivo e parado: derruba: o caminho de volta é o mesmo do processo morto,
     // e ter um caminho só é o que faz o conserto ser testável.
-    this.fail('O programa parou de produzir quadros; reiniciando o engine.')
-    this.lastProgress = Date.now()
+    //
+    // A mensagem carrega a prova. "O motor precisou ser levantado 21x" sem
+    // dizer o que foi visto manda o operador procurar uma queda que talvez
+    // nunca tenha existido -- foi exatamente o que aconteceu aqui.
+    this.stalls += 1
+    this.fail(
+      this.booted
+        ? `O programa parou de produzir quadros: ${(this.semQuadroMs / 1000).toFixed(1)}s ` +
+            `observados sem sair do quadro ${this.framesOut}. Reiniciando o engine.`
+        : `O engine não produziu o primeiro quadro em ${(this.semQuadroMs / 1000).toFixed(1)}s ` +
+            'desde que subiu. Reiniciando o engine.',
+    )
+    this.semQuadroMs = 0
+    this.matandoPorTravamento = true
     this.child.kill('SIGKILL')
   }
 
-  health(): { restarts: number; error: string | null } {
-    return { restarts: this.restarts, error: this.lastError }
+  health(): { restarts: number; deaths: number; stalls: number; error: string | null } {
+    return {
+      restarts: this.restarts,
+      deaths: this.deaths,
+      stalls: this.stalls,
+      error: this.lastError,
+    }
   }
 
   /** Põe de volta no ar o que estava no ar quando o engine caiu. */

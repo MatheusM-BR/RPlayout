@@ -402,9 +402,19 @@ export class ChannelRuntime {
 
     const health = this.transport.health()
     if (health.restarts > 0) {
+      // O motivo vai junto. Um motor que morreu sozinho e um motor que nós
+      // matamos por não estar entregando quadro são defeitos diferentes, e o
+      // alerta antigo -- só a contagem -- mandava procurar queda de processo
+      // mesmo quando nenhum processo tinha caído.
+      const causas = [
+        health.deaths > 0 ? `${health.deaths} por queda do processo` : null,
+        health.stalls > 0 ? `${health.stalls} por ficar sem entregar quadro` : null,
+      ].filter((causa): causa is string => causa !== null)
       found.push({
         kind: 'ENGINE',
-        message: `o motor precisou ser levantado ${health.restarts}x nesta sessão`,
+        message:
+          `o motor precisou ser levantado ${health.restarts}x nesta sessão` +
+          (causas.length > 0 ? ` (${causas.join(', ')})` : ''),
       })
     }
     return found
