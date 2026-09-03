@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { anchorTarget, durationIn, formatVideoFormat, isStill } from '@rplayout/protocol'
-import type { AudioLevel, EditScope, Fit, Trim } from '@rplayout/protocol'
+import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
+import type { AudioLevel, Channel, EditScope, Fit, Trim } from '@rplayout/protocol'
 import { api } from './api.js'
 import { clock, dur } from './format.js'
 import type {
@@ -68,7 +68,7 @@ export function App() {
   /** Situação da varredura do acervo. */
   const [scan, setScan] = useState<ScanStatus | null>(null)
   /** Canais existentes e a grade de cada um, para a troca de canal. */
-  const [channels, setChannels] = useState<{ id: string; name: string }[]>([])
+  const [channels, setChannels] = useState<Channel[]>([])
   const [rundownOf, setRundownOf] = useState<Record<string, string>>({})
   /** Nome do canal sendo criado, ou nulo quando ninguém está criando. */
   const [newChannel, setNewChannel] = useState<string | null>(null)
@@ -165,7 +165,7 @@ export function App() {
     void (async () => {
       try {
         const [state] = await Promise.all([api.state(), refreshLibrary()])
-        setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+        setChannels(state.channels)
         // Uma grade por canal: a primeira de cada um é a que a troca abre.
         const first: Record<string, string> = {}
         for (const rundown of state.rundowns) first[rundown.channelId] ??= rundown.id
@@ -539,7 +539,7 @@ export function App() {
     void guard(async () => {
       const created = await api.addChannel(name)
       const state = await api.state()
-      setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+      setChannels(state.channels)
       const map: Record<string, string> = {}
       for (const rundown of state.rundowns) map[rundown.channelId] ??= rundown.id
       setRundownOf(map)
@@ -1020,13 +1020,6 @@ export function App() {
         </button>
         <button
           className="btn"
-          onClick={() => setDialog({ kind: 'channel' })}
-          title={`Formato do canal — hoje em ${formatVideoFormat(view.channel)}`}
-        >
-          canal
-        </button>
-        <button
-          className="btn"
           onClick={() => {
             window.location.hash = 'distribuicao'
             setDialog({ kind: 'distribution' })
@@ -1138,7 +1131,7 @@ export function App() {
           onChanged={() => {
             void guard(async () => {
               const state = await api.state()
-              setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+              setChannels(state.channels)
               const map: Record<string, string> = {}
               for (const rundown of state.rundowns) map[rundown.channelId] ??= rundown.id
               setRundownOf(map)
@@ -1146,7 +1139,24 @@ export function App() {
               if (alvo) absorb(await api.rundown(alvo))
             })
           }}
-          onOpenFormat={() => setDialog({ kind: 'channel' })}
+          // Editar um canal que não está em foco troca o foco antes: a tela
+          // de canal mexe no canal em foco, e abrir ela apontando para outro
+          // faria a edição cair no canal errado.
+          onOpenFormat={(channelId) => {
+            if (channelId === view.channel.id) {
+              setDialog({ kind: 'channel' })
+              return
+            }
+            const rundownId = rundownOf[channelId]
+            if (!rundownId) {
+              say('Esse canal ainda não tem grade para abrir.')
+              return
+            }
+            void guard(async () => {
+              absorb(await api.rundown(rundownId))
+              setDialog({ kind: 'channel' })
+            })
+          }}
           onOpenDistribution={() => setDialog({ kind: 'distribution' })}
           onOpenGraphics={() => setDialog({ kind: 'graphics' })}
         />

@@ -959,6 +959,42 @@ input.bad { border-color: var(--onair); }
 }
 .trim .tela .som input[type='range'] { width: 96px; accent-color: var(--accent); }
 
+/* Lista de canais: cada um com o que ele é escrito na própria linha, e o
+   lápis na frente, que é onde a mão procura para editar. */
+.canais { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 4px; }
+.canais li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--raised);
+  border-radius: 2px;
+  padding: 7px 9px;
+}
+.canais li.foco { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-soft)); }
+.canais .quem { flex: 1 1 auto; min-width: 0; }
+.canais .nome { font-size: 13px; display: flex; align-items: center; gap: 7px; }
+.canais .detalhe {
+  font-size: 11px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lapis {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  background: var(--sunk);
+  color: var(--muted);
+  border-radius: 2px;
+  font-size: 13px;
+  line-height: 1;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.lapis:hover { color: var(--accent); border-color: var(--accent); }
+.dialog header .sub .lapis { margin-left: 8px; padding: 2px 6px; font-size: 11px; }
+
 .note.reiniciar { display: flex; align-items: center; gap: 10px; }
 .note.reiniciar span { flex: 1 1 auto; }
 

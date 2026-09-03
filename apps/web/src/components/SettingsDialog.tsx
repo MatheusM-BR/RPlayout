@@ -7,12 +7,13 @@ import { PastasPanel } from './PastasPanel.js'
 
 interface Props {
   channel: Channel
-  channels: { id: string; name: string }[]
+  channels: Channel[]
   onClose: () => void
   onMessage: (text: string) => void
   /** Recarrega canais e grade depois de mexer. */
   onChanged: () => void
-  onOpenFormat: () => void
+  /** Abre a edição de um canal. Outro que não o em foco troca o foco antes. */
+  onOpenFormat: (channelId: string) => void
   onOpenDistribution: () => void
   onOpenGraphics: () => void
 }
@@ -72,18 +73,52 @@ export function SettingsDialog({
       <div className="dialog wide" onClick={(event) => event.stopPropagation()}>
         <header>
           <h2>Configurações</h2>
-          <div className="sub">canal em foco: {channel.name} · {formatVideoFormat(channel)}</div>
+          <div className="sub">
+            canal em foco: {channel.name} · {formatVideoFormat(channel)}
+            <button
+              className="lapis"
+              title={`Editar ${channel.name}`}
+              aria-label={`Editar ${channel.name}`}
+              onClick={() => onOpenFormat(channel.id)}
+            >
+              ✎
+            </button>
+          </div>
         </header>
 
         <div className="body">
+          {/* Cada canal numa linha, com o que ele é escrito na própria linha.
+              Antes a lista dizia só o nome, e o formato de um canal que não
+              estava em foco não aparecia em lugar nenhum -- para saber em que
+              formato o outro canal estava era preciso trocar de canal. */}
           <div className="field">
             <label>Canais</label>
-            <ul className="cues">
+            <ul className="canais">
               {channels.map((entrada) => (
-                <li key={entrada.id}>
-                  <b>{entrada.id === channel.id ? 'no ar' : '—'}</b>
-                  <span>{entrada.name}</span>
-                  <i />
+                <li key={entrada.id} className={entrada.id === channel.id ? 'foco' : undefined}>
+                  <button
+                    className="lapis"
+                    title={
+                      entrada.id === channel.id
+                        ? `Editar ${entrada.name}`
+                        : `Editar ${entrada.name} (troca o canal em foco)`
+                    }
+                    aria-label={`Editar ${entrada.name}`}
+                    onClick={() => onOpenFormat(entrada.id)}
+                  >
+                    ✎
+                  </button>
+                  <div className="quem">
+                    <div className="nome">
+                      {entrada.name}
+                      {entrada.id === channel.id && <span className="pill">em foco</span>}
+                    </div>
+                    <div className="detalhe mono">
+                      {formatVideoFormat(entrada)} · {entrada.width}×{entrada.height} ·{' '}
+                      {entrada.scan === 'INTERLACED' ? 'entrelaçado' : 'progressivo'} · alvo{' '}
+                      {entrada.targetLufs} LUFS · teto {entrada.ceilingDbtp} dBTP
+                    </div>
+                  </div>
                   <button
                     className="btn small"
                     disabled={busy || channels.length <= 1}
@@ -99,30 +134,23 @@ export function SettingsDialog({
                 </li>
               ))}
             </ul>
-          </div>
-
-          <div className="row">
-            <div className="field">
-              <label>Novo canal</label>
+            <div className="pastas-add">
               <input
                 type="text"
-                placeholder="nome do canal"
+                placeholder="nome do canal novo"
                 value={novo}
                 onChange={(event) => setNovo(event.target.value)}
                 onKeyDown={(event) => event.key === 'Enter' && criar()}
               />
-            </div>
-            <div className="field">
-              <label>&nbsp;</label>
-              <button className="btn" disabled={busy || novo.trim() === ''} onClick={criar}>
-                criar
+              <button className="btn small" disabled={busy || novo.trim() === ''} onClick={criar}>
+                CRIAR CANAL
               </button>
             </div>
-          </div>
-
-          <div className="note">
-            Canal novo nasce no formato do primeiro e com grade vazia. Cada um tem engine próprio:
-            é isso que faz um cair sem levar o outro — e é isso que faz vários canais somarem CPU.
+            <div className="note">
+              Canal novo nasce no formato do primeiro e com grade vazia. Cada um tem engine
+              próprio: é isso que faz um cair sem levar o outro — e é isso que faz vários canais
+              somarem CPU.
+            </div>
           </div>
 
           <PastasPanel onMessage={onMessage} onChanged={onChanged} />
@@ -131,10 +159,6 @@ export function SettingsDialog({
           <div className="field">
             <label>Ajustes deste canal</label>
             <div className="atalhos">
-              <button className="btn" onClick={onOpenFormat}>
-                formato de vídeo
-                <i>{formatVideoFormat(channel)}</i>
-              </button>
               <button className="btn" onClick={onOpenDistribution}>
                 saídas
                 <i>RTMP, SRT, Decklink, convidados e destinos</i>
