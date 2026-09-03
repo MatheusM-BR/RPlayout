@@ -1,0 +1,1208 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { anchorTarget, durationIn, formatVideoFormat, isStill } from '@rplayout/protocol'
+import type { AudioLevel, EditScope, Fit, Trim } from '@rplayout/protocol'
+import { api } from './api.js'
+import { clock, dur } from './format.js'
+import type {
+  HistoryState,
+  ItemView,
+  LibraryAsset,
+  LibraryFolder,
+  Live,
+  ScanStatus,
+  Monitors as MonitorFeeds,
+  RundownView,
+  Snapshot,
+  Categoria,
+} from './types.js'
+import { AddItemDialog, type NewItem } from './components/AddItemDialog.js'
+import { StillDialog } from './components/StillDialog.js'
+import { AudioDialog } from './components/AudioDialog.js'
+import { Distribution } from './components/Distribution.js'
+import { Explorer } from './components/Explorer.js'
+import { AsRunPanel } from './components/AsRunPanel.js'
+import { Problemas, type Problema } from './components/Problemas.js'
+import { AutoFillDialog } from './components/AutoFillDialog.js'
+import { ChannelDialog } from './components/ChannelDialog.js'
+import { SettingsDialog } from './components/SettingsDialog.js'
+import { GraphicsPanel } from './components/GraphicsPanel.js'
+import { ItemGraphicsDialog } from './components/ItemGraphicsDialog.js'
+import { Monitors } from './components/Monitors.js'
+import { Rundown } from './components/Rundown.js'
+import { TrimDialog } from './components/TrimDialog.js'
+import { PlaylistsDialog } from './components/PlaylistsDialog.js'
+
+type Dialog =
+  | { kind: 'trim'; view: ItemView }
+  | { kind: 'playlists' }
+  | { kind: 'still'; view: ItemView }
+  | { kind: 'audio'; view: ItemView }
+  | { kind: 'add'; assetId?: string }
+  | { kind: 'distribution' }
+  | { kind: 'graphics' }
+  | { kind: 'itemGraphics'; view: ItemView }
+  | { kind: 'asrun' }
+  | { kind: 'autofill' }
+  | { kind: 'channel' }
+  | { kind: 'settings' }
+  | null
+
+export function App() {
+  const [view, setView] = useState<RundownView | null>(null)
+  const [live, setLive] = useState<Live | null>(null)
+  const [folders, setFolders] = useState<LibraryFolder[]>([])
+  const [categorias, setCategorias] = useState<Categoria[]>([])
+  const [dialog, setDialog] = useState<Dialog>(null)
+  /** Uma lista .m3u está sendo arrastada por cima da janela. */
+  const [listaSobrevoando, setListaSobrevoando] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [history, setHistory] = useState<HistoryState>({
+    canUndo: false,
+    canRedo: false,
+    undoLabel: null,
+    redoLabel: null,
+  })
+  /** Onde buscar a imagem dos monitores. Nulo enquanto não há servidor de mídia. */
+  const [monitors, setMonitors] = useState<MonitorFeeds | null>(null)
+  /** Situação da varredura do acervo. */
+  const [scan, setScan] = useState<ScanStatus | null>(null)
+  /** Canais existentes e a grade de cada um, para a troca de canal. */
+  const [channels, setChannels] = useState<{ id: string; name: string }[]>([])
+  const [rundownOf, setRundownOf] = useState<Record<string, string>>({})
+  /** Nome do canal sendo criado, ou nulo quando ninguém está criando. */
+  const [newChannel, setNewChannel] = useState<string | null>(null)
+  /** Enquanto a primeira consulta não voltou, não dá para dizer que não há canal. */
+  const [loading, setLoading] = useState(true)
+  /** Tudo que deu errado nesta sessão, venha de onde vier. */
+  const [problemas, setProblemas] = useState<Problema[]>([])
+  const proximoProblema = useRef(1)
+  /** O que já foi anotado, para não repetir a cada releitura. */
+  const vistos = useRef(new Set<string>())
+  /** Linhas marcadas para agrupar. Marcar não é armar: o PGM não muda. */
+  const [marked, setMarked] = useState<Set<string>>(new Set())
+  const lastClicked = useRef<string | null>(null)
+  /**
+   * Canal que a tela está mostrando.
+   *
+   * Numa `ref` porque o ouvinte do WebSocket é montado uma vez e precisa
+   * enxergar a troca de canal sem ser remontado -- reconectar a cada troca
+   * perderia eventos justamente no instante em que o operador está olhando.
+   */
+  const channelRef = useRef<string | null>(null)
+  const toastTimer = useRef<number | null>(null)
+
+  const assets = useMemo<LibraryAsset[]>(
+    () => folders.flatMap((folder) => folder.assets),
+    [folders],
+  )
+
+  const say = useCallback((message: string) => {
+    setToast(message)
+    if (toastTimer.current) window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToast(null), 3600)
+  }, [])
+
+  const absorb = useCallback((snapshot: Snapshot) => {
+    if (snapshot.view) setView(snapshot.view)
+    setLive(snapshot.live)
+    setHistory(snapshot.history)
+    setMonitors(snapshot.monitors)
+  }, [])
+
+  /**
+   * Registra um problema no sino do canto.
+   *
+   * Erro que aparece por três segundos e some não existe para quem estava
+   * olhando o monitor -- e num playout, o operador está olhando o monitor.
+   */
+  const anotar = useCallback((origem: Problema['origem'], texto: string) => {
+    // O mesmo problema não vira cem linhas: a lista do acervo é relida a cada
+    // varredura, e sem isto cada leitura repetiria os arquivos quebrados
+    // inteiros. Guardar o que já foi anotado é o que mantém a lista legível.
+    const chave = `${origem}:${texto}`
+    if (vistos.current.has(chave)) return
+    vistos.current.add(chave)
+
+    setProblemas((atuais) => {
+      const novo: Problema = {
+        id: proximoProblema.current++,
+        quando: new Date().toLocaleTimeString('pt-BR'),
+        origem,
+        texto,
+      }
+      return [novo, ...atuais].slice(0, 200)
+    })
+  }, [])
+
+  const guard = useCallback(
+    async (action: () => Promise<void>) => {
+      try {
+        await action()
+        setError(null)
+      } catch (failure) {
+        const texto = failure instanceof Error ? failure.message : 'Falha inesperada.'
+        setError(texto)
+        anotar('SERVIDOR', texto)
+      }
+    },
+    [anotar],
+  )
+
+  const refreshLibrary = useCallback(async () => {
+    const [library, status, cats] = await Promise.all([
+      api.library(),
+      api.scanStatus(),
+      api.categories(),
+    ])
+    setFolders(library.folders)
+    setScan(status)
+    setCategorias(cats.categories)
+    return status
+  }, [])
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const [state] = await Promise.all([api.state(), refreshLibrary()])
+        setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+        // Uma grade por canal: a primeira de cada um é a que a troca abre.
+        const first: Record<string, string> = {}
+        for (const rundown of state.rundowns) first[rundown.channelId] ??= rundown.id
+        setRundownOf(first)
+
+        const start = state.rundowns[0]
+        if (start) absorb(await api.rundown(start.id))
+      } catch (failure) {
+        setError(failure instanceof Error ? failure.message : 'Servidor fora do ar.')
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [absorb, refreshLibrary])
+
+  /**
+   * Dispara a varredura e acompanha até acabar.
+   *
+   * Ler um acervo inteiro leva minutos -- medir loudness custa decodificar o
+   * áudio de cada arquivo --, então quem informa o andamento é a consulta, não
+   * a resposta do disparo.
+   */
+  const startScan = useCallback(async (measure: boolean) => {
+    try {
+      setScan(await api.scan(measure))
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Não consegui ler a pasta.')
+      return
+    }
+
+    const poll = window.setInterval(() => {
+      void refreshLibrary().then((status) => {
+        if (status.running) return
+        window.clearInterval(poll)
+        say(
+          status.error ??
+            `Acervo lido: ${status.added} novos, ${status.updated} atualizados, ${status.failed} sem abrir.`,
+        )
+      })
+    }, 1000)
+  }, [refreshLibrary, say])
+
+  // O painel de distribuição tem endereço próprio: dá para deixar aberto numa
+  // segunda tela ou mandar o link para quem cuida da entrega.
+  useEffect(() => {
+    const sync = (): void => {
+      if (window.location.hash === '#distribuicao') setDialog({ kind: 'distribution' })
+    }
+    sync()
+    window.addEventListener('hashchange', sync)
+    return () => window.removeEventListener('hashchange', sync)
+  }, [])
+
+  // Erro de JavaScript na própria tela também é problema do operador: sem
+  // isto ele só existiria no console do navegador, que ninguém abre no ar.
+  useEffect(() => {
+    const naTela = (evento: ErrorEvent): void => anotar('TELA', evento.message)
+    const promessa = (evento: PromiseRejectionEvent): void =>
+      anotar('TELA', String(evento.reason))
+    window.addEventListener('error', naTela)
+    window.addEventListener('unhandledrejection', promessa)
+    return () => {
+      window.removeEventListener('error', naTela)
+      window.removeEventListener('unhandledrejection', promessa)
+    }
+  }, [anotar])
+
+  // Saída que caiu vem no estado ao vivo; entra no sino uma vez por motivo.
+  useEffect(() => {
+    for (const alerta of live?.alerts ?? []) anotar('SAÍDA', alerta.message)
+  }, [live?.alerts, anotar])
+
+  // Arquivo que não abriu é problema de acervo, e o motivo é acionável.
+  useEffect(() => {
+    for (const asset of assets) {
+      if (asset.probeError) anotar('ARQUIVO', `${asset.title}: ${asset.probeError}`)
+    }
+  }, [assets, anotar])
+
+  useEffect(() => {
+    const socket = new WebSocket(`ws://${window.location.host}/ws`)
+    socket.addEventListener('message', (event: MessageEvent<string>) => {
+      const payload = JSON.parse(event.data) as
+        | { type: 'view'; channelId: string; view: RundownView | null }
+        | ({ type: 'live'; channelId: string } & Live)
+
+      // O servidor transmite todos os canais; a tela mostra um. Sem este
+      // filtro, dois canais no ar fazem a interface piscar entre os dois.
+      if (payload.channelId !== channelRef.current) return
+
+      if (payload.type === 'view') {
+        if (payload.view) setView(payload.view)
+      } else {
+        setLive({
+          transport: payload.transport,
+          graphic: payload.graphic,
+          alerts: payload.alerts,
+          now: payload.now,
+          meters: payload.meters,
+        })
+      }
+    })
+    return () => socket.close()
+  }, [])
+
+  channelRef.current = view?.channel.id ?? null
+
+  const schedule = useMemo(
+    () => new Map((view?.schedule.items ?? []).map((item) => [item.id, item])),
+    [view],
+  )
+
+  const errorIds = useMemo(
+    () =>
+      new Set(
+        (view?.schedule.conflicts ?? [])
+          .filter((conflict) => conflict.severity === 'ERROR')
+          .map((conflict) => conflict.itemId),
+      ),
+    [view],
+  )
+
+  const target = live?.transport.preview ?? null
+  const selectedId = target?.kind === 'ITEM' ? target.id : null
+  const openAssetId = target?.kind === 'ASSET' ? target.id : null
+  const onAirId = live?.transport.onAir?.itemId ?? null
+
+  const onAirItem = view?.items.find((item) => item.item.id === onAirId) ?? null
+  const selected = view?.items.find((item) => item.item.id === selectedId) ?? null
+
+  const remainingOnAir = useMemo(() => {
+    if (!live?.transport.onAir || !onAirId) return 0
+    const scheduled = schedule.get(onAirId)
+    return Math.max(0, (scheduled?.duration ?? 0) - live.transport.onAir.elapsed)
+  }, [live, onAirId, schedule])
+
+  /** O que a interface desenha no monitor de preview, venha de onde vier. */
+  const previewCard = useMemo(() => {
+    if (target?.kind === 'ITEM' && selected) {
+      return {
+        title: selected.item.title,
+        duration: schedule.get(selected.item.id)?.duration ?? 0,
+        fromExplorer: false,
+      }
+    }
+    if (target?.kind === 'ASSET' && view) {
+      const asset = assets.find((candidate) => candidate.id === target.id)
+      if (asset) {
+        return {
+          title: asset.title,
+          duration: durationIn(asset, view.channel.rate),
+          fromExplorer: true,
+        }
+      }
+    }
+    return null
+  }, [target, selected, schedule, assets, view])
+
+  /**
+   * Próximo item com hora marcada. É a informação que o operador realmente
+   * precisa no alto da tela: quanto falta para o compromisso seguinte.
+   */
+  const commitment = useMemo(() => {
+    if (!view || !live) return null
+    for (const item of view.items) {
+      if (item.item.anchor.kind === 'FLOW') continue
+      const scheduled = schedule.get(item.item.id)
+      if (!scheduled || scheduled.state === 'DROPPED') continue
+      if (scheduled.start <= live.now) continue
+      return { title: item.item.title, at: scheduled.start, left: scheduled.start - live.now }
+    }
+    return null
+  }, [view, live, schedule])
+
+  const totalDuration = useMemo(
+    () =>
+      (view?.schedule.items ?? [])
+        .filter((item) => item.state !== 'DROPPED')
+        .reduce((sum, item) => sum + item.duration, 0),
+    [view],
+  )
+
+  const command = useCallback(
+    (action: 'take' | 'cue' | 'stop' | 'park', body?: { itemId?: string; assetId?: string }) =>
+      guard(async () => {
+        if (!view) return
+        absorb(await api.transport(view.channel.id, action, body))
+      }),
+    [view, guard, absorb],
+  )
+
+  const undo = useCallback(
+    (direction: 'undo' | 'redo') =>
+      guard(async () => {
+        if (!view) return
+        const result =
+          direction === 'undo' ? await api.undo(view.rundown.id) : await api.redo(view.rundown.id)
+        absorb(result)
+        say(`${direction === 'undo' ? 'Desfeito' : 'Refeito'}: ${result.label}.`)
+      }),
+    [view, guard, absorb, say],
+  )
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      const element = event.target as HTMLElement | null
+      const typing = element?.tagName === 'INPUT' || element?.tagName === 'SELECT'
+
+      if (event.key === 'Escape') {
+        setDialog(null)
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault()
+        void undo(event.shiftKey ? 'redo' : 'undo')
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+        event.preventDefault()
+        void undo('redo')
+        return
+      }
+      if (typing || dialog) return
+
+      if (event.code === 'Space') {
+        event.preventDefault()
+        if (selectedId) void command('take', { itemId: selectedId })
+      }
+      // Delete tira da grade. Backspace não: num teclado de notebook ele fica
+      // ao lado do Enter e a chance de errar não vale a comodidade.
+      if (event.key === 'Delete' && selectedId) {
+        event.preventDefault()
+        removerItem(selectedId)
+      }
+      if (event.key === 'i' && selected?.asset) setDialog({ kind: 'trim', view: selected })
+      if (event.key === 'n' && selected?.asset) setDialog({ kind: 'audio', view: selected })
+
+      // Setas andam pela grade armando linha a linha, sem tirar a mão do teclado.
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        const items = view?.items ?? []
+        if (items.length === 0) return
+        const current = items.findIndex((item) => item.item.id === selectedId)
+        const step = event.key === 'ArrowDown' ? 1 : -1
+        const nextIndex = current < 0 ? 0 : Math.min(items.length - 1, Math.max(0, current + step))
+        const nextItem = items[nextIndex]
+        if (nextItem) void command('cue', { itemId: nextItem.item.id })
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [dialog, selected, selectedId, command, view, undo])
+
+  const move = (id: string, toIndex: number): void => {
+    void guard(async () => {
+      absorb(await api.moveItem(id, toIndex))
+    })
+  }
+
+  const group = (): void => {
+    if (!view || marked.size < 2) return
+    void guard(async () => {
+      absorb(await api.group(view.rundown.id, [...marked]))
+      setMarked(new Set())
+      say('Bloco criado. Os itens passam a andar juntos.')
+    })
+  }
+
+  /**
+   * Tira o item da grade.
+   *
+   * O que está no ar não sai: apagar a linha não tira a imagem da tela, e a
+   * grade passaria a mentir sobre o que está acontecendo. Parar primeiro é uma
+   * decisão consciente; apagar por engano no meio de um VT não é.
+   *
+   * O resto sai na hora, sem perguntar -- porque desfazer existe e é um Ctrl+Z.
+   * Caixa de confirmação em ferramenta de todo dia vira clique automático, e aí
+   * não protege ninguém.
+   */
+  const removerItem = (id: string): void => {
+    if (id === onAirId) {
+      say('O item no ar não sai da grade. Pare antes.')
+      return
+    }
+    const alvo = view?.items.find((entry) => entry.item.id === id)
+    void guard(async () => {
+      absorb(await api.removeItem(id))
+      say(`"${alvo?.item.title ?? 'Item'}" saiu da grade — Ctrl+Z traz de volta.`)
+    })
+  }
+
+  const ungroup = (blockId: string): void => {
+    void guard(async () => {
+      absorb(await api.ungroup(blockId))
+      say('Bloco desfeito.')
+    })
+  }
+
+  /** Clique simples arma; shift marca faixa; ctrl marca item a item. */
+  const select = (id: string, modifier: 'none' | 'range' | 'toggle'): void => {
+    const items = view?.items ?? []
+
+    if (modifier === 'none') {
+      setMarked(new Set())
+      lastClicked.current = id
+      void command('cue', { itemId: id })
+      return
+    }
+
+    setMarked((current) => {
+      const next = new Set(current)
+      if (modifier === 'toggle') {
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      }
+
+      const from = items.findIndex((entry) => entry.item.id === (lastClicked.current ?? id))
+      const to = items.findIndex((entry) => entry.item.id === id)
+      if (from < 0 || to < 0) return next
+      for (let index = Math.min(from, to); index <= Math.max(from, to); index++) {
+        const entry = items[index]
+        if (entry) next.add(entry.item.id)
+      }
+      return next
+    })
+    lastClicked.current = id
+  }
+
+  const applyTrim = (trim: Trim, scope: EditScope): void => {
+    const item = dialog?.kind === 'trim' ? dialog.view : null
+    if (!item) return
+    setDialog(null)
+    void guard(async () => {
+      const result = await api.setTrim(item.item.id, trim, scope)
+      absorb(result)
+      say(result.result.message)
+    })
+  }
+
+  const applyAudio = (audio: AudioLevel, scope: EditScope): void => {
+    const item = dialog?.kind === 'audio' ? dialog.view : null
+    if (!item) return
+    setDialog(null)
+    void guard(async () => {
+      const result = await api.setAudio(item.item.id, audio, scope)
+      absorb(result)
+      say(result.result.message)
+    })
+  }
+
+  const addItem = (request: NewItem): void => {
+    if (!view) return
+    setDialog(null)
+    void guard(async () => {
+      absorb(await api.addItem(view.rundown.id, request))
+      const at = anchorTarget(request.anchor)
+      say(
+        at === null
+          ? 'Item inserido no fim da grade.'
+          : `Item inserido em ${clock(at, view.channel.rate)}; a grade foi remanejada.`,
+      )
+    })
+  }
+
+  /** Cria um canal e abre a grade dele. Serve à barra e à tela de primeira vez. */
+  const createChannel = (): void => {
+    const name = (newChannel ?? '').trim()
+    if (name === '') return
+    setNewChannel(null)
+    void guard(async () => {
+      const created = await api.addChannel(name)
+      const state = await api.state()
+      setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+      const map: Record<string, string> = {}
+      for (const rundown of state.rundowns) map[rundown.channelId] ??= rundown.id
+      setRundownOf(map)
+      absorb(await api.rundown(created.rundownId))
+      say(`${name} criado, com grade vazia.`)
+    })
+  }
+
+  /**
+   * A cor de cada categoria, para a grade e o explorador pintarem a linha.
+   *
+   * Cor é o que faz o operador achar o bloco comercial no meio de uma grade de
+   * cem linhas sem ler nome nenhum.
+   */
+  const coresDeCategoria = useMemo(
+    () => new Map(categorias.map((categoria) => [categoria.id, categoria.color])),
+    [categorias],
+  )
+
+  /** Categorias que já existem no acervo, para o explorador oferecer. */
+  const categories = useMemo(
+    () =>
+      [...new Set(assets.map((asset) => asset.categoryId).filter((id): id is string => !!id))].sort(),
+    [assets],
+  )
+
+  /** Arquivo largado na grade: entra na posição em que caiu. */
+  const inserirEm = (assetId: string, atIndex: number): void => {
+    if (!view) return
+    const asset = assets.find((candidate) => candidate.id === assetId)
+    void guard(async () => {
+      absorb(
+        await api.addItem(view.rundown.id, {
+          mediaId: assetId,
+          type: 'VT',
+          title: asset?.title,
+          anchor: { kind: 'FLOW' },
+          atIndex,
+        }),
+      )
+      say(`${asset?.title ?? 'Arquivo'} inserido na posição ${atIndex + 1}.`)
+    })
+  }
+
+  const inserirNoFim = (assetId: string): void => {
+    if (!view) return
+    const asset = assets.find((candidate) => candidate.id === assetId)
+    void guard(async () => {
+      absorb(
+        await api.addItem(view.rundown.id, {
+          mediaId: assetId,
+          type: 'VT',
+          title: asset?.title,
+          anchor: { kind: 'FLOW' },
+        }),
+      )
+      say(`${asset?.title ?? 'Arquivo'} no fim da grade.`)
+    })
+  }
+
+  const removerDoAcervo = (assetId: string): void => {
+    const asset = assets.find((candidate) => candidate.id === assetId)
+    void guard(async () => {
+      const resultado = await api.removeAsset(assetId)
+      if (resultado.conflito) {
+        // Arquivo em uso não sai calado: a grade que aponta para ele perderia a
+        // referência, e quem decide isso é o operador.
+        const quantos = resultado.items ?? 0
+        if (!window.confirm(`${resultado.conflito}\n\nTirar mesmo assim remove ${quantos} item(ns) da grade.`)) {
+          return
+        }
+        await api.removeAsset(assetId, true)
+      }
+      await refreshLibrary()
+      absorb(await api.rundown(view!.rundown.id))
+      say(`${asset?.title ?? 'Arquivo'} saiu do acervo. O arquivo em disco não foi tocado.`)
+    })
+  }
+
+  const categorizar = (assetId: string, categoryId: string | null): void => {
+    void guard(async () => {
+      await api.patchAsset(assetId, { categoryId })
+      await refreshLibrary()
+      say(categoryId ? `Categoria: ${categoryId}.` : 'Categoria removida.')
+    })
+  }
+
+  const limparQuebrados = (): void => {
+    void guard(async () => {
+      const resultado = await api.pruneAssets()
+      await refreshLibrary()
+      if (view) absorb(await api.rundown(view.rundown.id))
+      say(
+        `${resultado.removed} arquivo(s) que não abriram saíram do acervo` +
+          (resultado.removedItems > 0 ? `, e ${resultado.removedItems} item(ns) da grade.` : '.'),
+      )
+    })
+  }
+
+  const setTrack = (id: string, audioTrack: number): void => {
+    void guard(async () => {
+      absorb(await api.patchItem(id, { audioTrack }))
+      say(`Item passa a tocar a ${audioTrack + 1}ª trilha de áudio.`)
+    })
+  }
+
+  const setFit = (id: string, fit: Fit): void => {
+    void guard(async () => {
+      absorb(await api.patchItem(id, { fit }))
+      say(
+        fit === 'CROP'
+          ? 'Item enche a tela; a sobra da proporção é cortada.'
+          : 'Item entra inteiro, com barra preta na sobra.',
+      )
+    })
+  }
+
+  const saveNotes = (id: string, notes: string): void => {
+    void guard(async () => {
+      absorb(await api.patchItem(id, { notes: notes.trim() === '' ? null : notes }))
+    })
+  }
+
+  // Instalação nova: banco sem canal nenhum. Antes disto a tela ficava em
+  // "carregando" para sempre, que é a pior primeira impressão possível --
+  // parece defeito e é só falta de canal.
+  if (!view && channels.length === 0 && !loading) {
+    return (
+      <div className="app">
+        <div className="firstrun">
+          <h1>
+            RPlayout<span>.</span>
+          </h1>
+          <p>
+            Nenhum canal ainda. Um canal é o que tem grade, saídas e monitores — sem ele não há
+            o que operar.
+          </p>
+          <div className="row">
+            <input
+              type="text"
+              autoFocus
+              placeholder="nome do canal"
+              value={newChannel ?? ''}
+              onChange={(event) => setNewChannel(event.target.value)}
+              onKeyDown={(event) => event.key === 'Enter' && createChannel()}
+            />
+            <button className="btn take" onClick={createChannel}>
+              criar canal
+            </button>
+          </div>
+          <p className="hint">
+            O canal nasce em 1920×1080 a 50 quadros, com uma grade vazia. Depois aponte
+            <code>RPLAYOUT_MEDIA</code> para a sua pasta de vídeos e use <b>LER PASTA</b>: o
+            acervo é lido do disco, com duração, loudness e miniatura de cada arquivo.
+          </p>
+          {error && <p className="hint bad">{error}</p>}
+        </div>
+      </div>
+    )
+  }
+
+  if (!view || !live) {
+    return (
+      <div className="app">
+        <div className="empty" style={{ padding: 32 }}>
+          {error ?? 'Carregando a grade…'}
+        </div>
+      </div>
+    )
+  }
+
+  const rate = view.channel.rate
+  const near = commitment !== null && commitment.left <= 60 * (rate.num / rate.den)
+
+  /**
+   * Lista arrastada de qualquer lugar da máquina para dentro da janela.
+   *
+   * O navegador não entrega o caminho de um arquivo arrastado -- só o nome e o
+   * conteúdo --, então quem lê é o servidor, a partir do texto. É por isso que
+   * dá para arrastar um `.m3u` que nem está numa pasta do acervo.
+   */
+  const soltarLista = (event: React.DragEvent): void => {
+    event.preventDefault()
+    setListaSobrevoando(false)
+    const arquivo = [...(event.dataTransfer.files ?? [])].find((entrada) =>
+      /\.m3u8?$/i.test(entrada.name),
+    )
+    if (!arquivo) return
+
+    void arquivo
+      .text()
+      .then(async (texto) => {
+        const resposta = await api.loadPlaylistText(view.rundown.id, texto, false)
+        absorb(resposta)
+        say(
+          resposta.skipped > 0
+            ? `"${arquivo.name}": ${resposta.loaded} item(ns) na grade, ${resposta.skipped} sem arquivo no acervo.`
+            : `"${arquivo.name}": ${resposta.loaded} item(ns) na grade.`,
+        )
+      })
+      .catch((falha: Error) => setError(falha.message))
+  }
+
+  return (
+    <div
+      className={`app${listaSobrevoando ? ' recebendo-lista' : ''}`}
+      onDragOver={(event) => {
+        // Só reage a arquivo vindo de fora: arrastar item dentro da grade não
+        // pode acender a tela inteira.
+        if (!event.dataTransfer.types.includes('Files')) return
+        event.preventDefault()
+        setListaSobrevoando(true)
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget === event.target) setListaSobrevoando(false)
+      }}
+      onDrop={soltarLista}
+    >
+      {listaSobrevoando && (
+        <div className="solta-aqui">solte a lista .m3u para carregar na grade</div>
+      )}
+      <header className="topbar">
+        <div className="brand">
+          RPlayout<span>.</span>
+        </div>
+        <div className={`tally${onAirId ? ' live' : ''}`}>
+          <span className="dot" />
+          {onAirId ? 'NO AR' : 'FORA DO AR'}
+        </div>
+        {live.transport.standby && <div className="standby">PREPARADO</div>}
+        <div className="canais">
+          {/* Abas em vez de lista suspensa: com dois ou três canais, ver todos
+              de uma vez é a diferença entre olhar e procurar. */}
+          {channels.map((entrada) => (
+            <button
+              key={entrada.id}
+              className={`aba${entrada.id === view.channel.id ? ' on' : ''}`}
+              onClick={() => {
+                const rundownId = rundownOf[entrada.id]
+                if (!rundownId || entrada.id === view.channel.id) return
+                void guard(async () => absorb(await api.rundown(rundownId)))
+              }}
+            >
+              {entrada.name}
+            </button>
+          ))}
+          <button
+            className="aba engrenagem"
+            title="Configurações e canais"
+            onClick={() => setDialog({ kind: 'settings' })}
+          >
+            ⚙
+          </button>
+        </div>
+
+        {commitment && (
+          <div className={`commitment${near ? ' near' : ''}`}>
+            <div>
+              <div className="lbl">entra às {clock(commitment.at, rate)}</div>
+              <div className="who">{commitment.title}</div>
+            </div>
+            <div className="cd">{dur(commitment.left, rate)}</div>
+          </div>
+        )}
+
+        {/* O que está quebrado aparece na tela em que o operador já está
+            olhando, não escondido atrás de um painel que ele só abre quando
+            já desconfia. */}
+        {live.alerts.length > 0 && (
+          <div className="alerts" title={live.alerts.map((alert) => alert.message).join('\n')}>
+            <span className="dot" />
+            {live.alerts[0]?.message}
+            {live.alerts.length > 1 && <b>+{live.alerts.length - 1}</b>}
+          </div>
+        )}
+
+        <div className="spacer" />
+        <div className="bigclock">{clock(live.now, rate)}</div>
+      </header>
+
+      <div className="main">
+        <aside className="pane">
+          <div className="pane-title">
+            arquivos<span className="count">{assets.length}</span>
+          </div>
+          <Explorer
+            folders={folders}
+            rate={rate}
+            openAssetId={openAssetId}
+            categories={categories}
+            categoryColors={coresDeCategoria}
+            onPreview={(assetId) => void command('cue', { assetId })}
+            // O caminho de todo dia é pôr no fim da grade. Quem precisa de hora
+            // marcada usa INSERIR ITEM, que é onde as âncoras moram.
+            onInsert={inserirNoFim}
+            onRemove={removerDoAcervo}
+            onCategorize={categorizar}
+            onPrune={limparQuebrados}
+            scan={scan}
+            onScan={(measure) => void startScan(measure)}
+            // Acrescentar pasta mora aqui, e não só na engrenagem: é olhando a
+            // lista de arquivos que o operador percebe que falta uma pasta.
+            onAddRoot={async (path) => {
+              try {
+                await api.addMediaRoot(path)
+                await refreshLibrary()
+                void startScan(false)
+                return null
+              } catch (falha) {
+                return falha instanceof Error ? falha.message : 'Não consegui ler essa pasta.'
+              }
+            }}
+            onOpenInsert={() => setDialog({ kind: 'add' })}
+          />
+        </aside>
+
+        <section className="pane" style={{ background: 'var(--bg)' }}>
+          <div className="pane-title">
+            {view.rundown.name}
+            <span className="count">
+              {view.items.length} itens · {dur(totalDuration, rate)}
+              {view.rundown.loop && ' · em loop'}
+            </span>
+            {/* Desfazer, refazer e as-run moram em cima da grade, e não na barra
+                de baixo: são ações sobre a grade, e a mão que acabou de mexer
+                nela está aqui. As-run fica um pouco afastado -- é consulta, não
+                edição, e encostar nos outros dois convida ao clique errado. */}
+            <div className="acoes-grade">
+              <button
+                className="btn small"
+                disabled={!history.canUndo}
+                onClick={() => void undo('undo')}
+                title={history.undoLabel ? `Desfazer: ${history.undoLabel}` : 'Nada para desfazer'}
+              >
+                DESFAZER
+              </button>
+              <button
+                className="btn small"
+                disabled={!history.canRedo}
+                onClick={() => void undo('redo')}
+                title={history.redoLabel ? `Refazer: ${history.redoLabel}` : 'Nada para refazer'}
+              >
+                REFAZER
+              </button>
+              <button
+                className="btn small afastado"
+                onClick={() => setDialog({ kind: 'asrun' })}
+                title="O que realmente foi ao ar"
+              >
+                AS-RUN
+              </button>
+            </div>
+          </div>
+          <div className="pane-body">
+            <Rundown
+              items={view.items}
+              schedule={schedule}
+              rate={rate}
+              channel={view.channel}
+              selectedId={selectedId}
+              onAirId={onAirId}
+              remainingOnAir={remainingOnAir}
+              errorIds={errorIds}
+              marked={marked}
+              onSelect={select}
+              onMove={move}
+              onUngroup={ungroup}
+              onOpenTrim={(item) =>
+                // Imagem parada não tem o que marcar: o I/O dela é a duração.
+                setDialog({
+                  kind: item.asset && isStill(item.asset) ? 'still' : 'trim',
+                  view: item,
+                })
+              }
+              onOpenAudio={(item) => setDialog({ kind: 'audio', view: item })}
+              onSetFit={setFit}
+              onOpenGraphics={(item) => setDialog({ kind: 'itemGraphics', view: item })}
+              onDropAsset={inserirEm}
+              onRemove={removerItem}
+              categoryColors={coresDeCategoria}
+              onNotes={saveNotes}
+            />
+          </div>
+        </section>
+
+        <aside className="pane">
+          <Monitors
+            channel={view.channel}
+            live={live}
+            onAirItem={onAirItem}
+            onAirRemaining={remainingOnAir}
+            preview={previewCard}
+            monitors={monitors}
+          />
+          <div className="pane-title">
+            conflitos
+            <span className="count">{view.schedule.conflicts.length}</span>
+          </div>
+          <div className="pane-body">
+            {view.schedule.conflicts.length === 0 ? (
+              <div className="empty">A grade fecha. Nenhuma âncora em risco.</div>
+            ) : (
+              view.schedule.conflicts.map((conflict, index) => {
+                const owner = view.items.find((item) => item.item.id === conflict.itemId)
+                const fix = view.schedule.suggestions.find(
+                  (suggestion) => suggestion.itemId === conflict.itemId,
+                )
+                return (
+                  <div
+                    key={index}
+                    className={`conflict${conflict.severity === 'ERROR' ? ' err' : ''}`}
+                    onClick={() => void command('cue', { itemId: conflict.itemId })}
+                  >
+                    <div className="who">{owner?.item.title ?? conflict.itemId}</div>
+                    <div>{conflict.message}</div>
+                    {fix && <div className="fix">→ {fix.message}</div>}
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </aside>
+      </div>
+
+      <footer className="transport">
+        <button
+          className="btn take"
+          disabled={!selectedId}
+          onClick={() => selectedId && void command('take', { itemId: selectedId })}
+          title="Põe o item selecionado no ar (barra de espaço)"
+        >
+          <span className="glifo" aria-hidden="true">▶</span>
+          take<kbd>espaço</kbd>
+        </button>
+        <button className="btn stop" disabled={!onAirId} onClick={() => void command('stop')}>
+          <span className="glifo" aria-hidden="true">■</span>
+          parar
+        </button>
+        <button
+          className="btn"
+          onClick={() => void command('park')}
+          title="Prepara o primeiro item, parado, pronto para entrar"
+        >
+          preparar
+        </button>
+        <button
+          className="btn"
+          disabled={!selected?.asset}
+          onClick={() => selected && setDialog({ kind: 'trim', view: selected })}
+          title="Marcação de entrada e saída (tecla I)"
+        >
+          in/out<kbd>i</kbd>
+        </button>
+        <button
+          className="btn"
+          disabled={!selected?.asset}
+          onClick={() => selected && setDialog({ kind: 'audio', view: selected })}
+          title="Nível de áudio do item (tecla N)"
+        >
+          nível<kbd>n</kbd>
+        </button>
+        <button
+          className="btn"
+          onClick={() => setDialog({ kind: 'playlists' })}
+          title="Listas .m3u da pasta do acervo — a do dia vem aberta"
+        >
+          listas
+        </button>
+        <button
+          className={`btn${live?.graphic ? ' on' : ''}`}
+          onClick={() => setDialog({ kind: 'graphics' })}
+          title="Gerador de caracteres"
+        >
+          gc{live?.graphic ? ' no ar' : ''}
+        </button>
+        <button className="btn" onClick={() => setDialog({ kind: 'autofill' })}>
+          montar
+        </button>
+        <button
+          className="btn"
+          onClick={() => setDialog({ kind: 'channel' })}
+          title={`Formato do canal — hoje em ${formatVideoFormat(view.channel)}`}
+        >
+          canal
+        </button>
+        <button
+          className="btn"
+          onClick={() => {
+            window.location.hash = 'distribuicao'
+            setDialog({ kind: 'distribution' })
+          }}
+        >
+          saídas
+        </button>
+        {marked.size >= 2 && (
+          <button className="btn take" onClick={group}>
+            agrupar {marked.size} itens
+          </button>
+        )}
+        <div className="spacer" />
+        {error && (
+          <div className="meta" style={{ color: 'var(--onair)' }}>
+            {error}
+          </div>
+        )}
+        <Problemas
+          problemas={problemas}
+          onLimpar={() => {
+            vistos.current.clear()
+            setProblemas([])
+          }}
+        />
+        <div className="meta" title={previewCard?.title ?? ''}>
+          {previewCard ? (
+            <>
+              {previewCard.fromExplorer ? 'no preview: ' : 'preparado: '}
+              <b>{previewCard.title}</b>
+            </>
+          ) : (
+            'nada preparado — clique numa linha ou num arquivo'
+          )}
+        </div>
+      </footer>
+
+      {dialog?.kind === 'playlists' && (
+        <PlaylistsDialog
+          rundownId={view.rundown.id}
+          onCancel={() => setDialog(null)}
+          onLoaded={(snapshot, message) => {
+            absorb(snapshot)
+            setDialog(null)
+            say(message)
+          }}
+          onMessage={say}
+        />
+      )}
+      {dialog?.kind === 'trim' && (
+        <TrimDialog
+          view={dialog.view}
+          rate={rate}
+          onCancel={() => setDialog(null)}
+          onApply={applyTrim}
+        />
+      )}
+      {dialog?.kind === 'still' && (
+        <StillDialog
+          view={dialog.view}
+          rate={rate}
+          onCancel={() => setDialog(null)}
+          onApply={(frames) => {
+            const id = dialog.view.item.id
+            setDialog(null)
+            void guard(async () => {
+              absorb(await api.patchItem(id, { durationOverride: frames }))
+              say('Tempo da imagem parada atualizado; a grade foi remanejada.')
+            })
+          }}
+        />
+      )}
+      {dialog?.kind === 'audio' && (
+        <AudioDialog
+          // A linha vem da grade viva, não da cópia de quando o diálogo abriu:
+          // trocar de trilha aplica na hora e o seletor tem de acompanhar.
+          view={view.items.find((item) => item.item.id === dialog.view.item.id) ?? dialog.view}
+          channel={view.channel}
+          onCancel={() => setDialog(null)}
+          onApply={applyAudio}
+          onSetTrack={(index) => setTrack(dialog.view.item.id, index)}
+        />
+      )}
+      {dialog?.kind === 'add' && (
+        <AddItemDialog
+          assets={assets}
+          initialAssetId={dialog.assetId}
+          rate={rate}
+          suggestedAt={view.schedule.endsAt}
+          onCancel={() => setDialog(null)}
+          onAdd={addItem}
+        />
+      )}
+
+      {dialog?.kind === 'itemGraphics' && (
+        <ItemGraphicsDialog
+          view={dialog.view}
+          channelId={view.channel.id}
+          onClose={() => setDialog(null)}
+          onMessage={say}
+        />
+      )}
+      {dialog?.kind === 'settings' && (
+        <SettingsDialog
+          channel={view.channel}
+          channels={channels}
+          onClose={() => setDialog(null)}
+          onMessage={say}
+          onChanged={() => {
+            void guard(async () => {
+              const state = await api.state()
+              setChannels(state.channels.map((entry) => ({ id: entry.id, name: entry.name })))
+              const map: Record<string, string> = {}
+              for (const rundown of state.rundowns) map[rundown.channelId] ??= rundown.id
+              setRundownOf(map)
+              const alvo = map[view.channel.id] ?? state.rundowns[0]?.id
+              if (alvo) absorb(await api.rundown(alvo))
+            })
+          }}
+          onOpenFormat={() => setDialog({ kind: 'channel' })}
+          onOpenDistribution={() => setDialog({ kind: 'distribution' })}
+          onOpenGraphics={() => setDialog({ kind: 'graphics' })}
+        />
+      )}
+      {dialog?.kind === 'channel' && (
+        <ChannelDialog
+          channel={view.channel}
+          onCancel={() => setDialog(null)}
+          onSaved={(message) => {
+            setDialog(null)
+            say(message)
+            void guard(async () => absorb(await api.rundown(view.rundown.id)))
+          }}
+        />
+      )}
+      {dialog?.kind === 'autofill' && (
+        <AutoFillDialog
+          rundownId={view.rundown.id}
+          channelId={view.channel.id}
+          categories={[
+            ...new Set(assets.map((asset) => asset.categoryId).filter((id): id is string => !!id)),
+          ].sort()}
+          rate={rate}
+          onCancel={() => setDialog(null)}
+          onApplied={(snapshot, message) => {
+            absorb(snapshot)
+            setDialog(null)
+            say(message)
+          }}
+          onMessage={say}
+        />
+      )}
+      {dialog?.kind === 'asrun' && (
+        <AsRunPanel channelId={view.channel.id} rate={rate} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === 'graphics' && (
+        <GraphicsPanel
+          channelId={view.channel.id}
+          slateTemplateId={view.channel.slateTemplateId}
+          onAir={live?.graphic ?? null}
+          onClose={() => setDialog(null)}
+          onMessage={say}
+        />
+      )}
+      {dialog?.kind === 'distribution' && (
+        <Distribution
+          channelId={view.channel.id}
+          onClose={() => {
+            if (window.location.hash === '#distribuicao') window.location.hash = ''
+            setDialog(null)
+          }}
+          onMessage={say}
+        />
+      )}
+
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  )
+}
