@@ -568,6 +568,26 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   background: var(--sunk);
   border-top: 1px solid var(--border);
 }
+
+/*
+ * Três grupos, do mais pesado ao mais leve.
+ *
+ * A barra tinha nove botões do mesmo tamanho: take e parar, que mexem no ar
+ * agora, encostados em listas e montar, que são preparação. A mão que corre
+ * para o parar não pode ter que ler o rótulo. A separação é linha vertical e
+ * tamanho, não cor: cor aqui já quer dizer outra coisa (no ar, erro).
+ */
+.transport .grupo { display: flex; align-items: center; gap: 6px; }
+.transport .grupo + .grupo {
+  margin-left: 10px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+/* O grupo do ar respira mais: é onde a mão vai sem olhar. */
+.transport .grupo.ar { gap: 8px; }
+.transport .grupo.grade { opacity: 0.82; }
+.transport .grupo.grade:hover,
+.transport .grupo.grade:focus-within { opacity: 1; }
 /*
  * O texto de estado fica com largura fixa e quebra em duas linhas.
  *

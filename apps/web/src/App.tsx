@@ -965,6 +965,13 @@ export function App() {
       </div>
 
       <footer className="transport">
+        {/* A barra tinha nove botões do mesmo tamanho e de pesos muito
+            diferentes: take e parar, que mexem no que está no ar agora, do lado
+            de listas e montar, que são preparação para depois. A mão que corre
+            para o parar não pode ter que ler. Agora são três grupos, separados
+            e com tamanhos diferentes: o ar primeiro e maior, o item
+            selecionado no meio, a grade e os ajustes por último. */}
+        <div className="grupo ar">
         <button
           className="btn take"
           disabled={!selectedId}
@@ -986,7 +993,17 @@ export function App() {
           preparar
         </button>
         <button
-          className="btn"
+          className={`btn${live?.graphic ? ' on' : ''}`}
+          onClick={() => setDialog({ kind: 'graphics' })}
+          title="Gerador de caracteres — o que está no ar por cima da imagem"
+        >
+          gc{live?.graphic ? ' no ar' : ''}
+        </button>
+        </div>
+
+        <div className="grupo item">
+        <button
+          className="btn small"
           disabled={!selected?.asset}
           onClick={() => selected && setDialog({ kind: 'trim', view: selected })}
           title="Marcação de entrada e saída (tecla I)"
@@ -994,32 +1011,28 @@ export function App() {
           in/out<kbd>i</kbd>
         </button>
         <button
-          className="btn"
+          className="btn small"
           disabled={!selected?.asset}
           onClick={() => selected && setDialog({ kind: 'audio', view: selected })}
           title="Nível de áudio do item (tecla N)"
         >
           nível<kbd>n</kbd>
         </button>
+        </div>
+
+        <div className="grupo grade">
         <button
-          className="btn"
+          className="btn small"
           onClick={() => setDialog({ kind: 'playlists' })}
           title="Listas .m3u da pasta do acervo — a do dia vem aberta"
         >
           listas
         </button>
-        <button
-          className={`btn${live?.graphic ? ' on' : ''}`}
-          onClick={() => setDialog({ kind: 'graphics' })}
-          title="Gerador de caracteres"
-        >
-          gc{live?.graphic ? ' no ar' : ''}
-        </button>
-        <button className="btn" onClick={() => setDialog({ kind: 'autofill' })}>
+        <button className="btn small" onClick={() => setDialog({ kind: 'autofill' })}>
           montar
         </button>
         <button
-          className="btn"
+          className="btn small"
           onClick={() => {
             window.location.hash = 'distribuicao'
             setDialog({ kind: 'distribution' })
@@ -1027,6 +1040,7 @@ export function App() {
         >
           saídas
         </button>
+        </div>
         {marked.size >= 2 && (
           <button className="btn take" onClick={group}>
             agrupar {marked.size} itens
