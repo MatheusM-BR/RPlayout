@@ -387,20 +387,31 @@ export function Explorer({
 
       {/* O botão de pôr na grade mora embaixo da lista, que é onde a mão já
           está depois de escolher o arquivo -- e não no alto, longe do que foi
-          escolhido. */}
+          escolhido.
+
+          Os dois nomes dizem a diferença entre eles, e não o que os dois fazem.
+          "Pôr na grade" e "Inserir item" descreviam a mesma coisa com palavras
+          diferentes, lado a lado: quem está aprendendo tinha que clicar nos
+          dois para descobrir que um vai para o fim e o outro pergunta a hora. */}
       <div className="explorador-rodape">
         <button
           className="btn"
           disabled={escolhido === null}
           title={
-            escolhido === null ? 'Escolha um arquivo na lista' : 'Põe o arquivo no fim da grade'
+            escolhido === null
+              ? 'Escolha um arquivo na lista'
+              : 'Põe o arquivo no fim da grade, sem perguntar nada'
           }
           onClick={() => escolhido !== null && onInsert(escolhido)}
         >
-          PÔR NA GRADE
+          PÔR NO FIM
         </button>
-        <button className="btn" onClick={onOpenInsert} title="Com hora marcada e âncora">
-          INSERIR ITEM…
+        <button
+          className="btn"
+          onClick={onOpenInsert}
+          title="Abre o diálogo para marcar a hora de entrada e a âncora"
+        >
+          COM HORA MARCADA…
         </button>
       </div>
     </>
