@@ -24,6 +24,32 @@ export interface SourceList {
   readonly guests: SourceFamily
 }
 
+/**
+ * Há decodificador de AAC, dado o que falta na instalação?
+ *
+ * Separado da classe porque é a decisão que muda o alerta de "pode faltar o
+ * decodificador" para "está indo ao ar MUDO" -- e um alerta que afirma errado
+ * é pior que um que não afirma. Nulo é "ainda não sei", que não é "não falta".
+ */
+export function temAac(faltando: readonly Faltando[] | null): boolean | null {
+  if (faltando === null) return null
+  return !faltando.some((entrada) => entrada.element.includes('avdec_aac'))
+}
+
+/** Um elemento do GStreamer que a instalação não tem. */
+export interface Faltando {
+  element: string
+  plugin: string
+  breaks: string
+}
+
+/** O que o binário de descoberta devolve. */
+interface Descoberta {
+  decklink: ProbeFamily
+  ndi: ProbeFamily
+  plugins?: { missing: Faltando[]; optional: Faltando[] }
+}
+
 interface ProbeFamily {
   available: boolean
   reason?: string
@@ -45,6 +71,8 @@ export class Sources {
   private cached: SourceList | null = null
   private cachedAt = 0
   private running: Promise<SourceList> | null = null
+  /** O que a descoberta disse que falta na instalação. Nulo é "ainda não sei". */
+  private faltandoPlugins: Faltando[] | null = null
 
   constructor(
     private readonly db: Db,
@@ -52,6 +80,23 @@ export class Sources {
     private readonly binary: string,
     private readonly ttlMs = 15_000,
   ) {}
+
+  /**
+   * O que falta na instalação, do que já foi descoberto -- sem esperar.
+   *
+   * Os alertas são montados a cada tique e não podem parar para rodar a
+   * descoberta. Nulo quer dizer "ainda não sei", que é diferente de "não falta
+   * nada": um alerta que afirma com base em desconhecimento é pior que
+   * nenhum.
+   */
+  faltando(): Faltando[] | null {
+    return this.faltandoPlugins
+  }
+
+  /** Existe decodificador de AAC nesta instalação? Nulo é "ainda não sei". */
+  temDecodificadorAac(): boolean | null {
+    return temAac(this.faltando())
+  }
 
   async list(force = false): Promise<SourceList> {
     if (!force && this.cached && Date.now() - this.cachedAt < this.ttlMs) return this.cached
@@ -64,6 +109,9 @@ export class Sources {
 
   private async build(): Promise<SourceList> {
     const [hardware, guests] = await Promise.all([this.probe(), this.guests()])
+    // O que falta na instalação vem na mesma leitura e vale para os alertas,
+    // que não podem esperar por uma descoberta a cada tique.
+    if (hardware) this.faltandoPlugins = hardware.plugins?.missing ?? []
     const list: SourceList = {
       sdi: toFamily(hardware?.decklink, 'SDI'),
       ndi: toFamily(hardware?.ndi, 'NDI'),
@@ -88,7 +136,7 @@ export class Sources {
     }
   }
 
-  private probe(): Promise<{ decklink: ProbeFamily; ndi: ProbeFamily } | null> {
+  private probe(): Promise<Descoberta | null> {
     if (!this.binary) return Promise.resolve(null)
 
     return new Promise((done) => {

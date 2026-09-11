@@ -85,6 +85,19 @@ const REQUIRED: &[(&str, &str, &str)] = &[
     ("jpegenc", "good", "as miniaturas do acervo"),
 ];
 
+/// Onde um elemento pode vir de mais de um plugin.
+///
+/// Decodificar AAC é o caso que importa: quase todo arquivo de emissora é
+/// H.264 com AAC, e sem decodificador ele vai ao ar **mudo** -- a imagem
+/// aparece, o VT anda, e só quem está de fone descobre. O `avdec_aac` vem do
+/// gst-libav e o `faad` do plugins-bad; um dos dois basta, e acusar falta
+/// tendo o outro instalado mandaria procurar defeito onde não há.
+const ALTERNATIVAS: &[(&[&str], &str, &str)] = &[(
+    &["avdec_aac", "faad"],
+    "gst-libav (ou o faad, do plugins-bad)",
+    "tocar arquivo com áudio AAC -- sem ele o VT vai ao ar mudo",
+)];
+
 const OPTIONAL: &[(&str, &str, &str)] = &[
     ("rsvgoverlay", "bad (rsvg)", "o grafismo"),
     ("rtmp2sink", "bad (rtmp2)", "publicar em RTMP"),
@@ -94,6 +107,22 @@ const OPTIONAL: &[(&str, &str, &str)] = &[
     ("decklinkvideosrc", "bad (decklink)", "entrada e saída por placa"),
     ("ndisrc", "plugin NDI, instalado à parte", "entrada NDI"),
 ];
+
+/// O que falta entre os que têm mais de uma origem possível.
+fn survey_alternativas(list: &[(&[&str], &str, &str)]) -> Vec<Missing> {
+    list.iter()
+        .filter(|(opcoes, _, _)| {
+            opcoes
+                .iter()
+                .all(|element| gst::ElementFactory::find(element).is_none())
+        })
+        .map(|(opcoes, plugin, breaks)| Missing {
+            element: opcoes.join(" ou "),
+            plugin: (*plugin).to_string(),
+            breaks: (*breaks).to_string(),
+        })
+        .collect()
+}
 
 fn survey(list: &[(&str, &str, &str)]) -> Vec<Missing> {
     list.iter()
@@ -178,11 +207,45 @@ fn main() -> Result<()> {
             "o plugin NDI (`ndisrc`) não está nesta instalação do GStreamer",
         ),
         plugins: Plugins {
-            missing: survey(REQUIRED),
+            missing: {
+                let mut faltando = survey(REQUIRED);
+                faltando.extend(survey_alternativas(ALTERNATIVAS));
+                faltando
+            },
             optional: survey(OPTIONAL),
         },
     };
 
     println!("{}", serde_json::to_string(&devices)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basta_uma_das_alternativas_existir() {
+        gst::init().unwrap();
+        // `queue` existe em qualquer instalação; o outro nome não existe em
+        // nenhuma. Tendo um dos dois, nada falta.
+        let lista: &[(&[&str], &str, &str)] =
+            &[(&["nao-existe-mesmo", "queue"], "algum", "alguma coisa")];
+        assert!(survey_alternativas(lista).is_empty());
+    }
+
+    #[test]
+    fn faltando_todas_vira_pendencia_com_os_dois_nomes() {
+        gst::init().unwrap();
+        let lista: &[(&[&str], &str, &str)] = &[(
+            &["nao-existe-mesmo", "nem-este"],
+            "gst-libav",
+            "tocar AAC",
+        )];
+        let faltando = survey_alternativas(lista);
+        assert_eq!(faltando.len(), 1);
+        // Os dois nomes no recado: quem for instalar precisa saber que
+        // qualquer um dos dois resolve.
+        assert_eq!(faltando[0].element, "nao-existe-mesmo ou nem-este");
+    }
 }

@@ -328,6 +328,14 @@ export class ChannelRuntime {
   /** Monitores que alguém tentou abrir e que este canal não tem. */
   private readonly monitorPedidoSemExistir = new Set<'pvw' | 'mon'>()
 
+  /**
+   * Há decodificador de AAC nesta instalação? Nulo enquanto não se sabe.
+   *
+   * Injetado de fora porque o runtime não conhece a descoberta de
+   * dispositivos, e não deve conhecer: ele cuida de um canal.
+   */
+  aacDisponivel: () => boolean | null = () => null
+
   /** Este canal tem este monitor? */
   temMonitor(bus: 'pvw' | 'mon'): boolean {
     return this.monitores.has(bus)
@@ -421,11 +429,20 @@ export class ChannelRuntime {
         medida > -60 &&
         !abaixado
       ) {
+        // "Pode faltar o decodificador" manda procurar sem dizer onde. A
+        // instalação sabe a resposta: se não há decodificador de AAC, isso não
+        // é suspeita, é a causa -- e o arquivo está indo ao ar mudo agora.
+        const temAac = this.aacDisponivel()
         found.push({
           kind: 'ENGINE',
           message:
-            `"${item.item.title}" tem trilha de áudio mas nada chega ao medidor — ` +
-            'pode faltar o decodificador (AAC vem do gst-libav)',
+            temAac === false
+              ? `"${item.item.title}" está indo ao ar MUDO: esta instalação não tem ` +
+                'decodificador de AAC (instale o gst-libav, ou o faad)'
+              : `"${item.item.title}" tem trilha de áudio mas nada chega ao medidor` +
+                (temAac === true
+                  ? ' — o decodificador de AAC está instalado, então o problema é do arquivo'
+                  : ' — pode faltar o decodificador (AAC vem do gst-libav)'),
         })
       }
     }
@@ -549,6 +566,14 @@ export async function createApp(file: string): Promise<App> {
       sqlite.close()
     },
   }
+
+  // Descobre o que a instalação tem uma vez ao subir. Sem isto o primeiro
+  // alerta de áudio sairia com "pode faltar" só porque ninguém tinha aberto o
+  // diálogo de fontes ainda -- e "pode" é o que este alerta deixou de ser.
+  void app.sources.list().catch(() => {
+    // Máquina sem descoberta funciona: os alertas voltam a dizer "pode".
+  })
+
   return app
 }
 
@@ -610,6 +635,9 @@ export async function runtimeFor(app: App, channelId: string): Promise<ChannelRu
   conferir('mon', 'MONITOR')
 
   const runtime = new ChannelRuntime(channel, app.db, outputs, previewOutput, monitores, motivos)
+  // Os alertas precisam saber o que falta na instalação, e não podem esperar
+  // por uma descoberta a cada tique: perguntam ao que já foi descoberto.
+  runtime.aacDisponivel = () => app.sources.temDecodificadorAac()
   app.runtimes.set(channelId, runtime)
   return runtime
 }
