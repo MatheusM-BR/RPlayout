@@ -1,0 +1,41 @@
+[package]
+name = "rplayout-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Engine de vídeo do RPlayout: um processo por canal, controlado por JSON-RPC no stdio."
+
+[dependencies]
+gstreamer = "0.23"
+gstreamer-audio = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+gstreamer-app = "0.23"
+gstreamer-base = { version = "0.23", features = ["v1_18"] }
+
+[[bin]]
+name = "rplayout-engine"
+path = "src/main.rs"
+
+[[bin]]
+name = "rplayout-relay"
+path = "src/bin/relay.rs"
+
+[profile.release]
+opt-level = 2
+
+[[bin]]
+name = "rplayout-probe"
+path = "src/bin/probe.rs"
+
+[[bin]]
+name = "rplayout-devices"
+path = "src/bin/devices.rs"
+
+[[bin]]
+name = "rplayout"
+path = "src/bin/launcher.rs"
+
+[[bin]]
+name = "rplayout-avsync"
+path = "src/bin/avsync.rs"
