@@ -67,6 +67,7 @@ import {
 import { asRun, operatorDecisions } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { extname, resolve as resolvePath } from 'node:path'
 import {
   createOutput,
@@ -423,14 +424,19 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     checkedAt: new Date().toISOString(),
   }))
   server.get('/api/n1/status', async () => probeN1Peer(N1_PEER_URL || null, EXTERNAL_CONTROL_TOKEN))
-  server.get('/api/n1/state', async () => ({
-    checkedAt: new Date().toISOString(),
-    channels: [...app.runtimes.values()].map((runtime) => ({
+  server.get('/api/n1/state', async () => {
+    const channels = [...app.runtimes.values()].map((runtime) => ({
       channelId: runtime.channel.id,
       state: runtime.transport.state(),
       health: runtime.transport.health(),
-    })),
-  }))
+    }))
+    const canonical = JSON.stringify(channels)
+    return {
+      checkedAt: new Date().toISOString(),
+      stateHash: createHash('sha256').update(canonical).digest('hex'),
+      channels,
+    }
+  })
   server.get('/api/ready', async (_request, reply) => {
     const engines = [...app.runtimes.values()]
     const stopped = engines.filter((runtime) => !runtime.transport.health().ready)
