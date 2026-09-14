@@ -1,10 +1,13 @@
 param([string]$Destination = "release/RPlayout-1.1")
 $ErrorActionPreference = 'Stop'
+if (Test-Path $Destination) { Remove-Item $Destination -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-Copy-Item rplayout-test.exe "$Destination/rplayout-test.exe" -Force
-Copy-Item rplayout-engine-test.exe "$Destination/rplayout-engine-test.exe" -Force
+if (!(Test-Path "apps/engine/target/release/rplayout.exe")) { throw 'Engine release não compilado.' }
+Copy-Item apps/engine/target/release/rplayout.exe "$Destination/rplayout-test.exe" -Force
+Copy-Item apps/engine/target/release/rplayout-engine.exe "$Destination/rplayout-engine.exe" -Force
+Copy-Item apps/engine/target/release/rplayout-engine.exe "$Destination/rplayout-engine-test.exe" -Force
 New-Item -ItemType Directory -Force -Path "$Destination/apps/engine/target/release" | Out-Null
-Copy-Item rplayout-engine-test.exe "$Destination/apps/engine/target/release/rplayout-engine.exe" -Force
+Copy-Item apps/engine/target/release/rplayout-engine.exe "$Destination/apps/engine/target/release/rplayout-engine.exe" -Force
 foreach ($aux in @('rplayout-probe.exe','rplayout-devices.exe','rplayout-relay.exe','rplayout-avsync.exe')) {
   if (Test-Path "apps/engine/target/release/$aux") { Copy-Item "apps/engine/target/release/$aux" "$Destination/apps/engine/target/release/$aux" -Force }
 }
