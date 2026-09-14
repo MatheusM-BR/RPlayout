@@ -372,6 +372,28 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return { ok: response.ok, status: response.status }
     } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'falha de rede' } }
   })
+  // Entrada normalizada para automação SCTE-35/104. O playout registra a
+  // intenção e distribui para os gateways configurados; a inserção física no
+  // encoder permanece responsabilidade do perfil de saída selecionado.
+  server.post('/api/cues/scte', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para SCTE.' })
+    const body = z.object({
+      channelId: z.string().min(1),
+      eventId: z.string().min(1),
+      command: z.enum(['splice_insert', 'time_signal', 'splice_null']),
+      ptsTime: z.number().nonnegative().optional(),
+      durationMs: z.number().positive().optional(),
+      segmentationTypeId: z.number().int().min(0).max(255).optional(),
+      autoReturn: z.boolean().optional(),
+      source: z.enum(['SCTE35', 'SCTE104', 'OPERATOR']).default('OPERATOR'),
+    }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Cue SCTE inválido.' })
+    const payload = body.data
+    const message = `Cue ${payload.command} recebido (${payload.source}), evento ${payload.eventId}.`
+    await app.db.insert(healthEvents).values({ id: randomUUID(), channelId: payload.channelId, component: 'SCTE', state: 'received', severity: 'INFO', message, occurredAt: new Date().toISOString() }).run()
+    await emitIntegrationEvent(app.db, 'scte.cue', payload, payload.channelId)
+    return { ok: true, acceptedAt: new Date().toISOString(), payload }
+  })
   server.post('/api/users', async (request, reply) => {
     if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
     const body = z.object({ username: z.string().min(1).max(80), password: z.string().min(8), role: z.enum(['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']) }).safeParse(request.body)
