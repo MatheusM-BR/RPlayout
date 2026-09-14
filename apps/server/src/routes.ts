@@ -39,9 +39,10 @@ import { can, parseRole, roleLabel, type Action } from './domain/permissions.js'
 import { hashPassword, verifyPassword } from './domain/auth.js'
 import { emitIntegrationEvent } from './domain/integrations.js'
 import { redactUrl } from './domain/relays.js'
+import { probeN1Peer } from './domain/n1.js'
 import { conflictsWithScheduleRule } from './domain/schedule-rules.js'
 import { activeHorizonRule } from './domain/continuous.js'
-import { DEFAULT_ROLE, AUTH_PASSWORD, AUTH_USER, EXTERNAL_CONTROL_TOKEN } from './config.js'
+import { DEFAULT_ROLE, AUTH_PASSWORD, AUTH_USER, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from './config.js'
 
 const execFileAsync = promisify(execFile)
 import * as Roots from './domain/roots.js'
@@ -421,6 +422,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     mediamtx: app.mediamtx ? (app.mediamtx.running ? 'running' : 'stopped') : 'disabled',
     checkedAt: new Date().toISOString(),
   }))
+  server.get('/api/n1/status', async () => probeN1Peer(N1_PEER_URL || null, EXTERNAL_CONTROL_TOKEN))
   server.get('/api/ready', async (_request, reply) => {
     const engines = [...app.runtimes.values()]
     const stopped = engines.filter((runtime) => !runtime.transport.health().ready)
