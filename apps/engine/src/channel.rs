@@ -16,6 +16,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub use crate::loudness::Reading;
 use crate::limiter_element;
@@ -395,6 +396,11 @@ pub struct Channel {
     /// Medidor de loudness do programa e a torneira de onde ele bebe.
     meter: Meter,
     meter_sink: gst_app::AppSink,
+    /// Amostra reduzida do vídeo do PGM para detectar preto sustentado.
+    video_sink: gst_app::AppSink,
+    video_luma: f64,
+    black_since: Option<Instant>,
+    black_announced: bool,
     /// Medidor do preview. Vive à parte porque mede outro barramento.
     preview_meter: Meter,
     limiter: gst::Element,
@@ -839,6 +845,16 @@ impl Channel {
         // loudness -- sem ponderação K e sem gate, dois programas com o mesmo
         // RMS soam com volumes diferentes.
         let (meter_queue, meter_convert, meter_caps, meter_sink) = meter_branch()?;
+        let detector_queue = fila("fila-black-detector")?;
+        let detector_scale = make("videoscale")?;
+        let detector_convert = make("videoconvert")?;
+        let detector_caps = make("capsfilter")?;
+        detector_caps.set_property("caps", gst::Caps::builder("video/x-raw")
+            .field("format", "RGB").field("width", 160i32).field("height", 90i32).build());
+        let detector_sink = make("appsink")?;
+        detector_sink.set_property("sync", false);
+        detector_sink.set_property("max-buffers", 2u32);
+        detector_sink.set_property("drop", true);
 
         pipeline.add_many([
             &black,
@@ -876,6 +892,11 @@ impl Channel {
             &meter_convert,
             &meter_caps,
             &meter_sink,
+            &detector_queue,
+            &detector_scale,
+            &detector_convert,
+            &detector_caps,
+            &detector_sink,
         ])?;
 
         gst::Element::link_many([&black, &black_caps, &black_queue])?;
@@ -919,6 +940,11 @@ impl Channel {
                     .static_pad("sink")
                     .ok_or_else(|| anyhow!("queue do medidor sem sink"))?,
             )?;
+        gst::Element::link_many([&detector_queue, &detector_scale, &detector_convert, &detector_caps, &detector_sink])?;
+        tee_video
+            .request_pad_simple("src_%u")
+            .ok_or_else(|| anyhow!("tee de vídeo recusou o detector de preto"))?
+            .link(&detector_queue.static_pad("sink").ok_or_else(|| anyhow!("fila do detector sem sink"))?)?;
 
         let background_pad = compositor
             .request_pad_simple("sink_%u")
@@ -984,6 +1010,12 @@ impl Channel {
             meter_sink: meter_sink
                 .dynamic_cast::<gst_app::AppSink>()
                 .map_err(|_| anyhow!("appsink do medidor não é appsink"))?,
+            video_sink: detector_sink
+                .dynamic_cast::<gst_app::AppSink>()
+                .map_err(|_| anyhow!("appsink do detector não é appsink"))?,
+            video_luma: 255.0,
+            black_since: None,
+            black_announced: false,
             preview_meter: Meter::new(48_000, 2),
             limiter,
             graphics,
@@ -1365,6 +1397,19 @@ impl Channel {
     pub fn measure(&mut self) -> (Reading, Reading) {
         let program = self.meter_sink.clone();
         drain(&program, &mut self.meter_scratch, &mut self.meter);
+        while let Some(sample) = self.video_sink.try_pull_sample(gst::ClockTime::ZERO) {
+            let Some(buffer) = sample.buffer() else { continue };
+            let Ok(map) = buffer.map_readable() else { continue };
+            let bytes = map.as_slice();
+            if bytes.len() < 3 { continue }
+            let mut total = 0.0;
+            let mut count = 0usize;
+            for rgb in bytes.chunks_exact(3) {
+                total += 0.2126 * f64::from(rgb[0]) + 0.7152 * f64::from(rgb[1]) + 0.0722 * f64::from(rgb[2]);
+                count += 1;
+            }
+            if count > 0 { self.video_luma = total / count as f64; }
+        }
 
         // Sem nada aberto no preview não há o que medir, e mostrar a última
         // leitura seria o medidor falando de um arquivo que já fechou.
@@ -1382,6 +1427,25 @@ impl Channel {
         program.gain_reduction_db = self.limiter.property::<f64>("gain-reduction-db");
 
         (program, preview)
+    }
+
+    /// Retorna uma transição de preto sustentado no PGM. O fundo preto sem
+    /// item não é alerta: só um item efetivamente no ar pode dispará-lo.
+    pub fn black_transition(&mut self) -> Option<bool> {
+        if self.on_air.is_none() || self.video_luma > 8.0 {
+            self.black_since = None;
+            if self.black_announced {
+                self.black_announced = false;
+                return Some(false);
+            }
+            return None;
+        }
+        let started = *self.black_since.get_or_insert_with(Instant::now);
+        if !self.black_announced && started.elapsed() >= Duration::from_secs(5) {
+            self.black_announced = true;
+            return Some(true);
+        }
+        None
     }
 
     /// Sobe o canal e só volta quando ele está de fato no ar.

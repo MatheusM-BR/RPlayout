@@ -401,6 +401,16 @@ fn main() -> Result<()> {
             let (program, preview) = channel.measure();
             levels("pgm", &program).emit();
             levels("pvw", &preview).emit();
+            if let Some(black) = channel.black_transition() {
+                Event::Warning {
+                    message: if black {
+                        "vídeo do PGM em preto por mais de 5 segundos".to_string()
+                    } else {
+                        "vídeo do PGM recuperado após preto sustentado".to_string()
+                    },
+                }
+                .emit();
+            }
         }
 
         if last_position.elapsed() >= POSITION_EVERY {

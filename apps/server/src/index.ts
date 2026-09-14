@@ -190,6 +190,14 @@ async function main(): Promise<void> {
         void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'ENGINE', state, severity: severityOf('ENGINE', state, health.error), message: health.error, occurredAt: new Date().toISOString() }).run()
         void emitIntegrationEvent(app.db, `engine.${state}`, { message: health.error, restarts: health.restarts }, runtime.channel.id)
       }
+      const warning = runtime.transport.warning()
+      const warningKey = `engine-warning:${runtime.channel.id}`
+      if (warning && recorded.get(warningKey) !== warning) {
+        recorded.set(warningKey, warning)
+        const black = warning.includes('preto')
+        void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'SIGNAL', state: black ? 'black' : 'warning', severity: black ? 'CRITICAL' : 'WARN', message: warning, occurredAt: new Date().toISOString() }).run()
+        void emitIntegrationEvent(app.db, black ? 'signal.black' : 'engine.warning', { message: warning }, runtime.channel.id)
+      }
       // Silêncio sustentado no programa é uma falha operacional diferente de
       // engine parado. O medidor já vem do pipeline real (ou do simulador),
       // portanto não inferimos áudio a partir de conexão WebRTC.
