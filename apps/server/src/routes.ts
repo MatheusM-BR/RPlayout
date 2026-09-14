@@ -463,6 +463,26 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
     return { checkedAt: now.toISOString(), channels: result }
   })
+  server.get('/api/channels/:id/timeline', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const runtime = await runtimeFor(app, id)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Canal sem grade carregada.' })
+    const now = framesSinceMidnight(new Date(), runtime.channel.rate)
+    return {
+      channelId: id,
+      rate: runtime.channel.rate,
+      nowFrames: now,
+      items: runtime.view.schedule.items.map((entry) => ({
+        itemId: entry.item.id,
+        title: entry.item.title,
+        type: entry.item.type,
+        start: entry.start,
+        end: entry.end,
+        duration: entry.end - entry.start,
+        state: entry.start <= now && now < entry.end ? 'ON_AIR' : entry.start > now ? 'UP_NEXT' : 'AIRED',
+      })),
+    }
+  })
 
   server.get('/api/state', async () => {
     const channels = await listChannels(app.db)
