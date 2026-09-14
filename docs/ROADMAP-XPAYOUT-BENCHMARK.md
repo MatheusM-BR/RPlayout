@@ -20,8 +20,8 @@ O XPlayout será usado como referência funcional. O RPlayout mantém uma arquit
 | Timeline visual | Pendente |
 | Multiview de entradas | Pendente |
 | NDI e SDI físicos | Pendente de hardware |
-| SCTE-35/104 | Pendente |
-| N+1 failover e sincronização de estado | Pendente |
+| SCTE-35/104 | API normalizada e eventos de gateway implementados; inserção física depende do encoder |
+| N+1 failover e sincronização de estado | Reconexão isolada com backoff implementada; N+1 físico depende de segunda instância |
 | Cache local de continuidade | Pendente |
 | Controle externo GPI/ATEM/routers | Pendente |
 | Multi-tenant/cloud | Pendente, fora do escopo local 1.1 |
