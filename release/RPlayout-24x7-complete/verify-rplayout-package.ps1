@@ -1,0 +1,28 @@
+param([string]$Package = "release/RPlayout-1.1-next")
+$ErrorActionPreference = 'Stop'
+$root = (Resolve-Path $Package).Path
+$required = @(
+  'rplayout-test.exe',
+  'rplayout-engine-test.exe',
+  'apps/web/dist/index.html',
+  'apps/server/src/index.ts',
+  'apps/server/src/routes.ts',
+  'apps/engine/target/release/rplayout-engine.exe',
+  'apps/engine/target/release/rplayout-probe.exe',
+  'apps/engine/target/release/rplayout-devices.exe',
+  'apps/engine/target/release/rplayout-relay.exe',
+  'mediamtx/mediamtx.exe',
+  'RPLAYOUT-1.1-FUNCIONALIDADES.md'
+)
+$missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
+if ($missing.Count -gt 0) {
+  Write-Error ('Pacote incompleto. Faltam: ' + ($missing -join ', '))
+  exit 1
+}
+$files = $required | ForEach-Object {
+  $path = Join-Path $root $_
+  $hash = (Get-FileHash $path -Algorithm SHA256).Hash
+  [pscustomobject]@{ File = $_; Bytes = (Get-Item $path).Length; SHA256 = $hash }
+}
+Write-Host "Pacote válido: $root"
+$files | Format-Table -AutoSize

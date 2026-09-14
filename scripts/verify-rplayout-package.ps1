@@ -8,6 +8,9 @@ $required = @(
   'apps/server/src/index.ts',
   'apps/server/src/routes.ts',
   'apps/engine/target/release/rplayout-engine.exe',
+  'apps/engine/target/release/rplayout-probe.exe',
+  'apps/engine/target/release/rplayout-devices.exe',
+  'apps/engine/target/release/rplayout-relay.exe',
   'mediamtx/mediamtx.exe',
   'RPLAYOUT-1.1-FUNCIONALIDADES.md'
 )
