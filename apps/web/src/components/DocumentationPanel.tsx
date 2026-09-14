@@ -14,6 +14,7 @@ const sections = [
   ['Auditoria e Aired', 'Aired registra o que entrou e saiu do ar. Auditoria permite filtrar por usuário, ação e data e exportar CSV.'],
   ['Solução de problemas', 'Se ficar em SINTONIZANDO, confira MediaMTX e o processo do canal. Se não houver áudio, clique no alto-falante e confirme se o endpoint tem trilha Opus. Se o executável fechar, use o pacote com apps/web/dist e apps/server/src preservados.'],
   ['Roadmap profissional', 'O RPlayout usa o XPlayout como benchmark funcional. Já há telemetria de relays, reconexão com backoff, alerta de silêncio sustentado, cobertura de 48 horas, timeline operacional e entrada SCTE normalizada. A matriz completa e os limites que dependem de hardware estão em docs/ROADMAP-XPAYOUT-BENCHMARK.md.'],
+  ['Entradas e controle externo', 'DeckLink/SDI e NDI aparecem pela descoberta de fontes; SRT e RTMP podem ser informados por URL em AO VIVO. GPI, ATEM e routers usam a API protegida por RPLAYOUT_CONTROL_TOKEN e exigem gateway físico. O manual técnico está em docs/ENTRADAS-CONTROLE-EXTERNO.md.'],
 ]
 
 export function DocumentationPanel({ onClose }: Props) {

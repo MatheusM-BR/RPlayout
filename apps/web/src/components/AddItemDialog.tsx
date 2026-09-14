@@ -64,6 +64,7 @@ export function AddItemDialog({
   const [sources, setSources] = useState<SourceList | null>(null)
   const [scanning, setScanning] = useState(false)
   const [sourceRef, setSourceRef] = useState('')
+  const [manualSource, setManualSource] = useState('')
   const [liveMinutes, setLiveMinutes] = useState(15)
 
   // A descoberta só roda quando o operador pede o vivo: enumerar NDI vasculha
@@ -100,12 +101,13 @@ export function AddItemDialog({
   const families: SourceFamily[] = sources ? [sources.sdi, sources.ndi, sources.guests] : []
   const live = families.flatMap((family) => family.sources)
   const chosen = live.find((source) => source.reference === sourceRef)
+  const sourceValue = manualSource.trim() || chosen?.reference || ''
 
   const at = parseTimecode(atText, rate)
   const asset = assets.find((candidate) => candidate.id === assetId)
   const needsTime = mode !== 'FLOW'
   const valid =
-    (kind === 'FILE' ? asset !== undefined : chosen !== undefined && liveMinutes > 0) &&
+    (kind === 'FILE' ? asset !== undefined : sourceValue !== '' && liveMinutes > 0) &&
     (!needsTime || at !== null)
 
   const build = (): Anchor => {
@@ -133,12 +135,12 @@ export function AddItemDialog({
       })
       return
     }
-    if (!chosen) return
+    if (!sourceValue) return
     onAdd({
       mediaId: null,
-      sourceRef: chosen.reference,
+      sourceRef: sourceValue,
       type: 'LIVE',
-      title: chosen.label,
+      title: chosen?.label ?? sourceValue,
       anchor,
       durationOverride: secondsToFrames(liveMinutes * 60, rate),
     })
@@ -211,6 +213,14 @@ export function AddItemDialog({
                     )
                   })}
                 </select>
+                <input
+                  type="text"
+                  value={manualSource}
+                  onChange={(event) => setManualSource(event.target.value)}
+                  placeholder="ou informe srt://… ou rtmp://…"
+                  aria-label="Fonte SRT ou RTMP"
+                />
+                <div className="sub">SRT caller/listener e RTMP são aceitos pelo engine; use uma URL completa.</div>
               </div>
 
               {/* O que falta é tão informativo quanto o que existe: sem placa,
