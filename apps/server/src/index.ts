@@ -184,11 +184,21 @@ async function main(): Promise<void> {
       const health = runtime.transport.health()
       const state = health.error ? 'error' : 'running'
       const key = `engine:${runtime.channel.id}`
-      const signature = `${state}|${health.error ?? ''}|${health.restarts}|${runtime.transport.processId() ?? ''}`
+      const signature = `${state}|${health.error ?? ''}|${health.restarts}|${health.deaths}|${health.stalls}|${runtime.transport.processId() ?? ''}`
       if (recorded.get(key) !== signature) {
         recorded.set(key, signature)
         void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'ENGINE', state, severity: severityOf('ENGINE', state, health.error), message: health.error, occurredAt: new Date().toISOString() }).run()
         void emitIntegrationEvent(app.db, `engine.${state}`, { message: health.error, restarts: health.restarts }, runtime.channel.id)
+      }
+      const videoHealthKey = `video-health:${runtime.channel.id}`
+      const videoHealth = health.stalls > 0 ? 'stalled' : 'running'
+      if (recorded.get(videoHealthKey) !== videoHealth) {
+        recorded.set(videoHealthKey, videoHealth)
+        const message = videoHealth === 'stalled'
+          ? `Engine detectou ${health.stalls} congelamento(s) de vídeo.`
+          : 'Fluxo de vídeo recuperado.'
+        void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'VIDEO', state: videoHealth, severity: videoHealth === 'stalled' ? 'CRITICAL' : 'INFO', message, occurredAt: new Date().toISOString() }).run()
+        void emitIntegrationEvent(app.db, `video.${videoHealth}`, { stalls: health.stalls, deaths: health.deaths }, runtime.channel.id)
       }
       const warning = runtime.transport.warning()
       const warningKey = `engine-warning:${runtime.channel.id}`
