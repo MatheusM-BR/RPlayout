@@ -203,6 +203,7 @@ export const api = {
   healthEvents: (channelId?: string) => send<{ events: Array<{ id: string; channelId: string | null; component: string; state: string; severity: 'INFO' | 'WARN' | 'CRITICAL'; message: string | null; occurredAt: string; acknowledgedAt: string | null }> }>(`/api/health-events?limit=200${channelId ? `&channelId=${encodeURIComponent(channelId)}` : ''}`),
   acknowledgeHealth: (id: string) => post<{ ok: true }>(`/api/health-events/${id}/ack`, {}),
   schedulerStatus: () => send<{ checkedAt: string; channels: Array<{ channelId: string; rundownId: string | null; activeRule: { name: string; startMinute: number; endMinute: number } | null; endsAtFrames: number; minutesRemaining: number; coverageMinutes: number; coverageHours: number; targetHours: number; coverageReady: boolean }> }>('/api/scheduler/status'),
+  n1Status: () => send<{ configured: boolean; peer: string | null; reachable: boolean; latencyMs: number | null; checkedAt: string; error: string | null }>('/api/n1/status'),
 
   autoFill: (
     rundownId: string,
