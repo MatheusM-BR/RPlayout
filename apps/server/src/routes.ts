@@ -2717,6 +2717,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       else if (body.data.action === 'cue') await runtime.transport.cue(body.data.itemId ? { kind: 'ITEM', id: body.data.itemId } : body.data.assetId ? { kind: 'ASSET', id: body.data.assetId } : null)
       else if (body.data.action === 'stop') await runtime.transport.stop()
       else if (body.data.itemId) await runtime.transport.park(body.data.itemId)
+      await logDecision(app, runtime.view.rundown.id, body.data.itemId ?? null, `EXTERNAL_${body.data.action.toUpperCase()}`, { ...body.data, source: 'external-control' })
       await emitIntegrationEvent(app.db, `external.${body.data.action}`, body.data, body.data.channelId)
       return { ok: true, action: body.data.action, channelId: body.data.channelId }
     } catch (error) {
