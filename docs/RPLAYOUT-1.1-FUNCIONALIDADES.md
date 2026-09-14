@@ -38,6 +38,10 @@ A janela 1.1 deve usar largura menor, vídeo e régua no mesmo quadro e ações 
 
 ### Operação Master
 
+### Aplicativos independentes e servidor 24/7
+
+O servidor do RPlayout pode permanecer ligado sem interface com `rplayout-test.exe --server-only`. Os clientes são janelas independentes que se conectam à mesma API: operador (`/`), playlists (`/?workspace=playlist`), administração (`/?workspace=admin`) e monitor (`/?workspace=monitor`). Fechar uma janela cliente não encerra o servidor nem o canal no ar.
+
 - PGM, PVW e estado de saída no topo do painel direito.
 - Grade central com estados inequívocos: NO AR, PRÓXIMO, PREPARADO, INDISPONÍVEL e ERRO.
 - TAKE, PARAR e PREPARAR agrupados por risco operacional.

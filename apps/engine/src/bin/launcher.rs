@@ -20,6 +20,9 @@ const PORT: u16 = 4000;
 
 fn main() -> Result<()> {
     let raiz = raiz_da_instalacao()?;
+    let argumentos: Vec<String> = std::env::args().skip(1).collect();
+    let somente_servidor = argumentos.iter().any(|arg| arg == "--server-only");
+    let workspace = argumentos.iter().find_map(|arg| arg.strip_prefix("--workspace=").map(str::to_owned));
     println!("RPlayout · instalação em {}", raiz.display());
 
     if !raiz.join("apps/web/dist/index.html").exists() {
@@ -39,7 +42,7 @@ fn main() -> Result<()> {
     // interface.
     if std::net::TcpStream::connect(("127.0.0.1", PORT)).is_ok() {
         println!("RPlayout já está em execução na porta {PORT}; reutilizando a instância.");
-        abrir_navegador();
+        if !somente_servidor { abrir_navegador(workspace.as_deref()); }
         return Ok(());
     }
 
@@ -48,7 +51,7 @@ fn main() -> Result<()> {
     match esperar_porta() {
         Ok(()) => {
             println!("RPlayout no ar em http://localhost:{PORT}");
-            abrir_navegador();
+            if !somente_servidor { abrir_navegador(workspace.as_deref()); }
         }
         Err(erro) => {
             // Servidor que não sobe deixa o motivo no próprio terminal: matar
@@ -231,8 +234,11 @@ fn esperar_porta() -> Result<()> {
     Err(anyhow!("nada atendeu na porta {PORT} em 90 segundos"))
 }
 
-fn abrir_navegador() {
-    let endereco = format!("http://localhost:{PORT}");
+fn abrir_navegador(workspace: Option<&str>) {
+    let endereco = match workspace {
+        Some(nome) => format!("http://localhost:{PORT}/?workspace={nome}"),
+        None => format!("http://localhost:{PORT}"),
+    };
     let resultado = if cfg!(windows) {
         Command::new("cmd").args(["/C", "start", "", &endereco]).spawn()
     } else {

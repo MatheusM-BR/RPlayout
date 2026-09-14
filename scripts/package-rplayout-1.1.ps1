@@ -15,4 +15,5 @@ Copy-Item -Recurse -Force mediamtx "$Destination/"
 Copy-Item docs/RPLAYOUT-1.1-FUNCIONALIDADES.md "$Destination/" -Force
 Copy-Item scripts/verify-rplayout-package.ps1 "$Destination/" -Force
 Copy-Item scripts/verify-media-endpoints.ps1 "$Destination/" -Force
+Copy-Item scripts/start-rplayout-server.ps1, scripts/open-rplayout-workspace.ps1 "$Destination/" -Force
 Write-Host "Pacote de teste preparado em $Destination"
