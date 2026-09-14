@@ -583,6 +583,16 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                       <div className="d mono">{destination.url}</div>
                       {relay && (
                         <div className="d">
+                          <span className="pill">{relay.transport}{relay.transport === 'SRT' ? ` · ${relay.mode}` : ''}</span>
+                          {relay.latencyMs != null && ` · latência ${relay.latencyMs} ms`}
+                          {relay.rttMs != null && ` · RTT ${relay.rttMs} ms`}
+                          {relay.lossPct != null && ` · perda ${relay.lossPct.toFixed(1)}%`}
+                          {relay.bitrateKbps != null && ` · ${relay.bitrateKbps.toLocaleString('pt-BR')} kbps`}
+                          {` · ${relay.primary ? 'primário' : `backup de ${relay.backupFor ?? '—'}`}`}
+                        </div>
+                      )}
+                      {relay && (
+                        <div className="d">
                           {relay.delivered > 0
                             ? `${relay.delivered.toLocaleString('pt-BR')} pacotes entregues`
                             : 'nada entregue ainda'}

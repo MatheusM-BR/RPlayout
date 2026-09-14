@@ -712,6 +712,10 @@ export async function syncDistribution(app: App): Promise<void> {
   app.relays.sync(targets.filter((target) => target.enabled).flatMap((target) => {
     const path = app.paths.find((path) => path.channelId === target.channelId)
     return path ? [{ id: target.id, name: target.name, url: target.url,
-      source: MediaMtx.internalRead(path.program) }] : []
+      source: MediaMtx.internalRead(path.program),
+      transport: target.url.toLowerCase().startsWith('srt:') ? 'SRT' as const : target.url.toLowerCase().startsWith('rtmp:') || target.url.toLowerCase().startsWith('rtmps:') ? 'RTMP' as const : 'OTHER' as const,
+      mode: (() => { try { const value = new URL(target.url).searchParams.get('mode')?.toUpperCase(); return value === 'CALLER' || value === 'LISTENER' || value === 'RENDEZVOUS' ? value : 'UNKNOWN' as const } catch { return 'UNKNOWN' as const } })(),
+      latencyMs: (() => { try { const value = Number(new URL(target.url).searchParams.get('latency')); return Number.isFinite(value) && value >= 0 ? value : null } catch { return null } })(),
+    }] : []
   }))
 }

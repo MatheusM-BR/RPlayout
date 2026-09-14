@@ -1,11 +1,35 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 
+function parsed(url: string): URL | null {
+  try { return new URL(url) } catch { return null }
+}
+function transportOf(url: string): 'SRT' | 'RTMP' | 'OTHER' {
+  const protocol = parsed(url)?.protocol.toLowerCase()
+  if (protocol === 'srt:') return 'SRT'
+  if (protocol === 'rtmp:' || protocol === 'rtmps:') return 'RTMP'
+  return 'OTHER'
+}
+function modeOf(url: string): 'CALLER' | 'LISTENER' | 'RENDEZVOUS' | 'UNKNOWN' {
+  const value = parsed(url)?.searchParams.get('mode')?.toUpperCase()
+  return value === 'CALLER' || value === 'LISTENER' || value === 'RENDEZVOUS' ? value : 'UNKNOWN'
+}
+function latencyOf(url: string): number | null {
+  const value = Number(parsed(url)?.searchParams.get('latency'))
+  return Number.isFinite(value) && value >= 0 ? value : null
+}
+
 export interface RelayTarget {
   readonly id: string
   readonly name: string
   readonly url: string
   readonly source: string
+  /** Parâmetros operacionais do destino SRT; não contém senha. */
+  readonly transport?: 'SRT' | 'RTMP' | 'OTHER'
+  readonly mode?: 'CALLER' | 'LISTENER' | 'RENDEZVOUS' | 'UNKNOWN'
+  readonly latencyMs?: number | null
+  readonly primary?: boolean
+  readonly backupFor?: string | null
 }
 
 export type RelayState = 'CONECTANDO' | 'NO AR' | 'CAIU' | 'FALHOU'
@@ -21,6 +45,14 @@ export interface RelayStatus {
   readonly delivered: number
   /** Fluxos que a origem ofereceu, como o relay os classificou. */
   readonly streams: readonly string[]
+  readonly transport: 'SRT' | 'RTMP' | 'OTHER'
+  readonly mode: 'CALLER' | 'LISTENER' | 'RENDEZVOUS' | 'UNKNOWN'
+  readonly latencyMs: number | null
+  readonly rttMs: number | null
+  readonly lossPct: number | null
+  readonly bitrateKbps: number | null
+  readonly primary: boolean
+  readonly backupFor: string | null
 }
 
 interface Relay {
@@ -31,6 +63,9 @@ interface Relay {
   reason: string | null
   delivered: number
   streams: string[]
+  rttMs: number | null
+  lossPct: number | null
+  bitrateKbps: number | null
 }
 
 /**
@@ -87,6 +122,9 @@ export class RelaySupervisor {
       reason: null,
       delivered: 0,
       streams: [],
+      rttMs: null,
+      lossPct: null,
+      bitrateKbps: null,
     }
     this.relays.set(target.id, relay)
     child.on('error', (error) => {
@@ -106,6 +144,9 @@ export class RelaySupervisor {
             message?: string
             sink?: number
             streams?: string[]
+            rttMs?: number
+            lossPct?: number
+            bitrateKbps?: number
           }
           switch (event.event) {
             case 'connecting':
@@ -123,6 +164,9 @@ export class RelaySupervisor {
               // Entregue de verdade, não "conectado": é o número que diz se o
               // destino está recebendo alguma coisa.
               relay.delivered = event.sink ?? relay.delivered
+              relay.rttMs = event.rttMs ?? relay.rttMs
+              relay.lossPct = event.lossPct ?? relay.lossPct
+              relay.bitrateKbps = event.bitrateKbps ?? relay.bitrateKbps
               break
             case 'disconnected':
               relay.state = 'CAIU'
@@ -159,6 +203,14 @@ export class RelaySupervisor {
       reason: relay.reason,
       delivered: relay.delivered,
       streams: relay.streams,
+      transport: relay.target.transport ?? transportOf(relay.target.url),
+      mode: relay.target.mode ?? modeOf(relay.target.url),
+      latencyMs: relay.target.latencyMs ?? latencyOf(relay.target.url),
+      rttMs: relay.rttMs,
+      lossPct: relay.lossPct,
+      bitrateKbps: relay.bitrateKbps,
+      primary: relay.target.primary ?? true,
+      backupFor: relay.target.backupFor ?? null,
     }))
   }
 

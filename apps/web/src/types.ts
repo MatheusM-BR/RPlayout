@@ -184,6 +184,14 @@ export interface RelayStatus {
   reason: string | null
   delivered: number
   streams: string[]
+  transport: 'SRT' | 'RTMP' | 'OTHER'
+  mode: 'CALLER' | 'LISTENER' | 'RENDEZVOUS' | 'UNKNOWN'
+  latencyMs: number | null
+  rttMs: number | null
+  lossPct: number | null
+  bitrateKbps: number | null
+  primary: boolean
+  backupFor: string | null
 }
 
 /** Saída de rede do canal, como o engine reporta. */
