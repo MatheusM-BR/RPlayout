@@ -405,6 +405,16 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .limit(Math.min(500, Math.max(1, Number(limit ?? 100))))
     return { cues: rows.filter((row) => !channelId || row.channelId === channelId) }
   })
+  server.get('/api/cues/scte.csv', async (request, reply) => {
+    const { channelId } = request.query as { channelId?: string }
+    const rows = await app.db.select().from(healthEvents).where(eq(healthEvents.component, 'SCTE')).orderBy(asc(healthEvents.occurredAt))
+    const quote = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
+    const filtered = rows.filter((row) => !channelId || row.channelId === channelId)
+    const csv = ['horário;canal;estado;mensagem;reconhecido', ...filtered.map((row) => [row.occurredAt, row.channelId, row.state, row.message, row.acknowledgedAt].map(quote).join(';'))].join('\n')
+    void reply.header('content-type', 'text/csv; charset=utf-8')
+    void reply.header('content-disposition', 'attachment; filename="rplayout-scte.csv"')
+    return csv
+  })
   server.post('/api/users', async (request, reply) => {
     if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
     const body = z.object({ username: z.string().min(1).max(80), password: z.string().min(8), role: z.enum(['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']) }).safeParse(request.body)
