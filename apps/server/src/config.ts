@@ -71,7 +71,10 @@ export const HEALTH_RETENTION_DAYS = Number(process.env.RPLAYOUT_HEALTH_RETENTIO
 export const DEVICES_BINARY = process.env.RPLAYOUT_DEVICES ?? ''
 
 /** Papel padrão desta estação; pode ser substituído por sessão autenticada. */
-export const DEFAULT_ROLE = process.env.RPLAYOUT_ROLE ?? 'SUPERVISOR'
+// A estação local inicia como administrador para que o primeiro operador
+// consiga criar as contas reais. Em produção, defina RPLAYOUT_ROLE ou use
+// autenticação; o valor não substitui a sessão autenticada.
+export const DEFAULT_ROLE = process.env.RPLAYOUT_ROLE ?? 'ADMIN'
 export const AUTH_USER = process.env.RPLAYOUT_ADMIN_USER ?? ''
 export const AUTH_PASSWORD = process.env.RPLAYOUT_ADMIN_PASSWORD ?? ''
 /** Token dedicado a automações GPI/ATEM/routers; vazio desativa a porta lógica. */

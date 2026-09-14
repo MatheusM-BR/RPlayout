@@ -99,7 +99,7 @@ export const api = {
     return body
   },
 
-  patchAsset: (id: string, body: { title?: string; categoryId?: string | null }) =>
+  patchAsset: (id: string, body: { title?: string; categoryId?: string | null; ignored?: boolean }) =>
     send<{ ok: true }>(`/api/assets/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   /**
    * Tira do acervo. Arquivo em uso responde conflito em vez de sair calado --

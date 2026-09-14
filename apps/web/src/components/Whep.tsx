@@ -19,6 +19,15 @@ interface Props {
 
 type Status = 'off' | 'connecting' | 'live' | 'failed'
 
+const tempo = (seconds: number): string => {
+  if (!Number.isFinite(seconds) || seconds < 0) return '00:00'
+  const total = Math.floor(seconds)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  return h > 0 ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
 /**
  * Monitor de vídeo por WHEP.
  *
@@ -228,6 +237,7 @@ export function Whep({ path, port, onWatching, frameRate = 25 }: Props) {
       />
       {status === 'live' && (
         <div className="monitor-seekbar">
+          <span className="monitor-time" aria-live="off">{tempo(posicao)} / {duracao > 0 ? tempo(duracao) : 'ao vivo'}</span>
           <button type="button" className="btn small frame-step" aria-label="voltar um quadro" disabled={duracao <= 0} onClick={() => { if (!video.current) return; const value = Math.max(0, video.current.currentTime - 1 / frameRate); video.current.currentTime = value; setPosicao(value) }}>−1f</button>
           <input aria-label="Posição do vídeo" type="range" min="0" max={duracao || 1} step={1 / frameRate} value={Math.min(posicao, duracao || 1)} disabled={duracao <= 0} onChange={(event) => { const value = Number(event.target.value); setPosicao(value); if (video.current) video.current.currentTime = value }} />
           <button type="button" className="btn small frame-step" aria-label="avançar um quadro" disabled={duracao <= 0} onClick={() => { if (!video.current) return; const value = Math.min(duracao || Infinity, video.current.currentTime + 1 / frameRate); video.current.currentTime = value; setPosicao(value) }}>+1f</button>

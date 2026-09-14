@@ -442,6 +442,10 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 
 .bar { position: relative; width: 66px; height: 3px; border-radius: 2px; background: var(--border); }
 .bar i { position: absolute; inset: 0 auto 0 0; background: var(--onair); border-radius: 2px; }
+.ignored-assets { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
+.ignored-list { display: grid; gap: 4px; }
+.ignored-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 6px; padding: 5px 6px; background: rgba(255,255,255,.03); }
+.ignored-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- biblioteca ---------- */
 
@@ -1801,6 +1805,7 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
 .screen > .monitor-seekbar input { accent-color: var(--onair); cursor: ew-resize; }
 .monitor-seekbar { display: flex; align-items: center; gap: 4px; }
 .monitor-seekbar input { flex: 1; min-width: 0; }
+.monitor-time { min-width: 92px; color: var(--text); font: 11px var(--mono); text-align: right; white-space: nowrap; }
 .frame-step { min-width: 34px; padding-inline: 4px; font-size: 10px; }
 .timeline-strip { display:flex; gap:6px; overflow-x:auto; padding:8px 0; max-width:100%; }
 .timeline-chip { border:1px solid var(--border-soft); background:var(--sunk); color:var(--text-muted); padding:4px 8px; border-radius:3px; white-space:nowrap; font-size:11px; }

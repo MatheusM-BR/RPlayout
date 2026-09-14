@@ -1070,6 +1070,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   const assetPatch = z.object({
     title: z.string().min(1).optional(),
     categoryId: z.string().min(1).nullable().optional(),
+    ignored: z.boolean().optional(),
   })
 
   server.patch('/api/assets/:id', async (request, reply) => {
@@ -1107,7 +1108,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (usos.length > 0) {
       await app.db.delete(rundownItems).where(eq(rundownItems.mediaId, id))
     }
-    await app.db.delete(mediaAssets).where(eq(mediaAssets.id, id))
+    // Remoção da listagem é persistente. O arquivo volta a ser visto pelo
+    // scanner, mas continua ignorado até o operador aceitá-lo explicitamente.
+    await app.db.update(mediaAssets).set({ ignored: true }).where(eq(mediaAssets.id, id))
     for (const runtime of app.runtimes.values()) await runtime.refresh()
     onChange()
     return { ok: true, removedItems: usos.length }
@@ -1389,6 +1392,35 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return snapshot(app, runtime)
   })
 
+  /** Exporta a grade atual (itens e caminhos de mídia) para conferência ou
+   * importação em outra ferramenta. O arquivo é sempre a proposta vigente,
+   * sem alterar o estado do canal.
+   */
+  server.get('/api/rundowns/:id/export.csv', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar a grade.' })
+    const runtime = await runtimeForRundown(app, id)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Grade não encontrada.' })
+    const esc = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
+    const lines = ['ordem;item;tipo;arquivo;entrada prevista;duração;âncora;estado']
+    runtime.view.items.forEach((item, index) => {
+      const planned = runtime.view!.schedule.items.find((entry) => entry.id === item.item.id)
+      lines.push([
+        index + 1,
+        esc(item.item.title),
+        esc(item.item.type),
+        esc(item.asset?.path ?? item.item.sourceRef ?? ''),
+        esc(planned?.start ?? ''),
+        esc(planned?.duration ?? ''),
+        esc(item.item.anchor.kind),
+        esc(planned?.state ?? ''),
+      ].join(';'))
+    })
+    void reply.header('content-type', 'text/csv; charset=utf-8')
+    void reply.header('content-disposition', `attachment; filename="grade-${runtime.channel.name.replace(/\W+/g, '-')}.csv"`)
+    return `\ufeff${lines.join('\n')}`
+  })
+
   // ---- itens -----------------------------------------------------------
 
   const addItemSchema = z.object({
@@ -1414,6 +1446,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const asset = body.data.mediaId ? assets.find((a) => a.id === body.data.mediaId) : undefined
     if (body.data.mediaId && !asset) {
       return reply.code(400).send({ error: 'Arquivo não existe no acervo.' })
+    }
+    if (asset?.ignored) {
+      return reply.code(400).send({ error: 'Este arquivo está ignorado. Aceite-o no acervo antes de inserir na grade.' })
     }
 
     // Imagem parada não traz duração: quem diz quanto ela fica é a grade, e

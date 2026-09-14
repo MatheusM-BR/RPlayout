@@ -302,6 +302,7 @@ export function openDatabase(file: string) {
     'ALTER TABLE rundown_items ADD COLUMN fit TEXT',
     'ALTER TABLE rundown_items ADD COLUMN audio_track INTEGER',
     'ALTER TABLE media_assets ADD COLUMN audio_tracks TEXT',
+    'ALTER TABLE media_assets ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE operator_decisions ADD COLUMN actor_username TEXT',
     'ALTER TABLE health_events ADD COLUMN acknowledged_at TEXT',
     "ALTER TABLE health_events ADD COLUMN severity TEXT NOT NULL DEFAULT 'INFO'",

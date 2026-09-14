@@ -89,6 +89,8 @@ export const mediaAssets = sqliteTable('media_assets', {
   defaultAudio: text('default_audio', { mode: 'json' }).$type<AudioLevel | null>(),
   loudnessFile: text('loudness_file', { mode: 'json' }).$type<LoudnessMeasurement | null>(),
   suggestedTrim: text('suggested_trim', { mode: 'json' }).$type<Trim | null>(),
+  /** Removido da listagem pelo operador; permanece para não voltar no próximo scan. */
+  ignored: integer('ignored', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
 })
 

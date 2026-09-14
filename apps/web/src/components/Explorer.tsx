@@ -16,6 +16,7 @@ interface Props {
   /** Põe o arquivo no fim da grade, sem diálogo: é o caminho de todo dia. */
   onInsert: (assetId: string) => void
   onRemove: (assetId: string) => void
+  onAccept: (assetId: string) => void
   onCategorize: (assetId: string, categoryId: string | null) => void
   /** Tira do acervo tudo que não abriu. */
   onPrune: () => void
@@ -56,6 +57,7 @@ export function Explorer({
   onPreview,
   onInsert,
   onRemove,
+  onAccept,
   onCategorize,
   onPrune,
   scan,
@@ -102,7 +104,16 @@ export function Explorer({
       .filter((folder) => folder.assets.length > 0)
   }, [folders, query])
 
-  const resultCount = filtered.reduce((total, folder) => total + folder.assets.length, 0)
+  const ativos = useMemo(
+    () => filtered.map((folder) => ({ ...folder, assets: folder.assets.filter((asset) => !asset.ignored) })).filter((folder) => folder.assets.length > 0),
+    [filtered],
+  )
+  const ignorados = useMemo(
+    () => folders.flatMap((folder) => folder.assets.filter((asset) => asset.ignored)),
+    [folders],
+  )
+
+  const resultCount = ativos.reduce((total, folder) => total + folder.assets.length, 0)
   const assetsAll = folders.flatMap((folder) => folder.assets)
   const selectedAsset = assetsAll.find((asset) => asset.id === escolhido && !asset.probeError)
 
@@ -138,7 +149,7 @@ export function Explorer({
   /** Uma seção por raiz, com as pastas fixadas no topo de cada uma. */
   const porRaiz = useMemo(() => {
     const mapa = new Map<string, { label: string; folders: LibraryFolder[] }>()
-    for (const folder of filtered) {
+    for (const folder of ativos) {
       const grupo = mapa.get(folder.rootId)
       if (grupo) grupo.folders.push(folder)
       else mapa.set(folder.rootId, { label: folder.rootLabel, folders: [folder] })
@@ -151,7 +162,7 @@ export function Explorer({
       })
     }
     return [...mapa.entries()]
-  }, [filtered, fixadas])
+  }, [ativos, fixadas])
 
   const acrescentar = (): void => {
     void onPickRoot().then((erro) => {
@@ -419,6 +430,20 @@ export function Explorer({
           <strong>{query.trim() ? 'Nenhum resultado' : 'Seu acervo começa aqui'}</strong>
           <p>{query.trim() ? 'Tente outro nome ou limpe a busca para ver todos os arquivos.' : 'Use + PASTA para escolher a pasta de mídia. Depois, selecione um arquivo para conferir no preview.'}</p>
         </div>}
+        {ignorados.length > 0 && (
+          <div className="ignored-assets" aria-label="Arquivos ignorados">
+            <div className="pane-title">ignorados<span className="count">{ignorados.length}</span></div>
+            <div className="ignored-list">
+              {ignorados.map((asset) => (
+                <div className="ignored-row" key={asset.id}>
+                  <span className="name">{asset.title}</span>
+                  <span className="sub">{asset.probe?.hasAudio === false ? 'mudo' : asset.probe ? `${asset.probe.width}×${asset.probe.height}` : 'sem imagem'}</span>
+                  <button className="btn small" onClick={() => onAccept(asset.id)} title="Aceitar este arquivo no acervo ativo">ACEITAR</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       {menu && (
         <div className="context-menu" style={{ left: menu.x, top: menu.y }} onMouseLeave={fecharMenu}>

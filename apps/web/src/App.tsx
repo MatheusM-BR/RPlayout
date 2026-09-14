@@ -789,6 +789,14 @@ export function App() {
     )
   }
 
+  const aceitarDoAcervo = (assetId: string): void => {
+    void guard(async () => {
+      await api.patchAsset(assetId, { ignored: false })
+      await refreshLibrary()
+      say('Arquivo aceito no acervo ativo.')
+    })
+  }
+
   if (authRequired && !authenticated) return <Login onLogin={login} error={authError} />
 
   if (!view || !live) {
@@ -907,7 +915,7 @@ export function App() {
           >
             ⚙
           </button>
-          <button className="aba acesso" title="Abrir administração em janela própria" onClick={() => window.open(`${window.location.pathname}?workspace=admin`, '_blank', 'noopener,noreferrer')}>
+          <button className="aba acesso" title="Abrir gerenciamento de usuários" onClick={() => setDialog({ kind: 'users' })}>
             USUÁRIOS
           </button>
           <button className="aba" title="Abrir organização de playlists em janela própria" onClick={() => window.open(`${window.location.pathname}?workspace=playlist`, '_blank', 'noopener,noreferrer')}>
@@ -966,6 +974,7 @@ export function App() {
             // marcada usa INSERIR ITEM, que é onde as âncoras moram.
             onInsert={inserirNoFim}
             onRemove={removerDoAcervo}
+            onAccept={aceitarDoAcervo}
             onCategorize={categorizar}
             onPrune={limparQuebrados}
             scan={scan}
@@ -1028,6 +1037,9 @@ export function App() {
               >
                 AIRED
               </button>
+              <a className="btn small" href={`/api/rundowns/${view.rundown.id}/export.csv`} download title="Exportar a grade proposta em CSV">
+                EXPORTAR GRADE
+              </a>
               <button
                 className={`btn small${followOnAir ? ' on' : ''}`}
                 onClick={() => setFollowOnAir((value) => !value)}

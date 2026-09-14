@@ -106,6 +106,8 @@ export interface MediaAsset {
 
   /** Pontas de preto e de silêncio detectadas, como sugestão de corte. */
   readonly suggestedTrim: Trim | null
+  /** Arquivo deliberadamente oculto do acervo ativo pelo operador. */
+  readonly ignored?: boolean
   readonly createdAt: string
 }
 

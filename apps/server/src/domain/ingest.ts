@@ -397,6 +397,7 @@ export class Ingest {
         audioTracks: null,
         loudnessFile: null,
         probeError: probe.reason,
+        ignored: existing?.ignored ?? true,
       }
       await this.upsert(existing?.id ?? null, row)
       this.patch({ failed: this.state.failed + 1 })
@@ -441,6 +442,13 @@ export class Ingest {
       audioTracks: probe.audioTracks ?? [],
       probeError: null,
       loudnessFile: measuredLoudness,
+      // Material sem imagem, sem áudio ou vertical 9:16 entra no acervo
+      // ignorado. O operador pode aceitar manualmente; a decisão é preservada
+      // em novas varreduras e reinicializações.
+      ignored:
+        existing?.ignored ??
+        (!probe.video || !probe.audio ||
+          (probe.video.height > 0 && probe.video.width / probe.video.height < 0.8)),
     }
     await this.upsert(existing?.id ?? null, row)
     this.patch(

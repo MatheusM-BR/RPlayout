@@ -53,6 +53,7 @@ export const toAsset = (row: AssetRow): MediaAsset => ({
   defaultAudio: row.defaultAudio ?? null,
   loudnessFile: row.loudnessFile ?? null,
   suggestedTrim: row.suggestedTrim ?? null,
+  ignored: row.ignored ?? false,
   createdAt: row.createdAt,
 })
 
