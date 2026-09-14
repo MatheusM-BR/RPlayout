@@ -43,6 +43,9 @@ export interface RelayTarget {
 
 export type RelayState = 'CONECTANDO' | 'NO AR' | 'CAIU' | 'FALHOU'
 
+/** Só a confirmação de entrega autoriza desligar o backup. */
+export const primaryHealthy = (state: RelayState | undefined): boolean => state === 'NO AR'
+
 export interface RelayStatus {
   readonly id: string
   readonly name: string
@@ -227,10 +230,11 @@ export class RelaySupervisor {
       const backup = [...this.desired.values()].find((candidate) => candidate.backupFor === primary.id)
       if (!backup) continue
       const backupRelay = this.relays.get(backup.id)
-      const failed = !primaryRelay || primaryRelay.state === 'CAIU' || primaryRelay.state === 'FALHOU'
+      const healthy = primaryHealthy(primaryRelay?.state)
+      const failed = !healthy
       if (failed && !backupRelay) {
         this.spawn(backup, backup.source)
-      } else if (!failed && backupRelay) {
+      } else if (healthy && backupRelay) {
         backupRelay.child.kill()
         this.relays.delete(backup.id)
       }
