@@ -446,6 +446,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .ignored-list { display: grid; gap: 4px; }
 .ignored-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 6px; padding: 5px 6px; background: rgba(255,255,255,.03); }
 .ignored-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-picker-inline { display: flex; gap: 6px; flex: 1; min-width: 220px; }
+.file-picker-inline input { flex: 1; min-width: 0; }
 
 /* ---------- biblioteca ---------- */
 

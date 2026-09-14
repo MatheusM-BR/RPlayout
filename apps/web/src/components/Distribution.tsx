@@ -98,6 +98,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [processKind, setProcessKind] = useState<'ALL' | 'ENGINE' | 'OUTPUT' | 'MEDIAMTX'>('ALL')
   const [processChannel, setProcessChannel] = useState<'ALL' | 'CURRENT'>('CURRENT')
   const [outputs, setOutputs] = useState<OutputProfile[]>([])
+  const [decklinkSources, setDecklinkSources] = useState<{ reference: string; label: string }[]>([])
   const [outName, setOutName] = useState('')
   const [outTarget, setOutTarget] = useState('')
   const [outKind, setOutKind] = useState<'RTMP' | 'SRT' | 'FILE' | 'SDI'>('RTMP')
@@ -117,6 +118,11 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
    * escrevendo, o número sumiria do campo no meio da digitação.
    */
   const [rascunho, setRascunho] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (outKind !== 'SDI') return
+    void api.sources().then((sources) => setDecklinkSources(sources.sdi.sources)).catch(() => setDecklinkSources([]))
+  }, [outKind])
 
   const refresh = useCallback(async () => {
     try {
@@ -484,18 +490,25 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                 <option value="FILE">Arquivo</option>
                 <option value="SDI">SDI / Decklink (placa)</option>
               </select>
-              <input
-                type="text"
-                placeholder={
-                  outKind === 'FILE'
-                    ? 'caminho do arquivo'
-                    : outKind === 'SDI'
-                      ? 'conector da placa: 0, 1, 2… (Duo 2 = 0 a 3)'
-                      : 'rtmp://...'
-                }
-                value={outTarget}
-                onChange={(event) => setOutTarget(event.target.value)}
-              />
+              {outKind === 'SDI' ? (
+                <select value={outTarget} onChange={(event) => setOutTarget(event.target.value)} aria-label="placa e conector DeckLink">
+                  <option value="">selecione a placa/conector</option>
+                  {decklinkSources.map((source) => <option key={source.reference} value={source.reference.replace(/^sdi:/i, '')}>{source.label} ({source.reference})</option>)}
+                </select>
+              ) : outKind === 'FILE' ? (
+                <div className="file-picker-inline">
+                  <input type="text" value={outTarget} readOnly placeholder="nenhum arquivo selecionado" />
+                  <button className="btn small" onClick={() => void api.pickFile().then((path) => path && setOutTarget(path)).catch((failure: Error) => onMessage(failure.message))}>EXPLORAR…</button>
+                </div>
+              ) : (
+                <input
+                  type="text"
+                  placeholder="rtmp://..."
+                  value={outTarget}
+                  onChange={(event) => setOutTarget(event.target.value)}
+                />
+              )}
+              {outKind === 'SDI' && decklinkSources.length === 0 && <div className="sub bad">Nenhuma placa DeckLink disponível. Instale o driver Blackmagic e o plugin DeckLink do GStreamer.</div>}
               <button
                 className="btn small"
                 disabled={!outName.trim() || !outTarget.trim()}

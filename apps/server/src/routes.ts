@@ -1329,6 +1329,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { root: resultado.root, scanning: app.ingest.status().running }
   })
 
+  server.post('/api/files/pick', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Sem permissão para escolher arquivos.' })
+    const path = await Roots.pickFile()
+    if (!path) return reply.code(204).send()
+    return { path }
+  })
+
   server.post('/api/library/roots', async (request, reply) => {
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode adicionar pastas.' })
     const body = z

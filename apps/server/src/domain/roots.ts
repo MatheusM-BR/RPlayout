@@ -22,6 +22,19 @@ export async function pickFolder(): Promise<string | null> {
   }
 }
 
+/** Abre o seletor nativo de arquivo na máquina do servidor. */
+export async function pickFile(): Promise<string | null> {
+  if (process.platform !== 'win32') return null
+  const script = 'Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title="Escolha o arquivo de saída"; $d.Filter="Vídeo e áudio|*.mp4;*.mov;*.mkv;*.ts;*.wav;*.mp3|Todos os arquivos|*.*"; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){[Console]::Write($d.FileName)}'
+  try {
+    const result = await execFileAsync('powershell.exe', ['-NoProfile', '-STA', '-Command', script], { windowsHide: false, timeout: 120_000 })
+    const path = result.stdout.trim()
+    return path === '' ? null : path
+  } catch {
+    return null
+  }
+}
+
 export interface MediaRoot {
   readonly id: string
   readonly path: string

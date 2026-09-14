@@ -98,6 +98,13 @@ export const api = {
     if (!response.ok) throw new Error(body.error ?? 'Não consegui acrescentar a pasta.')
     return body
   },
+  pickFile: async () => {
+    const response = await fetch('/api/files/pick', { method: 'POST' })
+    if (response.status === 204) return null
+    const body = (await response.json()) as { path: string; error?: string }
+    if (!response.ok) throw new Error(body.error ?? 'Não consegui escolher o arquivo.')
+    return body.path
+  },
 
   patchAsset: (id: string, body: { title?: string; categoryId?: string | null; ignored?: boolean }) =>
     send<{ ok: true }>(`/api/assets/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
