@@ -473,9 +473,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       rate: runtime.channel.rate,
       nowFrames: now,
       items: runtime.view.schedule.items.map((entry) => ({
-        itemId: entry.item.id,
-        title: entry.item.title,
-        type: entry.item.type,
+        itemId: entry.id,
+        title: runtime.view?.items.find((view) => view.item.id === entry.id)?.item.title ?? entry.id,
+        type: runtime.view?.items.find((view) => view.item.id === entry.id)?.item.type ?? 'VT',
         start: entry.start,
         end: entry.end,
         duration: entry.end - entry.start,
