@@ -37,7 +37,7 @@ O XPlayout será usado como referência funcional. O RPlayout mantém uma arquit
 
 ### Fase B — entradas e distribuição profissional
 
-1. SRT Manager com caller/listener/rendezvous, latência, RTT, perda, bitrate, passphrase e reconnect.
+1. SRT Manager com caller/listener/rendezvous, latência, RTT, perda, bitrate, passphrase mascarada e reconnect.
 2. Perfil primário/secundário para cada entrada e saída.
 3. Normalização de resolução, frame rate, aspecto e codec no engine.
 4. Multiview operacional para várias entradas.
