@@ -397,6 +397,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     await emitIntegrationEvent(app.db, 'scte.cue', payload, payload.channelId)
     return { ok: true, acceptedAt: new Date().toISOString(), payload }
   })
+  server.get('/api/cues/scte', async (request) => {
+    const { channelId, limit } = request.query as { channelId?: string; limit?: string }
+    const rows = await app.db.select().from(healthEvents)
+      .where(eq(healthEvents.component, 'SCTE'))
+      .orderBy(desc(healthEvents.occurredAt))
+      .limit(Math.min(500, Math.max(1, Number(limit ?? 100))))
+    return { cues: rows.filter((row) => !channelId || row.channelId === channelId) }
+  })
   server.post('/api/users', async (request, reply) => {
     if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
     const body = z.object({ username: z.string().min(1).max(80), password: z.string().min(8), role: z.enum(['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']) }).safeParse(request.body)
