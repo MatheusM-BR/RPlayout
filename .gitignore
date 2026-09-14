@@ -13,6 +13,7 @@ coverage/
 apps/server/mediamtx.yml
 .thumbs/
 apps/server/.thumbs/
+apps/server/.continuity-cache/
 midia/
 apps/server/midia/
 backups/

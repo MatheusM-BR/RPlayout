@@ -12,6 +12,12 @@ foreach ($aux in @('rplayout-probe.exe','rplayout-devices.exe','rplayout-relay.e
   if (Test-Path "apps/engine/target/release/$aux") { Copy-Item "apps/engine/target/release/$aux" "$Destination/apps/engine/target/release/$aux" -Force }
 }
 Copy-Item package.json,pnpm-lock.yaml "$Destination/" -Force
+New-Item -ItemType Directory -Force -Path "$Destination/runtime/node", "$Destination/runtime/pnpm" | Out-Null
+$node = (Get-Command node -ErrorAction SilentlyContinue).Source
+if ($node) { Copy-Item $node "$Destination/runtime/node/node.exe" -Force }
+$pnpm = Join-Path (Split-Path (Get-Command pnpm.cmd -ErrorAction Stop).Source) 'node_modules/pnpm/pnpm.exe'
+if (Test-Path $pnpm) { Copy-Item $pnpm "$Destination/runtime/pnpm/pnpm.exe" -Force }
+if (Test-Path 'node_modules') { Copy-Item -Recurse -Force node_modules "$Destination/node_modules" }
 New-Item -ItemType Directory -Force -Path "$Destination/apps/web/dist" | Out-Null
 Copy-Item -Recurse -Force apps/web/dist/* "$Destination/apps/web/dist/"
 New-Item -ItemType Directory -Force -Path "$Destination/apps/server/src" | Out-Null

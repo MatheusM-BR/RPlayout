@@ -25,6 +25,11 @@ if (Test-Path $gst) {
 } else {
   Write-Warning 'GStreamer portátil ausente: o engine dependerá da instalação global do sistema.'
 }
+if ((Test-Path (Join-Path $root 'runtime/node/node.exe')) -and (Test-Path (Join-Path $root 'runtime/pnpm/pnpm.exe')) -and (Test-Path (Join-Path $root 'node_modules'))) {
+  Write-Host 'Node/pnpm portátil: OK' -ForegroundColor Green
+} else {
+  Write-Warning 'Node/pnpm portátil ausente: o launcher dependerá do ambiente global.'
+}
 $files = $required | ForEach-Object {
   $path = Join-Path $root $_
   $hash = (Get-FileHash $path -Algorithm SHA256).Hash
