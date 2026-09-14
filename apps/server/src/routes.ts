@@ -423,6 +423,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     checkedAt: new Date().toISOString(),
   }))
   server.get('/api/n1/status', async () => probeN1Peer(N1_PEER_URL || null, EXTERNAL_CONTROL_TOKEN))
+  server.get('/api/n1/state', async () => ({
+    checkedAt: new Date().toISOString(),
+    channels: [...app.runtimes.values()].map((runtime) => ({
+      channelId: runtime.channel.id,
+      state: runtime.transport.state(),
+      health: runtime.transport.health(),
+    })),
+  }))
   server.get('/api/ready', async (_request, reply) => {
     const engines = [...app.runtimes.values()]
     const stopped = engines.filter((runtime) => !runtime.transport.health().ready)
