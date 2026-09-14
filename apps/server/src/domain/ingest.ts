@@ -85,6 +85,7 @@ const SKIP = new Set(['.git', 'node_modules', '.thumbs'])
  * lado dos que de fato estão quebrados. Lista tem lugar próprio.
  */
 const PLAYLIST_EXT = new Set(['.m3u', '.m3u8'])
+const SYSTEM_FILES = new Set(['thumbs.db', 'desktop.ini'])
 
 /** Este arquivo é uma lista de reprodução? */
 export function isPlaylist(path: string): boolean {
@@ -103,7 +104,7 @@ export function isPlaylist(path: string): boolean {
  * justamente o caso em que alguém precisa fazer alguma coisa.
  */
 /** Motivo de um arquivo que estava no acervo e não está mais na pasta. */
-const VANISHED = 'o arquivo não está mais na pasta'
+export const VANISHED = 'o arquivo não está mais na pasta'
 
 export class Ingest {
   private state: IngestStatus = {
@@ -138,6 +139,7 @@ export class Ingest {
    * automático fica sem base até alguém medir.
    */
   measure = true
+  private measuring = true
 
   constructor(
     private readonly db: Db,
@@ -160,10 +162,11 @@ export class Ingest {
    * medir loudness custa decodificar o áudio de cada arquivo -- e segurar a
    * resposta HTTP por isso deixaria a interface pendurada.
    */
-  start(roots: string | readonly string[]): boolean {
+  start(roots: string | readonly string[], measure = this.measure): boolean {
     if (this.state.running || !this.available) return false
     const pastas = (typeof roots === 'string' ? [roots] : roots).map((entry) => resolve(entry))
     if (pastas.length === 0) return false
+    this.measuring = measure
     this.state = {
       running: true,
       root: pastas[0] ?? null,
@@ -183,6 +186,22 @@ export class Ingest {
     return true
   }
 
+  /** Confere também referências antigas que ficaram fora das raízes atuais. */
+  async reconcileAvailability(): Promise<boolean> {
+    let changed = false
+    for (const row of await this.db.select().from(mediaAssets)) {
+      if (row.path.includes('://')) continue
+      try {
+        if (!(await stat(row.path)).isFile()) throw new Error('não é arquivo')
+      } catch {
+        if (row.probeError === VANISHED) continue
+        await this.db.update(mediaAssets).set({ probeError: VANISHED }).where(eq(mediaAssets.id, row.id))
+        changed = true
+      }
+    }
+    return changed
+  }
+
   private patch(change: Partial<IngestStatus>): void {
     this.state = { ...this.state, ...change }
   }
@@ -193,12 +212,14 @@ export class Ingest {
       // que a interface mostra como progresso, e ele não pode crescer no meio.
       const files: string[] = []
       for (const root of roots) {
+        this.patch({ root })
         // Procurar numa pasta de rede grande leva minutos, e até aqui a
         // interface mostrava "0/0" e mais nada: do lado de fora isso é uma
         // varredura que não termina. Agora ela diz onde está.
         files.push(
           ...(await walk(root, (dir, achados) =>
             this.patch({ current: `procurando em ${dir} (${achados} até agora)` }),
+            (dir, error) => this.patch({ error: `Não foi possível ler ${dir}: ${error}` }),
           )),
         )
       }
@@ -210,7 +231,7 @@ export class Ingest {
       const mudando: string[] = []
       for (const file of unicos) {
         this.patch({ current: file, seen: this.state.seen + 1 })
-        if (!(await this.absorb(file))) mudando.push(file)
+        if (!(await this.absorbSafely(file))) mudando.push(file)
       }
       await this.esperarOsQueMudavam(mudando)
       await this.markVanished(roots, unicos)
@@ -250,14 +271,14 @@ export class Ingest {
       await new Promise((pronto) => setTimeout(pronto, 2_000))
       const restam: string[] = []
       for (const arquivo of pendentes) {
-        if (!(await this.absorb(arquivo))) restam.push(arquivo)
+        if (!(await this.absorbSafely(arquivo))) restam.push(arquivo)
       }
       pendentes = restam
     }
 
     // Passou da hora e ainda mudam: entram na conta de pulados, com a última
     // chance marcada para o contador não ficar mentindo.
-    for (const arquivo of pendentes) await this.absorb(arquivo, true)
+    for (const arquivo of pendentes) await this.absorbSafely(arquivo, true)
   }
 
   /**
@@ -328,11 +349,12 @@ export class Ingest {
     // inteiro marcado como visto, e a leitura com medição depois pulava tudo
     // -- o nivelamento automático ficava sem base para sempre, e não havia
     // como descobrir por quê.
-    const faltaMedir = this.measure && existing?.loudnessFile == null
+    const faltaMedir = this.measuring && existing?.hasAudio !== false && existing?.loudnessFile == null
     if (
       existing &&
       existing.sizeBytes === info.size &&
       existing.modifiedAt === modifiedAt &&
+      !existing.probeError &&
       !faltaMedir
     ) {
       this.patch({ skipped: this.state.skipped + 1 })
@@ -342,6 +364,12 @@ export class Ingest {
     const contentHash = await hashFile(path)
     const thumbnail = join(this.thumbnailDir, `${contentHash}.jpg`)
     const probe = await this.probe(path, thumbnail)
+    const after = await stat(path)
+    if (after.size !== info.size || after.mtimeMs !== info.mtimeMs) {
+      if (!ultimaChance) return false
+      this.patch({ skipped: this.state.skipped + 1 })
+      return true
+    }
 
     const base = {
       contentHash,
@@ -367,6 +395,7 @@ export class Ingest {
         hasAudio: null,
         audioChannels: null,
         audioTracks: null,
+        loudnessFile: null,
         probeError: probe.reason,
       }
       await this.upsert(existing?.id ?? null, row)
@@ -374,6 +403,21 @@ export class Ingest {
       return true
     }
 
+    // Uma varredura rápida pode reprobar o arquivo só para atualizar metadados.
+    // Se o conteúdo não mudou, preserve a medição de loudness já existente;
+    // apagá-la deixa o nivelamento sem referência até a próxima análise.
+    const sameContent = existing?.contentHash === contentHash
+    const measuredLoudness = sameContent && existing?.loudnessFile != null
+      ? existing.loudnessFile
+      : probe.audio?.integratedLufs !== undefined
+        ? {
+            integratedLufs: probe.audio.integratedLufs,
+            lra: probe.audio.lra ?? 0,
+            truePeakDbtp: probe.audio.truePeakDbtp ?? -90,
+            scope: 'FILE' as const,
+            measuredAt: new Date().toISOString(),
+          }
+        : null
     const row = {
       ...base,
       // Vídeo sem cadência é imagem parada: tem quadro, não tem tempo. Quem
@@ -396,22 +440,24 @@ export class Ingest {
       audioChannels: probe.audio?.channels ?? 0,
       audioTracks: probe.audioTracks ?? [],
       probeError: null,
-      loudnessFile:
-        probe.audio?.integratedLufs !== undefined
-          ? {
-              integratedLufs: probe.audio.integratedLufs,
-              lra: probe.audio.lra ?? 0,
-              truePeakDbtp: probe.audio.truePeakDbtp ?? -90,
-              scope: 'FILE' as const,
-              measuredAt: new Date().toISOString(),
-            }
-          : null,
+      loudnessFile: measuredLoudness,
     }
     await this.upsert(existing?.id ?? null, row)
     this.patch(
       existing ? { updated: this.state.updated + 1 } : { added: this.state.added + 1 },
     )
     return true
+  }
+
+  private async absorbSafely(path: string, ultimaChance = false): Promise<boolean> {
+    try {
+      return await this.absorb(path, ultimaChance)
+    } catch (failure) {
+      const reason = failure instanceof Error ? failure.message : 'Falha ao ler o arquivo'
+      await this.db.update(mediaAssets).set({ probeError: reason }).where(eq(mediaAssets.path, path))
+      this.patch({ failed: this.state.failed + 1, error: `${path}: ${reason}` })
+      return true
+    }
   }
 
   private async upsert(id: string | null, values: Record<string, unknown>): Promise<void> {
@@ -478,7 +524,16 @@ export class Ingest {
         '--largura',
         String(largura),
         '--no-loudness',
-      ])
+      ], { windowsHide: true })
+      let settled = false
+      const finish = (count: number): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        done(count)
+      }
+      const timeout = setTimeout(() => { finish(0); child.kill() }, 120_000)
+      child.stderr?.resume()
       try {
         if (child.pid) setPriority(child.pid, constants.priority.PRIORITY_LOW)
       } catch {
@@ -486,16 +541,16 @@ export class Ingest {
       }
       let out = ''
       child.stdout?.on('data', (chunk: Buffer) => {
-        out += chunk.toString()
+        out = (out + chunk.toString()).slice(-1_000_000)
       })
-      child.on('error', () => done(0))
+      child.on('error', () => finish(0))
       child.on('close', () => {
         const line = out.trim().split('\n').pop() ?? ''
         try {
           const resultado = JSON.parse(line) as ProbeResult
-          done(resultado.ok ? Number(resultado.thumbnail ?? '0') : 0)
+          finish(resultado.ok ? Number(resultado.thumbnail ?? '0') : 0)
         } catch {
-          done(0)
+          finish(0)
         }
       })
     }).finally(() => {
@@ -512,9 +567,23 @@ export class Ingest {
       const args = [path, '--thumbnail', thumbnail]
       // Medir loudness custa decodificar o áudio inteiro de cada arquivo. Num
       // acervo grande isso são horas de CPU -- e o canal está no ar ao lado.
-      if (!this.measure) args.push('--no-loudness')
+      if (!this.measuring) args.push('--no-loudness')
 
-      const child = spawn(this.probeBinary, args)
+      const child = spawn(this.probeBinary, args, { windowsHide: true })
+      let settled = false
+      const finish = (result: ProbeResult): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        done(result)
+      }
+      // Limite global: mensagens de bus não podem manter uma sonda presa para sempre.
+      const timeout = setTimeout(() => {
+        finish({ ok: false, reason: 'A análise excedeu 15 minutos. Confira o arquivo e tente novamente.' })
+        child.kill()
+      }, 15 * 60_000)
+      let stderr = ''
+      child.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4096) })
 
       // A sonda nunca disputa CPU com o ar. Ela pode demorar o dobro; o
       // programa não pode engasgar um frame.
@@ -525,15 +594,17 @@ export class Ingest {
       }
       let out = ''
       child.stdout?.on('data', (chunk: Buffer) => {
-        out += chunk.toString()
+        out = (out + chunk.toString()).slice(-1_000_000)
       })
-      child.on('error', (error) => done({ ok: false, reason: error.message }))
+      child.on('error', (error) => finish({ ok: false, reason: error.message }))
       child.on('close', () => {
         const line = out.trim().split('\n').pop() ?? ''
         try {
-          done(JSON.parse(line) as ProbeResult)
+          const result = JSON.parse(line) as ProbeResult
+          if (typeof result.ok !== 'boolean') throw new Error('resposta inválida')
+          finish(result)
         } catch {
-          done({ ok: false, reason: 'a sonda não devolveu resposta' })
+          finish({ ok: false, reason: stderr.trim() || 'a sonda não devolveu resposta' })
         }
       })
     })
@@ -548,7 +619,8 @@ function dentroDe(root: string, alvo: string): boolean {
   return caminho === raiz || caminho.startsWith(raiz + sep)
 }
 
-async function walk(root: string, aoEntrar?: (dir: string, achados: number) => void): Promise<string[]> {
+async function walk(root: string, aoEntrar?: (dir: string, achados: number) => void,
+  onError?: (dir: string, error: string) => void): Promise<string[]> {
   const found: string[] = []
   const pending = [root]
   // Atalho que aponta para uma pasta acima fecha um ciclo, e o laço nunca
@@ -567,13 +639,14 @@ async function walk(root: string, aoEntrar?: (dir: string, achados: number) => v
     let entries
     try {
       entries = await readdir(dir, { withFileTypes: true })
-    } catch {
+    } catch (failure) {
+      onError?.(dir, failure instanceof Error ? failure.message : 'pasta inacessível')
       // Pasta sem permissão não interrompe a varredura do resto.
       continue
     }
 
     for (const entry of entries) {
-      if (entry.name.startsWith('.') || SKIP.has(entry.name)) continue
+      if (entry.name.startsWith('.') || SKIP.has(entry.name) || SYSTEM_FILES.has(entry.name.toLowerCase())) continue
       const full = join(dir, entry.name)
       // Atalho não é pasta nem arquivo para a varredura: seguir um leva a
       // percorrer duas vezes a mesma coisa, ou a sair da pasta do acervo.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { decidirVigilia, type Vigilia } from './engine.js'
+import { decidirVigilia, restartDelayMs, type Vigilia } from './engine.js'
 
 /** Roda uma sequência de tiques e diz em qual deles o motor seria morto. */
 function correr(tiques: { vao: number; andou: boolean }[]): {
@@ -22,6 +22,13 @@ function sadios(quantos: number, andou = false) {
 }
 
 describe('vigilia do motor', () => {
+  it('aplica backoff exponencial com teto de cinco minutos', () => {
+    expect(restartDelayMs(0)).toBe(1_000)
+    expect(restartDelayMs(4)).toBe(16_000)
+    expect(restartDelayMs(99)).toBe(300_000)
+    expect(restartDelayMs(-2)).toBe(1_000)
+    expect(restartDelayMs(Number.NaN)).toBe(1_000)
+  })
   it('quadro que anda zera o silêncio e marca que o motor subiu', () => {
     const decisao = decidirVigilia({ vao: 50, andou: true, semQuadroMs: 2_900, booted: false })
     expect(decisao).toEqual({ semQuadroMs: 0, booted: true, matar: false })

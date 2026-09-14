@@ -23,6 +23,10 @@ export interface TransportState {
   readonly onAir: OnAirState | null
   /** O que está aberto no preview: item da grade ou arquivo do explorador. */
   readonly preview: PreviewTarget | null
+  /** Item já aberto e decodificado no slot alternativo do programa. */
+  readonly preparedItemId: string | null
+  /** Item cujo preroll está acontecendo neste instante. */
+  readonly preparingItemId: string | null
   readonly playing: boolean
   /** Grade parada com um item armado, esperando o take. */
   readonly standby: boolean
@@ -35,11 +39,11 @@ export interface TransportState {
  */
 export interface Transport {
   state(): TransportState
-  take(rundownId: string, itemId: string): void
-  cue(target: PreviewTarget | null): void
-  stop(): void
+  take(rundownId: string, itemId: string): void | Promise<void>
+  cue(target: PreviewTarget | null): void | Promise<void>
+  stop(): void | Promise<void>
   /** Arma a grade num item, parada, pronta para entrar no ar. */
-  park(itemId: string): void
+  park(itemId: string): void | Promise<void>
   /** Devolve true quando o estado mudou e a grade precisa ser recalculada. */
   tick(): boolean
   /** Medição real do programa, quando o transporte tem uma. */
@@ -48,6 +52,8 @@ export interface Transport {
   previewMeter(): MeterReading | null
   /** Saídas de rede do canal. Vazio no simulado, que não sai para lugar nenhum. */
   publishers(): readonly PublisherState[]
+  /** PID do processo de renderização, quando há engine real. */
+  processId(): number | null
   /**
    * Liga ou desliga um monitor ("pvw", "mon") sem encostar no programa.
    *
@@ -64,7 +70,7 @@ export interface Transport {
    * último erro. Separar morte do processo de travamento importa: são defeitos
    * diferentes, e o alerta que junta os dois não ajuda ninguém a procurar.
    */
-  health(): { restarts: number; deaths: number; stalls: number; error: string | null }
+  health(): { restarts: number; deaths: number; stalls: number; error: string | null; ready: boolean }
   /** Aviso recente do motor -- máquina apertada, por exemplo. Nulo se não há. */
   warning(): string | null
   close(): void
@@ -96,6 +102,8 @@ export class SimulatedTransport implements Transport {
       rundownId: this.rundownId,
       onAir: this.onAir(),
       preview: this.preview,
+      preparedItemId: null,
+      preparingItemId: null,
       playing: this.playing,
       standby: !this.playing && this.preview?.kind === 'ITEM',
     }
@@ -195,6 +203,10 @@ export class SimulatedTransport implements Transport {
     return []
   }
 
+  processId(): number | null {
+    return null
+  }
+
   setMonitor(): void {
     // Sem engine não há codificação para ligar nem desligar.
   }
@@ -205,8 +217,8 @@ export class SimulatedTransport implements Transport {
   /** O simulado é o próprio processo do servidor: não há o que vigiar. */
   watchdog(): void {}
 
-  health(): { restarts: number; deaths: number; stalls: number; error: string | null } {
-    return { restarts: 0, deaths: 0, stalls: 0, error: null }
+  health(): { restarts: number; deaths: number; stalls: number; error: string | null; ready: boolean } {
+    return { restarts: 0, deaths: 0, stalls: 0, error: null, ready: true }
   }
 
   /** O simulado não tem máquina apertada: ele não decodifica nada. */

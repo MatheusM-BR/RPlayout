@@ -412,6 +412,10 @@ impl Publisher {
                 // ressincroniza: o caminho fica "pronto" no servidor, os bytes
                 // entram e saem, e ninguém consegue decodificar um quadro.
                 mux.set_property("alignment", 7i32);
+                // O áudio chega antes do primeiro quadro codificado. Sem folga,
+                // o muxer publica a primeira PMT só com Opus; o MediaMTX fixa
+                // essa lista e descarta todo o vídeo que chega depois.
+                mux.set_property("latency", MUX_LATENCY);
                 let sink = make("srtsink")?;
                 sink.set_property("uri", &spec.url);
                 (mux, sink)
@@ -754,13 +758,13 @@ pub fn encode_chain(
     // da transmissão não viu o começo.
     vparse.set_property("config-interval", -1i32);
     let vcaps = make("capsfilter")?;
-    vcaps.set_property(
-        "caps",
-        gst::Caps::builder("video/x-h264")
+    let mut video_caps = gst::Caps::builder("video/x-h264")
             .field("stream-format", stream_format)
-            .field("alignment", "au")
-            .build(),
-    );
+            .field("alignment", "au");
+    if opus {
+        video_caps = video_caps.field("profile", "baseline");
+    }
+    vcaps.set_property("caps", video_caps.build());
 
     // Instalação sem `opusenc` continua saindo em AAC: monitor mudo é ruim,
     // monitor que não sobe é pior.

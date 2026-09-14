@@ -4,7 +4,6 @@ import { api } from '../api.js'
 import type { ItemView, Live, Monitors as MonitorFeeds } from '../types.js'
 import { Meter } from './Meter.js'
 import { Whep } from './Whep.js'
-import { dur } from '../format.js'
 
 interface Props {
   channel: Channel
@@ -56,14 +55,11 @@ export function Monitors({
             Um texto de cada, senão os dois se escrevem por cima. */}
         <div className="screen">
           {monitors && (
-            <Whep path={monitors.program} port={monitors.port} onWatching={avisarPgm} />
+            <Whep path={monitors.program} port={monitors.port} frameRate={channel.rate.num / channel.rate.den} onWatching={avisarPgm} />
           )}
           {onAirItem ? (
             <div className="over">
-              <div className="what">{onAirItem.item.title}</div>
-              <div className={`tc${ending ? ' warn' : ''}`}>
-                {dur(Math.max(0, onAirRemaining), channel.rate)}
-              </div>
+              <div className={`tc${ending ? ' warn' : ''}`}>NO AR</div>
             </div>
           ) : monitors ? (
             <div className="over">
@@ -83,13 +79,11 @@ export function Monitors({
         </div>
         <div className="screen">
           {monitors?.preview && (
-            <Whep path={monitors.preview} port={monitors.port} onWatching={avisarPvw} />
+            <Whep path={monitors.preview} port={monitors.port} frameRate={channel.rate.num / channel.rate.den} onWatching={avisarPvw} />
           )}
           {preview ? (
             <div className="over">
-              <div className="what">{preview.title}</div>
-              <div className="tc">{dur(preview.duration, channel.rate)}</div>
-              {preview.fromExplorer && <div className="tag-note">arquivo · fora da grade</div>}
+              <div className="tc">PREVIEW</div>
             </div>
           ) : monitors?.preview ? (
             <div className="over">

@@ -555,7 +555,7 @@ Atalhos de estúdio: `Espaço` take, `Ctrl+Espaço` cue, `I`/`O` trim,
 ## 12. Roadmap
 
 Estado em setembro de 2026: da F0 à F7, tudo entregue e verificado com vídeo e
-áudio de verdade, menos a F3 — que precisa de placa Decklink, do plugin NDI e de
+áudio de verdade, incluindo preenchimento contínuo 24/7, menos a F3 — que precisa de placa Decklink, do plugin NDI e de
 uma GPU com NVENC, nenhum dos três presentes na máquina em que o sistema foi
 construído. A descoberta de fontes (`rplayout-devices`) já responde o que existe
 na máquina de destino.
@@ -570,7 +570,7 @@ na máquina de destino.
 | F3 | Ao vivo: **Decklink entrada e saída** com alocação de sub-dispositivos, clock da placa e detecção de sinal; NDI discovery; NVENC. **Pendente**: depende de placa e de plugin NDI, que não existem na máquina onde isto foi construído | Ao vivo |
 | F4 | Grafismo: camada de SVG em linha (`rsvgoverlay`), templates com campos, painel de GC. **Feito**: artes com campos, painel de GC e deixa presa a item | Grafismo |
 | F5 | Multicanal **feito**: canal novo pela interface, engine e caminhos próprios, troca de canal na barra, e o que está quebrado avisando na barra de cima | Escala |
-| F6 | Automação **feita**: montagem com encaixe, frescor e preferência aprendida do log de decisões e do as-run, pauta por faixa horária e montagem do dia | Automação |
+| F6 | Automação **feita**: montagem com encaixe, frescor e preferência aprendida do log de decisões e do as-run, pauta por faixa horária, montagem do dia e preenchimento contínuo 24/7 no horizonte crítico | Automação |
 | F7 | Robustez **feita**: watchdog do engine, apresentação técnica, as-run com relatório em CSV e cópia de segurança automática do banco | Produção |
 
 ## 13. Pendências anotadas: entrada de arquivo e perfil de saída

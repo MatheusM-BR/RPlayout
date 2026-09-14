@@ -281,8 +281,8 @@ export class ChannelRuntime {
    * Roda a cada volta do laço e só escreve quando o item muda -- inclusive
    * quando ele muda para nada, porque preto no ar também é informação.
    */
-  followAsRun(): void {
-    void this.asRun.follow(this.transport.state().onAir?.itemId ?? null, this.view)
+  async followAsRun(): Promise<void> {
+    await this.asRun.follow(this.transport.state().onAir?.itemId ?? null, this.view)
   }
 
   fireDueGraphics(): boolean {
@@ -465,6 +465,7 @@ export class ChannelRuntime {
     if (aviso !== null) found.push({ kind: 'ENGINE', message: aviso })
 
     const health = this.transport.health()
+    if (health.error) found.push({ kind: 'ENGINE', message: health.error })
     if (health.restarts > 0) {
       // O motivo vai junto. Um motor que morreu sozinho e um motor que nós
       // matamos por não estar entregando quadro são defeitos diferentes, e o
@@ -497,8 +498,8 @@ export class ChannelRuntime {
       meters: {
         // Havendo engine, os dois medidores são medição de verdade, pela
         // BS.1770-4 sobre as amostras de cada barramento.
-        program: this.transport.programMeter() ?? this.meterForItem(state.onAir?.itemId ?? null),
-        preview: this.transport.previewMeter() ?? this.meterForPreview(state.preview),
+        program: this.transport.programMeter() ?? (ENGINE_BINARY ? SILENCE : this.meterForItem(state.onAir?.itemId ?? null)),
+        preview: this.transport.previewMeter() ?? (ENGINE_BINARY ? SILENCE : this.meterForPreview(state.preview)),
       },
     }
   }
@@ -561,6 +562,11 @@ export async function createApp(file: string): Promise<App> {
       for (const runtime of runtimes.values()) await runtime.asRun.finish('SHUTDOWN')
     },
     close: () => {
+      // O processo do engine mantém pipes e timers próprios. Fechar apenas o
+      // SQLite deixa motores órfãos e, na próxima subida, dois playouts podem
+      // disputar o mesmo canal.
+      for (const runtime of app.runtimes.values()) runtime.transport.close()
+      app.runtimes.clear()
       app.relays.closeAll()
       mediamtx?.stop()
       sqlite.close()
@@ -580,6 +586,18 @@ export async function createApp(file: string): Promise<App> {
 export async function runtimeFor(app: App, channelId: string): Promise<ChannelRuntime | null> {
   const existing = app.runtimes.get(channelId)
   if (existing) return existing
+  let pending = runtimeCreations.get(app)
+  if (!pending) { pending = new Map(); runtimeCreations.set(app, pending) }
+  const current = pending.get(channelId)
+  if (current) return current
+  const creation = createRuntime(app, channelId).finally(() => pending!.delete(channelId))
+  pending.set(channelId, creation)
+  return creation
+}
+
+const runtimeCreations = new WeakMap<App, Map<string, Promise<ChannelRuntime | null>>>()
+
+async function createRuntime(app: App, channelId: string): Promise<ChannelRuntime | null> {
 
   const channel = await getChannel(app.db, channelId)
   if (!channel) return null
@@ -691,13 +709,9 @@ export async function syncDistribution(app: App): Promise<void> {
   }
 
   const targets = await app.db.select().from(destinations)
-  const first = app.paths[0]
-  if (first) {
-    app.relays.sync(
-      targets
-        .filter((target) => target.enabled)
-        .map((target) => ({ id: target.id, name: target.name, url: target.url })),
-      MediaMtx.internalRead(first.program),
-    )
-  }
+  app.relays.sync(targets.filter((target) => target.enabled).flatMap((target) => {
+    const path = app.paths.find((path) => path.channelId === target.channelId)
+    return path ? [{ id: target.id, name: target.name, url: target.url,
+      source: MediaMtx.internalRead(path.program) }] : []
+  }))
 }

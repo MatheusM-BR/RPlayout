@@ -113,6 +113,8 @@ export function channelPaths(
  */
 export class MediaMtx {
   private child: ChildProcess | null = null
+  private restartAt: number | null = null
+  private restartStreak = 0
   /**
    * Por que o servidor de mídia não está de pé.
    *
@@ -131,6 +133,20 @@ export class MediaMtx {
   /** Verdadeiro quando o servidor está aberto para além da rede local. */
   get exposed(): boolean {
     return this.options.bind === '0.0.0.0' || this.options.bind === '::'
+  }
+
+  get processId(): number | null {
+    return this.child?.pid ?? null
+  }
+
+  watchdog(): void {
+    if (this.running) return
+    const now = Date.now()
+    if (this.restartAt !== null && now < this.restartAt) return
+    const delay = Math.min(30_000, 1_000 * 2 ** Math.min(this.restartStreak, 5))
+    this.restartAt = now + delay
+    this.restartStreak += 1
+    this.start()
   }
 
   /**
@@ -185,9 +201,10 @@ export class MediaMtx {
   start(): void {
     if (this.running) return
 
-    this.child = spawn(this.options.binary, [this.options.configPath], {
+    const child = spawn(this.options.binary, [this.options.configPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
+    this.child = child
 
     // O MediaMTX loga no stdout. Um cano que ninguém lê enche, e aí o processo
     // trava na hora de logar: a API continua respondendo e a publicação para de
@@ -204,11 +221,14 @@ export class MediaMtx {
       }
     })
     this.child.on('error', (erro) => {
+      if (this.child !== child) return
+      this.child = null
       this.lastError = `não consegui executar o servidor de mídia: ${erro.message}`
     })
   }
 
   stop(): void {
+    this.restartAt = null
     this.child?.kill()
     this.child = null
   }
@@ -228,6 +248,8 @@ export class MediaMtx {
         const response = await fetch(`http://127.0.0.1:${PORTS.api}/v3/paths/list`)
         if (response.ok) {
           this.lastError = null
+          this.restartStreak = 0
+          this.restartAt = null
           return true
         }
       } catch {

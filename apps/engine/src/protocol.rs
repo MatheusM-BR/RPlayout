@@ -130,6 +130,11 @@ pub enum Event {
     Eos {
         item_id: String,
     },
+    ItemError {
+        item_id: String,
+        bus: &'static str,
+        message: String,
+    },
     /// Fonte ao vivo caiu. Não é fim de item: a grade não anda por causa disto,
     /// e o engine fica tentando reabrir até a hora marcada de sair.
     SourceLost {

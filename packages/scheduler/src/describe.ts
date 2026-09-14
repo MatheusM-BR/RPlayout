@@ -1,6 +1,7 @@
 import type { Adjustment, AdjustmentKind, Conflict, ConflictKind } from '@rplayout/protocol'
 
 const CONFLICT_LABEL: Record<ConflictKind, string> = {
+  MEDIA_UNAVAILABLE: 'Arquivo indisponível',
   OVERRUN: 'Estouro',
   GAP: 'Buraco',
   ANCHOR_IMPOSSIBLE: 'Âncoras incompatíveis',

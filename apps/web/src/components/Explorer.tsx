@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useMemo, useState, type CSSProperties, type MouseEvent } from 'react'
 import { durationIn, type Rate } from '@rplayout/protocol'
 import type { LibraryFolder, ScanStatus } from '../types.js'
 import { dur, lufs } from '../format.js'
@@ -23,7 +23,8 @@ interface Props {
   scan: ScanStatus | null
   onScan: (measure: boolean) => void
   /** Acrescenta uma pasta ao acervo. Devolve o que deu errado, ou nulo. */
-  onAddRoot: (path: string) => Promise<string | null>
+  onPickRoot: () => Promise<string | null>
+  onRemoveRoot: (rootId: string) => void
   /** Abre o diálogo de inserir item com hora marcada. */
   onOpenInsert: () => void
 }
@@ -59,9 +60,11 @@ export function Explorer({
   onPrune,
   scan,
   onScan,
-  onAddRoot,
+  onPickRoot,
+  onRemoveRoot,
   onOpenInsert,
 }: Props) {
+  const [menu, setMenu] = useState<{ x: number; y: number; assetId?: string; rootId?: string } | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   /**
@@ -99,6 +102,16 @@ export function Explorer({
       .filter((folder) => folder.assets.length > 0)
   }, [folders, query])
 
+  const resultCount = filtered.reduce((total, folder) => total + folder.assets.length, 0)
+  const assetsAll = folders.flatMap((folder) => folder.assets)
+  const selectedAsset = assetsAll.find((asset) => asset.id === escolhido && !asset.probeError)
+
+  const fecharMenu = (): void => setMenu(null)
+  const abrirMenu = (event: MouseEvent, target: { assetId?: string; rootId?: string }): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    setMenu({ x: event.clientX, y: event.clientY, ...target })
+  }
   const toggle = (key: string): void => {
     setCollapsed((current) => {
       const next = new Set(current)
@@ -141,9 +154,7 @@ export function Explorer({
   }, [filtered, fixadas])
 
   const acrescentar = (): void => {
-    const caminho = (novaPasta ?? '').trim()
-    if (caminho === '') return
-    void onAddRoot(caminho).then((erro) => {
+    void onPickRoot().then((erro) => {
       setErroPasta(erro)
       if (!erro) setNovaPasta(null)
     })
@@ -154,10 +165,12 @@ export function Explorer({
       <div className="search">
         <input
           type="text"
-          placeholder="filtrar arquivos"
+          aria-label="Buscar arquivos no acervo"
+          placeholder="Buscar por nome do arquivo…"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
+        {query && <button className="btn small" onClick={() => setQuery('')}>Limpar busca</button>}
         {scan?.available && (
           <div className="acoes-acervo">
             <button className="btn small" onClick={() => onScan(true)} disabled={scan.running}>
@@ -200,21 +213,11 @@ export function Explorer({
           + PASTA
         </button>
       </div>
+      {query.trim() && <div className="search-summary" role="status">{resultCount} arquivo(s) encontrado(s)</div>}
       {novaPasta !== null && (
         <div className="nova-pasta">
-          <input
-            type="text"
-            autoFocus
-            placeholder="C:\\Caminho\\Da\\Pasta"
-            value={novaPasta}
-            onChange={(event) => setNovaPasta(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') setNovaPasta(null)
-              if (event.key === 'Enter') acrescentar()
-            }}
-          />
-          <button className="btn small" disabled={novaPasta.trim() === ''} onClick={acrescentar}>
-            LER
+          <button className="btn small" onClick={acrescentar}>
+            ABRIR EXPLORADOR DO WINDOWS
           </button>
           {erroPasta && <div className="erro">{erroPasta}</div>}
         </div>
@@ -224,18 +227,33 @@ export function Explorer({
           lendo o acervo · {scan.current ? scan.current.split('/').slice(-1)[0] : 'procurando'}
         </div>
       )}
+      {scan?.error && <div className="empty" role="alert">{scan.error}</div>}
+      {scan?.folders?.filter((folder) => !folder.present).map((folder) => (
+        <div className="empty" key={folder.id} role="status">Pasta indisponível: {folder.path}</div>
+      ))}
       <div className="pane-body">
         {porRaiz.map(([rootId, grupo]) => (
           <div key={rootId} className="raiz">
-            <div className="raiz-nome">{grupo.label}</div>
+            <div className="raiz-nome" onContextMenu={(event) => abrirMenu(event, { rootId })}>
+              <span>{grupo.label}</span>
+              {rootId !== 'fora' && (
+                <button
+                  className="btn small"
+                  title={`Remover a pasta ${grupo.label} do acervo`}
+                  onClick={() => onRemoveRoot(rootId)}
+                >
+                  remover pasta
+                </button>
+              )}
+            </div>
             {grupo.folders.map((folder) => {
           const fixa = fixadas.has(folder.key)
           // Pasta fixada nasce aberta: fixar é dizer "é nesta que eu trabalho".
           const shut = collapsed.has(folder.key) && !query && !fixa
           return (
             <div key={folder.key}>
-              <div className={`folder${fixa ? ' fixa' : ''}`}>
-                <button className="abre" onClick={() => toggle(folder.key)}>
+              <div className={`folder${fixa ? ' fixa' : ''}`} onContextMenu={(event) => abrirMenu(event, { rootId })}>
+                <button className="abre" aria-expanded={!shut} onClick={() => toggle(folder.key)}>
                   <span className="caret">{shut ? '▸' : '▾'}</span>
                   {folder.name}
                   <span className="n">{folder.assets.length}</span>
@@ -253,6 +271,18 @@ export function Explorer({
                 folder.assets.map((asset) => (
                   <div
                     key={asset.id}
+                    tabIndex={asset.probeError ? undefined : 0}
+                    role="group"
+                    aria-label={`${asset.title} — abrir no preview`}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return
+                      if (event.key !== 'Enter' && event.key !== ' ') return
+                      event.preventDefault()
+                      event.stopPropagation()
+                      if (asset.probeError || event.repeat) return
+                      setEscolhido(asset.id)
+                      onPreview(asset.id)
+                    }}
                     className={`file${openAssetId === asset.id ? ' open' : ''}${
                       asset.probeError ? ' broken' : ''
                     }${escolhido === asset.id ? ' escolhido' : ''}`}
@@ -279,6 +309,7 @@ export function Explorer({
                       setEscolhido(asset.id)
                       onPreview(asset.id)
                     }}
+                    onContextMenu={(event) => abrirMenu(event, { assetId: asset.id })}
                     title={
                       asset.probeError
                         ? `${asset.path}\n\nNão abriu: ${asset.probeError}`
@@ -310,6 +341,7 @@ export function Explorer({
                           <button
                             className="add"
                             title="Põe no fim da grade"
+                            aria-label={`Adicionar ${asset.title} ao fim da grade`}
                             onClick={() => onInsert(asset.id)}
                           >
                             +
@@ -328,6 +360,7 @@ export function Explorer({
                       <button
                         className="tira"
                         title="Tira do acervo (não apaga o arquivo em disco)"
+                        aria-label={`Remover ${asset.title} do acervo`}
                         onClick={() => onRemove(asset.id)}
                       >
                         ×
@@ -382,8 +415,27 @@ export function Explorer({
             })}
           </div>
         ))}
-        {filtered.length === 0 && <div className="empty">Nenhum arquivo com esse nome.</div>}
+        {resultCount === 0 && <div className="empty library-empty">
+          <strong>{query.trim() ? 'Nenhum resultado' : 'Seu acervo começa aqui'}</strong>
+          <p>{query.trim() ? 'Tente outro nome ou limpe a busca para ver todos os arquivos.' : 'Use + PASTA para escolher a pasta de mídia. Depois, selecione um arquivo para conferir no preview.'}</p>
+        </div>}
       </div>
+      {menu && (
+        <div className="context-menu" style={{ left: menu.x, top: menu.y }} onMouseLeave={fecharMenu}>
+          {menu.assetId && (() => {
+            const asset = assetsAll.find((entry) => entry.id === menu.assetId)
+            if (!asset) return null
+            return <>
+              <button disabled={Boolean(asset.probeError)} onClick={() => { fecharMenu(); onPreview(asset.id) }}>abrir no preview</button>
+              <button disabled={Boolean(asset.probeError)} onClick={() => { fecharMenu(); onInsert(asset.id) }}>inserir na grade</button>
+              <button onClick={() => { fecharMenu(); onRemove(asset.id) }}>remover do acervo</button>
+            </>
+          })()}
+          {menu.rootId && menu.rootId !== 'fora' && (
+            <button onClick={() => { fecharMenu(); onRemoveRoot(menu.rootId!) }}>remover pasta do acervo</button>
+          )}
+        </div>
+      )}
 
       {/* O botão de pôr na grade mora embaixo da lista, que é onde a mão já
           está depois de escolher o arquivo -- e não no alto, longe do que foi
@@ -396,13 +448,13 @@ export function Explorer({
       <div className="explorador-rodape">
         <button
           className="btn"
-          disabled={escolhido === null}
+          disabled={!selectedAsset}
           title={
-            escolhido === null
+            !selectedAsset
               ? 'Escolha um arquivo na lista'
-              : 'Põe o arquivo no fim da grade, sem perguntar nada'
+              : `Adicionar ${selectedAsset.title} ao fim da grade`
           }
-          onClick={() => escolhido !== null && onInsert(escolhido)}
+          onClick={() => selectedAsset && onInsert(selectedAsset.id)}
         >
           PÔR NO FIM
         </button>

@@ -48,6 +48,8 @@ export interface Live {
     rundownId: string | null
     onAir: { itemId: string; startedAt: Frames; elapsed: Frames } | null
     preview: PreviewTarget | null
+    preparedItemId: string | null
+    preparingItemId: string | null
     playing: boolean
     standby: boolean
   }
@@ -255,7 +257,7 @@ export interface FillPlan {
   window: number
   leftover: number
   reason: 'FILLED' | 'OUT_OF_MATERIAL'
-  items: { mediaId: string; title: string; durationFrames: number }[]
+  items: { mediaId: string; title: string; durationFrames: number; explanation?: { category: string | null; lastAiredAt: string | null; preference: number } }[]
 }
 
 /** Uma faixa da pauta: o que entra em cada hora do dia. */

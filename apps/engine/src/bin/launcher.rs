@@ -33,6 +33,16 @@ fn main() -> Result<()> {
 
     conferir_carimbo(&raiz);
 
+    // Duplo clique no atalho não pode criar um segundo servidor, e portanto
+    // nem uma segunda família de engines disputando os mesmos destinos. Se a
+    // API já responde, reaproveitamos a instância existente e só mostramos a
+    // interface.
+    if std::net::TcpStream::connect(("127.0.0.1", PORT)).is_ok() {
+        println!("RPlayout já está em execução na porta {PORT}; reutilizando a instância.");
+        abrir_navegador();
+        return Ok(());
+    }
+
     let mut servidor = subir_servidor(&raiz)?;
 
     match esperar_porta() {
@@ -51,9 +61,27 @@ fn main() -> Result<()> {
     // Daqui em diante a janela é o log do servidor. Fechá-la derruba o canal,
     // e é por isso que ela diz isso em vez de sumir para a bandeja.
     println!("Feche esta janela para tirar o RPlayout do ar.");
-    let saida = servidor.wait().context("o servidor encerrou de forma inesperada")?;
+    let pid = servidor.id();
+    let saida = match servidor.wait() {
+        Ok(status) => status,
+        Err(error) => {
+            encerrar_arvore(pid);
+            return Err(error).context("o servidor encerrou de forma inesperada");
+        }
+    };
+    encerrar_arvore(pid);
     println!("O servidor encerrou ({saida}).");
     Ok(())
+}
+
+/// O launcher sobe `cmd -> pnpm -> node`; matar só o primeiro processo deixa
+/// descendentes vivos no Windows. Limpe a árvore ao sair para não criar
+/// engines órfãos na próxima execução.
+fn encerrar_arvore(pid: u32) {
+    if !cfg!(windows) { return; }
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
 }
 
 /// Avisa quando a interface construída é de outro commit que o código na pasta.

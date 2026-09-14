@@ -13,6 +13,8 @@ interface Props {
    * quatro codificações que passam a existir só quando há alguém olhando.
    */
   onWatching?: () => void
+  /** Cadência do canal para avanço quadro a quadro no material pesquisável. */
+  frameRate?: number
 }
 
 type Status = 'off' | 'connecting' | 'live' | 'failed'
@@ -29,7 +31,7 @@ type Status = 'off' | 'connecting' | 'live' | 'failed'
  * nunca com um IP que o servidor ache que tem: quem abre por `localhost` e quem
  * abre pela rede precisam ver a mesma coisa.
  */
-export function Whep({ path, port, onWatching }: Props) {
+export function Whep({ path, port, onWatching, frameRate = 25 }: Props) {
   const video = useRef<HTMLVideoElement>(null)
   const [status, setStatus] = useState<Status>('off')
   const [reason, setReason] = useState<string | null>(null)
@@ -44,6 +46,10 @@ export function Whep({ path, port, onWatching }: Props) {
   const [mudo, setMudo] = useState(true)
   /** Chegou trilha de som nesta sessão? Sem ela o botão não teria o que fazer. */
   const [temSom, setTemSom] = useState(false)
+  const [volume, setVolume] = useState(0.7)
+  const [posicao, setPosicao] = useState(0)
+  const [duracao, setDuracao] = useState(0)
+  const volumeRef = useRef(0.7)
 
   /** Sobe a cada falha e é o que faz o monitor tentar de novo. */
   const [attempt, setAttempt] = useState(0)
@@ -64,14 +70,31 @@ export function Whep({ path, port, onWatching }: Props) {
   }, [path, onWatching])
 
   useEffect(() => {
+    setTemSom(false)
+    setReason(null)
     if (!path) {
       setStatus('off')
+      return
+    }
+    if (typeof RTCPeerConnection === 'undefined') {
+      setReason('WEBRTC INDISPONÍVEL NESTE NAVEGADOR')
+      setStatus('failed')
       return
     }
 
     let cancelled = false
     let retry: number | null = null
     let resource: string | null = null
+    const endpoint = `${window.location.protocol}//${window.location.hostname}:${port}/${path}/whep`
+    const abort = new AbortController()
+    const negotiationTimeout = window.setTimeout(() => {
+      abort.abort()
+      if (!cancelled && (video.current?.readyState ?? 0) < 2) {
+        setReason('CONEXÃO COM O MONITOR EXPIROU')
+        setStatus('failed')
+        if (!retry) retry = window.setTimeout(() => setAttempt((n) => n + 1), 3000)
+      }
+    }, 15_000)
     const peer = new RTCPeerConnection()
     peer.addTransceiver('video', { direction: 'recvonly' })
     // Som também. O monitor sai em Opus por MPEG-TS justamente para isto: em
@@ -83,14 +106,23 @@ export function Whep({ path, port, onWatching }: Props) {
 
     const stream = new MediaStream()
     peer.ontrack = (event) => {
+      if (cancelled) return
       stream.addTrack(event.track)
-      if (event.track.kind === 'audio') setTemSom(true)
-      if (video.current) video.current.srcObject = stream
+      if (event.track.kind === 'audio') {
+        // Alguns navegadores recebem a trilha desabilitada quando o elemento
+        // começa mutado; reative-a antes do gesto de "ouvir".
+        event.track.enabled = true
+        setTemSom(true)
+      }
+      if (video.current) {
+        video.current.srcObject = stream
+        video.current.volume = volumeRef.current
+        void video.current.play().catch(() => setReason('Clique em Ouvir para iniciar o monitor.'))
+      }
     }
     peer.onconnectionstatechange = () => {
       if (cancelled) return
       if (peer.connectionState === 'connected') {
-        setStatus('live')
         setReason(null)
       }
       if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
@@ -120,16 +152,22 @@ export function Whep({ path, port, onWatching }: Props) {
         window.setTimeout(done, 1500)
       })
 
-      const response = await fetch(`http://${window.location.hostname}:${port}/${path}/whep`, {
+      if (cancelled) return
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/sdp' },
         body: peer.localDescription?.sdp ?? '',
+        signal: abort.signal,
       })
       if (!response.ok) {
         const detail = await response.text()
         throw new Error(detail.includes('codecs') ? 'CODEC' : `HTTP ${response.status}`)
       }
       resource = response.headers.get('Location')
+      if (cancelled && resource) {
+        void fetch(new URL(resource, endpoint), { method: 'DELETE' }).catch(() => undefined)
+        return
+      }
       const answer = await response.text()
       if (cancelled) return
       await peer.setRemoteDescription({ type: 'answer', sdp: answer })
@@ -140,21 +178,25 @@ export function Whep({ path, port, onWatching }: Props) {
       // "CODEC" quase sempre é navegador sem H.264, não canal fora do ar.
       const message = failure instanceof Error ? failure.message : ''
       const codec = message === 'CODEC'
-      setReason(codec ? 'NAVEGADOR SEM H.264' : null)
+      setReason(codec ? 'CODEC INCOMPATÍVEL COM O NAVEGADOR' : `MONITOR INDISPONÍVEL: ${message || 'falha de conexão'}`)
       setStatus('failed')
       // Canal que ainda não subiu volta sozinho; navegador sem H.264 não muda
       // de ideia, então insistir só gastaria conexão.
-      if (!codec) retry = window.setTimeout(() => setAttempt((n) => n + 1), 3000)
+      if (!codec && !retry) retry = window.setTimeout(() => setAttempt((n) => n + 1), 3000)
     })
 
     return () => {
       cancelled = true
+      abort.abort()
+      window.clearTimeout(negotiationTimeout)
       if (retry) window.clearTimeout(retry)
       peer.close()
+      for (const track of stream.getTracks()) track.stop()
+      if (video.current?.srcObject === stream) video.current.srcObject = null
       // Avisar o servidor evita sessão pendurada quando o operador troca de
       // canal várias vezes seguidas.
       if (resource) {
-        void fetch(new URL(resource, `http://${window.location.hostname}:${port}`), {
+        void fetch(new URL(resource, endpoint), {
           method: 'DELETE',
         }).catch(() => undefined)
       }
@@ -169,20 +211,59 @@ export function Whep({ path, port, onWatching }: Props) {
         autoPlay
         playsInline
         muted={mudo}
+        onClick={() => {
+          // O navegador só permite som depois de um gesto. Qualquer clique no
+          // próprio monitor é um gesto claro do operador: habilita o áudio e
+          // evita depender de um botão minúsculo fora da imagem.
+          if (!temSom || !video.current) return
+          setMudo(false)
+          video.current.muted = false
+          video.current.volume = volumeRef.current
+          void video.current.play().catch(() => setReason('Clique em Ouvir para iniciar o monitor.'))
+        }}
+        onLoadedData={() => { setStatus('live'); setReason(null) }}
+        onLoadedMetadata={(event) => setDuracao(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+        onTimeUpdate={(event) => setPosicao(event.currentTarget.currentTime)}
         hidden={status !== 'live'}
       />
-      {status === 'live' && temSom && (
+      {status === 'live' && (
+        <div className="monitor-seekbar">
+          <button type="button" className="btn small frame-step" aria-label="voltar um quadro" disabled={duracao <= 0} onClick={() => { if (!video.current) return; const value = Math.max(0, video.current.currentTime - 1 / frameRate); video.current.currentTime = value; setPosicao(value) }}>−1f</button>
+          <input aria-label="Posição do vídeo" type="range" min="0" max={duracao || 1} step={1 / frameRate} value={Math.min(posicao, duracao || 1)} disabled={duracao <= 0} onChange={(event) => { const value = Number(event.target.value); setPosicao(value); if (video.current) video.current.currentTime = value }} />
+          <button type="button" className="btn small frame-step" aria-label="avançar um quadro" disabled={duracao <= 0} onClick={() => { if (!video.current) return; const value = Math.min(duracao || Infinity, video.current.currentTime + 1 / frameRate); video.current.currentTime = value; setPosicao(value) }}>+1f</button>
+        </div>
+      )}
+      {status === 'live' && (
+        <div className="monitor-audio">
         <button
           type="button"
-          className="som"
+          className="btn small"
+          disabled={!temSom}
           title={mudo ? 'Ouvir este monitor' : 'Silenciar'}
           aria-label={mudo ? 'Ouvir este monitor' : 'Silenciar'}
           aria-pressed={!mudo}
-          onClick={() => setMudo((antes) => !antes)}
+          onClick={() => {
+            const muted = !mudo
+            setMudo(muted)
+            if (video.current) {
+              video.current.muted = muted
+              video.current.volume = volume
+              void video.current.play().catch(() => setReason('O navegador bloqueou a reprodução. Tente novamente.'))
+            }
+          }}
         >
-          {mudo ? '🔇' : '🔊'}
+          {!temSom ? '🔇' : mudo ? '🔇' : '🔊'}
         </button>
+        {temSom && <input className="monitor-volume" aria-label="Volume deste monitor" type="range" min="0" max="1" step="0.05"
+          value={volume} onChange={(event) => {
+            const value = Number(event.target.value)
+            setVolume(value)
+            volumeRef.current = value
+            if (video.current) video.current.volume = value
+          }} />}
+        </div>
       )}
+      {status === 'live' && reason && <div className="monitor-reason" role="status">{reason}</div>}
       {status !== 'live' && (
         <div className="idle">
           {status === 'failed' ? (reason ?? 'SEM SINAL') : 'SINTONIZANDO'}

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { Channel } from '@rplayout/protocol'
 import type { MeterReading } from '../types.js'
 import { db, lufs } from '../format.js'
@@ -34,6 +35,7 @@ function Bar({ dbfs }: { dbfs: number }) {
  * acesa o tempo todo quer dizer que o nivelamento é que está errado.
  */
 export function Meter({ reading, channel }: { reading: MeterReading; channel: Channel }) {
+  const [detalhes, setDetalhes] = useState(false)
   const onTarget = Math.abs(reading.integratedLufs - channel.targetLufs) <= 1
   // Acima do teto de pico verdadeiro é o que o destino vai distorcer.
   const clipping = reading.truePeakDbtp > channel.ceilingDbtp
@@ -50,7 +52,10 @@ export function Meter({ reading, channel }: { reading: MeterReading; channel: Ch
         <b>R</b>
         <Bar dbfs={reading.peakDbfs[1] ?? FLOOR_DBFS} />
       </div>
-      <div className="readout">
+      <button className="meter-details-toggle" onClick={() => setDetalhes((open) => !open)}>
+        {detalhes ? 'ocultar áudio' : 'detalhes de áudio'}
+      </button>
+      {detalhes && <div className="readout">
         <div className="ro">
           <b>MOMENT.</b>
           <span>{lufs(reading.momentaryLufs)}</span>
@@ -85,7 +90,7 @@ export function Meter({ reading, channel }: { reading: MeterReading; channel: Ch
             {reading.correlation.toFixed(2)}
           </span>
         </div>
-      </div>
+      </div>}
     </div>
   )
 }

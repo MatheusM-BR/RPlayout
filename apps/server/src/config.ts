@@ -64,6 +64,13 @@ export const BACKUP_DIR = process.env.RPLAYOUT_BACKUPS ?? resolve(process.cwd(),
  * cópia sem depender de alguém lembrar de pedir.
  */
 export const BACKUP_EVERY_HOURS = Number(process.env.RPLAYOUT_BACKUP_HOURS ?? '24')
+export const HEALTH_RETENTION_DAYS = Number(process.env.RPLAYOUT_HEALTH_RETENTION_DAYS ?? '30')
+/** Preenchimento contínuo opt-in; desativado por padrão para preservar controle manual. */
 
 /** Binário de descoberta de fontes ao vivo. Vazio deixa só os convidados. */
 export const DEVICES_BINARY = process.env.RPLAYOUT_DEVICES ?? ''
+
+/** Papel padrão desta estação; pode ser substituído por sessão autenticada. */
+export const DEFAULT_ROLE = process.env.RPLAYOUT_ROLE ?? 'SUPERVISOR'
+export const AUTH_USER = process.env.RPLAYOUT_ADMIN_USER ?? ''
+export const AUTH_PASSWORD = process.env.RPLAYOUT_ADMIN_PASSWORD ?? ''

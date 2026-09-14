@@ -5,6 +5,7 @@ export interface RelayTarget {
   readonly id: string
   readonly name: string
   readonly url: string
+  readonly source: string
 }
 
 export type RelayState = 'CONECTANDO' | 'NO AR' | 'CAIU' | 'FALHOU'
@@ -45,7 +46,7 @@ export class RelaySupervisor {
   constructor(private readonly binary: string) {}
 
   /** Faz os processos baterem com a lista de destinos ligados. */
-  sync(targets: readonly RelayTarget[], source: string): void {
+  sync(targets: readonly RelayTarget[]): void {
     if (this.binary === '') return
 
     const wanted = new Map(targets.map((target) => [target.id, target]))
@@ -53,21 +54,29 @@ export class RelaySupervisor {
     for (const [id, relay] of this.relays) {
       const target = wanted.get(id)
       // Destino removido ou com endereço trocado: o processo antigo não serve.
-      if (!target || target.url !== relay.target.url) {
+      if (!target || target.url !== relay.target.url || target.source !== relay.target.source) {
         relay.child.kill()
         this.relays.delete(id)
       }
     }
 
     for (const target of targets) {
+      const current = this.relays.get(target.id)
+      // Um processo que terminou não volta sozinho. A próxima sincronização
+      // deve substituí-lo, mantendo a supervisão viva após uma queda.
+      if (current && (current.state === 'FALHOU' || current.state === 'CAIU' || current.child.exitCode !== null)) {
+        current.child.kill()
+        this.relays.delete(target.id)
+      }
       if (this.relays.has(target.id)) continue
-      this.spawn(target, source)
+      this.spawn(target, target.source)
     }
   }
 
   private spawn(target: RelayTarget, source: string): void {
     const child = spawn(this.binary, ['--from', source, '--to', target.url], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     })
 
     const relay: Relay = {
@@ -80,6 +89,11 @@ export class RelaySupervisor {
       streams: [],
     }
     this.relays.set(target.id, relay)
+    child.on('error', (error) => {
+      if (this.relays.get(target.id) !== relay) return
+      relay.state = 'FALHOU'
+      relay.reason = `Não foi possível iniciar o relay: ${error.message}`
+    })
 
     if (child.stdout) {
       createInterface({ input: child.stdout }).on('line', (line) => {

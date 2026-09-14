@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase, type Db } from '../db/client.js'
 import { mediaAssets } from '../db/schema.js'
-import { Ingest } from './ingest.js'
+import { Ingest, VANISHED } from './ingest.js'
+import { vi } from 'vitest'
 
 let db: Db
 let pasta: string
@@ -34,6 +35,39 @@ async function esperarFim(limiteMs = 60_000): Promise<void> {
 }
 
 describe('varredura', () => {
+  it('marca arquivo de raiz removida e recupera ao voltar com mesmo tamanho e data', async () => {
+    const root = join(pasta, 'raiz'); mkdirSync(root)
+    const file = join(root, 'video.mkv'); writeFileSync(file, 'video')
+    const old = new Date('2020-01-01'); utimesSync(file, old, old)
+    const probe = vi.spyOn(ingest as unknown as { probe: () => Promise<unknown> }, 'probe')
+      .mockResolvedValue({ ok: true, durationNs: 1e9, video: { width: 320, height: 180, rateNum: 25, rateDen: 1 } })
+    ingest.start(root); await esperarFim()
+    rmSync(root, { recursive: true })
+    ingest.start(root); await esperarFim()
+    expect((await db.select().from(mediaAssets))[0]?.probeError).toBe(VANISHED)
+    expect(ingest.status().error).toContain(root)
+    mkdirSync(root); writeFileSync(file, 'video'); utimesSync(file, old, old)
+    ingest.start(root); await esperarFim()
+    expect((await db.select().from(mediaAssets))[0]?.probeError).toBeNull()
+    expect(probe).toHaveBeenCalledTimes(2)
+  })
+
+  it('reconcilia referências antigas fora das raízes atuais', async () => {
+    await db.insert(mediaAssets).values({ id: 'old', contentHash: 'old', path: join(pasta, 'outra-maquina.mp4'),
+      title: 'Antigo', kind: 'VIDEO', durationFrames: 250, createdAt: new Date().toISOString() })
+    expect(await ingest.reconcileAvailability()).toBe(true)
+    expect((await db.select().from(mediaAssets))[0]?.probeError).toBe(VANISHED)
+    expect(await ingest.reconcileAvailability()).toBe(false)
+  })
+
+  it('não repete medição de vídeo sem trilha de áudio', async () => {
+    const file = join(pasta, 'mudo.mkv'); writeFileSync(file, 'video')
+    const old = new Date('2020-01-01'); utimesSync(file, old, old)
+    const probe = vi.spyOn(ingest as unknown as { probe: () => Promise<unknown> }, 'probe')
+      .mockResolvedValue({ ok: true, durationNs: 1e9, video: { width: 320, height: 180, rateNum: 25, rateDen: 1 } })
+    ingest.start(pasta, true); await esperarFim(); ingest.start(pasta, true); await esperarFim()
+    expect(probe).toHaveBeenCalledTimes(1)
+  })
   it('acha o arquivo recém-copiado na mesma procura', async () => {
     // Este é o defeito relatado: copiar um arquivo, mandar procurar na mesma
     // hora, e a procura terminar dizendo que não achou nada -- com o arquivo

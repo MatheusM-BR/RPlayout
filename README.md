@@ -148,6 +148,22 @@ para todos.
 A grade semeada nasce a partir do relógio da máquina, então as âncoras fecham a
 qualquer hora do dia.
 
+Para uma estação compartilhada, defina `RPLAYOUT_ADMIN_USER` e
+`RPLAYOUT_ADMIN_PASSWORD`. O primeiro login cria o administrador no banco; os
+demais usuários são criados na tela de administração, com os papéis Operador,
+Programador, Supervisor e Administrador. Sem essas variáveis a instalação fica
+em modo local, útil para desenvolvimento, sem exigir login.
+
+Gateways HTTP podem ser cadastrados em **Configurações → Integrações**. O envio
+é assíncrono e uma falha externa não interrompe o canal. Os eventos disponíveis
+são `asrun.started`, `asrun.ended`, `playlist.inserted`,
+`playlist.published`, `engine.ready`, `engine.error`, estados `output.*`,
+`scheduler.degraded` e `channel.stopped`.
+
+Para supervisão externa, `/api/health` é liveness (servidor vivo) e `/api/ready`
+é readiness: responde `200` somente quando engines e MediaMTX configurado estão
+prontos; quando há falha responde `503` com os canais/processos responsáveis.
+
 ## Estrutura
 
 ```
@@ -170,7 +186,7 @@ Planejamento concluído. **F0** e **F1** entregues:
 - Interface escura com rundown, PGM, preview, medidores e painel de conflitos.
 - Transporte simulado, com o mesmo contrato que o engine vai cumprir na F2.
 
-**F2** em andamento:
+**F2** entregue e validada:
 
 - Engine Rust/GStreamer entregue e verificado ponta a ponta.
 - Servidor liga no engine: o take da interface move vídeo de verdade, a posição
@@ -195,9 +211,11 @@ Planejamento concluído. **F0** e **F1** entregues:
   sobreamostrado e correlação de fase.
 - Limiter de pico verdadeiro na saída de programa, com lookahead, e a redução
   de ganho no medidor.
-- Falta: som nos monitores.
+- Som nos monitores WebRTC é opcional por sessão: o monitor começa mudo para
+  respeitar o bloqueio de autoplay do navegador e o operador pode ativá-lo em
+  PGM ou preview pelo controle de áudio.
 
-**F2.5** em andamento:
+**F2.5** entregue e validada:
 
 - **Ingest de arquivo de verdade**: varredura de pasta, identificação por
   SHA-256, sonda que abre o arquivo com o mesmo GStreamer que vai tocá-lo,
@@ -207,6 +225,11 @@ Planejamento concluído. **F0** e **F1** entregues:
 - **Toda saída que codifica roda em pipeline próprio**, inclusive a gravação
   as-run: nenhuma delas consegue derrubar o programa.
 - **Perfis de saída persistidos e editáveis**, no painel de distribuição.
+- **Preenchimento contínuo 24/7**: ao entrar no horizonte crítico, o scheduler
+  monta automaticamente a próxima pauta pela mesma rota auditada e registra o
+  resultado no histórico de saúde.
+- **Encerramento limpo no Windows**: o launcher encerra a árvore `cmd/pnpm/node`
+  ao sair, evitando engines órfãos e múltiplas instâncias após reiniciar.
 
 ### SRT precisa de pacote alinhado
 

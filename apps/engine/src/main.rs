@@ -309,12 +309,17 @@ fn main() -> Result<()> {
                     .emit();
                     running = keep_running;
                 }
-                Err(error) => Event::Ack {
-                    id,
-                    ok: false,
-                    error: Some(error.to_string()),
+                Err(error) => {
+                    // Uma falha pode ter fechado o item anterior. Publique o
+                    // estado real também neste caminho, antes de recusar.
+                    announce(&channel);
+                    Event::Ack {
+                        id,
+                        ok: false,
+                        error: Some(format!("{error:#}")),
+                    }
+                    .emit();
                 }
-                .emit(),
             }
         }
 
@@ -342,7 +347,9 @@ fn main() -> Result<()> {
                     gst::MessageView::Eos(_) => Some("a fonte encerrou o sinal".to_string()),
                     gst::MessageView::Error(error) if live => Some(error.error().to_string()),
                     gst::MessageView::Error(error) => {
-                        Event::Error {
+                        Event::ItemError {
+                            item_id: item_id.clone(),
+                            bus: "pgm",
                             message: format!("item {item_id}: {}", error.error()),
                         }
                         .emit();
@@ -379,7 +386,9 @@ fn main() -> Result<()> {
         if let (Some(preview_bus), Some(item_id)) = (channel.preview_bus(), channel.preview_id()) {
             while let Some(message) = preview_bus.pop() {
                 if let gst::MessageView::Error(error) = message.view() {
-                    Event::Error {
+                    Event::ItemError {
+                        item_id: item_id.clone(),
+                        bus: "pvw",
                         message: format!("preview {item_id}: {}", error.error()),
                     }
                     .emit();

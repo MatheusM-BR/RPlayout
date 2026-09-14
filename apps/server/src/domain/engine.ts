@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import { stat } from 'node:fs/promises'
 import {
   durationIn,
   framesSinceMidnight,
   isStill,
   secondsToFrames,
+  framesToMs,
   STILL_DEFAULT_SECONDS,
   type Channel,
   type Fit,
@@ -41,6 +43,7 @@ type EngineEvent =
   | { event: 'position'; itemId: string; frames: number; duration: number }
   | { event: 'eos'; itemId: string }
   | { event: 'sourceLost'; itemId: string; reason: string }
+  | { event: 'itemError'; itemId: string; bus: 'pgm' | 'pvw'; message: string }
   | {
       event: 'levels'
       bus: 'pgm' | 'pvw'
@@ -77,6 +80,12 @@ export interface EngineOptions {
  */
 /** Espera entre tentativas de subir o engine de novo. */
 const RESTART_DELAY_MS = 1_000
+/** Limite para um defeito persistente não virar uma tempestade de processos. */
+// Um binário ausente ou uma dependência do GStreamer quebrada não se resolve
+// em segundos. Limitar a cinco minutos evita a tempestade de processos que
+// consome CPU/GPU enquanto ainda preserva a recuperação automática depois que
+// o operador corrige a instalação.
+const RESTART_BACKOFF_MAX_MS = 300_000
 /**
  * Quanto tempo **observado** sem quadro novo é considerado congelamento.
  *
@@ -125,6 +134,14 @@ const MORTE_DEMORADA_MS = 10_000
  */
 const AVISO_VALE_MS = 30_000
 
+/** Espera antes de uma nova tentativa, limitada para não gerar tempestade. */
+export function restartDelayMs(consecutiveFailures: number): number {
+  const streak = Number.isFinite(consecutiveFailures)
+    ? Math.max(0, Math.floor(consecutiveFailures))
+    : 0
+  return Math.min(RESTART_BACKOFF_MAX_MS, RESTART_DELAY_MS * 2 ** Math.min(streak, 9))
+}
+
 /** O que o watchdog sabe do motor entre um tique e o outro. */
 export interface Vigilia {
   /** Milissegundos desde o tique anterior. */
@@ -163,6 +180,11 @@ export class EngineTransport implements Transport {
   private rundownId: string | null = null
   private onAirItemId: string | null = null
   private armedItemId: string | null = null
+  /** Preroll antecipado em andamento; evita enfileirar o mesmo load a cada tick. */
+  private preparingItemId: string | null = null
+  /** Falhas de preroll desta versão da grade; uma mídia ruim não vira tempestade. */
+  private readonly preparationFailures = new Set<string>()
+  private preparationView: RundownView | null = null
   private elapsed: Frames = 0
   /** Último nível que o engine recebeu para o item no ar. */
   private appliedGainDb: number | null = null
@@ -192,7 +214,10 @@ export class EngineTransport implements Transport {
   private lastTick = Date.now()
   /** O contador já andou desde que este processo subiu? */
   private booted = false
+  private ready = false
   private restartAt: number | null = null
+  /** Reinícios consecutivos sem um quadro saudável entre eles. */
+  private restartStreak = 0
   /** Quantas vezes o engine já teve de ser ressuscitado neste canal. */
   restarts = 0
   /** Dessas, quantas foram morte do processo e quantas foram nós que matamos. */
@@ -203,6 +228,15 @@ export class EngineTransport implements Transport {
   /** Último aviso e quando ele chegou. Caduca sozinho: veja `AVISO_VALE_MS`. */
   private lastWarning: string | null = null
   private warningAt = 0
+  private closed = false
+  private operation: Promise<void> = Promise.resolve()
+  private readonly pending = new Map<number, {
+    resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; since: number
+  }>()
+  private readonly desiredMonitors = new Map<'pvw' | 'mon', boolean>()
+  private resumeItemId: string | null = null
+  private advancing = false
+  private desiredGraphic: { svg: string | null; fadeMs: number } | null = null
 
   constructor(
     private readonly channel: Channel,
@@ -250,10 +284,33 @@ export class EngineTransport implements Transport {
    * nunca morrer.
    */
   private spawnChild(): ChildProcess {
-    const child = spawn(this.binary, this.args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    // O launcher pode ser iniciado pelo Explorer, sem o PATH do GStreamer.
+    // Nesse caso o Windows encerra o processo com 0xC0000135 antes de ele
+    // escrever qualquer log. Inclua a instalação padrão explicitamente.
+    const gstBin = process.env.GSTREAMER_1_0_ROOT_MSVC_X86_64
+      ? `${process.env.GSTREAMER_1_0_ROOT_MSVC_X86_64}bin`
+      : 'C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\bin'
+    const envPath = process.platform === 'win32'
+      ? `${gstBin};${process.env.PATH ?? ''}`
+      : process.env.PATH
+    const child = spawn(this.binary, this.args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, PATH: envPath },
+    })
+    child.on('error', (error) => {
+      if (this.closed || this.child !== child) return
+      this.alive = false
+      this.ready = false
+      this.fail(`Não foi possível iniciar o engine: ${error.message}`)
+      this.rejectPending(this.lastError!)
+      this.dirty = true
+    })
 
     if (child.stdout) {
-      createInterface({ input: child.stdout }).on('line', (line) => this.absorb(line))
+      createInterface({ input: child.stdout }).on('line', (line) => {
+        if (!this.closed && this.child === child) this.absorb(line)
+      })
     }
     // O engine loga no stderr de propósito, para nunca sujar o canal de dados.
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -268,14 +325,24 @@ export class EngineTransport implements Transport {
     // inteiro vai junto -- levando os outros canais, que não tinham nada com
     // isso. Foi assim que apagar canal virou "Internal Server Error".
     child.stdin?.on('error', (erro) => {
+      if (this.closed || this.child !== child) return
       this.alive = false
       this.lastError = `A entrada do engine fechou: ${erro.message}`
+      this.rejectPending(this.lastError)
+      child.kill()
     })
     child.stdout?.on('error', () => {})
     child.stderr?.on('error', () => {})
 
     child.on('exit', (code, signal) => {
+      if (this.closed || this.child !== child) return
       this.alive = false
+      this.resumeItemId = this.onAirItemId
+      this.onAirItemId = null
+      this.armedItemId = null
+      this.meter = SILENCE
+      this.previewReading = SILENCE
+      this.publisherStates.clear()
       // Sinal e código separados: quem morreu por SIGKILL nosso não é o mesmo
       // caso de quem morreu por conta própria, e a mensagem tem de deixar isso
       // legível para quem está lendo o log às três da manhã.
@@ -285,10 +352,12 @@ export class EngineTransport implements Transport {
       if (!this.matandoPorTravamento) this.deaths += 1
       this.matandoPorTravamento = false
       this.mateiEm = null
+      this.rejectPending(this.lastError)
       this.dirty = true
     })
 
     this.alive = true
+    this.ready = false
     this.framesOut = 0
     this.lastFrames = 0
     this.semQuadroMs = 0
@@ -313,6 +382,13 @@ export class EngineTransport implements Transport {
     }
 
     switch (event.event) {
+      case 'ready':
+        // Erros de uma sessão anterior não podem manter readiness em 503
+        // depois que o novo processo confirmou inicialização.
+        this.lastError = null
+        this.ready = true
+        this.dirty = true
+        break
       case 'state':
         this.onAirItemId = event.onAir ?? null
         this.armedItemId = event.armed ?? null
@@ -320,10 +396,14 @@ export class EngineTransport implements Transport {
         break
       case 'position':
         // A posição é a fonte da verdade sobre quanto já foi ao ar.
-        this.elapsed = event.frames
+        if (event.itemId === this.onAirItemId) this.elapsed = event.frames
         break
       case 'eos':
-        this.advanceAfter(event.itemId)
+        if (event.itemId === this.onAirItemId) this.advanceAfter(event.itemId)
+        break
+      case 'itemError':
+        this.fail(event.message)
+        if (event.bus === 'pgm' && event.itemId === this.onAirItemId) this.advanceAfter(event.itemId, true)
         break
       case 'sourceLost':
         // Fonte ao vivo que cai não anda com a grade: o estúdio pode voltar, e
@@ -350,6 +430,15 @@ export class EngineTransport implements Transport {
         this.framesOut = event.frames
         break
       case 'ack':
+        {
+          const pending = this.pending.get(event.id)
+          if (pending) {
+            clearTimeout(pending.timer)
+            this.pending.delete(event.id)
+            if (event.ok) pending.resolve()
+            else pending.reject(new Error(event.error ?? 'O engine recusou o comando.'))
+          }
+        }
         if (!event.ok && event.error) this.fail(event.error)
         break
       case 'error':
@@ -374,6 +463,7 @@ export class EngineTransport implements Transport {
    */
   private fail(message: string): void {
     this.lastError = message
+    this.dirty = true
     process.stderr.write(`[engine ${this.channel.name}] ERRO ${message}\n`)
   }
 
@@ -383,6 +473,7 @@ export class EngineTransport implements Transport {
    * ar.
    */
   graphic(svg: string | null, fadeMs: number): void {
+    this.desiredGraphic = { svg, fadeMs }
     this.send({ cmd: 'graphic', svg, fadeMs })
   }
 
@@ -397,20 +488,32 @@ export class EngineTransport implements Transport {
    * acorda mudo é tão inútil quanto um canal morto.
    */
   watchdog(): void {
+    if (this.closed) return
     const agora = Date.now()
     const vao = agora - this.lastTick
     this.lastTick = agora
 
     if (!this.alive) {
-      // Espera curta entre tentativas: se o engine não sobe, insistir sem
-      // pausa transforma um defeito em tempestade de processos.
-      this.restartAt ??= agora + RESTART_DELAY_MS
+      // Backoff progressivo: se o engine não sobe, insistir sem pausa
+      // transforma um defeito em tempestade de processos. Aumentamos somente
+      // entre mortes consecutivas; um processo que voltou a produzir quadro
+      // limpa a sequência mais abaixo.
+      const espera = restartDelayMs(this.restartStreak)
+      this.restartAt ??= agora + espera
       if (agora < this.restartAt) return
 
       this.restartAt = null
+      this.restartStreak += 1
       this.restarts += 1
       this.child = this.spawnChild()
       this.restore()
+      return
+    }
+
+    // load/preview fazem preroll síncrono no Rust. Nesse intervalo o contador
+    // não é publicado, embora o pipeline do programa continue trabalhando.
+    if ([...this.pending.values()].some((command) => agora - command.since < 30_000)) {
+      this.semQuadroMs = 0
       return
     }
 
@@ -420,9 +523,11 @@ export class EngineTransport implements Transport {
       semQuadroMs: this.semQuadroMs,
       booted: this.booted,
     })
+    const andou = this.framesOut !== this.lastFrames
     this.lastFrames = this.framesOut
     this.semQuadroMs = decisao.semQuadroMs
     this.booted = decisao.booted
+    if (andou) this.restartStreak = 0
     if (!decisao.matar) return
 
     // Vivo e parado: derruba: o caminho de volta é o mesmo do processo morto,
@@ -465,28 +570,63 @@ export class EngineTransport implements Transport {
     return this.lastWarning
   }
 
-  health(): { restarts: number; deaths: number; stalls: number; error: string | null } {
+  health(): { restarts: number; deaths: number; stalls: number; error: string | null; ready: boolean } {
     return {
       restarts: this.restarts,
       deaths: this.deaths,
       stalls: this.stalls,
       error: this.lastError,
+      ready: this.ready,
     }
   }
 
   /** Põe de volta no ar o que estava no ar quando o engine caiu. */
   private restore(): void {
-    const itemId = this.onAirItemId
-    if (!itemId) return
-    const spec = this.specFor(itemId)
-    if (!spec) return
-    this.send({ cmd: 'load', item: spec })
-    this.send({ cmd: 'take' })
-    this.appliedGainDb = spec.gainDb
+    for (const [bus, on] of this.desiredMonitors) this.send({ cmd: 'monitor', bus, on })
+    if (this.desiredGraphic) this.send({ cmd: 'graphic', ...this.desiredGraphic })
+    const itemId = this.resumeItemId
+    this.resumeItemId = null
+    if (itemId && this.rundownId) void this.take(this.rundownId, itemId).catch((error: Error) => this.fail(error.message))
+    else if (this.preview) void this.cue(this.preview).catch((error: Error) => this.fail(error.message))
+  }
+
+  private rejectPending(message: string): void {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(new Error(message))
+    }
+    this.pending.clear()
+  }
+
+  private enqueue(action: () => Promise<void>): Promise<void> {
+    const result = this.operation.then(() => {
+      if (this.closed || !this.alive) throw new Error('O engine está indisponível.')
+      return action()
+    })
+    this.operation = result.catch(() => {})
+    return result
+  }
+
+  private request(command: Record<string, unknown>): Promise<void> {
+    if (!this.alive || this.closed) return Promise.reject(new Error('O engine está indisponível.'))
+    const id = this.nextId++
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const message = `O engine não confirmou ${String(command.cmd)} em 30 segundos.`
+        this.fail(message)
+        this.alive = false
+        this.rejectPending(message)
+        this.child.kill()
+      }, 30_000)
+      this.pending.set(id, { resolve, reject, timer, since: Date.now() })
+      this.child.stdin?.write(`${JSON.stringify({ id, ...command })}\n`, (error) => {
+        if (error) this.rejectPending(error.message)
+      })
+    })
   }
 
   private send(command: Record<string, unknown>): void {
-    if (!this.alive) return
+    if (!this.alive || this.closed) return
     try {
       this.child.stdin?.write(`${JSON.stringify({ id: this.nextId++, ...command })}\n`)
     } catch (falha) {
@@ -520,7 +660,7 @@ export class EngineTransport implements Transport {
       }
     }
 
-    if (!entry.asset) return null
+    if (!entry.asset || entry.asset.probeError || entry.asset.kind !== 'VIDEO') return null
 
     // Imagem parada não tem tempo dentro do arquivo: o corte dela é a duração
     // que a grade marcou. Sem isto o item entraria com zero quadro.
@@ -549,7 +689,7 @@ export class EngineTransport implements Transport {
     if (target.kind === 'ITEM') return this.specFor(target.id)
 
     const asset = this.asset(target.id)
-    if (!asset) return null
+    if (!asset || asset.probeError || asset.kind !== 'VIDEO') return null
     return {
       itemId: asset.id,
       path: asset.path,
@@ -563,58 +703,94 @@ export class EngineTransport implements Transport {
     }
   }
 
-  /** Deixa o próximo item aberto e parado, para o take seguinte ser imediato. */
-  private preload(afterItemId: string): void {
-    const view = this.view()
-    if (!view) return
-
-    const index = view.items.findIndex((entry) => entry.item.id === afterItemId)
-    if (index < 0) return
-
-    const next = view.items
-      .slice(index + 1)
-      .find(
-        (entry) =>
-          view.schedule.items.find((row) => row.id === entry.item.id)?.state !== 'DROPPED',
-      )
-    const candidate = next ?? (view.rundown.loop ? view.items[0] : undefined)
-    if (!candidate) return
-
-    const spec = this.specFor(candidate.item.id)
-    if (spec) this.send({ cmd: 'load', item: spec })
+  private async checkFile(spec: EngineItem): Promise<void> {
+    if (spec.source || spec.path.includes('://')) return
+    try {
+      if (!(await stat(spec.path)).isFile()) throw new Error('não é arquivo')
+    } catch {
+      throw new Error('Arquivo indisponível: ' + spec.path)
+    }
   }
 
-  private advanceAfter(itemId: string): void {
+  /** Uma passagem limitada: uma grade em loop só com falhas deve parar. */
+  private async playFrom(rundownId: string, itemId: string): Promise<void> {
     const view = this.view()
-    if (!view) return
-
-    const index = view.items.findIndex((entry) => entry.item.id === itemId)
-    if (index < 0) return
-
-    const current = view.items[index]
-    if (current && !current.item.autoNext) {
-      this.send({ cmd: 'stop' })
-      this.onAirItemId = null
+    const index = view?.items.findIndex((entry) => entry.item.id === itemId) ?? -1
+    if (!view || index < 0) throw new Error('O item não está nesta grade.')
+    const candidates = [...view.items.slice(index), ...(view.rundown.loop ? view.items.slice(0, index) : [])]
+    const failedPaths = new Set<string>()
+    let lastFailure = 'Nenhum item disponível para reprodução.'
+    for (const entry of candidates) {
+      if (view.schedule.items.find((row) => row.id === entry.item.id)?.state === 'DROPPED') continue
+      const spec = this.specFor(entry.item.id)
+      if (!spec) {
+        lastFailure = entry.item.title + ': ' + (entry.asset?.probeError ?? 'sem arquivo ou fonte válida')
+        this.fail(lastFailure)
+        continue
+      }
+      if (failedPaths.has(spec.path || spec.source!)) continue
+      try {
+        await this.checkFile(spec)
+        if (this.armedItemId !== spec.itemId) {
+          this.armedItemId = null
+          await this.request({ cmd: 'load', item: spec })
+        }
+        await this.request({ cmd: 'take' })
+      } catch (failure) {
+        lastFailure = failure instanceof Error ? failure.message : 'Falha ao abrir item.'
+        this.fail(entry.item.title + ': ' + lastFailure)
+        failedPaths.add(spec.path || spec.source!)
+        // Sem engine não tente a grade inteira: deixe o watchdog recuperar.
+        if (!this.alive || this.closed) throw failure
+        continue
+      }
+      this.rundownId = rundownId
+      // O ar mudou: a próxima janela de continuidade começa limpa. Uma falha
+      // no ciclo anterior não condena o arquivo para sempre numa grade em loop.
+      this.preparationFailures.clear()
+      this.elapsed = 0
+      this.liveEndsAt = spec.source === undefined ? null : this.plannedEnd(spec.itemId)
+      this.appliedGainDb = spec.gainDb
+      this.preview = null
+      this.previewReading = SILENCE
       this.dirty = true
+      await this.request({ cmd: 'preview', item: null })
       return
     }
+    // Uma tentativa manual fracassada preserva o que já estava no ar.
+    if (!this.onAirItemId) this.preview = null
+    this.dirty = true
+    throw new Error('Nenhum item reproduzível. ' + lastFailure)
+  }
 
-    const next = view.items
-      .slice(index + 1)
-      .find(
-        (entry) =>
-          view.schedule.items.find((row) => row.id === entry.item.id)?.state !== 'DROPPED',
-      )
-    // Programação não acaba: chegou no fim, volta para o topo.
-    const candidate = next ?? (view.rundown.loop ? view.items[0] : undefined)
-    if (!candidate) {
-      this.send({ cmd: 'stop' })
-      this.onAirItemId = null
-      this.dirty = true
-      return
-    }
-
-    this.take(view.rundown.id, candidate.item.id)
+  private advanceAfter(itemId: string, failed = false): void {
+    if (this.advancing) return
+    this.advancing = true
+    void this.enqueue(async () => {
+      const view = this.view()
+      if (!view || this.onAirItemId !== itemId) return
+      const index = view.items.findIndex((entry) => entry.item.id === itemId)
+      const current = view.items[index]
+      if (!current) return
+      const next = view.items[index + 1] ?? (view.rundown.loop ? view.items[0] : undefined)
+      if (!failed && current.item.loop) {
+        await this.playFrom(view.rundown.id, current.item.id)
+        return
+      }
+      if (!failed && !current.item.autoNext) return
+      if (!next) {
+        await this.request({ cmd: 'stop' })
+        this.liveEndsAt = null
+        return
+      }
+      try {
+        await this.playFrom(view.rundown.id, next.item.id)
+      } catch (failure) {
+        await this.request({ cmd: 'stop' })
+        this.liveEndsAt = null
+        throw failure
+      }
+    }).catch((error: Error) => this.fail(error.message)).finally(() => { this.advancing = false })
   }
 
   state(): TransportState {
@@ -631,81 +807,64 @@ export class EngineTransport implements Transport {
       rundownId: this.rundownId,
       onAir,
       preview: this.preview,
+      preparedItemId: this.armedItemId,
+      preparingItemId: this.preparingItemId,
       playing: this.onAirItemId !== null,
       standby: this.onAirItemId === null && this.preview?.kind === 'ITEM',
     }
   }
 
-  take(rundownId: string, itemId: string): void {
-    const spec = this.specFor(itemId)
-    if (!spec) {
-      this.lastError = 'Este item não tem arquivo nem fonte que o engine saiba abrir.'
-      return
-    }
-
-    this.rundownId = rundownId
-    // Se já estava armado, o load é dispensável e o take sai na hora.
-    if (this.armedItemId !== itemId) this.send({ cmd: 'load', item: spec })
-    this.send({ cmd: 'take' })
-
-    this.onAirItemId = itemId
-    this.elapsed = 0
-    this.liveEndsAt = spec.source === undefined ? null : this.plannedEnd(itemId)
-    // O item entra com o nível que o `load` levou; a partir daí o `syncGain`
-    // acompanha.
-    this.appliedGainDb = spec.gainDb
-    this.preview = null
-    this.dirty = true
-    // O item entrou no ar: o preview não tem mais o que mostrar dele.
-    this.send({ cmd: 'preview', item: null })
-    this.preload(itemId)
+  take(rundownId: string, itemId: string): Promise<void> {
+    return this.enqueue(() => this.playFrom(rundownId, itemId))
   }
 
-  cue(target: PreviewTarget | null): void {
-    this.preview = target
-    this.dirty = true
-
-    // O preview é um tocador à parte: abre o arquivo de novo, no barramento
-    // dele. É o que permite olhar um arquivo sem encostar no que vai ao ar.
-    this.send({ cmd: 'preview', item: target ? this.specForPreview(target) : null })
-
-    // Armar item da grade também arma no engine: o take seguinte não paga o
-    // preço de abrir o arquivo.
-    if (target?.kind === 'ITEM') {
-      const spec = this.specFor(target.id)
-      if (spec && this.armedItemId !== target.id) this.send({ cmd: 'load', item: spec })
-    }
+  cue(target: PreviewTarget | null): Promise<void> {
+    return this.enqueue(async () => {
+      const spec = target ? this.specForPreview(target) : null
+      if (target && !spec) throw new Error('O arquivo do preview não está disponível. Atualize o acervo.')
+      if (spec) await this.checkFile(spec)
+      await this.request({ cmd: 'preview', item: spec })
+      this.preview = target
+      this.previewReading = SILENCE
+      this.dirty = true
+    })
   }
 
-  stop(): void {
-    const wasOnAir = this.onAirItemId
-    this.send({ cmd: 'stop' })
-    this.onAirItemId = null
-    this.elapsed = 0
-    this.liveEndsAt = null
-    this.dirty = true
-    // O que saiu do ar volta para o preview: é dali que o operador retoma, e
-    // passar pelo cue é o que faz o monitor de preview acompanhar.
-    if (wasOnAir) this.cue({ kind: 'ITEM', id: wasOnAir })
+  stop(): Promise<void> {
+    return this.enqueue(async () => {
+      await this.request({ cmd: 'stop' })
+      this.elapsed = 0
+      this.liveEndsAt = null
+      this.dirty = true
+    })
   }
 
-  park(itemId: string): void {
-    this.send({ cmd: 'stop' })
-    this.onAirItemId = null
-    this.elapsed = 0
-    this.cue({ kind: 'ITEM', id: itemId })
+  park(itemId: string): Promise<void> {
+    return this.enqueue(async () => {
+      const spec = this.specFor(itemId)
+      if (!spec) throw new Error('O primeiro item não está disponível. Atualize a grade.')
+      await this.checkFile(spec)
+      await this.request({ cmd: 'load', item: spec })
+      await this.request({ cmd: 'stop' })
+      await this.request({ cmd: 'preview', item: spec })
+      this.elapsed = 0
+      this.liveEndsAt = null
+      this.preview = { kind: 'ITEM', id: itemId }
+      this.dirty = true
+    })
   }
 
   /** Hora de saída que a grade marcou para este item, em frames. */
   private plannedEnd(itemId: string): Frames | null {
     const row = this.view()?.schedule.items.find((entry) => entry.id === itemId)
     if (!row) return null
-    return framesSinceMidnight(new Date(), this.channel.rate) + row.duration
+    return Date.now() + framesToMs(row.duration, this.channel.rate)
   }
 
   tick(): boolean {
     this.syncGain()
     this.endLiveWhenDue()
+    this.prepareAhead()
     const changed = this.dirty
     this.dirty = false
     return changed
@@ -719,7 +878,7 @@ export class EngineTransport implements Transport {
    */
   private endLiveWhenDue(): void {
     if (this.liveEndsAt === null || !this.onAirItemId) return
-    if (framesSinceMidnight(new Date(), this.channel.rate) < this.liveEndsAt) return
+    if (Date.now() < this.liveEndsAt) return
 
     const itemId = this.onAirItemId
     this.liveEndsAt = null
@@ -769,15 +928,77 @@ export class EngineTransport implements Transport {
     return [...this.publisherStates.values()]
   }
 
+  /**
+   * Arma o próximo item reproduzível enquanto o atual ainda está no ar.
+   *
+   * É o modelo A/B de continuidade: o slot A toca e o B fica em PAUSED no
+   * primeiro quadro. Quando chega o EOS, `playFrom` encontra o item já armado
+   * e o take deixa de pagar abertura de arquivo, descoberta de trilhas e seek.
+   */
+  private prepareAhead(): void {
+    if (!this.ready || !this.alive || this.closed || !this.onAirItemId || this.preparingItemId) return
+
+    const view = this.view()
+    if (!view) return
+    if (view !== this.preparationView) {
+      this.preparationView = view
+      this.preparationFailures.clear()
+    }
+
+    const index = view.items.findIndex((entry) => entry.item.id === this.onAirItemId)
+    if (index < 0) return
+    const candidates = [
+      ...view.items.slice(index + 1),
+      ...(view.rundown.loop ? view.items.slice(0, index) : []),
+    ]
+    const next = candidates.find((entry) => {
+      if (entry.item.id === this.onAirItemId || this.preparationFailures.has(entry.item.id)) return false
+      return view.schedule.items.find((row) => row.id === entry.item.id)?.state !== 'DROPPED' &&
+        this.specFor(entry.item.id) !== null
+    })
+    if (!next || this.armedItemId === next.item.id) return
+
+    const spec = this.specFor(next.item.id)
+    if (!spec) return
+    this.preparingItemId = next.item.id
+    this.dirty = true
+    void this.enqueue(async () => {
+      // Uma ordem manual pode ter mudado o ar enquanto aguardávamos a fila.
+      if (this.onAirItemId === spec.itemId || this.armedItemId === spec.itemId) return
+      await this.checkFile(spec)
+      await this.request({ cmd: 'load', item: spec })
+    }).catch((failure: unknown) => {
+      this.preparationFailures.add(spec.itemId)
+      const message = failure instanceof Error ? failure.message : 'Falha no preroll.'
+      this.fail(`${next.item.title}: preroll falhou — ${message}`)
+    }).finally(() => {
+      if (this.preparingItemId === spec.itemId) this.preparingItemId = null
+      this.dirty = true
+    })
+  }
+
+  processId(): number | null {
+    return this.child.pid ?? null
+  }
+
   /** Liga ou desliga um monitor. O engine faz isso sem tocar no programa. */
   setMonitor(bus: 'pvw' | 'mon', on: boolean): void {
+    this.desiredMonitors.set(bus, on)
     this.send({ cmd: 'monitor', bus, on })
   }
 
   close(): void {
+    if (this.closed) return
+    const child = this.child
     this.send({ cmd: 'shutdown' })
+    this.closed = true
     this.alive = false
-    setTimeout(() => this.child.kill(), 1000).unref()
+    this.rejectPending('O canal foi encerrado.')
+    this.onAirItemId = null
+    this.preview = null
+    this.meter = SILENCE
+    this.previewReading = SILENCE
+    setTimeout(() => child.kill(), 1000).unref()
   }
 }
 

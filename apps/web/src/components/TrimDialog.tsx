@@ -253,7 +253,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
 
   return (
     <div className="backdrop" onClick={onCancel}>
-      <div className="dialog wide" onClick={(event) => event.stopPropagation()}>
+      <div className="dialog trim-dialog" onClick={(event) => event.stopPropagation()}>
         <header>
           <h2>Marcação de entrada e saída</h2>
           <div className="sub">
@@ -273,6 +273,10 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                   <video
                     ref={video}
                     src={`/api/assets/${asset.id}/media`}
+                    // A miniatura já existe no acervo e aparece imediatamente.
+                    // A fita de frames é reservada para a régua, que pode
+                    // carregar depois sem deixar a tela preta.
+                    poster={`/api/assets/${asset.id}/thumbnail.svg`}
                     preload="metadata"
                     onError={() => {
                       setMotivo(motivoDoErro(video.current))
@@ -286,7 +290,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                     }}
                   />
                 ) : (
-                  parado && <img src={parado} alt="" />
+                  <img src={parado ?? `/api/assets/${asset.id}/thumbnail.svg`} alt="" />
                 )}
                 <div className="tc">{formatTimecode(cabeça, rate)}</div>
                 {tocável && (

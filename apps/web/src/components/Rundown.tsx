@@ -12,6 +12,11 @@ interface Props {
   channel: Channel
   selectedId: string | null
   onAirId: string | null
+  /** Próximo item efetivamente em preroll ou já decodificado pelo engine. */
+  preparedId: string | null
+  preparingId: string | null
+  followOnAir: boolean
+  onToggleFollowOnAir: () => void
   /** Frames que faltam do item no ar. */
   remainingOnAir: number
   errorIds: Set<string>
@@ -91,11 +96,22 @@ export function Rundown(props: Props) {
   const liveRow = useRef<HTMLTableRowElement | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropIndex, setDropIndex] = useState<number | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
 
   // A linha no ar não pode sumir da tela numa grade de duzentos itens.
   useEffect(() => {
-    liveRow.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }, [props.onAirId])
+    if (props.followOnAir) liveRow.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [props.onAirId, props.followOnAir])
+
+  // O scroll pertence ao pane, não à tabela. Ao fixar o PGM, bloqueie também
+  // a rolagem do pane externo para que a roda e a barra lateral não escapem.
+  useEffect(() => {
+    const pane = liveRow.current?.closest('.pane') as HTMLElement | null
+    if (!pane) return
+    const anterior = pane.style.overflow
+    if (props.followOnAir) pane.style.overflow = 'hidden'
+    return () => { pane.style.overflow = anterior }
+  }, [props.followOnAir])
 
   const airIndex = props.items.findIndex((view) => view.item.id === props.onAirId)
   const nextId =
@@ -112,6 +128,7 @@ export function Rundown(props: Props) {
       .reduce((sum, view) => sum + (props.schedule.get(view.item.id)?.duration ?? 0), 0)
 
   return (
+    <div className={`rundown-scroll-lock${props.followOnAir ? ' following' : ''}`} onWheel={props.followOnAir ? (event) => { event.preventDefault(); event.stopPropagation() } : undefined} onTouchMove={props.followOnAir ? (event) => { event.preventDefault(); event.stopPropagation() } : undefined}>
     <table className="rd">
       <thead>
         <tr>
@@ -140,6 +157,8 @@ export function Rundown(props: Props) {
 
           const live = id === props.onAirId
           const armed = id === props.selectedId
+          const prepared = id === props.preparedId
+          const preparing = id === props.preparingId
           const shortened = scheduled.duration < scheduled.plannedDuration
           const anchor = view.item.anchor
           const aspect = aspectLabel(view, props.channel)
@@ -232,6 +251,11 @@ export function Rundown(props: Props) {
                     event.shiftKey ? 'range' : event.ctrlKey || event.metaKey ? 'toggle' : 'none',
                   )
                 }
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  setMenu({ x: event.clientX, y: event.clientY, id })
+                }}
               >
                 <td className="num">
                   <span className="grip" title="Arraste para reordenar">
@@ -242,8 +266,12 @@ export function Rundown(props: Props) {
                 <td>
                   {live ? (
                     <span className="state air">NO AR</span>
+                  ) : prepared ? (
+                    <span className="state ready" title="Aberto e decodificado no slot alternativo">PRONTO</span>
+                  ) : preparing ? (
+                    <span className="state nxt" title="Abrindo e posicionando no primeiro quadro">PREP</span>
                   ) : armed ? (
-                    <span className="state nxt">PREP</span>
+                    <span className="state pvw" title="Selecionado no preview">PVW</span>
                   ) : id === nextId ? (
                     <span className="state next">PRÓX</span>
                   ) : null}
@@ -268,6 +296,7 @@ export function Rundown(props: Props) {
                   )}
                   <span className="nome">{view.item.title}</span>
                   <div className="tags">
+                    {view.asset?.probeError && <span className="chip" title={view.asset.probeError}>INDISPONÍVEL · SERÁ PULADO</span>}
                     <span className="chip src">{TYPE_LABEL[view.item.type]}</span>
                     {view.item.sourceRef && <span className="chip src">{view.item.sourceRef}</span>}
                     {view.item.locked && <span className="chip lock">TRAVADO</span>}
@@ -463,6 +492,25 @@ export function Rundown(props: Props) {
           </td>
         </tr>
       </tbody>
+      {menu && (() => {
+        const item = props.items.find((entry) => entry.item.id === menu.id)
+        if (!item) return null
+        const isLive = item.item.id === props.onAirId
+        return (
+          <tr><td colSpan={COLUMNS}>
+            <div className="context-menu" style={{ left: menu.x, top: menu.y }} onMouseLeave={() => setMenu(null)}>
+              <button onClick={() => { setMenu(null); props.onSelect(item.item.id, 'none') }}>selecionar item</button>
+              <button disabled={isLive} onClick={() => { setMenu(null); props.onRemove(item.item.id) }}>
+                {isLive ? 'item no ar' : 'remover da grade'}
+              </button>
+              <button onClick={() => { setMenu(null); props.onOpenGraphics(item) }}>abrir grafismo</button>
+              <button disabled={!item.asset} onClick={() => { setMenu(null); props.onOpenTrim(item) }}>editar corte I/O</button>
+              <button disabled={!item.asset} onClick={() => { setMenu(null); props.onOpenAudio(item) }}>editar áudio</button>
+            </div>
+          </td></tr>
+        )
+      })()}
     </table>
+    </div>
   )
 }

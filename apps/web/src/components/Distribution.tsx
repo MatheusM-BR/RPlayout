@@ -89,6 +89,12 @@ function profileSummary(output: OutputProfile): string {
 
 export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [data, setData] = useState<Payload | null>(null)
+  const [processes, setProcesses] = useState<Awaited<ReturnType<typeof api.processes>>['processes']>([])
+  const [healthEvents, setHealthEvents] = useState<Awaited<ReturnType<typeof api.healthEvents>>['events']>([])
+  const [scheduler, setScheduler] = useState<Awaited<ReturnType<typeof api.schedulerStatus>>['channels'][number] | null>(null)
+  const [healthFilter, setHealthFilter] = useState<'ALL' | 'WARN' | 'CRITICAL'>('ALL')
+  const [processKind, setProcessKind] = useState<'ALL' | 'ENGINE' | 'OUTPUT' | 'MEDIAMTX'>('ALL')
+  const [processChannel, setProcessChannel] = useState<'ALL' | 'CURRENT'>('CURRENT')
   const [outputs, setOutputs] = useState<OutputProfile[]>([])
   const [outName, setOutName] = useState('')
   const [outTarget, setOutTarget] = useState('')
@@ -108,12 +114,18 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
 
   const refresh = useCallback(async () => {
     try {
-      const [payload, profiles] = await Promise.all([
+      const [payload, profiles, processReport, healthReport, schedulerReport] = await Promise.all([
         api.distribution(),
         api.outputs(channelId),
+        api.processes(),
+        api.healthEvents(channelId),
+        api.schedulerStatus(),
       ])
       setData(payload)
       setOutputs(profiles.outputs)
+      setProcesses(processReport.processes)
+      setHealthEvents(healthReport.events)
+      setScheduler(schedulerReport.channels.find((entry) => entry.channelId === channelId) ?? null)
       setError(null)
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Falha ao ler a distribuição.')
@@ -162,11 +174,18 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
         delete proximo[output.id]
         return proximo
       })
-      onMessage('Qualidade guardada. Vale no próximo início do canal.')
+      onMessage('Qualidade guardada. O canal foi reaplicado com a nova configuração.')
     })
   }
 
   const channel = data?.channels.find((entry) => entry.channelId === channelId) ?? data?.channels[0]
+  const criticalPending = healthEvents.filter((event) => event.severity === 'CRITICAL' && !event.acknowledgedAt).length
+  const warnPending = healthEvents.filter((event) => event.severity === 'WARN' && !event.acknowledgedAt).length
+  const visibleProcesses = processes.filter((process) =>
+    (processKind === 'ALL' || process.kind === processKind) &&
+    (processChannel === 'ALL' || process.channelId === channelId || (process.kind === 'MEDIAMTX' && processChannel === 'CURRENT')),
+  )
+  const visibleHealthEvents = healthEvents.filter((event) => healthFilter === 'ALL' || event.severity === healthFilter)
 
   /**
    * O tipo que a saída de fato usa.
@@ -240,6 +259,46 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
               </div>
             </div>
           )}
+
+          <div className="field">
+            <label>Processos do playout</label>
+            <div className="note">Monitores desligados não consomem encoder. O PID e a memória abaixo são lidos do sistema operacional.</div>
+            <div className="health-summary">
+              <select aria-label="filtrar processos por tipo" value={processKind} onChange={(event) => setProcessKind(event.target.value as typeof processKind)}>
+                <option value="ALL">todos os usos</option><option value="ENGINE">engines</option><option value="OUTPUT">saídas RTMP/SRT</option><option value="MEDIAMTX">MediaMTX</option>
+              </select>
+              <select aria-label="filtrar processos por canal" value={processChannel} onChange={(event) => setProcessChannel(event.target.value as typeof processChannel)}>
+                <option value="CURRENT">canal atual</option><option value="ALL">todos os canais</option>
+              </select>
+            </div>
+            <table className="asrun process-table">
+              <thead><tr><th>processo</th><th>PID</th><th>estado</th><th className="right">CPU acumulada</th><th className="right">memória</th><th>saídas</th></tr></thead>
+              <tbody>
+                {visibleProcesses.map((process) => {
+                  const publishers = Array.isArray(process.details?.publishers) ? process.details.publishers : []
+                  return <tr key={process.id}>
+                    <td>{process.kind === 'MEDIAMTX' ? 'MediaMTX' : process.kind === 'ENGINE' ? `Engine ${process.channelId ?? ''}` : `${String((process.details?.transport as string | undefined) ?? 'OUTPUT')} · ${String((process.details?.url as string | undefined) ?? process.id)}`}</td>
+                    <td className="mono">{process.pid ?? '—'}</td>
+                    <td>{process.state}</td>
+                    <td className="right mono">{process.cpuTimeMs === null ? '—' : `${(process.cpuTimeMs / 1000).toFixed(1)} s`}</td>
+                    <td className="right mono">{process.memoryBytes === null ? '—' : `${(process.memoryBytes / 1024 / 1024).toFixed(0)} MB`}</td>
+                    <td>{publishers.length > 0 ? publishers.map((publisher) => String((publisher as { health?: unknown }).health ?? '')).join(', ') : '—'}</td>
+                  </tr>
+                })}
+                {visibleProcesses.length === 0 && <tr><td colSpan={6} className="dim">nenhum processo corresponde ao filtro</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="field">
+            <label>Histórico de saúde deste canal</label>
+            {scheduler && <div className="note">Faixa ativa: <b>{scheduler.activeRule?.name ?? 'nenhuma'}</b> · grade termina em aproximadamente <b>{scheduler.minutesRemaining} min</b>.</div>}
+            <a className="btn small" href={`/api/health-events.csv?channelId=${encodeURIComponent(channelId)}`} download>baixar CSV de saúde</a>
+            <div className="health-summary"><span className="pill bad">críticos pendentes: {criticalPending}</span><span className="pill warn">atenção pendente: {warnPending}</span><select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value as typeof healthFilter)}><option value="ALL">todos os níveis</option><option value="CRITICAL">somente críticos</option><option value="WARN">somente atenção</option></select></div>
+            <table className="asrun process-table"><thead><tr><th>horário</th><th>componente</th><th>severidade</th><th>estado</th><th>mensagem</th></tr></thead><tbody>
+              {visibleHealthEvents.slice(0, 30).map((event) => <tr key={event.id}><td className="mono">{event.occurredAt.replace('T', ' ').slice(0, 19)}</td><td>{event.component}</td><td className={event.severity === 'CRITICAL' ? 'bad' : event.severity === 'WARN' ? 'warn' : 'ok'}>{event.severity}</td><td>{event.state}</td><td>{event.message ?? '—'} {event.acknowledgedAt ? <span className="pill">RECONHECIDO</span> : <button className="btn small" onClick={() => void api.acknowledgeHealth(event.id).then(refresh)}>reconhecer</button>}</td></tr>)}
+              {healthEvents.length === 0 && <tr><td colSpan={5} className="dim">nenhum evento registrado</td></tr>}
+            </tbody></table>
+          </div>
 
           {/* ---- perfis de saída ---- */}
           <div className="field">
@@ -327,7 +386,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                                 return proximo
                               })
                               await api.patchOutput(output.id, { bitrateKbps: null })
-                              onMessage('Qualidade no automático. Vale no próximo início do canal.')
+                              onMessage('Qualidade no automático. O canal foi reaplicado.')
                             })
                           }
                           title="Volta a acompanhar o formato do canal"
@@ -343,7 +402,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                       onClick={() =>
                         void guard(async () => {
                           await api.patchOutput(output.id, { enabled: !output.enabled })
-                          onMessage('Vale no próximo início do canal.')
+                          onMessage(output.enabled ? 'Saída desligada e canal atualizado.' : 'Saída ligada e canal atualizado.')
                         })
                       }
                     >
@@ -435,7 +494,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                     })
                     setOutName('')
                     setOutTarget('')
-                    onMessage('Saída criada. Vale no próximo início do canal.')
+                    onMessage('Saída criada e aplicada ao canal.')
                   })
                 }
               >

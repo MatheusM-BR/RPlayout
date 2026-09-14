@@ -44,10 +44,13 @@ export function AutoFillDialog({
   onMessage,
 }: Props) {
   const [minutes, setMinutes] = useState(30)
+  const [ate, setAte] = useState('')
   const [avoidHours, setAvoidHours] = useState(6)
   const [plan, setPlan] = useState<FillPlan | null>(null)
   const [busy, setBusy] = useState(false)
   const [rules, setRules] = useState<ScheduleRule[] | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editing, setEditing] = useState({ name: '', from: '06:00', to: '12:00', weekdays: '0123456', categories: [] as string[], avoidHours: 6 })
   const [draft, setDraft] = useState({
     name: '',
     from: '06:00',
@@ -97,6 +100,20 @@ export function AutoFillDialog({
       .catch((failure: Error) => onMessage(failure.message))
   }
 
+  const editRule = (rule: ScheduleRule): void => {
+    setEditingId(rule.id)
+    setEditing({ name: rule.name, from: hhmm(rule.startMinute), to: hhmm(rule.endMinute), weekdays: rule.weekdays, categories: rule.categories, avoidHours: rule.avoidHours })
+  }
+
+  const saveRule = (): void => {
+    if (!editingId) return
+    const from = parseHhmm(editing.from); const to = parseHhmm(editing.to)
+    if (!editing.name.trim() || from === null || to === null || to <= from) { onMessage('A faixa precisa de nome e horário válido.'); return }
+    api.updateRule(editingId, { name: editing.name.trim(), startMinute: from, endMinute: to, weekdays: editing.weekdays, categories: editing.categories, avoidHours: editing.avoidHours })
+      .then((result) => { setRules((current) => (current ?? []).map((rule) => rule.id === editingId ? result.rule : rule).sort((a, b) => a.startMinute - b.startMinute)); setEditingId(null); onMessage('Faixa atualizada.') })
+      .catch((failure: Error) => onMessage(failure.message))
+  }
+
   const fillDay = (): void => {
     setBusy(true)
     api
@@ -110,9 +127,17 @@ export function AutoFillDialog({
   }
 
   const run = (preview: boolean): void => {
+    let janela = minutes
+    if (ate.trim() !== '') {
+      const fim = parseHhmm(ate)
+      const agora = new Date()
+      const inicio = agora.getHours() * 60 + agora.getMinutes()
+      if (fim === null || fim <= inicio) { onMessage('Informe um horário futuro para preencher até.'); return }
+      janela = fim - inicio
+    }
     setBusy(true)
     api
-      .autoFill(rundownId, { minutes, avoidHours, preview })
+      .autoFill(rundownId, { minutes: janela, avoidHours, preview })
       .then((result) => {
         setPlan(result.plan)
         if (!preview && result.view) {
@@ -130,8 +155,8 @@ export function AutoFillDialog({
     <div className="backdrop" onClick={onCancel}>
       <div className="dialog wide" onClick={(event) => event.stopPropagation()}>
         <header>
-          <h2>Montar automaticamente</h2>
-          <div className="sub">o motor propõe; quem decide é você</div>
+          <h2>Assistente inteligente de programação</h2>
+          <div className="sub">o sistema pontua; o operador revisa e decide</div>
         </header>
 
         <div className="body">
@@ -176,8 +201,7 @@ export function AutoFillDialog({
                   <li key={`${item.mediaId}-${index}`}>
                     <b>{dur(item.durationFrames, rate)}</b>
                     <span>{item.title}</span>
-                    <i />
-                    <span />
+                    <i>{item.explanation?.category ?? 'sem categoria'} · {item.explanation?.lastAiredAt ? `último ar ${new Date(item.explanation.lastAiredAt).toLocaleString()}` : 'nunca foi ao ar'} · preferência {item.explanation?.preference ?? 0}</i>
                   </li>
                 ))}
               </ul>
@@ -205,9 +229,8 @@ export function AutoFillDialog({
                       {' · '}
                       {[...rule.weekdays].map((day) => WEEKDAYS[Number(day)]).join(' ')}
                     </i>
-                    <button className="btn small" onClick={() => removeRule(rule.id)}>
-                      tirar
-                    </button>
+                    <button className="btn small" onClick={() => editRule(rule)}>editar</button>
+                    <button className="btn small" onClick={() => removeRule(rule.id)}>tirar</button>
                   </li>
                 ))}
               </ul>
@@ -265,6 +288,29 @@ export function AutoFillDialog({
               </div>
             </div>
           )}
+
+          <div className="field">
+            <label>Ou preencher até (horário)</label>
+            <input type="text" placeholder="ex.: 18:00" value={ate} onChange={(event) => setAte(event.target.value)} />
+            <div className="note">Útil para evento ao vivo: informe o horário de término e o sistema calcula o espaço restante.</div>
+          </div>
+          {editingId && (
+            <div className="field">
+              <label>Editando faixa</label>
+              <div className="row">
+                <input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} />
+                <input value={editing.from} onChange={(event) => setEditing({ ...editing, from: event.target.value })} />
+                <input value={editing.to} onChange={(event) => setEditing({ ...editing, to: event.target.value })} />
+                <input type="number" min="0" max="240" title="não repetir nas últimas horas" value={editing.avoidHours} onChange={(event) => setEditing({ ...editing, avoidHours: Number(event.target.value) })} />
+              </div>
+              <div className="seg-group wrap">
+                {WEEKDAYS.map((day, index) => <button key={day} className={editing.weekdays.includes(String(index)) ? 'on' : ''} onClick={() => setEditing({ ...editing, weekdays: editing.weekdays.includes(String(index)) ? editing.weekdays.replace(String(index), '') : `${editing.weekdays}${index}` })}>{day}</button>)}
+              </div>
+              {categories.length > 0 && <div className="seg-group wrap">
+                {categories.map((category) => <button key={category} className={editing.categories.includes(category) ? 'on' : ''} onClick={() => setEditing({ ...editing, categories: editing.categories.includes(category) ? editing.categories.filter((entry) => entry !== category) : [...editing.categories, category] })}>{category}</button>)}
+              </div>}
+            </div>
+          )}
         </div>
 
         <footer>
@@ -274,6 +320,7 @@ export function AutoFillDialog({
           <button className="btn" onClick={addRule}>
             guardar faixa
           </button>
+          {editingId && <button className="btn take" onClick={saveRule}>salvar edição</button>}
           <button className="btn" disabled={busy || !rules?.length} onClick={fillDay}>
             montar o dia
           </button>

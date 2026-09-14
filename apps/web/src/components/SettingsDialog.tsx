@@ -4,6 +4,8 @@ import { api } from '../api.js'
 import { BUILD_COMMIT, buildDate } from '../build.js'
 import { CategoriasPanel } from './CategoriasPanel.js'
 import { PastasPanel } from './PastasPanel.js'
+import { UsersPanel } from './UsersPanel.js'
+import { IntegrationsPanel } from './IntegrationsPanel.js'
 
 interface Props {
   channel: Channel
@@ -16,6 +18,7 @@ interface Props {
   onOpenFormat: (channelId: string) => void
   onOpenDistribution: () => void
   onOpenGraphics: () => void
+  onOpenAudit?: () => void
 }
 
 /**
@@ -34,6 +37,7 @@ export function SettingsDialog({
   onOpenFormat,
   onOpenDistribution,
   onOpenGraphics,
+  onOpenAudit,
 }: Props) {
   const [novo, setNovo] = useState('')
   const [busy, setBusy] = useState(false)
@@ -155,6 +159,11 @@ export function SettingsDialog({
 
           <PastasPanel onMessage={onMessage} onChanged={onChanged} />
           <CategoriasPanel onMessage={onMessage} onChanged={onChanged} />
+          <div className="settings-section-title">USUÁRIOS E ACESSO</div>
+          <UsersPanel onMessage={onMessage} />
+          <IntegrationsPanel channelId={channel.id} onMessage={onMessage} />
+          {onOpenAudit && <div className="field"><button className="btn" onClick={onOpenAudit}>auditoria de operações</button></div>}
+          <div className="field"><button className="btn" onClick={() => void api.logout().then(() => window.location.reload())}>sair da sessão</button></div>
 
           <div className="field">
             <label>Ajustes deste canal</label>

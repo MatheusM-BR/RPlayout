@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { asc, eq, isNotNull } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, isNotNull } from 'drizzle-orm'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
 import {
@@ -20,6 +20,8 @@ import {
   type PreviewTarget,
 } from '@rplayout/protocol'
 import { networkInterfaces } from 'node:os'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import {
   runtimeFor,
   runtimeForItem,
@@ -33,6 +35,14 @@ import { buildCandidates, planFill } from './domain/autofill.js'
 import { backupDatabase, listBackups } from './domain/backup.js'
 import { syncDistribution } from './app.js'
 import { PORTS } from './domain/mediamtx.js'
+import { can, parseRole, roleLabel, type Action } from './domain/permissions.js'
+import { hashPassword, verifyPassword } from './domain/auth.js'
+import { emitIntegrationEvent } from './domain/integrations.js'
+import { conflictsWithScheduleRule } from './domain/schedule-rules.js'
+import { activeHorizonRule } from './domain/continuous.js'
+import { DEFAULT_ROLE, AUTH_PASSWORD, AUTH_USER } from './config.js'
+
+const execFileAsync = promisify(execFile)
 import * as Roots from './domain/roots.js'
 import {
   categories,
@@ -45,6 +55,12 @@ import {
   mediaAssets,
   rundownItems,
   scheduleRules,
+  outputProfiles,
+  playlistVersions,
+  users,
+  sessions,
+  healthEvents,
+  integrations,
 } from './db/schema.js'
 import { asRun, operatorDecisions } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
@@ -163,6 +179,7 @@ async function logDecision(
   itemId: string | null,
   kind: string,
   payload: Record<string, unknown>,
+  actorUsername: string | null = null,
 ): Promise<void> {
   await app.db.insert(operatorDecisions).values({
     id: randomUUID(),
@@ -170,6 +187,7 @@ async function logDecision(
     itemId,
     kind,
     payload,
+    actorUsername,
     createdAt: new Date().toISOString(),
   })
 }
@@ -210,11 +228,12 @@ async function dentroDoAcervo(app: App, candidato: string): Promise<boolean> {
 function monitors(app: App, channelId: string) {
   const path = app.paths.find((entry) => entry.channelId === channelId)
   if (!app.mediamtx?.running || !path) return null
-  // O monitor do programa é o caminho `mon`, em 480p -- e não o `pgm`, que é
-  // o que vai ao ar. Assistir ao programa inteiro numa janela de trezentos
-  // pixels fazia o navegador decodificar quatro fluxos grandes ao mesmo tempo
-  // numa máquina com quatro canais.
-  return { port: PORTS.webrtc, program: path.monitor, preview: path.preview }
+  // O fluxo `pgm` é a fonte de verdade do programa e já carrega a trilha de
+  // áudio. O antigo `mon` era uma cópia reduzida que podia chegar sem áudio
+  // quando o encoder Opus não estava disponível; isso deixava o painel mudo
+  // apesar de /pgm funcionar no navegador. O MediaMTX entrega o mesmo fluxo
+  // por WHEP, sem uma segunda codificação no engine.
+  return { port: PORTS.webrtc, program: path.program, preview: path.preview }
 }
 
 /**
@@ -230,7 +249,187 @@ function blockCompanions(runtime: ChannelRuntime, itemId: string): string[] {
 }
 
 export function registerRoutes(app: App, server: FastifyInstance, onChange: () => void): void {
-  server.get('/api/health', async () => ({ ok: true }))
+  const roleOf = async (request: { headers: Record<string, string | string[] | undefined> }) => {
+    const cookie = typeof request.headers.cookie === 'string' ? request.headers.cookie : ''
+    const token = cookie.split(';').map((part: string) => part.trim()).find((part: string) => part.startsWith('rplayout_session='))?.slice(17)
+    if (token) {
+      const [row] = await app.db.select({ role: users.role }).from(sessions).innerJoin(users, eq(sessions.userId, users.id)).where(and(eq(sessions.token, token), gt(sessions.expiresAt, new Date().toISOString()), eq(users.enabled, true))).limit(1)
+      if (row) return parseRole(row.role)
+    }
+    // Com autenticação configurada, cabeçalho nunca pode elevar privilégio.
+    if (AUTH_USER && AUTH_PASSWORD) return 'OPERATOR'
+    return parseRole(request.headers['x-rplayout-role'] ?? DEFAULT_ROLE)
+  }
+  const usernameOf = async (request: { headers: Record<string, string | string[] | undefined> }): Promise<string | null> => {
+    const cookie = typeof request.headers.cookie === 'string' ? request.headers.cookie : ''
+    const token = cookie.split(';').map((part: string) => part.trim()).find((part: string) => part.startsWith('rplayout_session='))?.slice(17)
+    if (!token) return null
+    const [row] = await app.db.select({ username: users.username }).from(sessions).innerJoin(users, eq(sessions.userId, users.id)).where(and(eq(sessions.token, token), gt(sessions.expiresAt, new Date().toISOString()), eq(users.enabled, true))).limit(1)
+    return row?.username ?? null
+  }
+  const allowed = async (request: { headers: Record<string, string | string[] | undefined> }, action: Action): Promise<boolean> =>
+    can(await roleOf(request), action)
+
+  server.get('/api/session', async (request) => {
+    const role = await roleOf(request)
+    const authenticated = (await usernameOf(request)) !== null
+    return { role, label: roleLabel(role), authenticated, required: Boolean(AUTH_USER && AUTH_PASSWORD) }
+  })
+  server.post('/api/auth/login', async (request, reply) => {
+    const body = z.object({ username: z.string().min(1), password: z.string().min(1) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe usuário e senha.' })
+    let [user] = await app.db.select().from(users).where(eq(users.username, body.data.username)).limit(1)
+    if (!user && AUTH_USER && AUTH_PASSWORD && body.data.username === AUTH_USER && body.data.password === AUTH_PASSWORD) {
+      const created = { id: randomUUID(), username: AUTH_USER, passwordHash: await hashPassword(AUTH_PASSWORD), role: 'ADMIN' as const, enabled: true, createdAt: new Date().toISOString() }
+      await app.db.insert(users).values(created)
+      user = created
+    }
+    if (!user || !user.enabled || !(await verifyPassword(body.data.password, user.passwordHash))) return reply.code(401).send({ error: 'Usuário ou senha inválidos.' })
+    const token = randomUUID() + randomUUID()
+    await app.db.insert(sessions).values({ token, userId: user.id, expiresAt: new Date(Date.now() + 43_200_000).toISOString(), createdAt: new Date().toISOString() })
+    return reply.header('set-cookie', `rplayout_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`).send({ role: user.role, label: roleLabel(parseRole(user.role)) })
+  })
+  server.post('/api/auth/logout', async (request, reply) => {
+    const cookie = typeof request.headers.cookie === 'string' ? request.headers.cookie : ''
+    const token = cookie.split(';').map((part: string) => part.trim()).find((part: string) => part.startsWith('rplayout_session='))?.slice(17)
+    if (token) await app.db.delete(sessions).where(eq(sessions.token, token))
+    return reply.header('set-cookie', 'rplayout_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0').send({ ok: true })
+  })
+  server.get('/api/users', async (request, reply) => {
+    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
+    return { users: await app.db.select({ id: users.id, username: users.username, role: users.role, enabled: users.enabled, createdAt: users.createdAt }).from(users) }
+  })
+  server.get('/api/audit', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar auditoria.' })
+    const query = request.query as { limit?: string }
+    const limit = Math.min(1000, Math.max(1, Number(query.limit ?? 200) || 200))
+    const rows = await app.db.select().from(operatorDecisions).orderBy(desc(operatorDecisions.createdAt)).limit(limit)
+    return { entries: rows.reverse() }
+  })
+  server.get('/api/health-events', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar saúde.' })
+    const query = request.query as { channelId?: string; limit?: string }
+    const limit = Math.min(2000, Math.max(1, Number(query.limit ?? 500) || 500))
+    const rows = await app.db
+      .select()
+      .from(healthEvents)
+      .where(query.channelId ? eq(healthEvents.channelId, query.channelId) : undefined)
+      .orderBy(desc(healthEvents.occurredAt))
+      .limit(limit)
+    return { events: rows.reverse() }
+  })
+  server.get('/api/health-events.csv', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar saúde.' })
+    const query = request.query as { channelId?: string; since?: string }
+    const rows = await app.db
+      .select()
+      .from(healthEvents)
+      .where(query.channelId ? eq(healthEvents.channelId, query.channelId) : undefined)
+      .orderBy(desc(healthEvents.occurredAt))
+      .limit(10_000)
+    const filtered = (query.since ? rows.filter((row) => row.occurredAt >= query.since!) : rows).reverse()
+    const quote = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
+    const csv = ['horário;canal;componente;estado;severidade;mensagem;reconhecido', ...filtered.map((row) => [row.occurredAt, row.channelId, row.component, row.state, row.severity, row.message, row.acknowledgedAt].map(quote).join(';'))].join('\n')
+    void reply.header('content-type', 'text/csv; charset=utf-8')
+    void reply.header('content-disposition', 'attachment; filename="rplayout-saude.csv"')
+    return csv
+  })
+  server.post('/api/health-events/:id/ack', async (request, reply) => {
+    if (!(await allowed(request, 'CHANNEL_STOP'))) return reply.code(403).send({ error: 'Supervisor precisa reconhecer alertas.' })
+    const { id } = request.params as { id: string }
+    await app.db.update(healthEvents).set({ acknowledgedAt: new Date().toISOString() }).where(eq(healthEvents.id, id))
+    return { ok: true }
+  })
+  server.get('/api/integrations', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
+    const { channelId } = request.query as { channelId?: string }
+    const rows = await app.db.select().from(integrations)
+    return { integrations: channelId ? rows.filter((row) => row.channelId === channelId || row.channelId === null) : rows }
+  })
+  server.post('/api/integrations', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
+    const body = z.object({ channelId: z.string().nullable().optional(), name: z.string().min(1), url: z.string().url(), events: z.array(z.string()).min(1) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe nome, URL válida e pelo menos um evento.' })
+    const row = { id: randomUUID(), channelId: body.data.channelId ?? null, name: body.data.name, url: body.data.url, events: body.data.events, enabled: false, createdAt: new Date().toISOString() }
+    await app.db.insert(integrations).values(row)
+    return { integration: row }
+  })
+  server.patch('/api/integrations/:id', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
+    const body = z.object({ name: z.string().min(1).optional(), url: z.string().url().optional(), events: z.array(z.string()).min(1).optional(), enabled: z.boolean().optional() }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Alteração inválida.' })
+    const { id } = request.params as { id: string }
+    await app.db.update(integrations).set(body.data).where(eq(integrations.id, id))
+    return { ok: true }
+  })
+  server.post('/api/integrations/:id/test', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
+    const { id } = request.params as { id: string }
+    const [integration] = await app.db.select().from(integrations).where(eq(integrations.id, id)).limit(1)
+    if (!integration) return reply.code(404).send({ error: 'Integração não encontrada.' })
+    try {
+      const response = await fetch(integration.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'rplayout.test', sentAt: new Date().toISOString() }) })
+      return { ok: response.ok, status: response.status }
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'falha de rede' } }
+  })
+  server.post('/api/users', async (request, reply) => {
+    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
+    const body = z.object({ username: z.string().min(1).max(80), password: z.string().min(8), role: z.enum(['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe usuário, senha com 8 caracteres e papel.' })
+    try {
+      const row = { id: randomUUID(), username: body.data.username, passwordHash: await hashPassword(body.data.password), role: body.data.role, enabled: true, createdAt: new Date().toISOString() }
+      await app.db.insert(users).values(row)
+      return { user: { id: row.id, username: row.username, role: row.role, enabled: true } }
+    } catch { return reply.code(409).send({ error: 'Esse usuário já existe.' }) }
+  })
+  server.patch('/api/users/:id', async (request, reply) => {
+    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
+    const body = z.object({ password: z.string().min(8).optional(), role: z.enum(['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']).optional(), enabled: z.boolean().optional() }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Alteração inválida.' })
+    const { id } = request.params as { id: string }
+    await app.db.update(users).set({ ...(body.data.role ? { role: body.data.role } : {}), ...(body.data.enabled === undefined ? {} : { enabled: body.data.enabled }), ...(body.data.password ? { passwordHash: await hashPassword(body.data.password) } : {}) }).where(eq(users.id, id))
+    return { ok: true }
+  })
+  server.get('/api/health', async () => ({
+    ok: true,
+    uptimeSeconds: Math.floor(process.uptime()),
+    channels: app.runtimes.size,
+    engines: [...app.runtimes.values()].filter((runtime) => runtime.transport.health().ready).length,
+    mediamtx: app.mediamtx ? (app.mediamtx.running ? 'running' : 'stopped') : 'disabled',
+    checkedAt: new Date().toISOString(),
+  }))
+  server.get('/api/ready', async (_request, reply) => {
+    const engines = [...app.runtimes.values()]
+    const stopped = engines.filter((runtime) => !runtime.transport.health().ready)
+    const mediaUnavailable = Boolean(app.mediamtx && !app.mediamtx.running)
+    const ready = stopped.length === 0 && !mediaUnavailable
+    return reply.code(ready ? 200 : 503).send({
+      ready,
+      channels: engines.length,
+      enginesReady: engines.length - stopped.length,
+      mediamtx: app.mediamtx ? (app.mediamtx.running ? 'running' : 'stopped') : 'disabled',
+      reasons: [
+        ...stopped.map((runtime) => `engine:${runtime.channel.id}`),
+        ...(mediaUnavailable ? ['mediamtx:stopped'] : []),
+      ],
+      checkedAt: new Date().toISOString(),
+    })
+  })
+  server.get('/api/scheduler/status', async () => {
+    const now = new Date()
+    const nowMinute = now.getHours() * 60 + now.getMinutes()
+    const weekday = now.getDay()
+    const result = []
+    for (const runtime of app.runtimes.values()) {
+      const rules = await app.db.select().from(scheduleRules).where(eq(scheduleRules.channelId, runtime.channel.id))
+      const activeRule = activeHorizonRule(rules, nowMinute, weekday)
+      const nowFrames = framesSinceMidnight(now, runtime.channel.rate)
+      const endFrames = runtime.view?.schedule.endsAt ?? nowFrames
+      const minutesRemaining = Math.max(0, Math.round((endFrames - nowFrames) * runtime.channel.rate.den / runtime.channel.rate.num / 60))
+      result.push({ channelId: runtime.channel.id, rundownId: runtime.view?.rundown.id ?? null, activeRule: activeRule ?? null, endsAtFrames: endFrames, minutesRemaining })
+    }
+    return { checkedAt: now.toISOString(), channels: result }
+  })
 
   server.get('/api/state', async () => {
     const channels = await listChannels(app.db)
@@ -249,6 +448,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   server.post('/api/channels', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode criar canais.' })
     const body = channelSchema.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -318,6 +518,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.patch('/api/channels/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode configurar canais.' })
     const body = channelPatch.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -365,7 +566,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * a organização em disco é a organização que o operador vê.
    */
   server.get('/api/library', async () => {
-    const assets = await listAssets(app.db)
+    // Playout trabalha com vídeo; imagens e áudios podem continuar registrados
+    // para não quebrar referências antigas, mas não entram no explorador.
+    const assets = (await listAssets(app.db)).filter((asset) => asset.kind === 'VIDEO')
     const roots = await Roots.listRoots(app.db, app.mediaRoot)
 
     // A pasta é o caminho inteiro de dentro da raiz, não o último pedaço dele.
@@ -407,7 +610,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
             grupo.rootId === 'fora'
               ? grupo.rel.split('/').slice(-2).join('/') || grupo.rel
               : grupo.rel === ''
-                ? '(na raiz)'
+                ? grupo.rootId === 'fora' ? '(fora do acervo)' : (rotulo.get(grupo.rootId) ?? '(na raiz)')
                 : grupo.rel,
           assets: grupo.assets.map((asset) => ({
             ...asset,
@@ -594,6 +797,16 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { entries: await Playlists.entriesOf(path, assets) }
   })
 
+  server.get('/api/rundowns/:id/playlist-versions', async (request) => {
+    const { id } = request.params as { id: string }
+    const versions = await app.db
+      .select()
+      .from(playlistVersions)
+      .where(eq(playlistVersions.rundownId, id))
+      .orderBy(asc(playlistVersions.publishedAt))
+    return { versions: versions.reverse() }
+  })
+
   /**
    * Lê uma lista arrastada para a janela.
    *
@@ -639,9 +852,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         /** Conteúdo de uma lista arrastada, quando não há caminho. */
         text: z.string().min(1).max(4_000_000).optional(),
         replace: z.boolean().default(false),
+        scheduledDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Diga qual lista.' })
+    if (!(await allowed(request, body.data.replace ? 'PLAYLIST_PUBLISH' : 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode publicar esta playlist.' })
+    }
     // Ou o caminho de uma lista que mora numa pasta do acervo, ou o conteúdo
     // de uma que foi arrastada para a janela -- o navegador não entrega o
     // caminho de um arquivo arrastado, e sem isto arrastar não teria como
@@ -728,6 +945,21 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     await runtime.refresh()
     onChange()
+    await app.db.insert(playlistVersions).values({
+      id: randomUUID(),
+      rundownId: runtime.view.rundown.id,
+      sourcePath: body.data.path ?? null,
+      sourceName: body.data.path?.split(/[\\/]/).pop() ?? 'lista importada',
+      mode: body.data.replace ? 'PUBLISH_NEXT' : 'APPEND',
+      loaded: aproveitadas.length,
+      skipped: entradas.length - aproveitadas.length,
+      scheduledDate: body.data.scheduledDate ?? null,
+      publishedAt: new Date().toISOString(),
+    })
+    await logDecision(app, runtime.view.rundown.id, null, body.data.replace ? 'PLAYLIST_PUBLISHED' : 'PLAYLIST_INSERTED', {
+      source: body.data.path ?? 'importada', loaded: aproveitadas.length, skipped: entradas.length - aproveitadas.length,
+    }, await usernameOf(request))
+    void emitIntegrationEvent(app.db, body.data.replace ? 'playlist.published' : 'playlist.inserted', { rundownId: runtime.view.rundown.id, loaded: aproveitadas.length, skipped: entradas.length - aproveitadas.length }, runtime.channel.id)
     return {
       ...snapshot(app, runtime),
       loaded: aproveitadas.length,
@@ -744,6 +976,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.patch('/api/assets/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar o acervo.' })
     const body = assetPatch.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -762,6 +995,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.delete('/api/assets/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover arquivos.' })
     const { force } = request.query as { force?: string }
 
     const usos = await app.db.select().from(rundownItems).where(eq(rundownItems.mediaId, id))
@@ -789,7 +1023,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * que não vai agir, a mesma lista vira ruído, e limpar é o que devolve a
    * tela para o material que serve.
    */
-  server.post('/api/assets/prune', async () => {
+  server.post('/api/assets/prune', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode limpar o acervo.' })
     const quebrados = await app.db
       .select()
       .from(mediaAssets)
@@ -847,6 +1082,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   /** Cria a categoria ou troca a cor dela. O nome é a chave. */
   server.put('/api/categories/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar categorias.' })
     const body = z.object({ color: corValida }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Cor em #rrggbb.' })
     if (id.trim() === '') return reply.code(400).send({ error: 'A categoria precisa de nome.' })
@@ -871,8 +1107,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * Deixar a marca em arquivo cuja categoria não existe mais daria uma cor
    * fantasma na grade e uma opção que não aparece em lista nenhuma.
    */
-  server.delete('/api/categories/:id', async (request) => {
+  server.delete('/api/categories/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover categorias.' })
     await app.db.delete(categories).where(eq(categories.id, id))
     const soltos = await app.db
       .update(mediaAssets)
@@ -892,6 +1129,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.delete('/api/channels/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode remover canais.' })
     const todos = await listChannels(app.db)
     if (todos.length <= 1) {
       return reply.code(409).send({ error: 'Este é o único canal. Crie outro antes de apagar.' })
@@ -957,6 +1195,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.post('/api/channels/:id/restart', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode reiniciar canais.' })
     if (!(await getChannel(app.db, id))) {
       return reply.code(404).send({ error: 'Canal não encontrado.' })
     }
@@ -979,7 +1218,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     roots: await Roots.listRoots(app.db, app.mediaRoot),
   }))
 
+  server.post('/api/library/roots/pick', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode adicionar pastas.' })
+    const path = await Roots.pickFolder()
+    if (!path) return reply.code(204).send()
+    const resultado = await Roots.addRoot(app.db, path)
+    if (!resultado.ok) return reply.code(400).send({ error: resultado.error })
+    if (app.ingest.available) app.ingest.start([resultado.root.path])
+    return { root: resultado.root, scanning: app.ingest.status().running }
+  })
+
   server.post('/api/library/roots', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode adicionar pastas.' })
     const body = z
       .object({ path: z.string().min(1), label: z.string().optional() })
       .safeParse(request.body)
@@ -996,6 +1246,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.delete('/api/library/roots/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover pastas.' })
     if (!(await Roots.removeRoot(app.db, id))) {
       return reply
         .code(400)
@@ -1005,6 +1256,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   server.post('/api/library/scan', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode iniciar varredura.' })
     if (!app.ingest.available) {
       return reply.code(409).send({ error: 'A sonda de mídia não está configurada.' })
     }
@@ -1015,20 +1267,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     // Medir loudness é o que demora numa varredura. Poder ler sem medir é o
     // que torna um acervo grande utilizável no mesmo dia.
-    app.ingest.measure = body.data.measure ?? true
 
     // Sem pasta escolhida, varre todas -- que é o que "procurar arquivos"
-    // significa para quem tem o acervo espalhado em mais de um lugar. Pasta
-    // que não existe agora (rede caída) fica de fora: varrê-la marcaria o
-    // acervo inteiro dela como sumido.
+    // significa para quem tem o acervo espalhado em mais de um lugar. Inclui
+    // as indisponíveis para que seus arquivos sejam sinalizados na grade.
     const roots = await Roots.listRoots(app.db, app.mediaRoot)
     const alvo = body.data.root
       ? [body.data.root]
-      : roots.filter((root) => root.present).map((root) => root.path)
+      : roots.map((root) => root.path)
     if (alvo.length === 0) {
       return reply.code(409).send({ error: 'Nenhuma pasta do acervo está acessível agora.' })
     }
-    if (!app.ingest.start(alvo)) {
+    if (!app.ingest.start(alvo, body.data.measure ?? true)) {
       return reply.code(409).send({ error: 'A varredura já está em andamento.' })
     }
     return app.ingest.status()
@@ -1055,6 +1305,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/rundowns/:id/items', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode inserir itens.' })
     const body = addItemSchema.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -1156,6 +1407,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.patch('/api/items/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar itens.' })
     const body = patchSchema.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -1172,6 +1424,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.delete('/api/items/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover itens.' })
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
@@ -1190,6 +1443,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/items/:id/move', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode mover itens.' })
     const body = z.object({ toIndex: z.number().int().min(0) }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -1236,6 +1490,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/items/:id/trim', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode cortar itens.' })
     const body = z.object({ trim: trimSchema, scope: scopeSchema }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
     if (body.data.trim.out <= body.data.trim.in) {
@@ -1263,6 +1518,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/items/:id/audio', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode ajustar áudio.' })
     const body = z.object({ audio: audioSchema, scope: scopeSchema }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -1286,6 +1542,130 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   // ---- distribuição ----------------------------------------------------
+
+  /**
+   * Visão operacional dos processos que pertencem ao playout. O endpoint não
+   * cria processos nem tenta adivinhar consumo: ele identifica os PIDs vivos
+   * e, no Windows, consulta o próprio sistema para memória e CPU acumulada.
+   * Isso permite fechar monitores sem confundir um Preview desligado com uma
+   * falha do canal.
+   */
+  server.get('/api/processes', async () => {
+    const rows: Array<{
+      id: string
+      kind: 'ENGINE' | 'MEDIAMTX' | 'OUTPUT'
+      channelId: string | null
+      pid: number | null
+      state: string
+      cpuTimeMs: number | null
+      memoryBytes: number | null
+      details?: Record<string, unknown>
+    }> = []
+
+    if (app.mediamtx) {
+      rows.push({
+        id: 'mediamtx',
+        kind: 'MEDIAMTX',
+        channelId: null,
+        pid: app.mediamtx.processId,
+        state: app.mediamtx.running ? 'running' : 'stopped',
+        cpuTimeMs: null,
+        memoryBytes: null,
+        details: { error: app.mediamtx.lastError },
+      })
+    }
+    for (const [channelId, runtime] of app.runtimes) {
+      const publishers = runtime.transport.publishers()
+      rows.push({
+        id: `engine:${channelId}`,
+        kind: 'ENGINE',
+        channelId,
+        pid: runtime.transport.processId(),
+        state: runtime.transport.health().error
+          ? 'error'
+          : runtime.transport.health().ready
+            ? 'running'
+            : 'starting',
+        cpuTimeMs: null,
+        memoryBytes: null,
+        details: {
+          restarts: runtime.transport.health().restarts,
+          deaths: runtime.transport.health().deaths,
+          stalls: runtime.transport.health().stalls,
+          ready: runtime.transport.health().ready,
+          publishers: publishers.map((publisher) => ({
+            url: publisher.url,
+            health: publisher.health,
+            attempts: publisher.attempts,
+            delivered: publisher.delivered,
+            error: publisher.error ?? null,
+          })),
+        },
+      })
+      // Cada publisher é uma unidade operacional própria, mesmo quando
+      // compartilha o processo do engine. Linhas separadas permitem localizar
+      // rapidamente qual RTMP/SRT caiu sem confundir isso com o PGM.
+      for (const [index, publisher] of publishers.entries()) {
+        const target = String(publisher.url ?? '')
+        rows.push({
+          id: `output:${channelId}:${index}`,
+          kind: 'OUTPUT',
+          channelId,
+          pid: runtime.transport.processId(),
+          state: publisher.health,
+          cpuTimeMs: null,
+          memoryBytes: null,
+          details: {
+            url: target,
+            transport: (target.split(':', 1)[0] ?? '').toUpperCase(),
+            attempts: publisher.attempts,
+            delivered: publisher.delivered,
+            error: publisher.error ?? null,
+          },
+        })
+      }
+    }
+
+    const pids = rows.map((row) => row.pid).filter((pid): pid is number => pid !== null)
+    if (pids.length > 0 && process.platform === 'win32') {
+      try {
+        const { stdout } = await execFileAsync('tasklist', ['/FO', 'CSV', '/NH'])
+        const byPid = new Map<number, { memoryBytes: number; cpuTimeMs: number | null }>()
+        for (const line of stdout.split(/\r?\n/)) {
+          const columns = line.match(/"([^"]*)"/g)?.map((value) => value.slice(1, -1))
+          if (!columns || columns.length < 5) continue
+          const pid = Number((columns[1] ?? '').replace(/\D/g, ''))
+          if (!pids.includes(pid)) continue
+          const memory = Number((columns[4] ?? '').replace(/[^\d]/g, ''))
+          byPid.set(pid, { memoryBytes: Number.isFinite(memory) ? memory * 1024 : 0, cpuTimeMs: null })
+        }
+        for (const row of rows) {
+          const sample = row.pid === null ? undefined : byPid.get(row.pid)
+          if (sample) {
+            row.memoryBytes = sample.memoryBytes
+            row.cpuTimeMs = sample.cpuTimeMs
+          }
+        }
+      } catch {
+        // A ausência do tasklist não pode derrubar a API de operação.
+      }
+      // tasklist não expõe CPU. Uma consulta curta ao contador nativo do
+      // Windows completa o painel sem manter um coletor permanente no servidor.
+      try {
+        const query = pids.join(',')
+        const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ids=@(${query}); Get-Process -Id $ids -ErrorAction SilentlyContinue | Select-Object Id,CPU | ConvertTo-Json -Compress`])
+        const parsed = JSON.parse(stdout.trim() || '[]') as Array<{ Id?: number; CPU?: number }> | { Id?: number; CPU?: number }
+        const samples = Array.isArray(parsed) ? parsed : [parsed]
+        for (const sample of samples) {
+          const row = rows.find((candidate) => candidate.pid === sample.Id)
+          if (row && typeof sample.CPU === 'number' && Number.isFinite(sample.CPU)) row.cpuTimeMs = Math.round(sample.CPU * 1000)
+        }
+      } catch {
+        // CPU é informativo: se a consulta falhar, memória e estado continuam.
+      }
+    }
+    return { generatedAt: new Date().toISOString(), processes: rows }
+  })
 
   server.get('/api/distribution', async () => {
     const host = lanAddress()
@@ -1351,6 +1731,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.patch('/api/channels/:id/slate', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode configurar a apresentação técnica.' })
     const body = z
       .object({ templateId: z.string().nullable() })
       .safeParse(request.body)
@@ -1392,10 +1773,17 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/channels/:id/rules', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar a pauta.' })
     const body = ruleSchema.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
     if (body.data.endMinute <= body.data.startMinute) {
       return reply.code(400).send({ error: 'A faixa termina antes de começar.' })
+    }
+
+    const existentes = await app.db.select().from(scheduleRules).where(eq(scheduleRules.channelId, id))
+    const conflita = conflictsWithScheduleRule(body.data, existentes)
+    if (conflita) {
+      return reply.code(409).send({ error: 'Esta faixa se sobrepõe a outra faixa no mesmo dia.' })
     }
 
     const row = {
@@ -1409,10 +1797,27 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { rule: row }
   })
 
-  server.delete('/api/rules/:id', async (request) => {
+  server.delete('/api/rules/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar a pauta.' })
     await app.db.delete(scheduleRules).where(eq(scheduleRules.id, id))
     return { ok: true }
+  })
+
+  server.patch('/api/rules/:id', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar a pauta.' })
+    const body = ruleSchema.partial().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    const [current] = await app.db.select().from(scheduleRules).where(eq(scheduleRules.id, id)).limit(1)
+    if (!current) return reply.code(404).send({ error: 'Faixa não encontrada.' })
+    const next = { ...current, ...body.data }
+    if (next.endMinute <= next.startMinute) return reply.code(400).send({ error: 'A faixa termina antes de começar.' })
+    const existentes = await app.db.select().from(scheduleRules).where(eq(scheduleRules.channelId, next.channelId))
+    const conflita = conflictsWithScheduleRule(next, existentes, id)
+    if (conflita) return reply.code(409).send({ error: 'Esta faixa se sobrepõe a outra faixa no mesmo dia.' })
+    await app.db.update(scheduleRules).set(body.data).where(eq(scheduleRules.id, id))
+    return { rule: { ...current, ...body.data } }
   })
 
   /**
@@ -1425,6 +1830,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.post('/api/rundowns/:id/autofill-day', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode montar a grade.' })
     const runtime = await runtimeForRundown(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
 
@@ -1537,12 +1943,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.get('/api/channels/:id/asrun.csv', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { since } = request.query as { since?: string }
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Seu papel não pode exportar relatórios.' })
+    const { since, nome, categoria, data, hora } = request.query as { since?: string; nome?: string; categoria?: string; data?: string; hora?: string }
     const channel = await getChannel(app.db, id)
     if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
     const start = since ?? new Date(new Date().setHours(0, 0, 0, 0)).toISOString()
-    const entries = await listAsRun(app.db, id, start, 5000)
+    const entries = (await listAsRun(app.db, id, start, 5000)).filter((entry) =>
+      (!nome || entry.title.toLowerCase().includes(nome.toLowerCase())) &&
+      (!categoria || entry.type === categoria) &&
+      (!data || entry.startedAt.slice(0, 10) === data) &&
+      (!hora || entry.startedAt.slice(11, 16).startsWith(hora)),
+    )
 
     const head = 'entrou;saiu;item;tipo;previsto_frames;no_ar_frames;diferenca_frames;saiu_por'
     const lines = entries.map((entry) => {
@@ -1578,7 +1990,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     files: await listBackups(app.backupDir),
   }))
 
-  server.post('/api/backups', async () => {
+  server.post('/api/backups', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Seu papel não pode criar backups.' })
     const result = await backupDatabase(app.sqlite, app.backupDir)
     return { ...result, files: await listBackups(app.backupDir) }
   })
@@ -1618,6 +2031,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       mediaId: item.id,
       title: byId.get(item.id)?.title ?? 'arquivo',
       durationFrames: item.durationFrames,
+      explanation: {
+        category: item.categoryId,
+        lastAiredAt: item.lastAiredMs === null ? null : new Date(item.lastAiredMs).toISOString(),
+        preference: item.preference,
+      },
     }))
 
     // Planejar é de graça; aplicar mexe na grade, e por isso é pedido à parte.
@@ -1671,6 +2089,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const channel = await getChannel(app.db, id)
     if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
+    // Sincroniza a linha aberta antes da consulta. O laço operacional também
+    // chama followAsRun, mas a leitura pode chegar exatamente na troca de item;
+    // aguardá-la aqui evita que o Aired fique uma atualização atrás do PGM.
+    const runtime = app.runtimes.get(id)
+    if (runtime) await runtime.followAsRun()
+
     // Sem `since`, o dia de hoje: é o recorte que o operador quer ver, e um
     // as-run inteiro de meses não cabe numa tela nem numa resposta.
     const start = since ?? new Date(new Date().setHours(0, 0, 0, 0)).toISOString()
@@ -1709,6 +2133,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   server.post('/api/graphics', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode criar grafismos.' })
     const body = templateSchema.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -1740,6 +2165,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.patch('/api/graphics/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar grafismos.' })
     const body = templateSchema.partial().safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -1763,8 +2189,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { ok: true }
   })
 
-  server.delete('/api/graphics/:id', async (request) => {
+  server.delete('/api/graphics/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover grafismos.' })
     await app.db.delete(graphicTemplates).where(eq(graphicTemplates.id, id))
     return { ok: true }
   })
@@ -1776,6 +2203,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/channels/:id/graphic', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode colocar grafismos no ar.' })
     const body = fireSchema.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -1795,6 +2223,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.delete('/api/channels/:id/graphic', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode retirar grafismos.' })
     const runtime = await runtimeFor(app, id)
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
     runtime.graphics.hide()
@@ -1817,6 +2246,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/items/:id/graphics', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode programar grafismos.' })
     const body = cueSchema.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -1838,6 +2268,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.delete('/api/item-graphics/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover grafismos programados.' })
     const [cue] = await app.db.select().from(itemGraphics).where(eq(itemGraphics.id, id))
     if (!cue) return reply.code(404).send({ error: 'Deixa não existe.' })
 
@@ -1908,16 +2339,25 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Dê um nome e um destino.' })
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode criar saídas.' })
+    }
     // Na placa o destino é o número do conector, e só isso.
     if (body.data.kind === 'SDI' && !/^\d+$/.test(body.data.target.trim())) {
       return reply.code(400).send({ error: 'Na SDI o destino é o número do conector: 0, 1, 2…' })
     }
 
     const row = await createOutput(app.db, id, body.data)
-    // Saída nova só existe no engine no próximo start do canal: mexer no
-    // conjunto de saídas de um pipeline que está no ar é o tipo de cirurgia
-    // que este projeto já pagou caro para evitar.
-    return { output: row, restartRequired: true }
+    const runtime = app.runtimes.get(id)
+    if (runtime) {
+      const rundownId = runtime.view?.rundown.id ?? null
+      runtime.transport.close()
+      app.runtimes.delete(id)
+      const novo = await runtimeFor(app, id)
+      if (novo && rundownId) await novo.load(rundownId)
+    }
+    await syncDistribution(app)
+    return { output: row, restartRequired: false }
   })
 
   server.patch('/api/outputs/:id', async (request, reply) => {
@@ -1937,21 +2377,54 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode alterar saídas.' })
+    }
 
+    const [profile] = await app.db.select({ channelId: outputProfiles.channelId }).from(outputProfiles).where(eq(outputProfiles.id, id))
     await updateOutput(app.db, id, body.data)
-    return { ok: true, restartRequired: true }
+    // Trocar liga/desliga é uma ação operacional: reconstrói somente o engine
+    // deste canal e mantém o servidor HTTP, banco e os demais canais vivos.
+    if (profile) {
+      const anterior = app.runtimes.get(profile.channelId)
+      const rundownId = anterior?.view?.rundown.id ?? null
+      if (anterior) {
+        anterior.transport.close()
+        app.runtimes.delete(profile.channelId)
+      }
+      const runtime = await runtimeFor(app, profile.channelId)
+      if (runtime && rundownId) await runtime.load(rundownId)
+    }
+    await syncDistribution(app)
+    return { ok: true, restartRequired: false }
   })
 
   server.delete('/api/outputs/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode remover saídas.' })
+    }
+    const [profile] = await app.db.select({ channelId: outputProfiles.channelId }).from(outputProfiles).where(eq(outputProfiles.id, id))
     if (!(await deleteOutput(app.db, id))) {
       return reply.code(409).send({ error: 'Programa e preview não podem ser removidos.' })
     }
-    return { ok: true, restartRequired: true }
+    if (profile) {
+      const anterior = app.runtimes.get(profile.channelId)
+      const rundownId = anterior?.view?.rundown.id ?? null
+      if (anterior) {
+        anterior.transport.close()
+        app.runtimes.delete(profile.channelId)
+      }
+      const runtime = await runtimeFor(app, profile.channelId)
+      if (runtime && rundownId) await runtime.load(rundownId)
+    }
+    await syncDistribution(app)
+    return { ok: true, restartRequired: false }
   })
 
   server.post('/api/channels/:id/guests', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode gerenciar convidados.' })
     const body = z.object({ label: z.string().min(1) }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Dê um nome ao convidado.' })
 
@@ -1972,8 +2445,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
-  server.delete('/api/guests/:id', async (request) => {
+  server.delete('/api/guests/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode revogar convidados.' })
     // Revogar é sumir com o caminho: quem tinha a chave passa a publicar no
     // vazio, sem derrubar quem está no ar.
     await app.db.delete(guestKeys).where(eq(guestKeys.id, id))
@@ -1983,6 +2457,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/channels/:id/destinations', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode criar destinos.' })
     const body = z
       .object({ name: z.string().min(1), url: z.string().min(1) })
       .safeParse(request.body)
@@ -2003,6 +2478,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.patch('/api/destinations/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode editar destinos.' })
     const body = z
       .object({
         name: z.string().min(1).optional(),
@@ -2017,8 +2493,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { ok: true }
   })
 
-  server.delete('/api/destinations/:id', async (request) => {
+  server.delete('/api/destinations/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode remover destinos.' })
     await app.db.delete(destinations).where(eq(destinations.id, id))
     await syncDistribution(app)
     return { ok: true }
@@ -2029,6 +2506,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   const step = (kind: 'undo' | 'redo') =>
     async (request: { params: unknown }, reply: { code: (n: number) => { send: (b: unknown) => unknown } }) => {
       const { id } = request.params as { id: string }
+      if (!(await allowed(request as never, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode desfazer esta alteração.' })
       const runtime = await runtimeForRundown(app, id)
       if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
 
@@ -2053,6 +2531,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/rundowns/:id/blocks', async (request, reply) => {
     const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode agrupar itens.' })
     const body = z
       .object({ itemIds: z.array(z.string()).min(2) })
       .safeParse(request.body)
@@ -2098,6 +2577,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/blocks/:blockId/ungroup', async (request, reply) => {
     const { blockId } = request.params as { blockId: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode desfazer blocos.' })
     const [row] = await app.db
       .select({ rundownId: rundownItems.rundownId })
       .from(rundownItems)
@@ -2132,6 +2612,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    const actionPermission = body.data.action === 'stop' ? 'CHANNEL_STOP' : 'PLAYLIST_EDIT'
+    if (!(await allowed(request, actionPermission))) return reply.code(403).send({ error: 'Seu papel não pode executar esta ação.' })
 
     const runtime = await runtimeFor(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Canal sem grade carregada.' })
@@ -2141,7 +2623,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         const armed = runtime.transport.state().preview
         const itemId = body.data.itemId ?? (armed?.kind === 'ITEM' ? armed.id : null)
         if (!itemId) return reply.code(400).send({ error: 'Nada armado para entrar no ar.' })
-        runtime.transport.take(runtime.view.rundown.id, itemId)
+        await runtime.transport.take(runtime.view.rundown.id, itemId)
         break
       }
       case 'cue': {
@@ -2150,17 +2632,22 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
           : body.data.itemId
             ? { kind: 'ITEM', id: body.data.itemId }
             : null
-        runtime.transport.cue(target)
+        await runtime.transport.cue(target)
         break
       }
       case 'park': {
         const first = runtime.view.items[0]
         if (!first) return reply.code(400).send({ error: 'Grade vazia.' })
-        runtime.transport.park(first.item.id)
+        await runtime.transport.park(first.item.id)
         break
       }
       case 'stop':
-        runtime.transport.stop()
+        if (!(await allowed(request, 'CHANNEL_STOP'))) {
+          return reply.code(403).send({ error: 'Seu papel não pode parar o canal.' })
+        }
+        await runtime.transport.stop()
+        await logDecision(app, runtime.view.rundown.id, null, 'CHANNEL_STOPPED', {}, await usernameOf(request))
+        void emitIntegrationEvent(app.db, 'channel.stopped', { rundownId: runtime.view.rundown.id }, runtime.channel.id)
         break
     }
 

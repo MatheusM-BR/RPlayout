@@ -18,7 +18,6 @@ interface Props {
  */
 export function PastasPanel({ onMessage, onChanged }: Props) {
   const [pastas, setPastas] = useState<MediaRoot[]>([])
-  const [nova, setNova] = useState('')
   const [busy, setBusy] = useState(false)
   const [varrendo, setVarrendo] = useState(false)
 
@@ -67,11 +66,10 @@ export function PastasPanel({ onMessage, onChanged }: Props) {
   }
 
   const acrescentar = (): void => {
-    const caminho = nova.trim()
-    if (caminho === '') return
     guard(async () => {
-      const { root, scanning } = await api.addMediaRoot(caminho)
-      setNova('')
+      const picked = await api.pickMediaRoot()
+      if (!picked) return
+      const { root, scanning } = picked
       setVarrendo(scanning)
       onMessage(
         scanning
@@ -137,18 +135,8 @@ export function PastasPanel({ onMessage, onChanged }: Props) {
       </ul>
 
       <div className="pastas-add">
-        <input
-          type="text"
-          placeholder="C:\Caminho\Da\Pasta"
-          value={nova}
-          disabled={busy}
-          onChange={(event) => setNova(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') acrescentar()
-          }}
-        />
-        <button className="btn small" disabled={busy || nova.trim() === ''} onClick={acrescentar}>
-          ACRESCENTAR
+        <button className="btn small" disabled={busy} onClick={acrescentar}>
+          ESCOLHER PASTA…
         </button>
         <button className="btn small" disabled={busy || varrendo} onClick={procurar}>
           {varrendo ? 'PROCURANDO…' : 'PROCURAR'}

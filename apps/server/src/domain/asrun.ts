@@ -5,6 +5,7 @@ import type { Channel } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
 import { asRun } from '../db/schema.js'
 import type { RundownView } from './plan.js'
+import { emitIntegrationEvent } from './integrations.js'
 
 /** Uma linha do as-run como ela sai para a interface e para o relatório. */
 export type AsRunEntry = typeof asRun.$inferSelect
@@ -60,6 +61,7 @@ export class AsRun {
       endedBy: null,
       createdAt: new Date().toISOString(),
     })
+    void emitIntegrationEvent(this.db, 'asrun.started', { itemId, title: entry?.item.title ?? 'item desconhecido', startedAt: new Date().toISOString() }, this.channel.id)
     this.open = { id, itemId, startedMs: Date.now() }
   }
 
@@ -70,7 +72,7 @@ export class AsRun {
     this.open = null
   }
 
-  private async close(open: { id: string; startedMs: number }, reason: string): Promise<void> {
+  private async close(open: { id: string; itemId: string; startedMs: number }, reason: string): Promise<void> {
     // A conta é sobre o relógio de parede, não sobre frames desde a
     // meia-noite: item que atravessa a virada do dia daria duração negativa.
     const aired = msToFrames(Date.now() - open.startedMs, this.channel.rate)
@@ -82,6 +84,7 @@ export class AsRun {
         endedBy: reason,
       })
       .where(eq(asRun.id, open.id))
+    void emitIntegrationEvent(this.db, 'asrun.ended', { itemId: open.itemId, endedAt: new Date().toISOString(), reason, airedFrames: Math.max(0, aired) }, this.channel.id)
   }
 }
 

@@ -155,6 +155,7 @@ pub struct Config {
 
 /// Um item aberto, no seu próprio pipeline.
 struct Item {
+    slot: usize,
     spec: ItemSpec,
     pipeline: gst::Pipeline,
     volume: gst::Element,
@@ -162,6 +163,14 @@ struct Item {
     /// Só o item do preview tem: o programa é medido depois do mix, que é onde
     /// a medição vale. No preview não há mix, então mede-se o próprio item.
     meter_sink: Option<gst_app::AppSink>,
+}
+
+impl Drop for Item {
+    fn drop(&mut self) {
+        // Inclui os retornos antecipados de load/preview por erro de seek.
+        // Um pipeline recusado não pode continuar ocupando arquivo e decoder.
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
 }
 
 /// Quantos quadros uma imagem parada precisa gerar para durar o que a grade
@@ -371,6 +380,8 @@ pub struct Channel {
     config: Config,
     video_channel: String,
     audio_channel: String,
+    video_selector: gst::Element,
+    audio_selector: gst::Element,
     on_air: Option<Item>,
     armed: Option<Item>,
     frames_out: Arc<AtomicU64>,
@@ -739,7 +750,7 @@ impl Channel {
 
         // Entrada do programa: o que estiver publicando neste canal `inter`.
         let program_video = make("intervideosrc")?;
-        program_video.set_property("channel", &video_channel);
+        program_video.set_property("channel", format!("{video_channel}-0"));
         program_video.set_property("timeout", 200_000_000u64);
         let program_video_convert = make("videoconvert")?;
         let program_video_scale = make("videoscale")?;
@@ -748,7 +759,7 @@ impl Channel {
         program_video_caps.set_property("caps", &video_caps);
 
         let program_audio = make("interaudiosrc")?;
-        program_audio.set_property("channel", &audio_channel);
+        program_audio.set_property("channel", format!("{audio_channel}-0"));
         // Latência do áudio, dita e não herdada.
         //
         // O padrão do `interaudiosrc` é 100 ms de latência anunciada e um anel
@@ -765,6 +776,22 @@ impl Channel {
         let program_audio_resample = make("audioresample")?;
         let program_audio_caps = make("capsfilter")?;
         program_audio_caps.set_property("caps", &audio_caps);
+
+        // Dois barramentos permanentes: preparar/descartar um item nunca
+        // reseta a superfície usada pelo item que está no ar.
+        let video_selector = make("input-selector")?;
+        let audio_selector = make("input-selector")?;
+        for selector in [&video_selector, &audio_selector] {
+            selector.set_property_from_str("sync-mode", "clock");
+            selector.set_property("sync-streams", true);
+        }
+        let next_video = make("intervideosrc")?;
+        next_video.set_property("channel", format!("{video_channel}-1"));
+        next_video.set_property("timeout", 200_000_000u64);
+        let next_audio = make("interaudiosrc")?;
+        next_audio.set_property("channel", format!("{audio_channel}-1"));
+        aplicar_latencia_de_audio(&next_audio);
+        pipeline.add_many([&video_selector, &audio_selector, &next_video, &next_audio])?;
 
         let compositor = make_named("compositor", "pgm")?;
         compositor.set_property_from_str("background", "black");
@@ -855,6 +882,7 @@ impl Channel {
         gst::Element::link_many([&silence, &silence_caps, &silence_queue])?;
         gst::Element::link_many([
             &program_video,
+            &video_selector,
             &program_video_convert,
             &program_video_scale,
             &program_video_rate,
@@ -863,11 +891,14 @@ impl Channel {
         ])?;
         gst::Element::link_many([
             &program_audio,
+            &audio_selector,
             &program_audio_convert,
             &program_audio_resample,
             &program_audio_caps,
             &program_audio_queue,
         ])?;
+        next_video.link(&video_selector)?;
+        next_audio.link(&audio_selector)?;
         gst::Element::link_many([
             &compositor,
             &vconv,
@@ -940,6 +971,8 @@ impl Channel {
             config,
             video_channel,
             audio_channel,
+            video_selector,
+            audio_selector,
             on_air: None,
             armed: None,
             frames_out,
@@ -1202,7 +1235,9 @@ impl Channel {
             on_demand: spec.role.as_deref() == Some("mon"),
             // Só o monitor troca de codec de áudio: quem vai para o mundo sai
             // em AAC, que é o que destino de RTMP e de SRT espera receber.
-            opus: spec.role.as_deref() == Some("mon") && som_de_monitor(spec.kind),
+            // Todo fluxo SRT gerenciado pelo MediaMTX precisa de Opus para
+            // WHEP; RTMP continua em AAC para destinos externos.
+            opus: spec.kind == Kind::Srt && som_de_monitor(spec.kind),
         }));
         Ok(())
     }
@@ -1297,7 +1332,7 @@ impl Channel {
         let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
         result.with_context(|| open_failure(&spec, " no preview"))?;
 
-        item.pipeline
+        if !spec.is_live() { item.pipeline
             .seek(
                 1.0,
                 gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
@@ -1306,7 +1341,7 @@ impl Channel {
                 gst::SeekType::Set,
                 self.frame_to_time(spec.trim_out),
             )
-            .context("o preview não aceitou o ponto de entrada")?;
+            .context("o preview não aceitou o ponto de entrada")?; }
 
         item.pipeline.set_state(gst::State::Playing)?;
         item.on_air = true;
@@ -1452,20 +1487,8 @@ impl Channel {
             .map(|item| item.spec.clone())
             .ok_or_else(|| anyhow!("nada no ar para reabrir"))?;
 
-        if let Some(previous) = self.on_air.take() {
-            discard(previous);
-        }
-
-        let mut item = self.build_item(
-            &spec,
-            &self.video_channel.clone(),
-            &self.audio_channel.clone(),
-            &self.video_caps(),
-            false,
-        )?;
-        item.pipeline.set_state(gst::State::Playing)?;
-        item.on_air = true;
-        self.on_air = Some(item);
+        self.load(spec)?;
+        self.take()?;
         Ok(())
     }
 
@@ -1497,19 +1520,15 @@ impl Channel {
             discard(previous);
         }
 
-        // O item já nasce publicando no canal definitivo. Trocar o nome depois
-        // não adianta: o `inter` fixa a superfície ao entrar em PAUSED, e o
-        // sinal ficaria publicando num canal que ninguém escuta.
-        //
-        // Publicar cedo não vaza nada: em PAUSED o item não empurra buffer
-        // nenhum. Quem solta o sinal é o PLAYING, no take.
-        let item = self.build_item(
+        let slot = self.on_air.as_ref().map_or(0, |item| 1 - item.slot);
+        let mut item = self.build_item(
             &spec,
-            &self.video_channel.clone(),
-            &self.audio_channel.clone(),
+            &format!("{}-{slot}", self.video_channel),
+            &format!("{}-{slot}", self.audio_channel),
             &self.video_caps(),
             false,
         )?;
+        item.slot = slot;
 
         item.pipeline
             .set_state(gst::State::Paused)
@@ -1739,6 +1758,7 @@ impl Channel {
         }
 
         Ok(Item {
+            slot: 0,
             spec: spec.clone(),
             pipeline,
             volume,
@@ -1755,11 +1775,15 @@ impl Channel {
             .take()
             .ok_or_else(|| anyhow!("nada armado para entrar no ar"))?;
 
+        item.pipeline.set_state(gst::State::Playing)?;
+        for selector in [&self.video_selector, &self.audio_selector] {
+            let pad = selector.static_pad(&format!("sink_{}", item.slot))
+                .ok_or_else(|| anyhow!("barramento preparado não existe"))?;
+            selector.set_property("active-pad", &pad);
+        }
         if let Some(previous) = self.on_air.take() {
             discard(previous);
         }
-
-        item.pipeline.set_state(gst::State::Playing)?;
         item.on_air = true;
 
         // Item novo no ar, medida nova: a integrada do item anterior não diz

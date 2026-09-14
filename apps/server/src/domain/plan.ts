@@ -120,13 +120,28 @@ export function buildView(
 
   const schedule = resolve({
     rate: channel.rate,
-    items: ordered.map((item) =>
-      toPlanItem(item, item.mediaId ? assets.get(item.mediaId) : undefined, channel.rate),
-    ),
+    items: ordered.map((item) => {
+      const asset = item.mediaId ? assets.get(item.mediaId) : undefined
+      const plan = toPlanItem(item, asset, channel.rate)
+      if (item.id !== onAir?.itemId && item.mediaId && (!asset || asset.probeError)) {
+        return { ...plan, duration: 0, minDuration: 0, anchor: { kind: 'FLOW' as const }, locked: false }
+      }
+      return plan
+    }),
     now,
     onAir,
     plannedStart: rundown.plannedStart,
   })
 
-  return { rundown, channel, items: views, schedule }
+  const unavailable = views.filter((entry) => entry.item.id !== onAir?.itemId &&
+    entry.item.mediaId && (!entry.asset || entry.asset.probeError))
+  const unavailableIds = new Set(unavailable.map((entry) => entry.item.id))
+  return { rundown, channel, items: views, schedule: {
+    ...schedule,
+    items: schedule.items.map((entry) => unavailableIds.has(entry.id) ? { ...entry, state: 'DROPPED' as const } : entry),
+    conflicts: [...schedule.conflicts, ...unavailable.map((entry) => ({
+      kind: 'MEDIA_UNAVAILABLE' as const, itemId: entry.item.id, frames: 0,
+      severity: 'ERROR' as const, message: `Será pulado: ${entry.asset?.probeError ?? 'arquivo removido do acervo'}`,
+    }))],
+  } }
 }

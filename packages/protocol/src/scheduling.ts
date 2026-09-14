@@ -88,6 +88,7 @@ export interface ResolvedItem {
 }
 
 export type ConflictKind =
+  | 'MEDIA_UNAVAILABLE'
   /** Não deu para recuperar tempo suficiente antes de uma âncora. */
   | 'OVERRUN'
   /** Sobrou buraco e não havia com o que preencher. */

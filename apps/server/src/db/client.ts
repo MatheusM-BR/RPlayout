@@ -95,6 +95,54 @@ CREATE TABLE IF NOT EXISTS rundown_items (
 CREATE INDEX IF NOT EXISTS rundown_items_rundown ON rundown_items (rundown_id, sort_order);
 CREATE INDEX IF NOT EXISTS rundown_items_media ON rundown_items (media_id);
 
+CREATE TABLE IF NOT EXISTS playlist_versions (
+  id TEXT PRIMARY KEY,
+  rundown_id TEXT NOT NULL REFERENCES rundowns (id) ON DELETE CASCADE,
+  source_path TEXT,
+  source_name TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  loaded INTEGER NOT NULL,
+  skipped INTEGER NOT NULL,
+  published_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS playlist_versions_rundown ON playlist_versions (rundown_id, published_at);
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions (expires_at);
+CREATE TABLE IF NOT EXISTS health_events (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT,
+  component TEXT NOT NULL,
+  state TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'INFO',
+  message TEXT,
+  occurred_at TEXT NOT NULL,
+  acknowledged_at TEXT
+);
+CREATE INDEX IF NOT EXISTS health_events_time ON health_events (occurred_at);
+CREATE TABLE IF NOT EXISTS integrations (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  events TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS guest_keys (
   id TEXT PRIMARY KEY,
   channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
@@ -112,6 +160,7 @@ CREATE TABLE IF NOT EXISTS destinations (
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
+
 
 CREATE TABLE IF NOT EXISTS graphic_templates (
   id TEXT PRIMARY KEY,
@@ -253,6 +302,10 @@ export function openDatabase(file: string) {
     'ALTER TABLE rundown_items ADD COLUMN fit TEXT',
     'ALTER TABLE rundown_items ADD COLUMN audio_track INTEGER',
     'ALTER TABLE media_assets ADD COLUMN audio_tracks TEXT',
+    'ALTER TABLE operator_decisions ADD COLUMN actor_username TEXT',
+    'ALTER TABLE health_events ADD COLUMN acknowledged_at TEXT',
+    "ALTER TABLE health_events ADD COLUMN severity TEXT NOT NULL DEFAULT 'INFO'",
+    'ALTER TABLE playlist_versions ADD COLUMN scheduled_date TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS media_assets_path ON media_assets (path)',
   ]) {
     try {

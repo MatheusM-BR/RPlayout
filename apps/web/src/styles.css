@@ -53,17 +53,18 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .app {
   display: grid;
-  grid-template-rows: 46px 1fr 52px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100%;
 }
 
 .main {
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr) 340px;
+  grid-template-columns: clamp(280px, 20vw, 320px) minmax(0, 1fr) clamp(280px, 22vw, 360px);
   min-height: 0;
 }
 
 .pane {
+  min-width: 0;
   border-right: 1px solid var(--border);
   min-height: 0;
   display: flex;
@@ -75,7 +76,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .pane-title {
   font-family: var(--mono);
-  font-size: 9.5px;
+  font-size: 11px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--dim);
@@ -90,10 +91,12 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* ---------- barra superior ---------- */
 
 .topbar {
+  min-height: 56px;
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 0 14px;
+  padding: 8px 14px;
   background: var(--sunk);
   border-bottom: 1px solid var(--border);
 }
@@ -222,6 +225,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .state { font-size: 9px; letter-spacing: 0.12em; font-weight: 600; }
 .state.air { color: var(--onair); }
 .state.nxt { color: var(--next); }
+.state.ready { color: #50df8b; }
+.state.pvw { color: #87bfff; }
 .state.done { color: var(--dim); }
 
 .chip {
@@ -278,7 +283,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 /* Caixa de marcar com rótulo à direita. */
 /* Abas de canal: todas visíveis, sem lista suspensa. */
-.canais { display: flex; align-items: center; gap: 4px; }
+.channel-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; }
 .aba {
   background: var(--sunk);
   border: 1px solid var(--border-soft);
@@ -457,6 +462,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 /* ---------- monitores ---------- */
 
 .monitor { padding: 10px 12px; border-bottom: 1px solid var(--border-soft); }
+.monitor + .monitor { border-top: 1px solid var(--border); }
 .monitor-head {
   display: flex;
   align-items: center;
@@ -472,6 +478,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .monitor-head .tag.pgm { background: rgba(255, 59, 59, 0.16); color: var(--onair); }
 .monitor-head .tag.pvw { background: rgba(27, 58, 143, 0.35); color: var(--accent); }
 .screen {
+  position: relative;
   aspect-ratio: 16 / 9;
   background:
     repeating-linear-gradient(45deg, #0c111b 0 8px, #0a0e17 8px 16px);
@@ -561,10 +568,12 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 /* ---------- transporte ---------- */
 
 .transport {
+  min-height: 60px;
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 12px;
+  padding: 8px 12px;
   background: var(--sunk);
   border-top: 1px solid var(--border);
 }
@@ -941,7 +950,48 @@ input.bad { border-color: var(--onair); }
   color: var(--dim);
   padding: 9px 10px 4px;
   border-bottom: 1px solid var(--border-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
+.screen { overflow: visible; margin-bottom: 12px; }
+
+.login-screen { min-height: 100vh; display: grid; place-items: center; background: var(--bg, #080d18); }
+.login-card { width: min(360px, calc(100vw - 32px)); display: grid; gap: 14px; padding: 28px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 24px 80px rgba(0,0,0,.45); }
+.login-card h1 { margin: 0; }
+.login-card p { margin: 0 0 8px; color: var(--dim); }
+.login-card label { display: grid; gap: 6px; color: var(--muted); }
+.login-card input { width: 100%; box-sizing: border-box; }
+.health-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 180px;
+  padding: 4px;
+  /* Fundo opaco: o menu aparece sobre vídeo e sobre a tabela, e transparência
+     torna texto e ações impossíveis de ler durante uma troca de quadro. */
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  opacity: 1;
+}
+.context-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.context-menu button:hover { background: var(--accent); color: var(--bg); }
+.context-menu button:disabled { opacity: .45; cursor: not-allowed; }
+.aired-filters { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 6px; }
+.aired-filters input, .aired-filters select { min-width: 0; }
+.rundown-follow { display: flex; justify-content: flex-end; padding: 4px 0; }
+.rundown-scroll-lock { min-height: 100%; }
 
 .nova-pasta { display: grid; grid-template-columns: 1fr auto; gap: 6px; padding: 7px 10px; }
 .nova-pasta .erro { grid-column: 1 / -1; color: var(--onair); font-size: 11px; }
@@ -1037,7 +1087,7 @@ input.bad { border-color: var(--onair); }
 
 .file {
   display: grid;
-  grid-template-columns: 64px 1fr auto;
+  grid-template-columns: 64px minmax(0, 1fr);
   gap: 9px;
   align-items: center;
   /* A caixa de categoria abre numa segunda linha, ocupando a largura toda. */
@@ -1050,6 +1100,7 @@ input.bad { border-color: var(--onair); }
 .file.open { background: rgba(27, 58, 143, 0.32); box-shadow: inset 3px 0 0 var(--accent); }
 .file img { display: block; border-radius: 2px; border: 1px solid var(--border-soft); }
 .file .info { min-width: 0; }
+.file .acoes { grid-column: 2; opacity: 1; }
 .file .name {
   font-size: 12px;
   line-height: 1.3;
@@ -1573,3 +1624,177 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
 /* O que não achou fica à vista, apagado: sumir esconderia o que precisa de
    conserto antes do ar. */
 .entradas li.faltando .t { color: var(--dim); text-decoration: line-through; }
+
+/* A grade mantém título e ferramentas legíveis mesmo com nomes extensos. */
+.main > section > .pane-title { flex-wrap: wrap; gap: 10px; line-height: 1.5; }
+.main > section > .pane-title .count { white-space: nowrap; }
+.acoes-grade { flex-wrap: wrap; }
+.channel-tabs .aba { flex-shrink: 0; white-space: nowrap; }
+.brand, .tally, .bigclock { flex-shrink: 0; }
+.pane-title { min-height: 44px; }
+.explorador-rodape { grid-template-columns: minmax(0, 1fr); }
+.explorador-rodape .btn { min-height: 34px; }
+.search-summary { padding: 4px 12px 10px; color: var(--muted); font-size: 12px; }
+.library-empty { padding: 24px 16px; line-height: 1.6; }
+.library-empty strong { display: block; font-size: 14px; color: var(--text); }
+.library-empty p { margin: 8px 0 0; }
+.file:focus-within .acoes, .file:focus-within .add { opacity: 1; }
+.file:focus-visible { outline-offset: -2px; background: rgba(91, 155, 255, 0.12); }
+.file .name { font-size: 13px; }
+.file .sub { font-size: 11px; }
+.file .add { opacity: 1; }
+.transport-error { flex: 1 0 100%; order: 1; color: var(--onair); line-height: 1.5; overflow-wrap: anywhere; }
+.monitor-audio { position: absolute; z-index: 3; top: 8px; right: 8px; display: flex; align-items: center; gap: 6px; padding: 4px; background: rgba(0, 0, 0, 0.8); border-radius: 3px; }
+.monitor-audio input { width: 70px; accent-color: var(--accent); }
+.monitor-audio .monitor-seek { width: 150px; }
+.monitor-audio .monitor-volume { width: 0; opacity: 0; transition: width .16s ease, opacity .16s ease; }
+.monitor-audio:hover .monitor-volume, .monitor-audio:focus-within .monitor-volume { width: 82px; opacity: 1; }
+.meter-details-toggle {
+  margin-top: 5px;
+  padding: 3px 7px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  font: 10px var(--mono);
+  cursor: pointer;
+}
+.meter-details-toggle:hover { color: var(--text); border-color: var(--accent); }
+.monitor-reason { position: absolute; top: 52px; left: 8px; right: 8px; z-index: 3; color: var(--next); font-size: 11px; background: var(--sunk); padding: 5px; }
+.main > .pane:last-child { overflow-y: auto; }
+.main > .pane:last-child > .monitor { flex-shrink: 0; }
+
+@media (max-width: 1200px) {
+  .topbar { gap: 10px; }
+  .commitment .who { max-width: 150px; }
+  .transport .meta { flex: 1 1 240px; }
+  .transport .grupo + .grupo { margin-left: 4px; padding-left: 8px; }
+}
+.tela .playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--onair);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 0 8px rgba(255,95,95,.8);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Em telas menores, cada área mantém sua própria rolagem. */
+@media (max-width: 1000px) {
+  body { overflow: auto; }
+  .app { height: auto; min-height: 100%; grid-template-rows: auto 1fr auto; }
+  .main { grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr); }
+  .main > .pane { height: 65vh; min-height: 360px; }
+  .main > .pane:last-child { grid-column: 1 / -1; height: auto; min-height: 0; border-left: 0; border-top: 1px solid var(--border); }
+  .main > .pane:last-child .screen { max-height: 280px; }
+  .transport { position: sticky; bottom: 0; z-index: 5; }
+}
+
+@media (max-width: 620px) {
+  .main { grid-template-columns: minmax(0, 1fr); }
+  .main > .pane { border-right: 0; border-bottom: 1px solid var(--border); }
+  .main > .pane:first-child { height: 420px; }
+  .topbar .commitment { order: 1; width: 100%; }
+  .topbar .commitment .cd { margin-left: auto; }
+  .topbar .bigclock { font-size: 17px; }
+  .topbar .spacer { display: none; }
+  .transport .grupo + .grupo { margin-left: 0; padding-left: 0; border-left: 0; }
+  .transport .meta { min-width: 0; font-size: 10px; }
+  .transport .btn { min-width: 60px; height: 36px; }
+  .transport .grupo { flex-wrap: wrap; }
+  .toast { max-width: calc(100vw - 24px); white-space: normal; }
+}
+
+/* Monitores mostram somente o controle de volume ao passar sobre o ícone. */
+.monitor-audio { gap: 0; }
+.monitor-audio .monitor-volume { width: 0; opacity: 0; pointer-events: none; }
+.monitor-audio:hover .monitor-volume, .monitor-audio:focus-within .monitor-volume { width: 82px; opacity: 1; pointer-events: auto; }
+/* O marcador de corte fica na régua inferior, nunca sobre o quadro. */
+.tela .playhead { display: none; }
+.audit-dialog { width: min(1180px, calc(100vw - 32px)); max-height: 92vh; }
+.audit-dialog .body { min-width: 0; overflow: hidden; }
+.audit-dialog .asrun { table-layout: fixed; }
+.audit-dialog .asrun th, .audit-dialog .asrun td { overflow-wrap: anywhere; word-break: break-word; }
+.audit-dialog .asrun th:nth-child(1) { width: 16%; }
+.audit-dialog .asrun th:nth-child(2) { width: 14%; }
+.audit-dialog .asrun th:nth-child(3) { width: 14%; }
+.audit-dialog .asrun th:nth-child(4) { width: 14%; }
+.audit-dialog .asrun th:nth-child(5) { width: 42%; }
+
+/* Grade fixa: bloqueia roda, toque e seleção de rolagem enquanto o acompanhamento está ativo. */
+.rundown-scroll-lock.following { overflow: hidden; }
+
+
+/* Sistema visual dos diálogos: cada janela tem a mesma largura, hierarquia e
+   área de trabalho, como os control panels profissionais. */
+.backdrop { padding: clamp(12px, 3vw, 32px); overflow: auto; }
+.dialog { width: min(720px, calc(100vw - 24px)); max-height: min(900px, calc(100vh - 24px)); overflow-x: hidden; }
+.dialog.wide, .dialog.audit-dialog { width: min(1180px, calc(100vw - 24px)); }
+.dialog header { position: sticky; top: 0; z-index: 2; }
+.dialog footer { position: sticky; bottom: 0; z-index: 2; flex-wrap: wrap; }
+.dialog .body { min-width: 0; overflow-x: hidden; }
+.dialog table { max-width: 100%; }
+.conflict { min-height: 64px; padding: 12px 14px; font-size: 12px; line-height: 1.45; cursor: pointer; }
+.conflict:hover { background: rgba(91,155,255,.08); }
+@media (max-width: 720px) {
+  .dialog, .dialog.wide, .dialog.audit-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  .dialog .body { padding: 12px; }
+  .dialog footer { padding: 10px 12px; }
+}
+
+/* Área de conflitos não pode ser comprimida pelos monitores acima. */
+.conflicts-body { flex: 0 0 220px; min-height: 220px; overflow-y: auto; }
+/* Recorte opera vídeo e régua juntos; largura cabe em uma tela 1366px. */
+.trim-dialog { width: min(820px, calc(100vw - 24px)); }
+.trim-dialog .body { padding: 12px 14px; gap: 10px; }
+.users-dialog { width: min(760px, calc(100vw - 24px)); }
+.users-dialog .body { min-height: 280px; }
+.week-days { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.playlist-workspace { min-height: 100vh; background: var(--bg); }
+.playlist-workspace > .backdrop { position: static; min-height: 100vh; padding: 18px; background: transparent; }
+.playlist-workspace > .backdrop > .dialog { width: min(1180px, 100%); max-height: none; }
+.docs-dialog { width: min(1080px, calc(100vw - 24px)); }
+.docs-toolbar { display: flex; align-items: center; gap: 8px; }
+.docs-toolbar input { flex: 1; }
+.docs-index { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+.docs-index a { color: var(--accent); font-family: var(--mono); font-size: 11px; text-decoration: none; padding: 4px 6px; border: 1px solid var(--border-soft); }
+.docs-index a:hover { border-color: var(--accent); }
+.docs-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; }
+.docs-content section { border-bottom: 1px solid var(--border-soft); padding: 8px 0; scroll-margin-top: 60px; }
+.docs-content h3 { margin: 0 0 5px; color: var(--text); font-size: 14px; }
+.docs-content p { margin: 0; color: var(--dim); line-height: 1.5; font-size: 12px; }
+@media (max-width: 760px) { .docs-content { grid-template-columns: 1fr; } }
+
+.monitor-timeline { height: 4px; margin: 6px 12px 2px; background: var(--sunk); border: 1px solid var(--border-soft); }
+.monitor-timeline i { display: block; height: 100%; background: var(--onair); transition: width .25s linear; }
+
+.settings-section-title { font: 600 11px var(--mono); letter-spacing: .16em; color: var(--accent); border-bottom: 1px solid var(--border-soft); padding-bottom: 7px; }
+
+.preview-timeline i { width: 28%; animation: preview-progress 2.4s ease-in-out infinite; }
+@keyframes preview-progress { 0% { transform: translateX(0); } 50% { transform: translateX(250%); } 100% { transform: translateX(0); } }
+
+.playlist-entry-actions { display: inline-flex; gap: 4px; margin-left: auto; }
+.entradas li { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+
+
+.playlist-clock { color: var(--accent); min-width: 62px; }
+.playlist-import { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+
+
+.playlist-date-filter { display:flex; align-items:center; gap:8px; margin:8px 0; }
+.playlist-date-filter label { font: 10px var(--mono); color: var(--dim); text-transform:uppercase; letter-spacing:.1em; }
+
+
+/* O elemento que tem overflow é o pane-body; bloquear somente o wrapper não
+   impede a barra interna de continuar rolando. */
+.pane-body.following { overflow: hidden !important; }
+.monitor-seekbar { padding: 0 12px 3px; }
+.monitor-seekbar input { width: 100%; accent-color: var(--accent); }
+.monitor-seekbar input:disabled { opacity: .35; }
+.screen > .monitor-seekbar { grid-area: auto; position: absolute; left: 0; right: 0; bottom: -14px; z-index: 4; padding: 0 12px; }
+.screen > .monitor-seekbar input { accent-color: var(--onair); cursor: ew-resize; }
+.monitor-seekbar { display: flex; align-items: center; gap: 4px; }
+.monitor-seekbar input { flex: 1; min-width: 0; }
+.frame-step { min-width: 34px; padding-inline: 4px; font-size: 10px; }

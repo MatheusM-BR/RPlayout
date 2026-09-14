@@ -31,6 +31,10 @@ import { Monitors } from './components/Monitors.js'
 import { Rundown } from './components/Rundown.js'
 import { TrimDialog } from './components/TrimDialog.js'
 import { PlaylistsDialog } from './components/PlaylistsDialog.js'
+import { Login } from './components/Login.js'
+import { AuditPanel } from './components/AuditPanel.js'
+import { UsersPanel } from './components/UsersPanel.js'
+import { DocumentationPanel } from './components/DocumentationPanel.js'
 
 type Dialog =
   | { kind: 'trim'; view: ItemView }
@@ -45,14 +49,47 @@ type Dialog =
   | { kind: 'autofill' }
   | { kind: 'channel' }
   | { kind: 'settings' }
+  | { kind: 'users' }
+  | { kind: 'docs' }
+  | { kind: 'audit' }
   | null
 
 export function App() {
+  // A interface de playout publicada é um app operacional. Impede que o
+  // navegador roube F1 para a ajuda e que o menu nativo apareça sobre a tela;
+  // os menus de contexto do próprio Playout chamam preventDefault e continuam
+  // disponíveis nos itens da grade e do acervo.
+  useEffect(() => {
+    const bloquearAjuda = (event: KeyboardEvent): void => {
+      if (event.key === 'F1') {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+    }
+    const bloquearMenuNativo = (event: MouseEvent): void => {
+      event.preventDefault()
+    }
+    window.addEventListener('keydown', bloquearAjuda, true)
+    window.addEventListener('contextmenu', bloquearMenuNativo)
+    return () => {
+      window.removeEventListener('keydown', bloquearAjuda, true)
+      window.removeEventListener('contextmenu', bloquearMenuNativo)
+    }
+  }, [])
+
   const [view, setView] = useState<RundownView | null>(null)
   const [live, setLive] = useState<Live | null>(null)
   const [folders, setFolders] = useState<LibraryFolder[]>([])
   const [categorias, setCategorias] = useState<Categoria[]>([])
   const [dialog, setDialog] = useState<Dialog>(null)
+  const abriuPlaylistWorkspace = useRef(false)
+  useEffect(() => {
+    if (!view || abriuPlaylistWorkspace.current) return
+    if (new URLSearchParams(window.location.search).get('workspace') === 'playlist') {
+      abriuPlaylistWorkspace.current = true
+      setDialog({ kind: 'playlists' })
+    }
+  }, [view])
   /** Uma lista .m3u está sendo arrastada por cima da janela. */
   const [listaSobrevoando, setListaSobrevoando] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -74,6 +111,11 @@ export function App() {
   const [newChannel, setNewChannel] = useState<string | null>(null)
   /** Enquanto a primeira consulta não voltou, não dá para dizer que não há canal. */
   const [loading, setLoading] = useState(true)
+  const [initializationFailed, setInitializationFailed] = useState(false)
+  const [sessionRole, setSessionRole] = useState<string | null>(null)
+  const [authRequired, setAuthRequired] = useState(false)
+  const [authenticated, setAuthenticated] = useState(true)
+  const [authError, setAuthError] = useState<string | null>(null)
   /** Tudo que deu errado nesta sessão, venha de onde vier. */
   const [problemas, setProblemas] = useState<Problema[]>([])
   const proximoProblema = useRef(1)
@@ -81,6 +123,7 @@ export function App() {
   const vistos = useRef(new Set<string>())
   /** Linhas marcadas para agrupar. Marcar não é armar: o PGM não muda. */
   const [marked, setMarked] = useState<Set<string>>(new Set())
+  const [followOnAir, setFollowOnAir] = useState(false)
   const lastClicked = useRef<string | null>(null)
   /**
    * Canal que a tela está mostrando.
@@ -164,7 +207,10 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [state] = await Promise.all([api.state(), refreshLibrary()])
+        const [state, session] = await Promise.all([api.state(), api.session(), refreshLibrary()])
+        setSessionRole(session.label)
+        setAuthRequired(session.required)
+        setAuthenticated(session.authenticated)
         setChannels(state.channels)
         // Uma grade por canal: a primeira de cada um é a que a troca abre.
         const first: Record<string, string> = {}
@@ -174,12 +220,20 @@ export function App() {
         const start = state.rundowns[0]
         if (start) absorb(await api.rundown(start.id))
       } catch (failure) {
+        setInitializationFailed(true)
         setError(failure instanceof Error ? failure.message : 'Servidor fora do ar.')
       } finally {
         setLoading(false)
       }
     })()
   }, [absorb, refreshLibrary])
+
+  const login = useCallback(async (username: string, password: string) => {
+    const response = await fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) })
+    const body = await response.json() as { error?: string; label?: string }
+    if (!response.ok) { setAuthError(body.error ?? 'Não foi possível entrar.'); return }
+    setAuthError(null); setAuthenticated(true); setSessionRole(body.label ?? 'Administrador')
+  }, [])
 
   /**
    * Dispara a varredura e acompanha até acabar.
@@ -196,17 +250,29 @@ export function App() {
       return
     }
 
-    const poll = window.setInterval(() => {
-      void refreshLibrary().then((status) => {
-        if (status.running) return
-        window.clearInterval(poll)
-        say(
-          status.error ??
-            `Acervo lido: ${status.added} novos, ${status.updated} atualizados, ${status.failed} sem abrir.`,
-        )
-      })
-    }, 1000)
-  }, [refreshLibrary, say])
+  }, [])
+
+  // Acompanha também varreduras iniciadas pelo servidor ou por outro operador.
+  useEffect(() => {
+    let cancelled = false
+    let timer: number | undefined
+    let wasRunning = false
+    const poll = async (): Promise<void> => {
+      try {
+        const status = await refreshLibrary()
+        if (cancelled) return
+        if (wasRunning && !status.running) say(status.error ??
+          `Acervo lido: ${status.added} novos, ${status.updated} atualizados, ${status.failed} sem abrir.`)
+        wasRunning = status.running
+      } catch (failure) {
+        if (!cancelled) anotar('SERVIDOR', failure instanceof Error ? failure.message : 'Falha ao atualizar acervo.')
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void poll(), wasRunning ? 1500 : 10_000)
+      }
+    }
+    timer = window.setTimeout(() => void poll(), 1500)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [refreshLibrary, say, anotar])
 
   // O painel de distribuição tem endereço próprio: dá para deixar aberto numa
   // segunda tela ou mandar o link para quem cuida da entrega.
@@ -246,11 +312,21 @@ export function App() {
   }, [assets, anotar])
 
   useEffect(() => {
-    const socket = new WebSocket(`ws://${window.location.host}/ws`)
+    let socket: WebSocket
+    let closed = false
+    let retry: number | undefined
+    const connect = (): void => {
+    socket = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`)
     socket.addEventListener('message', (event: MessageEvent<string>) => {
       const payload = JSON.parse(event.data) as
         | { type: 'view'; channelId: string; view: RundownView | null }
         | ({ type: 'live'; channelId: string } & Live)
+        | { type: 'library' }
+
+      if (payload.type === 'library') {
+        void refreshLibrary().catch((failure: Error) => anotar('SERVIDOR', failure.message))
+        return
+      }
 
       // O servidor transmite todos os canais; a tela mostra um. Sem este
       // filtro, dois canais no ar fazem a interface piscar entre os dois.
@@ -268,8 +344,13 @@ export function App() {
         })
       }
     })
-    return () => socket.close()
-  }, [])
+    socket.addEventListener('close', () => {
+      if (!closed) retry = window.setTimeout(connect, 2000)
+    })
+    }
+    connect()
+    return () => { closed = true; window.clearTimeout(retry); socket.close() }
+  }, [refreshLibrary, anotar])
 
   channelRef.current = view?.channel.id ?? null
 
@@ -372,12 +453,16 @@ export function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       const element = event.target as HTMLElement | null
-      const typing = element?.tagName === 'INPUT' || element?.tagName === 'SELECT'
+      const typing = element?.matches('input, select, textarea') || element?.isContentEditable
+
+      // Preserve edição nativa e comandos dos controles focados.
+      if (event.defaultPrevented || event.isComposing) return
 
       if (event.key === 'Escape') {
         setDialog(null)
         return
       }
+      if (typing || dialog) return
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault()
         void undo(event.shiftKey ? 'redo' : 'undo')
@@ -388,7 +473,8 @@ export function App() {
         void undo('redo')
         return
       }
-      if (typing || dialog) return
+      if (element?.closest('button, a, [role="button"]')) return
+      if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return
 
       if (event.code === 'Space') {
         event.preventDefault()
@@ -400,7 +486,9 @@ export function App() {
         event.preventDefault()
         removerItem(selectedId)
       }
-      if (event.key === 'i' && selected?.asset) setDialog({ kind: 'trim', view: selected })
+      if (event.key === 'i' && selected?.asset) {
+        setDialog({ kind: isStill(selected.asset) ? 'still' : 'trim', view: selected })
+      }
       if (event.key === 'n' && selected?.asset) setDialog({ kind: 'audio', view: selected })
 
       // Setas andam pela grade armando linha a linha, sem tirar a mão do teclado.
@@ -666,7 +754,7 @@ export function App() {
   // Instalação nova: banco sem canal nenhum. Antes disto a tela ficava em
   // "carregando" para sempre, que é a pior primeira impressão possível --
   // parece defeito e é só falta de canal.
-  if (!view && channels.length === 0 && !loading) {
+  if (!view && channels.length === 0 && !loading && !initializationFailed) {
     return (
       <div className="app">
         <div className="firstrun">
@@ -701,14 +789,31 @@ export function App() {
     )
   }
 
+  if (authRequired && !authenticated) return <Login onLogin={login} error={authError} />
+
   if (!view || !live) {
     return (
       <div className="app">
-        <div className="empty" style={{ padding: 32 }}>
-          {error ?? 'Carregando a grade…'}
+        <div className="firstrun" role={error ? 'alert' : 'status'}>
+          <h1>RPlayout<span>.</span></h1>
+          <p>{error ? 'Não foi possível carregar o Playout.' : 'Carregando a grade…'}</p>
+          {error && <>
+            <p className="hint bad">{error}</p>
+            <button className="btn" onClick={() => window.location.reload()}>Tentar novamente</button>
+          </>}
         </div>
       </div>
     )
+  }
+
+  const playlistWorkspace = new URLSearchParams(window.location.search).get('workspace') === 'playlist'
+  if (playlistWorkspace) {
+    return <div className="playlist-workspace"><PlaylistsDialog
+      rundownId={view.rundown.id}
+      onCancel={() => { window.location.href = window.location.pathname }}
+      onLoaded={(snapshot, message) => { absorb(snapshot); say(message) }}
+      onMessage={say}
+    /></div>
   }
 
   const rate = view.channel.rate
@@ -770,13 +875,14 @@ export function App() {
           {onAirId ? 'NO AR' : 'FORA DO AR'}
         </div>
         {live.transport.standby && <div className="standby">PREPARADO</div>}
-        <div className="canais">
+        <nav className="channel-tabs" aria-label="Canais">
           {/* Abas em vez de lista suspensa: com dois ou três canais, ver todos
               de uma vez é a diferença entre olhar e procurar. */}
           {channels.map((entrada) => (
             <button
               key={entrada.id}
               className={`aba${entrada.id === view.channel.id ? ' on' : ''}`}
+              aria-current={entrada.id === view.channel.id ? 'page' : undefined}
               onClick={() => {
                 const rundownId = rundownOf[entrada.id]
                 if (!rundownId || entrada.id === view.channel.id) return
@@ -789,11 +895,21 @@ export function App() {
           <button
             className="aba engrenagem"
             title="Configurações e canais"
+            aria-label="Configurações e canais"
             onClick={() => setDialog({ kind: 'settings' })}
           >
             ⚙
           </button>
-        </div>
+          <button className="aba acesso" title="Usuários, permissões e auditoria" onClick={() => setDialog({ kind: 'users' })}>
+            USUÁRIOS
+          </button>
+          <button className="aba" title="Organização e publicação de playlists 24h" onClick={() => setDialog({ kind: 'playlists' })}>
+            PLAYLISTS
+          </button>
+          <button className="aba" title="Documentação e procedimentos do RPlayout" onClick={() => setDialog({ kind: 'docs' })}>
+            AJUDA
+          </button>
+        </nav>
 
         {commitment && (
           <div className={`commitment${near ? ' near' : ''}`}>
@@ -817,6 +933,13 @@ export function App() {
         )}
 
         <div className="spacer" />
+        <div className="session-role" title="papel da sessão">{sessionRole ?? 'Operador'}</div>
+        {authRequired && <button className="btn small" title="Encerrar sessão" onClick={() => {
+          void fetch('/api/auth/logout', { method: 'POST' }).finally(() => {
+            setAuthenticated(false)
+            setSessionRole(null)
+          })
+        }}>SAIR</button>}
         <div className="bigclock">{clock(live.now, rate)}</div>
       </header>
 
@@ -842,15 +965,22 @@ export function App() {
             onScan={(measure) => void startScan(measure)}
             // Acrescentar pasta mora aqui, e não só na engrenagem: é olhando a
             // lista de arquivos que o operador percebe que falta uma pasta.
-            onAddRoot={async (path) => {
+            onPickRoot={async () => {
               try {
-                await api.addMediaRoot(path)
+                const picked = await api.pickMediaRoot()
+                if (!picked) return null
                 await refreshLibrary()
                 void startScan(false)
                 return null
               } catch (falha) {
                 return falha instanceof Error ? falha.message : 'Não consegui ler essa pasta.'
               }
+            }}
+            onRemoveRoot={(rootId) => {
+              if (!window.confirm('Remover esta pasta do acervo? Os vídeos já usados nas grades continuam disponíveis.')) return
+              void api.removeMediaRoot(rootId)
+                .then(() => refreshLibrary())
+                .catch((failure) => setError(failure instanceof Error ? failure.message : 'Não consegui remover a pasta.'))
             }}
             onOpenInsert={() => setDialog({ kind: 'add' })}
           />
@@ -889,11 +1019,18 @@ export function App() {
                 onClick={() => setDialog({ kind: 'asrun' })}
                 title="O que realmente foi ao ar"
               >
-                AS-RUN
+                AIRED
+              </button>
+              <button
+                className={`btn small${followOnAir ? ' on' : ''}`}
+                onClick={() => setFollowOnAir((value) => !value)}
+                title={followOnAir ? 'Acompanhamento fixo ativo; clique para liberar a rolagem' : 'Fixar a grade no item que está no PGM'}
+              >
+                {followOnAir ? 'PGM FIXADO' : 'FIXAR PGM'}
               </button>
             </div>
           </div>
-          <div className="pane-body">
+          <div className={`pane-body${followOnAir ? ' following' : ''}`}>
             <Rundown
               items={view.items}
               schedule={schedule}
@@ -901,6 +1038,10 @@ export function App() {
               channel={view.channel}
               selectedId={selectedId}
               onAirId={onAirId}
+              preparedId={live?.transport.preparedItemId ?? null}
+              preparingId={live?.transport.preparingItemId ?? null}
+              followOnAir={followOnAir}
+              onToggleFollowOnAir={() => setFollowOnAir((value) => !value)}
               remainingOnAir={remainingOnAir}
               errorIds={errorIds}
               marked={marked}
@@ -938,7 +1079,7 @@ export function App() {
             conflitos
             <span className="count">{view.schedule.conflicts.length}</span>
           </div>
-          <div className="pane-body">
+          <div className="pane-body conflicts-body">
             {view.schedule.conflicts.length === 0 ? (
               <div className="empty">A grade fecha. Nenhuma âncora em risco.</div>
             ) : (
@@ -1005,7 +1146,7 @@ export function App() {
         <button
           className="btn small"
           disabled={!selected?.asset}
-          onClick={() => selected && setDialog({ kind: 'trim', view: selected })}
+          onClick={() => selected?.asset && setDialog({ kind: isStill(selected.asset) ? 'still' : 'trim', view: selected })}
           title="Marcação de entrada e saída (tecla I)"
         >
           in/out<kbd>i</kbd>
@@ -1021,13 +1162,6 @@ export function App() {
         </div>
 
         <div className="grupo grade">
-        <button
-          className="btn small"
-          onClick={() => setDialog({ kind: 'playlists' })}
-          title="Listas .m3u da pasta do acervo — a do dia vem aberta"
-        >
-          listas
-        </button>
         <button className="btn small" onClick={() => setDialog({ kind: 'autofill' })}>
           montar
         </button>
@@ -1037,8 +1171,9 @@ export function App() {
             window.location.hash = 'distribuicao'
             setDialog({ kind: 'distribution' })
           }}
+          title="Saídas e processos por canal, uso e estado"
         >
-          saídas
+          SAÍDAS E PROCESSOS
         </button>
         </div>
         {marked.size >= 2 && (
@@ -1048,7 +1183,7 @@ export function App() {
         )}
         <div className="spacer" />
         {error && (
-          <div className="meta" style={{ color: 'var(--onair)' }}>
+          <div className="transport-error" role="alert">
             {error}
           </div>
         )}
@@ -1059,16 +1194,6 @@ export function App() {
             setProblemas([])
           }}
         />
-        <div className="meta" title={previewCard?.title ?? ''}>
-          {previewCard ? (
-            <>
-              {previewCard.fromExplorer ? 'no preview: ' : 'preparado: '}
-              <b>{previewCard.title}</b>
-            </>
-          ) : (
-            'nada preparado — clique numa linha ou num arquivo'
-          )}
-        </div>
       </footer>
 
       {dialog?.kind === 'playlists' && (
@@ -1173,6 +1298,7 @@ export function App() {
           }}
           onOpenDistribution={() => setDialog({ kind: 'distribution' })}
           onOpenGraphics={() => setDialog({ kind: 'graphics' })}
+          onOpenAudit={() => setDialog({ kind: 'audit' })}
         />
       )}
       {dialog?.kind === 'channel' && (
@@ -1206,6 +1332,9 @@ export function App() {
       {dialog?.kind === 'asrun' && (
         <AsRunPanel channelId={view.channel.id} rate={rate} onClose={() => setDialog(null)} />
       )}
+      {dialog?.kind === 'audit' && <AuditPanel onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'users' && <div className="backdrop" onClick={() => setDialog(null)}><div className="dialog users-dialog" onClick={(event) => event.stopPropagation()}><header><h2>Gerenciador de usuários</h2><div className="sub">acesso, papéis e permissões da operação</div></header><div className="body"><UsersPanel onMessage={say} /></div><footer><button className="btn" onClick={() => setDialog(null)}>fechar</button></footer></div></div>}
+      {dialog?.kind === 'docs' && <DocumentationPanel onClose={() => setDialog(null)} />}
       {dialog?.kind === 'graphics' && (
         <GraphicsPanel
           channelId={view.channel.id}
@@ -1226,7 +1355,7 @@ export function App() {
         />
       )}
 
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   )
 }

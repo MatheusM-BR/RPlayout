@@ -104,6 +104,56 @@ export const rundowns = sqliteTable('rundowns', {
   updatedAt: text('updated_at').notNull(),
 })
 
+/** Versões publicadas de uma playlist, para auditoria e rollback operacional. */
+export const playlistVersions = sqliteTable('playlist_versions', {
+  id: text('id').primaryKey(),
+  rundownId: text('rundown_id').notNull().references(() => rundowns.id, { onDelete: 'cascade' }),
+  sourcePath: text('source_path'),
+  sourceName: text('source_name').notNull(),
+  mode: text('mode').$type<'APPEND' | 'PUBLISH_NEXT'>().notNull(),
+  loaded: integer('loaded').notNull(),
+  skipped: integer('skipped').notNull(),
+  scheduledDate: text('scheduled_date'),
+  publishedAt: text('published_at').notNull(),
+})
+
+export const users = sqliteTable('users', {
+  id: text('id').primaryKey(),
+  username: text('username').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  role: text('role').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+})
+
+export const sessions = sqliteTable('sessions', {
+  token: text('token').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  expiresAt: text('expires_at').notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
+export const healthEvents = sqliteTable('health_events', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id'),
+  component: text('component').notNull(),
+  state: text('state').notNull(),
+  severity: text('severity').$type<'INFO' | 'WARN' | 'CRITICAL'>().notNull().default('INFO'),
+  message: text('message'),
+  occurredAt: text('occurred_at').notNull(),
+  acknowledgedAt: text('acknowledged_at'),
+})
+
+export const integrations = sqliteTable('integrations', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id'),
+  name: text('name').notNull(),
+  url: text('url').notNull(),
+  events: text('events', { mode: 'json' }).$type<string[]>().notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+  createdAt: text('created_at').notNull(),
+})
+
 export const rundownItems = sqliteTable('rundown_items', {
   id: text('id').primaryKey(),
   rundownId: text('rundown_id').notNull(),
@@ -228,6 +278,7 @@ export const operatorDecisions = sqliteTable('operator_decisions', {
   itemId: text('item_id'),
   kind: text('kind').notNull(),
   payload: text('payload', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+  actorUsername: text('actor_username'),
   createdAt: text('created_at').notNull(),
 })
 

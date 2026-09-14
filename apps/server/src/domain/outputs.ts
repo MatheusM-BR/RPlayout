@@ -127,7 +127,9 @@ export async function ensureManagedOutputs(
       rateDen: null,
       scan: null,
       bitrateKbps: null,
-      enabled: true,
+      // Saídas gerenciadas começam desligadas para não iniciar encoders e
+      // conexões sem uma decisão explícita do operador.
+      enabled: false,
       createdAt: new Date().toISOString(),
       ...entry.defaults,
     })
@@ -140,7 +142,10 @@ const ehMonitor = (row: OutputProfileRow): boolean =>
 
 /** Destino real de um perfil: derivado para os gerenciados, guardado nos demais. */
 export function targetOf(row: OutputProfileRow, path: ChannelPaths | undefined): string | null {
-  if (row.role === 'PROGRAM') return path ? MediaMtx.loopback(path.program) : null
+  // O programa gerenciado sai por MPEG-TS/SRT para que o mesmo caminho que o
+  // navegador abre em WHEP carregue Opus. RTMP/FLV aceita AAC, mas o WebRTC do
+  // MediaMTX não converte AAC para Opus e o resultado é vídeo sem áudio.
+  if (row.role === 'PROGRAM') return path ? MediaMtx.loopbackSrt(path.program) : null
   // Preview e monitor são olhados no navegador, e por isso vão por SRT: é o
   // único caminho daqui até o servidor de mídia que carrega Opus. Veja
   // `MediaMtx.loopbackSrt`.
@@ -167,7 +172,7 @@ export function toEngineProfile(
   return {
     // O monitor sai por SRT independente do que o perfil diga: o `kind` dele é
     // do tempo em que todo mundo saía por RTMP, e o destino agora é fixo.
-    kind: ehMonitor(row) ? 'srt' : (row.kind.toLowerCase() as EngineProfile['kind']),
+    kind: row.role === 'PROGRAM' || ehMonitor(row) ? 'srt' : (row.kind.toLowerCase() as EngineProfile['kind']),
     target,
     ...(row.width !== null ? { width: row.width } : {}),
     ...(row.height !== null ? { height: row.height } : {}),

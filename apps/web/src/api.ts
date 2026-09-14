@@ -38,7 +38,7 @@ import type {
 function motivo(detalhe: unknown, path: string, status: number): string {
   if (typeof detalhe === 'object' && detalhe !== null) {
     const corpo = detalhe as { error?: unknown; message?: unknown }
-    const bruto = corpo.error ?? corpo.message
+    const bruto = corpo.message ?? corpo.error
     if (typeof bruto === 'string' && bruto.trim() !== '') return bruto
     if (bruto !== undefined) return JSON.stringify(bruto)
   }
@@ -61,6 +61,15 @@ const post = <T>(path: string, body: unknown): Promise<T> =>
   send<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
 export const api = {
+  session: () => send<{ role: string; label: string; authenticated: boolean; required: boolean }>('/api/session'),
+  logout: () => post<{ ok: true }>('/api/auth/logout', {}),
+  users: () => send<{ users: Array<{ id: string; username: string; role: string; enabled: boolean; createdAt: string }> }>('/api/users'),
+  addUser: (body: { username: string; password: string; role: string }) => post('/api/users', body),
+  patchUser: (id: string, body: Record<string, unknown>) => send<{ ok: true }>(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  integrations: (channelId?: string) => send<{ integrations: Array<{ id: string; name: string; url: string; events: string[]; enabled: boolean; channelId: string | null }> }>(`/api/integrations${channelId ? `?channelId=${encodeURIComponent(channelId)}` : ''}`),
+  addIntegration: (body: { channelId: string | null; name: string; url: string; events: string[] }) => post('/api/integrations', body),
+  patchIntegration: (id: string, body: Record<string, unknown>) => send<{ ok: true }>(`/api/integrations/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  testIntegration: (id: string) => post<{ ok: boolean; status?: number; error?: string }>(`/api/integrations/${id}/test`, {}),
   state: () => send<{ channels: Channel[]; rundowns: Rundown[] }>('/api/state'),
   patchChannel: (
     id: string,
@@ -82,6 +91,13 @@ export const api = {
     post<{ channelId: string; rundownId: string }>('/api/channels', { name }),
   assets: () => send<{ assets: MediaAsset[] }>('/api/assets'),
   library: () => send<{ folders: LibraryFolder[]; roots: MediaRoot[] }>('/api/library'),
+  pickMediaRoot: async () => {
+    const response = await fetch('/api/library/roots/pick', { method: 'POST' })
+    if (response.status === 204) return null
+    const body = (await response.json()) as { root: MediaRoot; scanning: boolean; error?: string }
+    if (!response.ok) throw new Error(body.error ?? 'Não consegui acrescentar a pasta.')
+    return body
+  },
 
   patchAsset: (id: string, body: { title?: string; categoryId?: string | null }) =>
     send<{ ok: true }>(`/api/assets/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
@@ -170,6 +186,23 @@ export const api = {
     post<Snapshot & { result: { message: string } }>(`/api/items/${id}/audio`, { audio, scope }),
 
   distribution: () => send<Distribution>('/api/distribution'),
+  processes: () =>
+    send<{
+      generatedAt: string
+      processes: Array<{
+        id: string
+        kind: 'ENGINE' | 'MEDIAMTX' | 'OUTPUT'
+        channelId: string | null
+        pid: number | null
+        state: string
+        cpuTimeMs: number | null
+        memoryBytes: number | null
+        details?: Record<string, unknown>
+      }>
+    }>('/api/processes'),
+  healthEvents: (channelId?: string) => send<{ events: Array<{ id: string; channelId: string | null; component: string; state: string; severity: 'INFO' | 'WARN' | 'CRITICAL'; message: string | null; occurredAt: string; acknowledgedAt: string | null }> }>(`/api/health-events?limit=200${channelId ? `&channelId=${encodeURIComponent(channelId)}` : ''}`),
+  acknowledgeHealth: (id: string) => post<{ ok: true }>(`/api/health-events/${id}/ack`, {}),
+  schedulerStatus: () => send<{ checkedAt: string; channels: Array<{ channelId: string; rundownId: string | null; activeRule: { name: string; startMinute: number; endMinute: number } | null; endsAtFrames: number; minutesRemaining: number }> }>('/api/scheduler/status'),
 
   autoFill: (
     rundownId: string,
@@ -199,16 +232,20 @@ export const api = {
     send<{ entries: PlaylistEntryView[] }>(
       `/api/playlists/entries?path=${encodeURIComponent(path)}`,
     ),
-  loadPlaylist: (rundownId: string, path: string, replace: boolean) =>
+  loadPlaylist: (rundownId: string, path: string, replace: boolean, scheduledDate?: string) =>
     post<Snapshot & { loaded: number; skipped: number }>(
       `/api/rundowns/${rundownId}/playlist`,
-      { path, replace },
+      { path, replace, scheduledDate },
     ),
   /** Lista arrastada para a janela: vai o conteúdo, porque não há caminho. */
-  loadPlaylistText: (rundownId: string, text: string, replace: boolean) =>
+  loadPlaylistText: (rundownId: string, text: string, replace: boolean, scheduledDate?: string) =>
     post<Snapshot & { loaded: number; skipped: number }>(
       `/api/rundowns/${rundownId}/playlist`,
-      { text, replace },
+      { text, replace, scheduledDate },
+    ),
+  playlistVersions: (rundownId: string) =>
+    send<{ versions: Array<{ id: string; sourceName: string; mode: 'APPEND' | 'PUBLISH_NEXT'; loaded: number; skipped: number; scheduledDate: string | null; publishedAt: string }> }>(
+      `/api/rundowns/${rundownId}/playlist-versions`,
     ),
 
   categories: () => send<{ categories: Categoria[] }>('/api/categories'),
@@ -223,6 +260,8 @@ export const api = {
     }),
 
   removeRule: (id: string) => send<{ ok: true }>(`/api/rules/${id}`, { method: 'DELETE' }),
+  updateRule: (id: string, body: Partial<{ name: string; weekdays: string; startMinute: number; endMinute: number; categories: string[]; avoidHours: number }>) =>
+    send<{ rule: ScheduleRule }>(`/api/rules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   autoFillDay: (rundownId: string) =>
     post<Snapshot & { bands: { rule: string; items: number; leftover: number }[] }>(
       `/api/rundowns/${rundownId}/autofill-day`,

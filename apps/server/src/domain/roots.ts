@@ -1,9 +1,26 @@
 import { randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { basename, resolve, sep } from 'node:path'
 import { existsSync, statSync } from 'node:fs'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import { mediaRoots } from '../db/schema.js'
+
+const execFileAsync = promisify(execFile)
+
+/** Abre o seletor nativo na máquina que executa o servidor. */
+export async function pickFolder(): Promise<string | null> {
+  if (process.platform !== 'win32') return null
+  const script = 'Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description="Escolha a pasta do acervo"; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){[Console]::Write($d.SelectedPath)}'
+  try {
+    const result = await execFileAsync('powershell.exe', ['-NoProfile', '-STA', '-Command', script], { windowsHide: false, timeout: 120_000 })
+    const path = result.stdout.trim()
+    return path === '' ? null : path
+  } catch {
+    return null
+  }
+}
 
 export interface MediaRoot {
   readonly id: string
@@ -96,8 +113,11 @@ export async function removeRoot(db: Db, id: string): Promise<boolean> {
 
 /** `alvo` está dentro de `raiz`? Compara caminhos já resolvidos. */
 export function contem(raiz: string, alvo: string): boolean {
-  const a = resolve(raiz)
-  const b = resolve(alvo)
+  // O Windows trata letras de unidade e nomes de pasta sem diferenciar caixa.
+  // Normalizar aqui evita aceitar a mesma raiz duas vezes e evita perder
+  // arquivos quando o caminho vem com capitalização diferente do banco.
+  const a = resolve(raiz).toLocaleLowerCase()
+  const b = resolve(alvo).toLocaleLowerCase()
   return b === a || b.startsWith(a + sep)
 }
 

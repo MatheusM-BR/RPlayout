@@ -1,0 +1,11 @@
+import { useEffect, useState } from 'react'
+import { api } from '../api.js'
+
+export function IntegrationsPanel({ channelId, onMessage }: { channelId: string; onMessage: (text: string) => void }) {
+  const [items, setItems] = useState<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
+  const [name, setName] = useState(''); const [url, setUrl] = useState(''); const [events, setEvents] = useState('asrun.started,asrun.ended,playlist.published,engine.error,scheduler.degraded')
+  const reload = () => void api.integrations(channelId).then((response) => setItems(response.integrations)).catch(() => setItems([]))
+  useEffect(reload, [channelId])
+  const add = () => void api.addIntegration({ channelId, name, url, events: events.split(',').map((event) => event.trim()).filter(Boolean) }).then(() => { setName(''); setUrl(''); reload(); onMessage('Gateway cadastrado.') }).catch((error: Error) => onMessage(error.message))
+  return <div className="field"><label>Gateways e integrações</label><p className="detalhe">Eventos: asrun.started, asrun.ended, playlist.published, playlist.inserted, engine.error, engine.ready, output.onAir, output.retrying, scheduler.degraded, channel.stopped.</p><ul className="canais">{items.map((item) => <li key={item.id}><div className="quem"><div className="nome">{item.name} <span className="pill">{item.enabled ? 'ATIVO' : 'DESLIGADO'}</span></div><div className="detalhe mono">{item.url} · {item.events.join(', ')}</div></div><button className="btn small" onClick={() => void api.patchIntegration(item.id, { enabled: !item.enabled }).then(reload)}>{item.enabled ? 'desativar' : 'ativar'}</button><button className="btn small" onClick={() => void api.testIntegration(item.id).then((result) => onMessage(result.ok ? `Gateway respondeu HTTP ${result.status ?? 200}.` : result.error ?? 'Gateway não respondeu.'))}>testar</button></li>)}</ul><div className="pastas-add"><input placeholder="nome" value={name} onChange={(event) => setName(event.target.value)} /><input placeholder="https://gateway/eventos" value={url} onChange={(event) => setUrl(event.target.value)} /><input placeholder="asrun.started,asrun.ended,scheduler.degraded" value={events} onChange={(event) => setEvents(event.target.value)} /><button className="btn small" disabled={!name || !url} onClick={add}>ADICIONAR</button></div></div>
+}

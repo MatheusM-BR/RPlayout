@@ -1,6 +1,6 @@
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
-import { mediaAssets, rundownItems } from '../db/schema.js'
+import { mediaAssets, rundownItems, itemGraphics } from '../db/schema.js'
 
 type ItemRow = typeof rundownItems.$inferSelect
 type AssetRow = typeof mediaAssets.$inferSelect
@@ -22,6 +22,7 @@ interface Frame {
   readonly rundownId: string
   readonly items: ItemRow[]
   readonly assets: AssetRow[]
+  readonly cues: (typeof itemGraphics.$inferSelect)[]
 }
 
 export interface HistoryState {
@@ -53,26 +54,33 @@ async function read(
       ? await db.select().from(mediaAssets).where(inArray(mediaAssets.id, [...target.assetIds]))
       : []
 
-  return { label, target, rundownId, items, assets }
+  const cues = target.wholeRundown && items.length > 0
+    ? await db.select().from(itemGraphics).where(inArray(itemGraphics.itemId, items.map((item) => item.id)))
+    : []
+  return { label, target, rundownId, items, assets, cues }
 }
 
 async function restore(db: Db, frame: Frame): Promise<void> {
+  db.transaction((tx) => {
   if (frame.target.wholeRundown) {
     // Ordem e quantidade voltam juntas: reescreve a grade como ela estava.
-    await db.delete(rundownItems).where(eq(rundownItems.rundownId, frame.rundownId))
-    if (frame.items.length > 0) await db.insert(rundownItems).values(frame.items)
+    tx.delete(rundownItems).where(eq(rundownItems.rundownId, frame.rundownId)).run()
+    for (const item of frame.items) tx.insert(rundownItems).values(item).run()
+    for (const cue of frame.cues) tx.insert(itemGraphics).values(cue).run()
   } else {
     for (const item of frame.items) {
-      await db.update(rundownItems).set(item).where(eq(rundownItems.id, item.id))
+      tx.update(rundownItems).set(item).where(eq(rundownItems.id, item.id)).run()
     }
   }
 
   for (const asset of frame.assets) {
-    await db
+    tx
       .update(mediaAssets)
       .set({ defaultTrim: asset.defaultTrim, defaultAudio: asset.defaultAudio })
       .where(eq(mediaAssets.id, asset.id))
+      .run()
   }
+  })
 }
 
 /**
@@ -85,6 +93,7 @@ async function restore(db: Db, frame: Frame): Promise<void> {
 export class History {
   private readonly past = new Map<string, Frame[]>()
   private readonly future = new Map<string, Frame[]>()
+  private readonly pending = new Map<string, Promise<unknown>>()
 
   state(rundownId: string): HistoryState {
     const past = this.past.get(rundownId) ?? []
@@ -110,12 +119,13 @@ export class History {
 
   private async step(db: Db, rundownId: string, from: Map<string, Frame[]>, to: Map<string, Frame[]>) {
     const stack = from.get(rundownId)
-    const frame = stack?.pop()
+    const frame = stack?.[stack.length - 1]
     if (!frame) return null
 
     // O estado atual vira o passo contrário antes de ser sobrescrito.
     const mirror = await read(db, rundownId, frame.label, frame.target)
     await restore(db, frame)
+    stack!.pop()
 
     const other = to.get(rundownId) ?? []
     other.push(mirror)
@@ -125,11 +135,21 @@ export class History {
   }
 
   undo(db: Db, rundownId: string): Promise<string | null> {
-    return this.step(db, rundownId, this.past, this.future)
+    return this.serial(rundownId, () => this.step(db, rundownId, this.past, this.future))
   }
 
   redo(db: Db, rundownId: string): Promise<string | null> {
-    return this.step(db, rundownId, this.future, this.past)
+    return this.serial(rundownId, () => this.step(db, rundownId, this.future, this.past))
+  }
+
+  private serial<T>(rundownId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.pending.get(rundownId) ?? Promise.resolve()
+    const current = previous.then(operation, operation)
+    this.pending.set(rundownId, current)
+    void current.finally(() => {
+      if (this.pending.get(rundownId) === current) this.pending.delete(rundownId)
+    })
+    return current
   }
 
   forget(rundownId: string): void {
