@@ -17,7 +17,7 @@ O XPlayout será usado como referência funcional. O RPlayout mantém uma arquit
 | WebSocket e monitoramento de processos | Implementado |
 | LIVE nativo com preview e TAKE | Parcial |
 | Correção automática de atraso | Parcial: regras existem, falta política operacional completa |
-| Timeline visual | Pendente |
+| Timeline visual | Endpoint e faixa visual no painel de Distribuição |
 | Multiview de entradas | Pendente |
 | NDI e SDI físicos | Pendente de hardware |
 | SCTE-35/104 | API normalizada e eventos de gateway implementados; inserção física depende do encoder |
