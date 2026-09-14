@@ -78,3 +78,4 @@ export const AUTH_PASSWORD = process.env.RPLAYOUT_ADMIN_PASSWORD ?? ''
 export const EXTERNAL_CONTROL_TOKEN = process.env.RPLAYOUT_CONTROL_TOKEN ?? ''
 /** URL base do segundo host para heartbeat N+1; vazio desativa o peer. */
 export const N1_PEER_URL = process.env.RPLAYOUT_N1_PEER ?? ''
+export const CONTINUITY_CACHE_MAX_BYTES = Number(process.env.RPLAYOUT_CACHE_MAX_BYTES ?? String(100 * 1024 * 1024 * 1024))

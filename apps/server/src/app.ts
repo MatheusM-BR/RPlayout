@@ -33,6 +33,7 @@ import {
   PROBE_BINARY,
   RELAY_BINARY,
   THUMBNAIL_DIR,
+  CONTINUITY_CACHE_MAX_BYTES,
 } from './config.js'
 import { MediaMtx, channelPaths, type ChannelPaths } from './domain/mediamtx.js'
 import { Ingest } from './domain/ingest.js'
@@ -558,7 +559,7 @@ export async function createApp(file: string): Promise<App> {
     paths: [],
     sqlite,
     backupDir: BACKUP_DIR,
-    continuityCache: new ContinuityCache(process.env.RPLAYOUT_CACHE ?? resolvePath(process.cwd(), '.continuity-cache')),
+    continuityCache: new ContinuityCache(process.env.RPLAYOUT_CACHE ?? resolvePath(process.cwd(), '.continuity-cache'), CONTINUITY_CACHE_MAX_BYTES),
     /**
      * Fecha as linhas de as-run abertas antes de o processo sair.
      *
