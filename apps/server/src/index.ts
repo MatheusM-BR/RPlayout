@@ -161,6 +161,7 @@ async function main(): Promise<void> {
 
   const recorded = new Map<string, string>()
   const silenceSince = new Map<string, number>()
+  let lastCacheWarm = 0
   const timer = setInterval(async () => {
     // MediaMTX é um processo único do servidor: seu watchdog deve rodar uma
     // vez por ciclo, independentemente da quantidade de canais.
@@ -168,6 +169,11 @@ async function main(): Promise<void> {
     // Reconnecta destinos externos de forma isolada e com backoff; uma queda
     // não deve criar uma tempestade de processos nem exigir reinício manual.
     app.relays.tick()
+    if (Date.now() - lastCacheWarm >= 60_000) {
+      lastCacheWarm = Date.now()
+      const assets = [...app.runtimes.values()].flatMap((runtime) => runtime.view?.items.map((entry) => entry.asset).filter((asset): asset is NonNullable<typeof asset> => Boolean(asset)) ?? [])
+      void app.continuityCache.warm([...new Map(assets.map((asset) => [asset.id, asset])).values()])
+    }
     for (const runtime of app.runtimes.values()) {
       // O canal anda com ou sem interface aberta. Amarrar isto à presença de
       // um navegador seria congelar a grade e o nivelamento no instante em que

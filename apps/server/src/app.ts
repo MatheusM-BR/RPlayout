@@ -46,6 +46,8 @@ import {
 import { RelaySupervisor } from './domain/relays.js'
 import { destinations, guestKeys } from './db/schema.js'
 import { resolve as resolvePath } from 'node:path'
+import { existsSync } from 'node:fs'
+import { ContinuityCache } from './domain/continuity-cache.js'
 
 /**
  * Runtime de um canal. Guarda a grade já resolvida em cache porque o
@@ -113,6 +115,7 @@ export class ChannelRuntime {
      * na instalação. Um alerta que junta as duas manda procurar no lugar errado.
      */
     private readonly motivoSemMonitor: ReadonlyMap<'pvw' | 'mon', string> = new Map(),
+    private readonly continuityCache: ContinuityCache | null = null,
   ) {
     // Sem engine configurado, a grade inteira continua operável no simulado:
     // é o que permite montar programação numa máquina sem GStreamer.
@@ -144,7 +147,10 @@ export class ChannelRuntime {
       listItems(this.db, rundownId),
       assetMap(this.db),
     ])
-    this.assets = assets
+    this.assets = new Map([...assets.entries()].map(([id, asset]) => {
+      const cached = this.continuityCache?.pathFor(asset)
+      return [id, cached && existsSync(cached) ? { ...asset, path: cached } : asset] as const
+    }))
 
     // Grafismo preso a item anda junto com a grade: recarregar a grade e
     // deixar as deixas velhas em memória é como um crédito antigo volta ao ar.
@@ -521,6 +527,7 @@ export interface App {
   /** Handle do SQLite, para a cópia de segurança sem parar o servidor. */
   readonly sqlite: Database.Database
   readonly backupDir: string
+  readonly continuityCache: ContinuityCache
   /** Fecha o que precisa de escrita antes de o processo sair. */
   flush(): Promise<void>
   close(): void
@@ -551,6 +558,7 @@ export async function createApp(file: string): Promise<App> {
     paths: [],
     sqlite,
     backupDir: BACKUP_DIR,
+    continuityCache: new ContinuityCache(process.env.RPLAYOUT_CACHE ?? resolvePath(process.cwd(), '.continuity-cache')),
     /**
      * Fecha as linhas de as-run abertas antes de o processo sair.
      *
@@ -652,7 +660,7 @@ async function createRuntime(app: App, channelId: string): Promise<ChannelRuntim
   conferir('pvw', 'PREVIEW')
   conferir('mon', 'MONITOR')
 
-  const runtime = new ChannelRuntime(channel, app.db, outputs, previewOutput, monitores, motivos)
+  const runtime = new ChannelRuntime(channel, app.db, outputs, previewOutput, monitores, motivos, app.continuityCache)
   // Os alertas precisam saber o que falta na instalação, e não podem esperar
   // por uma descoberta a cada tique: perguntam ao que já foi descoberto.
   runtime.aacDisponivel = () => app.sources.temDecodificadorAac()
