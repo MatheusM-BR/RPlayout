@@ -47,7 +47,7 @@ O XPlayout será usado como referência funcional. O RPlayout mantém uma arquit
 1. Cache local das próximas 48 horas e indicador de cobertura.
 2. N+1 com heartbeat e sincronização de item, frame e estado de saída.
 3. As-Run com previsto/executado/falha e exportação de relatório.
-4. Detecção de black e silêncio implementada no PGM; dropped frames e perda de fonte seguem os eventos do engine.
+4. Detecção de black, silêncio e congelamento de vídeo implementada no PGM; perda de fonte segue os eventos do engine.
 
 ### Fase D — eventos secundários e integração
 
