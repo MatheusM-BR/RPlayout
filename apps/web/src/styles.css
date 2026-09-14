@@ -1755,6 +1755,10 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
 .playlist-workspace { min-height: 100vh; background: var(--bg); }
 .playlist-workspace > .backdrop { position: static; min-height: 100vh; padding: 18px; background: transparent; }
 .playlist-workspace > .backdrop > .dialog { width: min(1180px, 100%); max-height: none; }
+.standalone-workspace { min-height: 100vh; padding: 18px; background: var(--bg); }
+.standalone-card { width: min(860px, 100%); margin: 0 auto; border: 1px solid var(--border); background: var(--panel); }
+.standalone-card > header { padding: 16px 18px; border-bottom: 1px solid var(--border); }
+.standalone-card > footer { display: flex; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--border); }
 .docs-dialog { width: min(1080px, calc(100vw - 24px)); }
 .docs-toolbar { display: flex; align-items: center; gap: 8px; }
 .docs-toolbar input { flex: 1; }

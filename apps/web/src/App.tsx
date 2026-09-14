@@ -806,14 +806,21 @@ export function App() {
     )
   }
 
-  const playlistWorkspace = new URLSearchParams(window.location.search).get('workspace') === 'playlist'
-  if (playlistWorkspace) {
+  const workspace = new URLSearchParams(window.location.search).get('workspace')
+  const abrirMaster = (): void => { window.location.href = window.location.pathname }
+  if (workspace === 'playlist') {
     return <div className="playlist-workspace"><PlaylistsDialog
       rundownId={view.rundown.id}
       onCancel={() => { window.location.href = window.location.pathname }}
       onLoaded={(snapshot, message) => { absorb(snapshot); say(message) }}
       onMessage={say}
     /></div>
+  }
+  if (workspace === 'admin') {
+    return <div className="standalone-workspace"><div className="standalone-card"><header><h2>Administração do RPlayout</h2><div className="sub">usuários, papéis e permissões</div></header><div className="body"><UsersPanel onMessage={say} /></div><footer><button className="btn" onClick={abrirMaster}>voltar ao operador</button></footer></div></div>
+  }
+  if (workspace === 'monitor') {
+    return <div className="standalone-workspace"><Distribution channelId={view.channel.id} onClose={abrirMaster} onMessage={say} /></div>
   }
 
   const rate = view.channel.rate
@@ -900,10 +907,10 @@ export function App() {
           >
             ⚙
           </button>
-          <button className="aba acesso" title="Usuários, permissões e auditoria" onClick={() => setDialog({ kind: 'users' })}>
+          <button className="aba acesso" title="Abrir administração em janela própria" onClick={() => window.open(`${window.location.pathname}?workspace=admin`, '_blank', 'noopener,noreferrer')}>
             USUÁRIOS
           </button>
-          <button className="aba" title="Organização e publicação de playlists 24h" onClick={() => setDialog({ kind: 'playlists' })}>
+          <button className="aba" title="Abrir organização de playlists em janela própria" onClick={() => window.open(`${window.location.pathname}?workspace=playlist`, '_blank', 'noopener,noreferrer')}>
             PLAYLISTS
           </button>
           <button className="aba" title="Documentação e procedimentos do RPlayout" onClick={() => setDialog({ kind: 'docs' })}>
@@ -1169,7 +1176,7 @@ export function App() {
           className="btn small"
           onClick={() => {
             window.location.hash = 'distribuicao'
-            setDialog({ kind: 'distribution' })
+            window.open(`${window.location.pathname}?workspace=monitor`, '_blank', 'noopener,noreferrer')
           }}
           title="Saídas e processos por canal, uso e estado"
         >
