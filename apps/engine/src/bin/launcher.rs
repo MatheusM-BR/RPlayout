@@ -230,9 +230,19 @@ fn configurar_runtime_gstreamer(comando: &mut Command, raiz: &Path) {
     let runtime = raiz.join("runtime").join("gstreamer");
     let bin = runtime.join("bin");
     let plugins = runtime.join("lib").join("gstreamer-1.0");
-    if !bin.exists() { return; }
-    let path_atual = std::env::var("PATH").unwrap_or_default();
-    comando.env("PATH", format!("{};{}", bin.display(), path_atual));
+    let runtime_dir = raiz.join("runtime");
+    let node_dir = runtime_dir.join("node");
+    let mut prefixes = Vec::new();
+    if node_dir.exists() { prefixes.push(node_dir); }
+    let pnpm_dir = runtime_dir.join("pnpm");
+    if pnpm_dir.exists() { prefixes.push(pnpm_dir); }
+    if bin.exists() { prefixes.push(bin); }
+    if !prefixes.is_empty() {
+        let current = std::env::var("PATH").unwrap_or_default();
+        let prefix = prefixes.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(";");
+        comando.env("PATH", format!("{prefix};{current}"));
+    }
+    if !runtime.join("bin").exists() { return; }
     comando.env("GSTREAMER_1_0_ROOT_MSVC_X86_64", &runtime);
     comando.env("GST_PLUGIN_PATH", &plugins);
     comando.env("GST_REGISTRY_1_0_FILE", raiz.join(".cache").join("gstreamer-registry.bin"));

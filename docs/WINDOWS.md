@@ -105,6 +105,11 @@ instalar GStreamer globalmente na máquina de operação.
 Isso não substitui drivers de hardware: DeckLink exige o driver Blackmagic e
 NDI exige o runtime/SDK NDI correspondente.
 
+O empacotador também copia Node e pnpm para `runtime/node` e `runtime/pnpm`,
+além de `node_modules`. O executável de teste validado fica em
+`release/RPlayout-1.1-next/rplayout-test.exe`; ele inicia o servidor sem exigir
+Node ou pnpm instalados globalmente.
+
 ```powershell
 .\apps\engine\target\release\rplayout-devices.exe
 ```
