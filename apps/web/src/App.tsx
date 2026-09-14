@@ -1174,11 +1174,8 @@ export function App() {
         </button>
         <button
           className="btn small"
-          onClick={() => {
-            window.location.hash = 'distribuicao'
-            window.open(`${window.location.pathname}?workspace=monitor`, '_blank', 'noopener,noreferrer')
-          }}
-          title="Saídas e processos por canal, uso e estado"
+          onClick={() => setDialog({ kind: 'distribution' })}
+          title="Abrir saídas e processos neste painel"
         >
           SAÍDAS E PROCESSOS
         </button>
