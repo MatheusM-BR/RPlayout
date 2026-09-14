@@ -448,7 +448,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       const nowFrames = framesSinceMidnight(now, runtime.channel.rate)
       const endFrames = runtime.view?.schedule.endsAt ?? nowFrames
       const minutesRemaining = Math.max(0, Math.round((endFrames - nowFrames) * runtime.channel.rate.den / runtime.channel.rate.num / 60))
-      result.push({ channelId: runtime.channel.id, rundownId: runtime.view?.rundown.id ?? null, activeRule: activeRule ?? null, endsAtFrames: endFrames, minutesRemaining })
+      const targetMinutes = 48 * 60
+      result.push({
+        channelId: runtime.channel.id,
+        rundownId: runtime.view?.rundown.id ?? null,
+        activeRule: activeRule ?? null,
+        endsAtFrames: endFrames,
+        minutesRemaining,
+        coverageMinutes: minutesRemaining,
+        coverageHours: Math.round((minutesRemaining / 60) * 10) / 10,
+        targetHours: 48,
+        coverageReady: minutesRemaining >= targetMinutes,
+      })
     }
     return { checkedAt: now.toISOString(), channels: result }
   })
