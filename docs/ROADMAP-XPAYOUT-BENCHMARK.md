@@ -22,7 +22,7 @@ O XPlayout será usado como referência funcional. O RPlayout mantém uma arquit
 | NDI e SDI físicos | Pendente de hardware |
 | SCTE-35/104 | API normalizada e eventos de gateway implementados; inserção física depende do encoder |
 | N+1 failover e sincronização de estado | Reconexão isolada com backoff implementada; N+1 físico depende de segunda instância |
-| Cache local de continuidade | Pendente |
+| Cache local de continuidade | Implementado: aquecimento e fallback por hash |
 | Controle externo GPI/ATEM/routers | Pendente |
 | Multi-tenant/cloud | Pendente, fora do escopo local 1.1 |
 
@@ -47,7 +47,7 @@ O XPlayout será usado como referência funcional. O RPlayout mantém uma arquit
 1. Cache local das próximas 48 horas e indicador de cobertura.
 2. N+1 com heartbeat e sincronização de item, frame e estado de saída.
 3. As-Run com previsto/executado/falha e exportação de relatório.
-4. Detecção de black, silêncio, dropped frames e perda de fonte.
+4. Detecção de black e silêncio implementada no PGM; dropped frames e perda de fonte seguem os eventos do engine.
 
 ### Fase D — eventos secundários e integração
 
