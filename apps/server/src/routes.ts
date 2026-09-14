@@ -38,6 +38,7 @@ import { PORTS } from './domain/mediamtx.js'
 import { can, parseRole, roleLabel, type Action } from './domain/permissions.js'
 import { hashPassword, verifyPassword } from './domain/auth.js'
 import { emitIntegrationEvent } from './domain/integrations.js'
+import { redactUrl } from './domain/relays.js'
 import { conflictsWithScheduleRule } from './domain/schedule-rules.js'
 import { activeHorizonRule } from './domain/continuous.js'
 import { DEFAULT_ROLE, AUTH_PASSWORD, AUTH_USER, EXTERNAL_CONTROL_TOKEN } from './config.js'
@@ -1764,7 +1765,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         ...guest,
         publishUrl: `rtmp://${host}:${PORTS.rtmp}/guest/${guest.streamKey}`,
       })),
-      destinations: targets,
+      destinations: targets.map((target) => ({ ...target, url: redactUrl(target.url) })),
       relays: app.relays.status(),
       paths: status,
     }

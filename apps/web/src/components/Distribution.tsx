@@ -103,6 +103,10 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [reiniciando, setReiniciando] = useState(false)
   const [destName, setDestName] = useState('')
   const [destUrl, setDestUrl] = useState('')
+  const [srtMode, setSrtMode] = useState<'caller' | 'listener' | 'rendezvous'>('caller')
+  const [srtLatency, setSrtLatency] = useState('800')
+  const [srtStreamId, setSrtStreamId] = useState('')
+  const [srtPassphrase, setSrtPassphrase] = useState('')
   const [error, setError] = useState<string | null>(null)
   /**
    * O que está digitado no campo de qualidade, por saída.
@@ -652,9 +656,20 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                 disabled={destName.trim() === '' || destUrl.trim() === ''}
                 onClick={() =>
                   void guard(async () => {
-                    await api.addDestination(channelId, destName.trim(), destUrl.trim())
+                    let destination = destUrl.trim()
+                    if (destination.toLowerCase().startsWith('srt://')) {
+                      const url = new URL(destination)
+                      url.searchParams.set('mode', srtMode)
+                      if (srtLatency.trim() !== '') url.searchParams.set('latency', srtLatency.trim())
+                      if (srtStreamId.trim() !== '') url.searchParams.set('streamid', srtStreamId.trim())
+                      if (srtPassphrase.trim() !== '') url.searchParams.set('passphrase', srtPassphrase.trim())
+                      destination = url.toString()
+                    }
+                    await api.addDestination(channelId, destName.trim(), destination)
                     setDestName('')
                     setDestUrl('')
+                    setSrtStreamId('')
+                    setSrtPassphrase('')
                     onMessage('Destino criado. O relay começa a entregar em alguns segundos.')
                   })
                 }
@@ -662,6 +677,19 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                 adicionar
               </button>
             </div>
+            {destUrl.trim().toLowerCase().startsWith('srt://') && (
+              <details className="field compact" open>
+                <summary>opções SRT</summary>
+                <div className="inline">
+                  <select value={srtMode} onChange={(event) => setSrtMode(event.target.value as typeof srtMode)} aria-label="modo SRT">
+                    <option value="caller">caller</option><option value="listener">listener</option><option value="rendezvous">rendezvous</option>
+                  </select>
+                  <input value={srtLatency} onChange={(event) => setSrtLatency(event.target.value)} placeholder="latência ms" aria-label="latência SRT" />
+                  <input value={srtStreamId} onChange={(event) => setSrtStreamId(event.target.value)} placeholder="streamid (opcional)" aria-label="streamid SRT" />
+                  <input type="password" value={srtPassphrase} onChange={(event) => setSrtPassphrase(event.target.value)} placeholder="passphrase (opcional)" aria-label="passphrase SRT" />
+                </div>
+              </details>
+            )}
           </div>
 
           {/* ---- o que está passando ---- */}

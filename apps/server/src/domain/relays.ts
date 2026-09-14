@@ -18,6 +18,15 @@ function latencyOf(url: string): number | null {
   const value = Number(parsed(url)?.searchParams.get('latency'))
   return Number.isFinite(value) && value >= 0 ? value : null
 }
+export function redactUrl(url: string): string {
+  try {
+    const value = new URL(url)
+    for (const key of ['passphrase', 'password', 'secret', 'token']) {
+      if (value.searchParams.has(key)) value.searchParams.set(key, '••••••')
+    }
+    return value.toString()
+  } catch { return url }
+}
 
 export interface RelayTarget {
   readonly id: string
@@ -232,7 +241,7 @@ export class RelaySupervisor {
     return [...this.relays.values()].map((relay) => ({
       id: relay.target.id,
       name: relay.target.name,
-      url: relay.target.url,
+      url: redactUrl(relay.target.url),
       state: relay.state,
       attempts: relay.attempts,
       reason: relay.reason,
