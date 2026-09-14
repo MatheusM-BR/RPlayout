@@ -18,6 +18,13 @@ New-Item -ItemType Directory -Force -Path "$Destination/apps/server/src" | Out-N
 Copy-Item -Recurse -Force apps/server/src/* "$Destination/apps/server/src/"
 Copy-Item -Recurse -Force packages/protocol/src,packages/scheduler/src "$Destination/packages/"
 Copy-Item -Recurse -Force mediamtx "$Destination/"
+if ($env:GSTREAMER_1_0_ROOT_MSVC_X86_64 -and (Test-Path $env:GSTREAMER_1_0_ROOT_MSVC_X86_64)) {
+  New-Item -ItemType Directory -Force -Path "$Destination/runtime" | Out-Null
+  Copy-Item -Recurse -Force $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 "$Destination/runtime/gstreamer"
+  Write-Host "GStreamer portátil incluído em runtime/gstreamer"
+} else {
+  Write-Warning 'GStreamer não foi incluído. Defina GSTREAMER_1_0_ROOT_MSVC_X86_64 antes de empacotar.'
+}
 Copy-Item docs/RPLAYOUT-1.1-FUNCIONALIDADES.md "$Destination/" -Force
 Copy-Item scripts/verify-rplayout-package.ps1 "$Destination/" -Force
 Copy-Item scripts/verify-media-endpoints.ps1 "$Destination/" -Force

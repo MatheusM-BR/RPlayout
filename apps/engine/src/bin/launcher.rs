@@ -179,6 +179,7 @@ fn raiz_da_instalacao() -> Result<PathBuf> {
 fn subir_servidor(raiz: &Path) -> Result<Child> {
     let mut comando = shell();
     comando.current_dir(raiz);
+    configurar_runtime_gstreamer(&mut comando, raiz);
 
     let bin = raiz.join("apps/engine/target/release");
     let opcionais = [
@@ -220,6 +221,22 @@ fn subir_servidor(raiz: &Path) -> Result<Child> {
         });
     }
     Ok(filho)
+}
+
+/// Usa o runtime distribuído junto ao aplicativo quando ele existir. Isso
+/// elimina a necessidade de instalar GStreamer globalmente; drivers físicos
+/// (DeckLink/NDI) continuam sendo responsabilidade do fabricante.
+fn configurar_runtime_gstreamer(comando: &mut Command, raiz: &Path) {
+    let runtime = raiz.join("runtime").join("gstreamer");
+    let bin = runtime.join("bin");
+    let plugins = runtime.join("lib").join("gstreamer-1.0");
+    if !bin.exists() { return; }
+    let path_atual = std::env::var("PATH").unwrap_or_default();
+    comando.env("PATH", format!("{};{}", bin.display(), path_atual));
+    comando.env("GSTREAMER_1_0_ROOT_MSVC_X86_64", &runtime);
+    comando.env("GST_PLUGIN_PATH", &plugins);
+    comando.env("GST_REGISTRY_1_0_FILE", raiz.join(".cache").join("gstreamer-registry.bin"));
+    println!("  GStreamer portátil: {}", runtime.display());
 }
 
 /// Espera o servidor responder de verdade, não só o processo existir.

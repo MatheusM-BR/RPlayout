@@ -95,6 +95,16 @@ cd C:\RPlayout
 
 ## Conferir a máquina antes de qualquer outra coisa
 
+O pacote pode carregar um runtime GStreamer portátil em `runtime/gstreamer`.
+Para incluí-lo durante a montagem da distribuição, defina
+`GSTREAMER_1_0_ROOT_MSVC_X86_64` apontando para o runtime MSVC e execute
+`scripts/package-rplayout-1.1.ps1`. O launcher configura `PATH`,
+`GST_PLUGIN_PATH` e o registro local automaticamente. Assim não é necessário
+instalar GStreamer globalmente na máquina de operação.
+
+Isso não substitui drivers de hardware: DeckLink exige o driver Blackmagic e
+NDI exige o runtime/SDK NDI correspondente.
+
 ```powershell
 .\apps\engine\target\release\rplayout-devices.exe
 ```

@@ -19,6 +19,12 @@ if ($missing.Count -gt 0) {
   Write-Error ('Pacote incompleto. Faltam: ' + ($missing -join ', '))
   exit 1
 }
+$gst = Join-Path $root 'runtime/gstreamer/bin'
+if (Test-Path $gst) {
+  Write-Host "GStreamer portátil: OK ($gst)" -ForegroundColor Green
+} else {
+  Write-Warning 'GStreamer portátil ausente: o engine dependerá da instalação global do sistema.'
+}
 $files = $required | ForEach-Object {
   $path = Join-Path $root $_
   $hash = (Get-FileHash $path -Algorithm SHA256).Hash
