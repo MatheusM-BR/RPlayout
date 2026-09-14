@@ -445,6 +445,16 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       channels,
     }
   })
+  server.post('/api/n1/compare', async (request, reply) => {
+    const body = z.object({ stateHash: z.string().length(64), channels: z.array(z.object({ channelId: z.string(), state: z.unknown(), health: z.unknown().optional() })).optional() }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Estado N+1 inválido.' })
+    const local = [...app.runtimes.values()].map((runtime) => ({ channelId: runtime.channel.id, state: runtime.transport.state(), health: runtime.transport.health() }))
+    const localHash = createHash('sha256').update(JSON.stringify(local)).digest('hex')
+    const localIds = new Set(local.map((entry) => entry.channelId))
+    const remoteIds = new Set((body.data.channels ?? []).map((entry) => entry.channelId))
+    const divergentChannels = [...new Set([...localIds, ...remoteIds])].filter((id) => !localIds.has(id) || !remoteIds.has(id))
+    return { match: localHash === body.data.stateHash && divergentChannels.length === 0, localHash, divergentChannels }
+  })
   server.get('/api/ready', async (_request, reply) => {
     const engines = [...app.runtimes.values()]
     const stopped = engines.filter((runtime) => !runtime.transport.health().ready)
