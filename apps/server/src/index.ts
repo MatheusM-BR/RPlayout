@@ -160,6 +160,7 @@ async function main(): Promise<void> {
   }, 6 * 60 * 60 * 1000)
 
   const recorded = new Map<string, string>()
+  const silenceSince = new Map<string, number>()
   const timer = setInterval(async () => {
     // MediaMTX é um processo único do servidor: seu watchdog deve rodar uma
     // vez por ciclo, independentemente da quantidade de canais.
@@ -179,6 +180,32 @@ async function main(): Promise<void> {
         recorded.set(key, signature)
         void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'ENGINE', state, severity: severityOf('ENGINE', state, health.error), message: health.error, occurredAt: new Date().toISOString() }).run()
         void emitIntegrationEvent(app.db, `engine.${state}`, { message: health.error, restarts: health.restarts }, runtime.channel.id)
+      }
+      // Silêncio sustentado no programa é uma falha operacional diferente de
+      // engine parado. O medidor já vem do pipeline real (ou do simulador),
+      // portanto não inferimos áudio a partir de conexão WebRTC.
+      const meter = runtime.transport.programMeter()
+      const silent = meter !== null && meter.momentaryLufs <= -65
+      const signalKey = `signal:${runtime.channel.id}`
+      if (silent) {
+        const started = silenceSince.get(signalKey) ?? Date.now()
+        silenceSince.set(signalKey, started)
+        const elapsed = Date.now() - started
+        const signature = elapsed >= 5000 ? 'silence' : 'ok'
+        if (elapsed >= 5000 && recorded.get(signalKey) !== signature) {
+          recorded.set(signalKey, signature)
+          const message = 'Silêncio sustentado no PGM por mais de 5 segundos.'
+          void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'SIGNAL', state: 'silence', severity: 'CRITICAL', message, occurredAt: new Date().toISOString() }).run()
+          void emitIntegrationEvent(app.db, 'signal.silence', { durationMs: elapsed }, runtime.channel.id)
+        }
+      } else {
+        silenceSince.delete(signalKey)
+        if (recorded.get(signalKey) === 'silence') {
+          recorded.set(signalKey, 'ok')
+          const message = 'Áudio do PGM voltou a apresentar nível.'
+          void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'SIGNAL', state: 'running', severity: 'INFO', message, occurredAt: new Date().toISOString() }).run()
+          void emitIntegrationEvent(app.db, 'signal.recovered', {}, runtime.channel.id)
+        }
       }
       // Uma grade que está prestes a acabar é um risco operacional antes de
       // virar tela preta. O aviso é deduplicado pelo relógio e desaparece
