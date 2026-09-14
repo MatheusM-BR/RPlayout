@@ -12,7 +12,7 @@ export class ContinuityCache {
     return join(this.root, `${safe}-${name}`)
   }
 
-  async warm(assets: readonly MediaAsset[]): Promise<{ cached: number; missing: number }> {
+  async warm(assets: readonly Pick<MediaAsset, 'id' | 'contentHash' | 'path' | 'kind'>[]): Promise<{ cached: number; missing: number }> {
     await mkdir(this.root, { recursive: true })
     let cached = 0
     let missing = 0
@@ -25,7 +25,7 @@ export class ContinuityCache {
     return { cached, missing }
   }
 
-  async resolve(asset: MediaAsset): Promise<string> {
+  async resolve(asset: Pick<MediaAsset, 'id' | 'contentHash' | 'path'>): Promise<string> {
     try { await stat(asset.path); return asset.path } catch { return this.pathFor(asset) }
   }
 }
