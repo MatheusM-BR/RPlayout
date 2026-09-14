@@ -74,3 +74,5 @@ export const DEVICES_BINARY = process.env.RPLAYOUT_DEVICES ?? ''
 export const DEFAULT_ROLE = process.env.RPLAYOUT_ROLE ?? 'SUPERVISOR'
 export const AUTH_USER = process.env.RPLAYOUT_ADMIN_USER ?? ''
 export const AUTH_PASSWORD = process.env.RPLAYOUT_ADMIN_PASSWORD ?? ''
+/** Token dedicado a automações GPI/ATEM/routers; vazio desativa a porta lógica. */
+export const EXTERNAL_CONTROL_TOKEN = process.env.RPLAYOUT_CONTROL_TOKEN ?? ''

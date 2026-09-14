@@ -23,7 +23,7 @@ O XPlayout será usado como referência funcional. O RPlayout mantém uma arquit
 | SCTE-35/104 | API normalizada e eventos de gateway implementados; inserção física depende do encoder |
 | N+1 failover e sincronização de estado | Failover lógico primário/backup e backoff implementados; N+1 físico entre hosts depende de segunda instância |
 | Cache local de continuidade | Implementado: aquecimento e fallback por hash |
-| Controle externo GPI/ATEM/routers | Pendente |
+| Controle externo GPI/ATEM/routers | API protegida por token para take/cue/stop/park; integração física depende do gateway |
 | Multi-tenant/cloud | Pendente, fora do escopo local 1.1 |
 
 ## Ordem de desenvolvimento
@@ -54,7 +54,7 @@ O XPlayout será usado como referência funcional. O RPlayout mantém uma arquit
 1. CG vinculado ao evento: logo, clock, ticker, crawl e lower third.
 2. Secondary events com disparo temporal e por estado.
 3. SCTE-35 em IP e SCTE-104 em SDI.
-4. Controle externo de routers, GPI e ATEM.
+4. Controle externo de routers, GPI e ATEM via gateway autenticado.
 
 ### Fase E — timeline e operação distribuída
 

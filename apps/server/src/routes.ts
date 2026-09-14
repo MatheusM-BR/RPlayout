@@ -40,7 +40,7 @@ import { hashPassword, verifyPassword } from './domain/auth.js'
 import { emitIntegrationEvent } from './domain/integrations.js'
 import { conflictsWithScheduleRule } from './domain/schedule-rules.js'
 import { activeHorizonRule } from './domain/continuous.js'
-import { DEFAULT_ROLE, AUTH_PASSWORD, AUTH_USER } from './config.js'
+import { DEFAULT_ROLE, AUTH_PASSWORD, AUTH_USER, EXTERNAL_CONTROL_TOKEN } from './config.js'
 
 const execFileAsync = promisify(execFile)
 import * as Roots from './domain/roots.js'
@@ -2653,6 +2653,31 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   // ---- transporte ------------------------------------------------------
+
+  server.post('/api/external/control', async (request, reply) => {
+    if (!EXTERNAL_CONTROL_TOKEN) return reply.code(503).send({ error: 'Controle externo não configurado.' })
+    const token = request.headers['x-rplayout-control-token']
+    if (token !== EXTERNAL_CONTROL_TOKEN) return reply.code(401).send({ error: 'Token de controle externo inválido.' })
+    const body = z.object({
+      channelId: z.string().min(1),
+      action: z.enum(['take', 'cue', 'stop', 'park']),
+      itemId: z.string().nullable().optional(),
+      assetId: z.string().nullable().optional(),
+    }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Comando externo inválido.' })
+    const runtime = await runtimeFor(app, body.data.channelId)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Canal sem grade carregada.' })
+    try {
+      if (body.data.action === 'take') await runtime.transport.take(runtime.view.rundown.id, body.data.itemId ?? '')
+      else if (body.data.action === 'cue') await runtime.transport.cue(body.data.itemId ? { kind: 'ITEM', id: body.data.itemId } : body.data.assetId ? { kind: 'ASSET', id: body.data.assetId } : null)
+      else if (body.data.action === 'stop') await runtime.transport.stop()
+      else if (body.data.itemId) await runtime.transport.park(body.data.itemId)
+      await emitIntegrationEvent(app.db, `external.${body.data.action}`, body.data, body.data.channelId)
+      return { ok: true, action: body.data.action, channelId: body.data.channelId }
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : 'Comando recusado pelo transporte.' })
+    }
+  })
 
   server.post('/api/channels/:id/transport', async (request, reply) => {
     const { id } = request.params as { id: string }
