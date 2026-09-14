@@ -204,6 +204,7 @@ export const api = {
   acknowledgeHealth: (id: string) => post<{ ok: true }>(`/api/health-events/${id}/ack`, {}),
   schedulerStatus: () => send<{ checkedAt: string; channels: Array<{ channelId: string; rundownId: string | null; activeRule: { name: string; startMinute: number; endMinute: number } | null; endsAtFrames: number; minutesRemaining: number; coverageMinutes: number; coverageHours: number; targetHours: number; coverageReady: boolean }> }>('/api/scheduler/status'),
   n1Status: () => send<{ configured: boolean; peer: string | null; reachable: boolean; latencyMs: number | null; checkedAt: string; error: string | null }>('/api/n1/status'),
+  timeline: (channelId: string) => send<{ channelId: string; nowFrames: number; items: Array<{ itemId: string; title: string; type: string; start: number; end: number; duration: number; state: 'ON_AIR' | 'UP_NEXT' | 'AIRED' }> }>(`/api/channels/${encodeURIComponent(channelId)}/timeline`),
 
   autoFill: (
     rundownId: string,

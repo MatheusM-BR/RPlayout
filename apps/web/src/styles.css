@@ -1802,3 +1802,6 @@ input.obs:focus { border-color: var(--accent); background: var(--sunk); color: v
 .monitor-seekbar { display: flex; align-items: center; gap: 4px; }
 .monitor-seekbar input { flex: 1; min-width: 0; }
 .frame-step { min-width: 34px; padding-inline: 4px; font-size: 10px; }
+.timeline-strip { display:flex; gap:6px; overflow-x:auto; padding:8px 0; max-width:100%; }
+.timeline-chip { border:1px solid var(--border-soft); background:var(--sunk); color:var(--text-muted); padding:4px 8px; border-radius:3px; white-space:nowrap; font-size:11px; }
+.timeline-chip.active { border-color:var(--onair); color:var(--text); background:rgba(220,60,80,.18); }

@@ -93,6 +93,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [healthEvents, setHealthEvents] = useState<Awaited<ReturnType<typeof api.healthEvents>>['events']>([])
   const [scheduler, setScheduler] = useState<Awaited<ReturnType<typeof api.schedulerStatus>>['channels'][number] | null>(null)
   const [n1, setN1] = useState<Awaited<ReturnType<typeof api.n1Status>> | null>(null)
+  const [timeline, setTimeline] = useState<Awaited<ReturnType<typeof api.timeline>>['items']>([])
   const [healthFilter, setHealthFilter] = useState<'ALL' | 'WARN' | 'CRITICAL'>('ALL')
   const [processKind, setProcessKind] = useState<'ALL' | 'ENGINE' | 'OUTPUT' | 'MEDIAMTX'>('ALL')
   const [processChannel, setProcessChannel] = useState<'ALL' | 'CURRENT'>('CURRENT')
@@ -119,13 +120,14 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
 
   const refresh = useCallback(async () => {
     try {
-      const [payload, profiles, processReport, healthReport, schedulerReport, n1Report] = await Promise.all([
+      const [payload, profiles, processReport, healthReport, schedulerReport, n1Report, timelineReport] = await Promise.all([
         api.distribution(),
         api.outputs(channelId),
         api.processes(),
         api.healthEvents(channelId),
         api.schedulerStatus(),
         api.n1Status(),
+        api.timeline(channelId),
       ])
       setData(payload)
       setOutputs(profiles.outputs)
@@ -133,6 +135,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
       setHealthEvents(healthReport.events)
       setScheduler(schedulerReport.channels.find((entry) => entry.channelId === channelId) ?? null)
       setN1(n1Report)
+      setTimeline(timelineReport.items)
       setError(null)
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Falha ao ler a distribuição.')
@@ -300,6 +303,9 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
             <label>Histórico de saúde deste canal</label>
             {scheduler && <div className="note">Faixa ativa: <b>{scheduler.activeRule?.name ?? 'nenhuma'}</b> · grade termina em aproximadamente <b>{scheduler.minutesRemaining} min</b> · cobertura {scheduler.coverageHours} h.</div>}
             {n1?.configured && <div className="note">Peer N+1: <span className={`pill ${n1.reachable ? 'ok' : 'bad'}`}>{n1.reachable ? 'alcançável' : 'indisponível'}</span>{n1.latencyMs != null && ` · ${n1.latencyMs} ms`}{n1.error && ` · ${n1.error}`}</div>}
+            {timeline.length > 0 && <div className="timeline-strip" aria-label="timeline operacional">
+              {timeline.slice(0, 12).map((item) => <span key={item.itemId} className={`timeline-chip ${item.state === 'ON_AIR' ? 'active' : ''}`} title={`${item.title} · ${item.state}`}>{item.state === 'ON_AIR' ? '● ' : ''}{item.title}</span>)}
+            </div>}
             <a className="btn small" href={`/api/health-events.csv?channelId=${encodeURIComponent(channelId)}`} download>baixar CSV de saúde</a>
             <div className="health-summary"><span className="pill bad">críticos pendentes: {criticalPending}</span><span className="pill warn">atenção pendente: {warnPending}</span><select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value as typeof healthFilter)}><option value="ALL">todos os níveis</option><option value="CRITICAL">somente críticos</option><option value="WARN">somente atenção</option></select></div>
             <table className="asrun process-table"><thead><tr><th>horário</th><th>componente</th><th>severidade</th><th>estado</th><th>mensagem</th></tr></thead><tbody>
