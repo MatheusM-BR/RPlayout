@@ -165,6 +165,9 @@ async function main(): Promise<void> {
     // MediaMTX é um processo único do servidor: seu watchdog deve rodar uma
     // vez por ciclo, independentemente da quantidade de canais.
     app.mediamtx?.watchdog()
+    // Reconnecta destinos externos de forma isolada e com backoff; uma queda
+    // não deve criar uma tempestade de processos nem exigir reinício manual.
+    app.relays.tick()
     for (const runtime of app.runtimes.values()) {
       // O canal anda com ou sem interface aberta. Amarrar isto à presença de
       // um navegador seria congelar a grade e o nivelamento no instante em que

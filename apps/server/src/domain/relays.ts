@@ -66,6 +66,7 @@ interface Relay {
   rttMs: number | null
   lossPct: number | null
   bitrateKbps: number | null
+  nextRetryAt: number
 }
 
 /**
@@ -125,6 +126,7 @@ export class RelaySupervisor {
       rttMs: null,
       lossPct: null,
       bitrateKbps: null,
+      nextRetryAt: 0,
     }
     this.relays.set(target.id, relay)
     child.on('error', (error) => {
@@ -152,6 +154,7 @@ export class RelaySupervisor {
             case 'connecting':
               relay.state = 'CONECTANDO'
               relay.attempts = event.attempt ?? relay.attempts
+              relay.nextRetryAt = 0
               break
             case 'assembled':
               relay.streams = event.streams ?? []
@@ -171,10 +174,12 @@ export class RelaySupervisor {
             case 'disconnected':
               relay.state = 'CAIU'
               relay.reason = event.reason ?? null
+              relay.nextRetryAt = Date.now() + retryDelay(relay.attempts)
               break
             case 'fatal':
               relay.state = 'FALHOU'
               relay.reason = event.message ?? null
+              relay.nextRetryAt = Date.now() + retryDelay(relay.attempts)
               break
             default:
               break
@@ -190,7 +195,19 @@ export class RelaySupervisor {
     child.on('exit', () => {
       const current = this.relays.get(target.id)
       if (current?.child === child) current.state = 'FALHOU'
+      if (current?.child === child) current.nextRetryAt = Date.now() + retryDelay(current.attempts)
     })
+  }
+
+  /** Reabre apenas um destino que caiu, com backoff exponencial limitado. */
+  tick(now = Date.now()): void {
+    for (const [id, relay] of this.relays) {
+      if (relay.state !== 'CAIU' && relay.state !== 'FALHOU') continue
+      if (relay.nextRetryAt > now) continue
+      relay.child.kill()
+      this.relays.delete(id)
+      this.spawn(relay.target, relay.target.source)
+    }
   }
 
   status(): RelayStatus[] {
@@ -218,4 +235,8 @@ export class RelaySupervisor {
     for (const relay of this.relays.values()) relay.child.kill()
     this.relays.clear()
   }
+}
+
+function retryDelay(attempts: number): number {
+  return Math.min(30_000, 1_000 * 2 ** Math.min(5, Math.max(0, attempts)))
 }
