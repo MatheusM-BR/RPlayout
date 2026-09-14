@@ -13,7 +13,7 @@ const sections = [
   ['Usuários e permissões', 'USUÁRIOS permite criar contas, escolher papel e ativar ou desativar acesso. O login é controlado por sessão; SAIR encerra a sessão atual.'],
   ['Auditoria e Aired', 'Aired registra o que entrou e saiu do ar. Auditoria permite filtrar por usuário, ação e data e exportar CSV.'],
   ['Solução de problemas', 'Se ficar em SINTONIZANDO, confira MediaMTX e o processo do canal. Se não houver áudio, clique no alto-falante e confirme se o endpoint tem trilha Opus. Se o executável fechar, use o pacote com apps/web/dist e apps/server/src preservados.'],
-  ['Roadmap profissional', 'O RPlayout usa o XPlayout como benchmark funcional. As próximas camadas são automação 24/7 com eventos FIXED/SEQUENTIAL/HARD TIME/LIVE/FILLER, SRT Manager, cache de continuidade, N+1, detecção de black/silêncio, SCTE e timeline visual. A matriz completa está em docs/ROADMAP-XPAYOUT-BENCHMARK.md.'],
+  ['Roadmap profissional', 'O RPlayout usa o XPlayout como benchmark funcional. Já há telemetria de relays, reconexão com backoff, alerta de silêncio sustentado, cobertura de 48 horas, timeline operacional e entrada SCTE normalizada. A matriz completa e os limites que dependem de hardware estão em docs/ROADMAP-XPAYOUT-BENCHMARK.md.'],
 ]
 
 export function DocumentationPanel({ onClose }: Props) {
