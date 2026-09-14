@@ -78,6 +78,7 @@ interface Relay {
  */
 export class RelaySupervisor {
   private readonly relays = new Map<string, Relay>()
+  private desired = new Map<string, RelayTarget>()
 
   constructor(private readonly binary: string) {}
 
@@ -86,6 +87,7 @@ export class RelaySupervisor {
     if (this.binary === '') return
 
     const wanted = new Map(targets.map((target) => [target.id, target]))
+    this.desired = wanted
 
     for (const [id, relay] of this.relays) {
       const target = wanted.get(id)
@@ -96,7 +98,7 @@ export class RelaySupervisor {
       }
     }
 
-    for (const target of targets) {
+    for (const target of targets.filter((candidate) => candidate.primary !== false && !candidate.backupFor)) {
       const current = this.relays.get(target.id)
       // Um processo que terminou não volta sozinho. A próxima sincronização
       // deve substituí-lo, mantendo a supervisão viva após uma queda.
@@ -207,6 +209,22 @@ export class RelaySupervisor {
       relay.child.kill()
       this.relays.delete(id)
       this.spawn(relay.target, relay.target.source)
+    }
+    // Failover N+1: o backup só assume quando o primário está realmente
+    // caído. Enquanto o primário voltar, não há dois encoders transmitindo.
+    for (const primary of this.desired.values()) {
+      if (primary.primary === false || primary.backupFor) continue
+      const primaryRelay = this.relays.get(primary.id)
+      const backup = [...this.desired.values()].find((candidate) => candidate.backupFor === primary.id)
+      if (!backup) continue
+      const backupRelay = this.relays.get(backup.id)
+      const failed = !primaryRelay || primaryRelay.state === 'CAIU' || primaryRelay.state === 'FALHOU'
+      if (failed && !backupRelay) {
+        this.spawn(backup, backup.source)
+      } else if (!failed && backupRelay) {
+        backupRelay.child.kill()
+        this.relays.delete(backup.id)
+      }
     }
   }
 
