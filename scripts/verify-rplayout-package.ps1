@@ -3,6 +3,13 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path $Package).Path
 $required = @(
   'rplayout-test.exe',
+  'RPlayout-Server.exe',
+  'RPlayout-Master.exe',
+  'RPlayout-Schedule.exe',
+  'RPlayout-Users.exe',
+  'RPlayout-Monitor.exe',
+  'RPlayout-Aired.exe',
+  'RPlayout-QC.exe',
   'rplayout-engine-test.exe',
   'apps/web/dist/index.html',
   'apps/server/src/index.ts',

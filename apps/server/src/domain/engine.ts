@@ -41,6 +41,7 @@ type EngineEvent =
   | { event: 'ack'; id: number; ok: boolean; error?: string }
   | { event: 'state'; onAir?: string; armed?: string; preview?: string }
   | { event: 'position'; itemId: string; frames: number; duration: number }
+  | { event: 'previewPosition'; itemId: string; frames: number; duration: number }
   | { event: 'eos'; itemId: string }
   | { event: 'sourceLost'; itemId: string; reason: string }
   | { event: 'itemError'; itemId: string; bus: 'pgm' | 'pvw'; message: string }
@@ -197,6 +198,7 @@ export class EngineTransport implements Transport {
    */
   private liveEndsAt: Frames | null = null
   private preview: PreviewTarget | null = null
+  private previewPosition: { frames: Frames; duration: Frames } | null = null
   private meter: MeterReading | null = null
   private previewReading: MeterReading | null = null
   /** Uma entrada por saída de rede, chaveada pela URL de destino. */
@@ -397,6 +399,12 @@ export class EngineTransport implements Transport {
       case 'position':
         // A posição é a fonte da verdade sobre quanto já foi ao ar.
         if (event.itemId === this.onAirItemId) this.elapsed = event.frames
+        break
+      case 'previewPosition':
+        if (this.preview && event.itemId === this.preview.id) {
+          this.previewPosition = { frames: event.frames, duration: event.duration }
+          this.dirty = true
+        }
         break
       case 'eos':
         if (event.itemId === this.onAirItemId) this.advanceAfter(event.itemId)
@@ -807,6 +815,7 @@ export class EngineTransport implements Transport {
       rundownId: this.rundownId,
       onAir,
       preview: this.preview,
+      previewPosition: this.previewPosition,
       preparedItemId: this.armedItemId,
       preparingItemId: this.preparingItemId,
       playing: this.onAirItemId !== null,
@@ -825,6 +834,7 @@ export class EngineTransport implements Transport {
       if (spec) await this.checkFile(spec)
       await this.request({ cmd: 'preview', item: spec })
       this.preview = target
+      this.previewPosition = spec && !spec.source ? { frames: 0, duration: Math.max(0, spec.trimOut - spec.trimIn) } : null
       this.previewReading = SILENCE
       this.dirty = true
     })
@@ -850,6 +860,16 @@ export class EngineTransport implements Transport {
       this.elapsed = 0
       this.liveEndsAt = null
       this.preview = { kind: 'ITEM', id: itemId }
+      this.previewPosition = { frames: 0, duration: Math.max(0, spec.trimOut - spec.trimIn) }
+      this.dirty = true
+    })
+  }
+
+  seek(bus: 'pgm' | 'pvw', frames: Frames): Promise<void> {
+    return this.enqueue(async () => {
+      await this.request({ cmd: 'seek', bus, frames: Math.max(0, Math.round(frames)) })
+      if (bus === 'pgm') this.elapsed = Math.max(0, Math.round(frames))
+      else if (this.previewPosition) this.previewPosition = { ...this.previewPosition, frames: Math.max(0, Math.min(this.previewPosition.duration, Math.round(frames))) }
       this.dirty = true
     })
   }
@@ -996,6 +1016,7 @@ export class EngineTransport implements Transport {
     this.rejectPending('O canal foi encerrado.')
     this.onAirItemId = null
     this.preview = null
+    this.previewPosition = null
     this.meter = SILENCE
     this.previewReading = SILENCE
     setTimeout(() => child.kill(), 1000).unref()

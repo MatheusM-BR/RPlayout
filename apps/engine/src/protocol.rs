@@ -79,6 +79,8 @@ pub enum Command {
     Stop,
     /// Muda o ganho do item no ar sem interromper nada.
     SetGain { gain_db: f64 },
+    /// Posiciona arquivo do programa ou preview em frames desde o Mark In.
+    Seek { bus: String, frames: i64 },
     /// Liga ou desliga um monitor ("pvw", "mon") sob demanda.
     ///
     /// Os pipelines de saída são independentes do do canal, então parar um
@@ -123,6 +125,12 @@ pub enum Event {
     },
     /// Posição do item no ar, em frames desde o ponto de entrada.
     Position {
+        item_id: String,
+        frames: i64,
+        duration: i64,
+    },
+    /// Posição do arquivo aberto no preview.
+    PreviewPosition {
         item_id: String,
         frames: i64,
         duration: i64,

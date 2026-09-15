@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
 import type { AudioLevel, Channel, EditScope, Fit, Trim } from '@rplayout/protocol'
 import { api } from './api.js'
@@ -35,6 +36,8 @@ import { Login } from './components/Login.js'
 import { AuditPanel } from './components/AuditPanel.js'
 import { UsersPanel } from './components/UsersPanel.js'
 import { DocumentationPanel } from './components/DocumentationPanel.js'
+import { WorkspaceShell, type WorkspaceId } from './components/WorkspaceShell.js'
+import { QualityControlPanel } from './components/QualityControlPanel.js'
 
 type Dialog =
   | { kind: 'trim'; view: ItemView }
@@ -82,14 +85,6 @@ export function App() {
   const [folders, setFolders] = useState<LibraryFolder[]>([])
   const [categorias, setCategorias] = useState<Categoria[]>([])
   const [dialog, setDialog] = useState<Dialog>(null)
-  const abriuPlaylistWorkspace = useRef(false)
-  useEffect(() => {
-    if (!view || abriuPlaylistWorkspace.current) return
-    if (new URLSearchParams(window.location.search).get('workspace') === 'playlist') {
-      abriuPlaylistWorkspace.current = true
-      setDialog({ kind: 'playlists' })
-    }
-  }, [view])
   /** Uma lista .m3u está sendo arrastada por cima da janela. */
   const [listaSobrevoando, setListaSobrevoando] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -134,6 +129,21 @@ export function App() {
    */
   const channelRef = useRef<string | null>(null)
   const toastTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('follow-lock', followOnAir)
+    if (!followOnAir) return () => document.documentElement.classList.remove('follow-lock')
+    const stopPageKeys = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) event.preventDefault()
+    }
+    window.addEventListener('keydown', stopPageKeys, { capture: true })
+    return () => {
+      document.documentElement.classList.remove('follow-lock')
+      window.removeEventListener('keydown', stopPageKeys, { capture: true })
+    }
+  }, [followOnAir])
 
   const assets = useMemo<LibraryAsset[]>(
     () => folders.flatMap((folder) => folder.assets),
@@ -390,6 +400,7 @@ export function App() {
         title: selected.item.title,
         duration: schedule.get(selected.item.id)?.duration ?? 0,
         fromExplorer: false,
+        seekable: !selected.item.sourceRef,
       }
     }
     if (target?.kind === 'ASSET' && view) {
@@ -399,6 +410,7 @@ export function App() {
           title: asset.title,
           duration: durationIn(asset, view.channel.rate),
           fromExplorer: true,
+          seekable: true,
         }
       }
     }
@@ -429,8 +441,14 @@ export function App() {
     [view],
   )
 
+  const nextScheduledItem = useMemo(() => {
+    if (!view) return null
+    const index = view.items.findIndex((item) => item.item.id === onAirId)
+    return view.items.slice(Math.max(0, index + 1)).find((item) => schedule.get(item.item.id)?.state !== 'DROPPED') ?? null
+  }, [view, onAirId, schedule])
+
   const command = useCallback(
-    (action: 'take' | 'cue' | 'stop' | 'park', body?: { itemId?: string; assetId?: string }) =>
+    (action: 'take' | 'cue' | 'stop' | 'park' | 'seek', body?: { itemId?: string; assetId?: string; bus?: 'pgm' | 'pvw'; frames?: number }) =>
       guard(async () => {
         if (!view) return
         absorb(await api.transport(view.channel.id, action, body))
@@ -797,6 +815,14 @@ export function App() {
     })
   }
 
+  const ignorarNoAcervo = (assetId: string): void => {
+    void guard(async () => {
+      await api.patchAsset(assetId, { ignored: true })
+      await refreshLibrary()
+      say('Arquivo movido para os ignorados.')
+    })
+  }
+
   if (authRequired && !authenticated) return <Login onLogin={login} error={authError} />
 
   if (!view || !live) {
@@ -814,21 +840,37 @@ export function App() {
     )
   }
 
-  const workspace = new URLSearchParams(window.location.search).get('workspace')
-  const abrirMaster = (): void => { window.location.href = window.location.pathname }
+  const requestedWorkspace = new URLSearchParams(window.location.search).get('workspace')
+  const knownWorkspaces: WorkspaceId[] = ['master', 'playlist', 'users', 'monitor', 'aired', 'audit', 'qc', 'docs']
+  const workspace: WorkspaceId = knownWorkspaces.includes(requestedWorkspace as WorkspaceId) ? requestedWorkspace as WorkspaceId : 'master'
+  const workspaceHref = (target: WorkspaceId): string => target === 'master' ? window.location.pathname : `${window.location.pathname}?workspace=${target}`
+  const abrirMaster = (): void => { window.location.href = workspaceHref('master') }
+  const shell = (active: WorkspaceId, title: string, description: string, content: ReactNode) => <WorkspaceShell active={active} channelName={view.channel.name} role={sessionRole ?? 'Operador'} authRequired={authRequired} title={title} description={description}>{content}{toast && <div className="toast" role="status">{toast}</div>}</WorkspaceShell>
   if (workspace === 'playlist') {
-    return <div className="playlist-workspace"><PlaylistsDialog
+    return shell('playlist', 'Programação', 'organização e publicação de playlists 24h', <div className="playlist-workspace"><PlaylistsDialog
       rundownId={view.rundown.id}
-      onCancel={() => { window.location.href = window.location.pathname }}
+      onCancel={abrirMaster}
       onLoaded={(snapshot, message) => { absorb(snapshot); say(message) }}
       onMessage={say}
-    /></div>
+    /></div>)
   }
-  if (workspace === 'admin') {
-    return <div className="standalone-workspace"><div className="standalone-card"><header><h2>Administração do RPlayout</h2><div className="sub">usuários, papéis e permissões</div></header><div className="body"><UsersPanel onMessage={say} /></div><footer><button className="btn" onClick={abrirMaster}>voltar ao operador</button></footer></div></div>
+  if (workspace === 'users') {
+    return shell('users', 'Usuários e acesso', 'contas, papéis e permissões', <section className="workspace-panel"><header className="workspace-panel-head"><div><h1>Usuários e acesso</h1><p>Controle quem opera, programa e administra o canal.</p></div><span className={`auth-state${authRequired ? ' protected' : ' local'}`}>{authRequired ? 'LOGIN ATIVO' : 'MODO LOCAL SEM LOGIN'}</span></header>{!authRequired && <div className="action-banner warn"><div><strong>Este servidor está em modo local.</strong><span>Configure RPLAYOUT_ADMIN_USER e RPLAYOUT_ADMIN_PASSWORD para exigir login no próximo início.</span></div></div>}<UsersPanel onMessage={say} /></section>)
   }
   if (workspace === 'monitor') {
-    return <div className="standalone-workspace"><Distribution channelId={view.channel.id} onClose={abrirMaster} onMessage={say} /></div>
+    return shell('monitor', 'Monitoramento', 'saídas, processos, saúde e continuidade', <Distribution channelId={view.channel.id} onClose={abrirMaster} onMessage={say} />)
+  }
+  if (workspace === 'aired') {
+    return shell('aired', 'Aired', 'o que realmente foi ao ar', <AsRunPanel channelId={view.channel.id} rate={view.channel.rate} onClose={abrirMaster} />)
+  }
+  if (workspace === 'audit') {
+    return shell('audit', 'Auditoria', 'ações de operadores e do sistema', <AuditPanel onClose={abrirMaster} />)
+  }
+  if (workspace === 'docs') {
+    return shell('docs', 'Ajuda operacional', 'procedimentos e recuperação de falhas', <DocumentationPanel onClose={abrirMaster} />)
+  }
+  if (workspace === 'qc') {
+    return shell('qc', 'Controle de qualidade', 'análise, aceite e rejeição de mídia', <QualityControlPanel folders={folders} scan={scan} onAccept={aceitarDoAcervo} onIgnore={ignorarNoAcervo} onScan={(measure) => void startScan(measure)} />)
   }
 
   const rate = view.channel.rate
@@ -915,15 +957,11 @@ export function App() {
           >
             ⚙
           </button>
-          <button className="aba acesso" title="Abrir gerenciamento de usuários" onClick={() => setDialog({ kind: 'users' })}>
-            USUÁRIOS
-          </button>
-          <button className="aba" title="Abrir organização de playlists em janela própria" onClick={() => window.open(`${window.location.pathname}?workspace=playlist`, '_blank', 'noopener,noreferrer')}>
-            PLAYLISTS
-          </button>
-          <button className="aba" title="Documentação e procedimentos do RPlayout" onClick={() => setDialog({ kind: 'docs' })}>
-            AJUDA
-          </button>
+          <a className="aba" href={workspaceHref('playlist')} title="Organizar e publicar a programação de 24 horas">PLAYLISTS</a>
+          <a className="aba" href={workspaceHref('qc')} title="Revisar mídias com problemas de imagem, áudio ou formato">QC</a>
+          <a className="aba" href={workspaceHref('monitor')} title="Abrir saídas, processos e saúde do canal">MONITOR</a>
+          <a className="aba acesso" href={workspaceHref('users')} title="Abrir gerenciamento de usuários">USUÁRIOS</a>
+          <a className="aba" href={workspaceHref('docs')} title="Documentação e procedimentos do RPlayout">AJUDA</a>
         </nav>
 
         {commitment && (
@@ -948,7 +986,7 @@ export function App() {
         )}
 
         <div className="spacer" />
-        <div className="session-role" title="papel da sessão">{sessionRole ?? 'Operador'}</div>
+        <div className={`session-role${authRequired ? '' : ' local'}`} title={authRequired ? 'papel da sessão autenticada' : 'servidor em modo local sem exigência de login'}>{authRequired ? (sessionRole ?? 'Operador') : 'ACESSO LOCAL'}</div>
         {authRequired && <button className="btn small" title="Encerrar sessão" onClick={() => {
           void fetch('/api/auth/logout', { method: 'POST' }).finally(() => {
             setAuthenticated(false)
@@ -1030,13 +1068,7 @@ export function App() {
               >
                 REFAZER
               </button>
-              <button
-                className="btn small afastado"
-                onClick={() => setDialog({ kind: 'asrun' })}
-                title="O que realmente foi ao ar"
-              >
-                AIRED
-              </button>
+              <a className="btn small afastado" href={workspaceHref('aired')} title="O que realmente foi ao ar">AIRED</a>
               <a className="btn small" href={`/api/rundowns/${view.rundown.id}/export.csv`} download title="Exportar a grade proposta em CSV">
                 EXPORTAR GRADE
               </a>
@@ -1049,6 +1081,13 @@ export function App() {
               </button>
             </div>
           </div>
+          <section className={`operation-state${live.alerts.length ? ' failed' : onAirId ? ' live' : ' idle'}`} aria-label="Estado operacional do canal">
+            <div><span>ESTADO</span><strong>{live.alerts.length ? 'ATENÇÃO' : onAirId ? 'NO AR' : live.transport.standby ? 'PREPARADO' : 'PARADO'}</strong></div>
+            <div className="operation-item"><span>ITEM</span><strong>{onAirItem?.item.title ?? 'nenhum item no ar'}</strong></div>
+            <div><span>RESTANTE</span><strong className="mono">{onAirId ? dur(remainingOnAir, rate) : '—'}</strong></div>
+            <div className="operation-item"><span>PRÓXIMO</span><strong>{nextScheduledItem?.item.title ?? 'fim da grade'}</strong></div>
+            {live.alerts.length > 0 ? <a className="btn small" href={workspaceHref('monitor')}>ABRIR DIAGNÓSTICO</a> : !onAirId ? <button className="btn small" onClick={() => void command('park')}>PREPARAR PRIMEIRO</button> : null}
+          </section>
           <div className={`pane-body${followOnAir ? ' following' : ''}`}>
             <Rundown
               items={view.items}
@@ -1093,6 +1132,7 @@ export function App() {
             onAirRemaining={remainingOnAir}
             preview={previewCard}
             monitors={monitors}
+            onSeek={(bus, frames) => void command('seek', { bus, frames, itemId: bus === 'pgm' ? onAirId ?? undefined : selectedId ?? undefined })}
           />
           <div className="pane-title">
             conflitos
@@ -1184,13 +1224,7 @@ export function App() {
         <button className="btn small" onClick={() => setDialog({ kind: 'autofill' })}>
           montar
         </button>
-        <button
-          className="btn small"
-          onClick={() => setDialog({ kind: 'distribution' })}
-          title="Abrir saídas e processos neste painel"
-        >
-          SAÍDAS E PROCESSOS
-        </button>
+        <a className="btn small" href={workspaceHref('monitor')} title="Abrir saídas, processos e saúde do canal">MONITORAMENTO</a>
         </div>
         {marked.size >= 2 && (
           <button className="btn take" onClick={group}>

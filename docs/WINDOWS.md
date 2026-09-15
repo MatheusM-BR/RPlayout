@@ -106,9 +106,18 @@ Isso não substitui drivers de hardware: DeckLink exige o driver Blackmagic e
 NDI exige o runtime/SDK NDI correspondente.
 
 O empacotador também copia Node e pnpm para `runtime/node` e `runtime/pnpm`,
-além de `node_modules`. O executável de teste validado fica em
-`release/RPlayout-1.1-next/rplayout-test.exe`; ele inicia o servidor sem exigir
-Node ou pnpm instalados globalmente.
+além de `node_modules`. A entrega separa o serviço 24/7 dos clientes de operação:
+
+- `RPlayout-Server.exe`: mantém o serviço no ar e não abre navegador;
+- `RPlayout-Master.exe`: operação do canal;
+- `RPlayout-Schedule.exe`: programação e playlists 24h;
+- `RPlayout-Users.exe`: usuários, papéis e acesso;
+- `RPlayout-Monitor.exe`: saídas, processos, saúde, cache e failover;
+- `RPlayout-Aired.exe`: histórico do que foi ao ar;
+- `RPlayout-QC.exe`: controle de qualidade do acervo.
+
+Os clientes podem ser fechados sem derrubar o servidor. Eles reutilizam uma
+instância já ativa e abrem diretamente o workspace correspondente.
 
 ```powershell
 .\apps\engine\target\release\rplayout-devices.exe
@@ -194,18 +203,19 @@ A tela abre em <http://localhost:4000> -- ou pelo IP da máquina, de outro
 computador da rede. Repetir `pnpm build` só é necessário quando a interface
 mudar.
 
-### Um clique para pôr no ar
+### Serviço 24/7 e aplicativos de operação
 
-O `cargo build --release` produz, junto com o engine, um lançador:
+O `cargo build --release` produz o lançador base. O empacotador cria os nomes
+operacionais acima a partir dele:
 
 ```
 C:\RPlayout\apps\engine\target\release\rplayout.exe
 ```
 
 Ele descobre a instalação a partir de onde está, sobe o servidor com os
-caminhos certos, espera a porta responder e abre a interface no navegador. A
-janela que fica aberta é o log do servidor -- é onde aparece por que uma saída
-caiu ou um arquivo não abriu --, e fechá-la tira o RPlayout do ar.
+caminhos certos e espera a porta responder. O executável Server mantém somente
+o serviço; os demais abrem a interface do próprio módulo. Fechar um cliente não
+interrompe o canal. Fechar o Server encerra os processos filhos que ele iniciou.
 
 Copie para a raiz e faça um atalho na área de trabalho:
 

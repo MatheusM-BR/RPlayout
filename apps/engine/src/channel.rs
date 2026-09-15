@@ -1916,10 +1916,47 @@ impl Channel {
         Ok(())
     }
 
+    /// Move o arquivo do programa ou do preview sem reconstruir o pipeline.
+    pub fn seek(&mut self, bus: &str, frames: i64) -> Result<()> {
+        let fps_n = self.config.fps_n as u128;
+        let fps_d = self.config.fps_d as u128;
+        let item = match bus {
+            "pgm" => self.on_air.as_mut(),
+            "pvw" => self.previewing.as_mut(),
+            _ => return Err(anyhow!("barramento de seek desconhecido: {bus}")),
+        }
+        .ok_or_else(|| anyhow!("nada aberto em {bus} para posicionar"))?;
+        if item.spec.is_live() {
+            return Err(anyhow!("fonte ao vivo não permite seek"));
+        }
+        let duration = (item.spec.trim_out - item.spec.trim_in).max(0);
+        let relative = frames.clamp(0, duration);
+        let absolute = item.spec.trim_in + relative;
+        let nanos = absolute as u128 * 1_000_000_000u128 * fps_d / fps_n;
+        item.pipeline
+            .seek_simple(
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+                gst::ClockTime::from_nseconds(nanos as u64),
+            )
+            .with_context(|| format!("{bus} não aceitou o seek"))?;
+        Ok(())
+    }
+
     /// Posição do item no ar, em frames desde o ponto de entrada.
     pub fn position(&self) -> Option<(String, i64, i64)> {
         let item = self.on_air.as_ref()?;
         if !item.on_air {
+            return None;
+        }
+        let position = item.pipeline.query_position::<gst::ClockTime>()?;
+        let frames = self.time_to_frames(position) - item.spec.trim_in;
+        let duration = item.spec.trim_out - item.spec.trim_in;
+        Some((item.spec.item_id.clone(), frames.max(0), duration))
+    }
+
+    pub fn preview_position(&self) -> Option<(String, i64, i64)> {
+        let item = self.previewing.as_ref()?;
+        if item.spec.is_live() {
             return None;
         }
         let position = item.pipeline.query_position::<gst::ClockTime>()?;

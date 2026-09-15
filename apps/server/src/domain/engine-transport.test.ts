@@ -16,7 +16,7 @@ const channel = { id: 'channel', name: 'Test', width: 320, height: 180,
 let directory: string
 let transport: EngineTransport
 let child: EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; kill: ReturnType<typeof vi.fn> }
-let commands: Array<{ id: number; cmd: string; item?: { itemId: string; path: string } }>
+let commands: Array<{ id: number; cmd: string; item?: { itemId: string; path: string }; bus?: 'pgm' | 'pvw'; frames?: number }>
 let onAir: string | undefined
 let armed: string | undefined
 let rejectLoad: string | null
@@ -118,5 +118,16 @@ describe('transporte real confirmado pelo engine', () => {
     event({ event: 'eos', itemId: '0' })
     await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('1'))
     expect(commands.filter((command) => command.cmd === 'load').map((command) => command.item?.itemId)).toEqual(['0', '1'])
+  })
+
+  it('envia seek ao engine e atualiza a posição real do programa e preview', async () => {
+    const good = join(directory, 'bom.mkv'); writeFileSync(good, 'video')
+    start(view([good])); await transport.take('grade', '0')
+    await transport.seek('pgm', 125)
+    expect(commands.at(-1)).toMatchObject({ cmd: 'seek', bus: 'pgm', frames: 125 })
+    expect(transport.state().onAir?.elapsed).toBe(125)
+    await transport.cue({ kind: 'ITEM', id: '0' })
+    event({ event: 'previewPosition', itemId: '0', frames: 50, duration: 250 })
+    expect(transport.state().previewPosition).toEqual({ frames: 50, duration: 250 })
   })
 })

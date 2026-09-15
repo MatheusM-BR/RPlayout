@@ -103,7 +103,6 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [outTarget, setOutTarget] = useState('')
   const [outKind, setOutKind] = useState<'RTMP' | 'SRT' | 'FILE' | 'SDI'>('RTMP')
   const [guestLabel, setGuestLabel] = useState('')
-  const [reiniciando, setReiniciando] = useState(false)
   const [destName, setDestName] = useState('')
   const [destUrl, setDestUrl] = useState('')
   const [srtMode, setSrtMode] = useState<'caller' | 'listener' | 'rendezvous'>('caller')
@@ -149,9 +148,26 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   }, [channelId])
 
   useEffect(() => {
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), 2000)
-    return () => window.clearInterval(timer)
+    let active = true
+    let timer = 0
+    const poll = async (): Promise<void> => {
+      if (!active) return
+      if (document.visibilityState === 'visible') await refresh()
+      if (!active) return
+      timer = window.setTimeout(() => void poll(), document.visibilityState === 'visible' ? 3000 : 15000)
+    }
+    void poll()
+    const resume = (): void => {
+      if (document.visibilityState !== 'visible') return
+      window.clearTimeout(timer)
+      void poll()
+    }
+    document.addEventListener('visibilitychange', resume)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', resume)
+    }
   }, [refresh])
 
   const guard = async (action: () => Promise<void>): Promise<void> => {
@@ -228,7 +244,9 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
         <header>
           <h2>Saídas do canal</h2>
           <div className="sub">
-            {data?.server.running
+            {data === null && !error
+              ? 'carregando estado do servidor…'
+              : data?.server.running
               ? `servidor local no ar em ${data.server.host}`
               : 'servidor local desligado'}
           </div>
@@ -236,6 +254,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
 
         <div className="body">
           {error && <div className="note warn">{error}</div>}
+          <nav className="workspace-subnav" aria-label="Seções do monitoramento"><a href="#monitor-resumo">RESUMO</a><a href="#monitor-processos">PROCESSOS</a><a href="#monitor-saude">SAÚDE</a><a href="#monitor-saidas">SAÍDAS</a><a href="#monitor-entradas">ENTRADAS</a><a href="#monitor-destinos">DESTINOS</a></nav>
 
           {data?.server.exposed && (
             <div className="note warn">
@@ -258,7 +277,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
           )}
 
           {channel?.urls && (
-            <div className="field">
+            <div className="field" id="monitor-resumo">
               <label>Endereços do programa</label>
               <div className="addresses">
                 {Object.entries(channel.urls).map(([protocol, url]) => (
@@ -276,7 +295,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
             </div>
           )}
 
-          <div className="field">
+          <div className="field" id="monitor-processos">
             <label>Processos do playout</label>
             <div className="note">Monitores desligados não consomem encoder. O PID e a memória abaixo são lidos do sistema operacional.</div>
             <div className="health-summary">
@@ -305,7 +324,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
               </tbody>
             </table>
           </div>
-          <div className="field">
+          <div className="field" id="monitor-saude">
             <label>Histórico de saúde deste canal</label>
             {scheduler && <div className="note">Faixa ativa: <b>{scheduler.activeRule?.name ?? 'nenhuma'}</b> · grade termina em aproximadamente <b>{scheduler.minutesRemaining} min</b> · cobertura {scheduler.coverageHours} h.</div>}
             {n1?.configured && <div className="note">Peer N+1: <span className={`pill ${n1.reachable ? 'ok' : 'bad'}`}>{n1.reachable ? 'alcançável' : 'indisponível'}</span>{n1.latencyMs != null && ` · ${n1.latencyMs} ms`}{n1.error && ` · ${n1.error}`}</div>}
@@ -321,7 +340,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
           </div>
 
           {/* ---- perfis de saída ---- */}
-          <div className="field">
+          <div className="field" id="monitor-saidas">
             <label>Perfis de saída</label>
             <div className="rows">
               {outputs.map((output) => {
@@ -445,35 +464,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                 )
               })}
             </div>
-            {/* Mexer no conjunto de saídas de um pipeline que está no ar é o
-                tipo de cirurgia que este projeto já pagou caro para evitar. */}
-            {/* Dizer que a mudança só vale no próximo início e não oferecer
-                como fazer é o que deixava o operador ligando o preview e
-                olhando a tela preta sem ter o que clicar. */}
-            <div className="note reiniciar">
-              <span>
-                Mudança em perfil de saída só vale quando o canal sobe de novo — ligar aqui
-                não põe a saída no ar sozinho.
-              </span>
-              <button
-                className="btn small"
-                disabled={reiniciando}
-                title="O canal sai do ar por um instante"
-                onClick={() => {
-                  if (!channelId) return
-                  if (!window.confirm('Levantar o canal de novo? Ele sai do ar por um instante.'))
-                    return
-                  setReiniciando(true)
-                  void api
-                    .restartChannel(channelId)
-                    .then(() => onMessage('Canal levantado de novo com os perfis de agora.'))
-                    .catch((falha: Error) => onMessage(falha.message))
-                    .finally(() => setReiniciando(false))
-                }}
-              >
-                {reiniciando ? 'LEVANTANDO…' : 'LEVANTAR O CANAL'}
-              </button>
-            </div>
+            <div className="note ok">Ligar, desligar ou alterar um perfil reaplica as saídas imediatamente, sem reiniciar o servidor.</div>
             <div className="add-row">
               <input
                 type="text"
@@ -531,7 +522,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
           </div>
 
           {/* ---- convidados ---- */}
-          <div className="field">
+          <div className="field" id="monitor-entradas">
             <label>Convidados</label>
             <div className="rows">
               {(data?.guests ?? []).map((guest) => {
@@ -593,7 +584,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
           </div>
 
           {/* ---- destinos ---- */}
-          <div className="field">
+          <div className="field" id="monitor-destinos">
             <label>Destinos</label>
             <div className="rows">
               {(data?.destinations ?? []).map((destination) => {
@@ -736,7 +727,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                 </div>
               ))}
               {(data?.paths ?? []).length === 0 && (
-                <div className="empty">O servidor local não está respondendo.</div>
+                <div className="empty">{data === null && !error ? 'Carregando fluxos…' : error ? 'O servidor local não está respondendo.' : 'Nenhum fluxo publicado agora.'}</div>
               )}
             </div>
           </div>

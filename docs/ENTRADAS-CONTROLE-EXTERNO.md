@@ -4,8 +4,11 @@
 
 - **Master/Operador:** `http://localhost:4000/`
 - **Playlist 24h:** `http://localhost:4000/?workspace=playlist`
-- **Usuários:** `http://localhost:4000/?workspace=admin` ou botão **USUÁRIOS**
+- **Usuários:** `http://localhost:4000/?workspace=users` ou botão **USUÁRIOS**
 - **Monitoramento e saídas:** `http://localhost:4000/?workspace=monitor`
+- **Aired:** `http://localhost:4000/?workspace=aired`
+- **Auditoria:** `http://localhost:4000/?workspace=audit`
+- **Controle de qualidade:** `http://localhost:4000/?workspace=qc`
 
 ## Entradas ao vivo
 

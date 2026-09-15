@@ -328,7 +328,7 @@ export const api = {
 
   transport: (
     channelId: string,
-    action: 'take' | 'cue' | 'stop' | 'park',
-    target?: { itemId?: string | null; assetId?: string | null },
+    action: 'take' | 'cue' | 'stop' | 'park' | 'seek',
+    target?: { itemId?: string | null; assetId?: string | null; bus?: 'pgm' | 'pvw'; frames?: number },
   ) => post<Snapshot>(`/api/channels/${channelId}/transport`, { action, ...target }),
 }

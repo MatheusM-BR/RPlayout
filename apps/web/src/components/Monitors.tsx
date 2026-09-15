@@ -11,9 +11,10 @@ interface Props {
   onAirItem: ItemView | null
   onAirRemaining: number
   /** O que está no preview: título e duração, venha de item ou de arquivo. */
-  preview: { title: string; duration: number; fromExplorer: boolean } | null
+  preview: { title: string; duration: number; fromExplorer: boolean; seekable: boolean } | null
   /** De onde vem a imagem. Nulo mantém os monitores no modo texto. */
   monitors: MonitorFeeds | null
+  onSeek: (bus: 'pgm' | 'pvw', frames: number) => void
 }
 
 /**
@@ -28,6 +29,7 @@ export function Monitors({
   onAirRemaining,
   preview,
   monitors,
+  onSeek,
 }: Props) {
   const ending = onAirRemaining > 0 && onAirRemaining <= 10 * (channel.rate.num / channel.rate.den)
 
@@ -55,7 +57,7 @@ export function Monitors({
             Um texto de cada, senão os dois se escrevem por cima. */}
         <div className="screen">
           {monitors && (
-            <Whep path={monitors.program} port={monitors.port} frameRate={channel.rate.num / channel.rate.den} onWatching={avisarPgm} />
+            <Whep path={monitors.program} port={monitors.port} frameRate={channel.rate.num / channel.rate.den} positionFrames={live.transport.onAir?.elapsed ?? 0} durationFrames={onAirItem && !onAirItem.item.sourceRef ? (live.transport.onAir?.elapsed ?? 0) + onAirRemaining : 0} onSeek={onAirItem?.item.sourceRef ? undefined : (frames) => onSeek('pgm', frames)} onWatching={avisarPgm} />
           )}
           {onAirItem ? (
             <div className="over">
@@ -79,7 +81,7 @@ export function Monitors({
         </div>
         <div className="screen">
           {monitors?.preview && (
-            <Whep path={monitors.preview} port={monitors.port} frameRate={channel.rate.num / channel.rate.den} onWatching={avisarPvw} />
+            <Whep path={monitors.preview} port={monitors.port} frameRate={channel.rate.num / channel.rate.den} positionFrames={live.transport.previewPosition?.frames ?? 0} durationFrames={preview?.seekable ? (live.transport.previewPosition?.duration ?? preview.duration) : 0} onSeek={preview?.seekable ? (frames) => onSeek('pvw', frames) : undefined} onWatching={avisarPvw} />
           )}
           {preview ? (
             <div className="over">

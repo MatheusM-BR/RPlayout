@@ -15,6 +15,10 @@ interface Props {
   onWatching?: () => void
   /** Cadência do canal para avanço quadro a quadro no material pesquisável. */
   frameRate?: number
+  /** Posição real reportada pelo engine, em frames desde o Mark In. */
+  positionFrames?: number
+  durationFrames?: number
+  onSeek?: (frames: number) => void
 }
 
 type Status = 'off' | 'connecting' | 'live' | 'failed'
@@ -40,7 +44,7 @@ const tempo = (seconds: number): string => {
  * nunca com um IP que o servidor ache que tem: quem abre por `localhost` e quem
  * abre pela rede precisam ver a mesma coisa.
  */
-export function Whep({ path, port, onWatching, frameRate = 25 }: Props) {
+export function Whep({ path, port, onWatching, frameRate = 25, positionFrames = 0, durationFrames = 0, onSeek }: Props) {
   const video = useRef<HTMLVideoElement>(null)
   const [status, setStatus] = useState<Status>('off')
   const [reason, setReason] = useState<string | null>(null)
@@ -56,8 +60,7 @@ export function Whep({ path, port, onWatching, frameRate = 25 }: Props) {
   /** Chegou trilha de som nesta sessão? Sem ela o botão não teria o que fazer. */
   const [temSom, setTemSom] = useState(false)
   const [volume, setVolume] = useState(0.7)
-  const [posicao, setPosicao] = useState(0)
-  const [duracao, setDuracao] = useState(0)
+  const [scrub, setScrub] = useState<number | null>(null)
   const volumeRef = useRef(0.7)
 
   /** Sobe a cada falha e é o que faz o monitor tentar de novo. */
@@ -231,16 +234,14 @@ export function Whep({ path, port, onWatching, frameRate = 25 }: Props) {
           void video.current.play().catch(() => setReason('Clique em Ouvir para iniciar o monitor.'))
         }}
         onLoadedData={() => { setStatus('live'); setReason(null) }}
-        onLoadedMetadata={(event) => setDuracao(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
-        onTimeUpdate={(event) => setPosicao(event.currentTarget.currentTime)}
         hidden={status !== 'live'}
       />
       {status === 'live' && (
-        <div className="monitor-seekbar">
-          <span className="monitor-time" aria-live="off">{tempo(posicao)} / {duracao > 0 ? tempo(duracao) : 'ao vivo'}</span>
-          <button type="button" className="btn small frame-step" aria-label="voltar um quadro" disabled={duracao <= 0} onClick={() => { if (!video.current) return; const value = Math.max(0, video.current.currentTime - 1 / frameRate); video.current.currentTime = value; setPosicao(value) }}>−1f</button>
-          <input aria-label="Posição do vídeo" type="range" min="0" max={duracao || 1} step={1 / frameRate} value={Math.min(posicao, duracao || 1)} disabled={duracao <= 0} onChange={(event) => { const value = Number(event.target.value); setPosicao(value); if (video.current) video.current.currentTime = value }} />
-          <button type="button" className="btn small frame-step" aria-label="avançar um quadro" disabled={duracao <= 0} onClick={() => { if (!video.current) return; const value = Math.min(duracao || Infinity, video.current.currentTime + 1 / frameRate); video.current.currentTime = value; setPosicao(value) }}>+1f</button>
+        <div className="monitor-seekbar" data-seekable={onSeek && durationFrames > 0 ? 'true' : 'false'}>
+          <span className="monitor-time" aria-live="off">{tempo((scrub ?? positionFrames) / frameRate)} / {durationFrames > 0 ? tempo(durationFrames / frameRate) : 'AO VIVO'}</span>
+          <button type="button" className="btn small frame-step" aria-label="voltar um quadro no engine" disabled={!onSeek || durationFrames <= 0} onClick={() => onSeek?.(Math.max(0, positionFrames - 1))}>−1f</button>
+          <input aria-label={durationFrames > 0 ? 'Posição real do vídeo no engine' : 'Fonte ao vivo sem seek'} title={durationFrames > 0 ? 'Arraste para avançar ou retroceder o vídeo no engine' : 'Fonte ao vivo não permite seek'} type="range" min="0" max={durationFrames || 1} step="1" value={Math.min(scrub ?? positionFrames, durationFrames || 1)} disabled={!onSeek || durationFrames <= 0} onChange={(event) => setScrub(Number(event.target.value))} onPointerUp={(event) => { onSeek?.(Number(event.currentTarget.value)); setScrub(null) }} onKeyUp={(event) => { onSeek?.(Number(event.currentTarget.value)); setScrub(null) }} onBlur={(event) => { if (scrub !== null) onSeek?.(Number(event.currentTarget.value)); setScrub(null) }} />
+          <button type="button" className="btn small frame-step" aria-label="avançar um quadro no engine" disabled={!onSeek || durationFrames <= 0} onClick={() => onSeek?.(Math.min(durationFrames, positionFrames + 1))}>+1f</button>
         </div>
       )}
       {status === 'live' && (
@@ -274,11 +275,7 @@ export function Whep({ path, port, onWatching, frameRate = 25 }: Props) {
         </div>
       )}
       {status === 'live' && reason && <div className="monitor-reason" role="status">{reason}</div>}
-      {status !== 'live' && (
-        <div className="idle">
-          {status === 'failed' ? (reason ?? 'SEM SINAL') : 'SINTONIZANDO'}
-        </div>
-      )}
+      {status !== 'live' && <div className="idle monitor-idle"><span>{status === 'failed' ? (reason ?? 'SEM SINAL') : 'SINTONIZANDO'}</span>{status === 'failed' && <button className="btn small" onClick={() => setAttempt((value) => value + 1)}>TENTAR NOVAMENTE</button>}</div>}
     </>
   )
 }

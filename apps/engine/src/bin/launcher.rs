@@ -21,8 +21,16 @@ const PORT: u16 = 4000;
 fn main() -> Result<()> {
     let raiz = raiz_da_instalacao()?;
     let argumentos: Vec<String> = std::env::args().skip(1).collect();
-    let somente_servidor = argumentos.iter().any(|arg| arg == "--server-only");
-    let workspace = argumentos.iter().find_map(|arg| arg.strip_prefix("--workspace=").map(str::to_owned));
+    let nome_executavel = std::env::current_exe().ok().and_then(|path| path.file_stem().map(|name| name.to_string_lossy().to_lowercase())).unwrap_or_default();
+    let somente_servidor = argumentos.iter().any(|arg| arg == "--server-only") || nome_executavel.contains("server");
+    let workspace = argumentos.iter().find_map(|arg| arg.strip_prefix("--workspace=").map(str::to_owned)).or_else(|| {
+        if nome_executavel.contains("schedule") || nome_executavel.contains("playlist") { Some("playlist".to_owned()) }
+        else if nome_executavel.contains("users") || nome_executavel.contains("admin") { Some("users".to_owned()) }
+        else if nome_executavel.contains("monitor") { Some("monitor".to_owned()) }
+        else if nome_executavel.contains("aired") { Some("aired".to_owned()) }
+        else if nome_executavel.contains("qc") { Some("qc".to_owned()) }
+        else { None }
+    });
     println!("RPlayout · instalação em {}", raiz.display());
 
     if !raiz.join("apps/web/dist/index.html").exists() {

@@ -23,6 +23,7 @@ export interface TransportState {
   readonly onAir: OnAirState | null
   /** O que está aberto no preview: item da grade ou arquivo do explorador. */
   readonly preview: PreviewTarget | null
+  readonly previewPosition: { readonly frames: Frames; readonly duration: Frames } | null
   /** Item já aberto e decodificado no slot alternativo do programa. */
   readonly preparedItemId: string | null
   /** Item cujo preroll está acontecendo neste instante. */
@@ -44,6 +45,8 @@ export interface Transport {
   stop(): void | Promise<void>
   /** Arma a grade num item, parada, pronta para entrar no ar. */
   park(itemId: string): void | Promise<void>
+  /** Posiciona programa ou preview em frames desde o Mark In. */
+  seek(bus: 'pgm' | 'pvw', frames: Frames): void | Promise<void>
   /** Devolve true quando o estado mudou e a grade precisa ser recalculada. */
   tick(): boolean
   /** Medição real do programa, quando o transporte tem uma. */
@@ -102,6 +105,7 @@ export class SimulatedTransport implements Transport {
       rundownId: this.rundownId,
       onAir: this.onAir(),
       preview: this.preview,
+      previewPosition: null,
       preparedItemId: null,
       preparingItemId: null,
       playing: this.playing,
@@ -201,6 +205,10 @@ export class SimulatedTransport implements Transport {
   /** O simulado não sai para lugar nenhum: quem publica é o engine. */
   publishers(): readonly PublisherState[] {
     return []
+  }
+
+  seek(bus: 'pgm' | 'pvw', frames: Frames): void {
+    if (bus === 'pgm' && this.onAirItemId && this.playing) this.startedAt = this.nowFrames() - Math.max(0, frames)
   }
 
   processId(): number | null {

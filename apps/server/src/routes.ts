@@ -2771,10 +2771,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const { id } = request.params as { id: string }
     const body = z
       .object({
-        action: z.enum(['take', 'cue', 'stop', 'park']),
+        action: z.enum(['take', 'cue', 'stop', 'park', 'seek']),
         itemId: z.string().nullable().optional(),
         /** Arquivo aberto direto do explorador, sem entrar na grade. */
         assetId: z.string().nullable().optional(),
+        bus: z.enum(['pgm', 'pvw']).optional(),
+        frames: z.number().int().min(0).optional(),
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
@@ -2814,6 +2816,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         await runtime.transport.stop()
         await logDecision(app, runtime.view.rundown.id, null, 'CHANNEL_STOPPED', {}, await usernameOf(request))
         void emitIntegrationEvent(app.db, 'channel.stopped', { rundownId: runtime.view.rundown.id }, runtime.channel.id)
+        break
+      case 'seek':
+        if (!body.data.bus || body.data.frames === undefined) return reply.code(400).send({ error: 'Informe barramento e posição.' })
+        await runtime.transport.seek(body.data.bus, body.data.frames)
+        await logDecision(app, runtime.view.rundown.id, body.data.itemId ?? null, 'TRANSPORT_SEEK', { bus: body.data.bus, frames: body.data.frames }, await usernameOf(request))
         break
     }
 

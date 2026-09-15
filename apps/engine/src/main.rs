@@ -147,6 +147,10 @@ fn run_command(channel: &mut Channel, command: Command) -> Result<bool> {
             channel.set_gain(gain_db)?;
             Ok(true)
         }
+        Command::Seek { bus, frames } => {
+            channel.seek(&bus, frames)?;
+            Ok(true)
+        }
         Command::Monitor { bus, on } => {
             if !channel.set_monitor(&bus, on) {
                 return Err(anyhow::anyhow!("não existe monitor chamado {bus}"));
@@ -422,6 +426,9 @@ fn main() -> Result<()> {
                     duration,
                 }
                 .emit();
+            }
+            if let Some((item_id, frames, duration)) = channel.preview_position() {
+                Event::PreviewPosition { item_id, frames, duration }.emit();
             }
         }
 

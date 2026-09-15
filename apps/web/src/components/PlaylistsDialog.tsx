@@ -120,6 +120,7 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
         </header>
 
         <div className="body">
+          <div className="workflow-steps" aria-label="Etapas da programação"><span className="done">1 ESCOLHER DIA</span><span className={arquivoEntries ? 'done' : 'active'}>2 IMPORTAR E REVISAR</span><span className={arquivoEntries ? 'active' : ''}>3 PUBLICAR</span></div>
           <div className="field">
               <label>Listas encontradas</label>
             <div className="playlist-date-filter"><label>Filtrar por data</label><input type="date" value={filtroData} onChange={(event) => setFiltroData(event.target.value)} /></div>
@@ -210,6 +211,12 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
                 Publicar a lista substitui somente o futuro da grade. O item que já está no ar
                 permanece protegido; a alteração pode ser desfeita pelo histórico.
               </div>
+              <div className={`publication-review${semArquivo ? ' warn' : ''}`}>
+                <div><span>DATA</span><strong>{new Date(`${dataProgramacao}T12:00:00`).toLocaleDateString('pt-BR')}</strong></div>
+                <div><span>ENTRARÃO</span><strong>{arquivoEntries.length - semArquivo} itens</strong></div>
+                <div><span>SERÃO PULADOS</span><strong>{semArquivo} itens</strong></div>
+                <div><span>DURAÇÃO</span><strong className="mono">{duracaoLabel}</strong></div>
+              </div>
             </div>
           )}
           <div className="field">
@@ -229,11 +236,8 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
         </div>
 
         <footer>
-          <button className="btn" onClick={() => window.open(`${window.location.pathname}?workspace=playlist`, '_blank', 'noopener,noreferrer')}>
-            abrir tela do operador
-          </button>
           <button className="btn" onClick={onCancel}>
-            cancelar
+            voltar ao Master
           </button>
           {arquivoEntries && <a className="btn" download="programacao-24h.csv" href={`data:text/csv;charset=utf-8,${encodeURIComponent(agendaCsv)}`}>baixar programação</a>}
           <button className="btn" disabled={busy || (escolhida === null && !importada)} onClick={() => carregar(false)}>

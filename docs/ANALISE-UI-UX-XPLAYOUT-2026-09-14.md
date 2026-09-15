@@ -164,7 +164,18 @@ Correção recomendada: polling adaptativo: 250 ms somente durante transição c
 - A mesma ação tem o mesmo nome, cor, posição e confirmação em todas as telas.
 - A operação continua compreensível em 1366×768 e 1920×1080, sem scroll horizontal no Master.
 
-## Resultado desta auditoria
+## Resultado da implementação
 
-O RPlayout não deve ser redesenhado copiando a aparência do XPlayout. O caminho mais forte é adotar a mesma disciplina de produto: módulos com responsabilidade única, estado operacional explícito, scheduler separado, QC separado, logs certificados e fallback visível. A base de código já suporta essa direção; o próximo trabalho deve transformar os componentes existentes em workspaces claros e fechar os contratos de estado antes de adicionar mais integrações.
+As recomendações de interface desta auditoria foram aplicadas na versão 1.1:
 
+- Master, Programação, Usuários, Monitor, Aired, Auditoria, QC e Ajuda agora são workspaces próprios, com navegação e contexto consistentes;
+- o Master ganhou uma faixa operacional fixa com estado, item no ar, restante, próximo item e recuperação;
+- PGM FIXADO mantém o item no ar na terceira posição possível e bloqueia roda, toque e teclas de rolagem enquanto estiver ativo;
+- PGM e PVW exibem posição atual/duração e enviam seek real ao engine; fontes LIVE são identificadas como não navegáveis;
+- o workspace QC mostra o motivo de rejeição ou atenção e oferece aceite, ignorar e nova análise;
+- Monitor reúne saídas, processos e saúde, aplica perfis sem reiniciar o servidor e reduz polling quando a tela fica oculta;
+- a programação mostra etapas e resumo antes da publicação;
+- usuários exibem papel, estado e matriz de permissões; modo local sem login fica explícito;
+- a entrega gera aplicativos independentes para Server 24/7, Master, Schedule, Users, Monitor, Aired e QC.
+
+Integrações físicas continuam mostrando estados verificáveis. DeckLink, NDI, SDI, GPI, ATEM, router, SCTE no encoder e sincronização entre hosts só podem receber estado “testado” quando o respectivo driver, placa ou gateway estiver presente. O software fornece descoberta, configuração, API e diagnóstico sem simular disponibilidade física.

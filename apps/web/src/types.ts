@@ -48,6 +48,7 @@ export interface Live {
     rundownId: string | null
     onAir: { itemId: string; startedAt: Frames; elapsed: Frames } | null
     preview: PreviewTarget | null
+    previewPosition: { frames: Frames; duration: Frames } | null
     preparedItemId: string | null
     preparingItemId: string | null
     playing: boolean

@@ -100,7 +100,13 @@ export function Rundown(props: Props) {
 
   // A linha no ar não pode sumir da tela numa grade de duzentos itens.
   useEffect(() => {
-    if (props.followOnAir) liveRow.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    if (!props.followOnAir || !liveRow.current) return
+    const pane = liveRow.current.closest('.pane-body') as HTMLElement | null
+    if (!pane) return
+    // Duas linhas anteriores permanecem visíveis; o item no ar ocupa a
+    // terceira posição sempre que já houver duas entradas acima dele.
+    const target = Math.max(0, liveRow.current.offsetTop - liveRow.current.offsetHeight * 2 - 32)
+    pane.scrollTo({ top: target, behavior: 'smooth' })
   }, [props.onAirId, props.followOnAir])
 
   // O scroll pertence ao pane, não à tabela. Ao fixar o PGM, bloqueie também
