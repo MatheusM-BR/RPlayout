@@ -61,7 +61,7 @@ export function BroadcastHeader({
   }, [fps])
 
   return (
-    <header className="fixed top-0 left-0 right-0 w-full z-50 bg-surface-card border-b border-border-subtle select-none">
+    <header className="w-full shrink-0 z-40 bg-surface-card border-b border-border-subtle select-none">
       <div className="h-16 px-margin flex items-center justify-between gap-gutter">
         {/* Left: Logo + Spacious Channel Selector */}
         <div className="flex items-center gap-space-lg">

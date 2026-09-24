@@ -3135,7 +3135,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const body = z
       .object({
         name: z.string().min(1),
-        kind: z.enum(['RTMP', 'SRT', 'FILE', 'SDI']),
+        kind: z.enum(['RTMP', 'SRT', 'FILE', 'SDI', 'NDI', 'OMT']),
         target: z.string().min(1),
       })
       .safeParse(request.body)
@@ -3167,7 +3167,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .object({
         name: z.string().min(1).optional(),
         target: z.string().min(1).optional(),
-        kind: z.enum(['RTMP', 'SRT', 'FILE', 'SDI']).optional(),
+        kind: z.enum(['RTMP', 'SRT', 'FILE', 'SDI', 'NDI', 'OMT']).optional(),
         width: z.number().int().positive().nullable().optional(),
         height: z.number().int().positive().nullable().optional(),
         rateNum: z.number().int().positive().nullable().optional(),
@@ -4127,9 +4127,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     const newRundownVersion = globalConcurrencyManager.incrementRundownVersion(id)
 
+    let activeSnapshot: any = null
     for (const runtime of app.runtimes.values()) {
       if (runtime.view?.rundown.id === id) {
         await runtime.refresh()
+        activeSnapshot = snapshot(app, runtime)
       }
     }
     onChange()
@@ -4140,6 +4142,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       insertedItemId: insertedId,
       newRundownVersion,
       remainingGapMs: 0,
+      ...(activeSnapshot ?? {}),
     }
   })
 }

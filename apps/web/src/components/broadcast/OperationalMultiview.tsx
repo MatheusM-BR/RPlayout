@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import type { MultiviewLayout, MultiviewTally, MultiviewSyncState, SrtTelemetry } from '@rplayout/protocol'
 
 export interface MultiviewSourceItem {
@@ -406,16 +406,13 @@ function MultiviewCellCard({
             </span>
           </div>
         ) : (
-          <div className="w-full h-full relative flex items-center justify-center">
-            {/* Grade técnica de enquadramento broadcast */}
-            <div className="absolute inset-0 opacity-15 pointer-events-none bg-[radial-gradient(#5570AB_1px,transparent_1px)] [background-size:16px_16px]"></div>
-            
-            {/* Safe Area e Crosshair Central */}
-            <div className="absolute inset-8 border border-white/5 rounded-xs pointer-events-none"></div>
-            <div className="w-4 h-4 border-t border-b border-l border-r border-white/20 pointer-events-none"></div>
+          <div className="w-full h-full relative flex items-center justify-center overflow-hidden">
+            {/* Raster de Sinal Ativo (Color Bars Animado) */}
+            <MultiviewLiveRaster source={source} />
 
-            {/* Simulação gráfica sutil de barras ou estúdio */}
-            <div className="absolute inset-x-0 bottom-0 h-10 bg-linear-to-t from-black/80 to-transparent"></div>
+            {/* Safe Area e Crosshair Central */}
+            <div className="absolute inset-6 border border-white/10 rounded-xs pointer-events-none"></div>
+            <div className="w-3 h-3 border-t border-b border-l border-r border-white/30 pointer-events-none absolute"></div>
 
             {/* Indicador de Resolução & Framerate em overlay */}
             <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-xs border border-white/10 font-label-mono text-[9.5px] text-on-surface-variant tabular-nums">
@@ -608,6 +605,82 @@ function CompactSourceRow({
       </div>
     </div>
   )
+}
+
+/* =========================================================================
+   SUB-COMPONENTE: RASTER DE SINAL BROADCAST DINÂMICO (SMPTE COLOR BARS + TIMECODE)
+   ========================================================================= */
+function MultiviewLiveRaster({ source }: { source: MultiviewSourceItem }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    let animFrame: number
+    const colors = ['#c0c0c0', '#c0c000', '#00c0c0', '#00c000', '#c000c0', '#c00000', '#0000c0']
+
+    const render = () => {
+      const w = canvas.width
+      const h = canvas.height
+      const barWidth = w / colors.length
+
+      // SMPTE 75% Color Bars (Top 70%)
+      const topHeight = h * 0.7
+      colors.forEach((col, idx) => {
+        ctx.fillStyle = col
+        ctx.fillRect(idx * barWidth, 0, barWidth + 1, topHeight)
+      })
+
+      // Castellation Bars (Mid 10%)
+      const midHeight = h * 0.1
+      const midColors = ['#0000c0', '#131313', '#c000c0', '#131313', '#00c0c0', '#131313', '#c0c0c0']
+      midColors.forEach((col, idx) => {
+        ctx.fillStyle = col
+        ctx.fillRect(idx * barWidth, topHeight, barWidth + 1, midHeight)
+      })
+
+      // Bottom section (Dark base)
+      const botY = topHeight + midHeight
+      const botH = h - botY
+      ctx.fillStyle = '#0a0e17'
+      ctx.fillRect(0, botY, w, botH)
+
+      // Moving green sync bar sweep
+      const now = Date.now()
+      const sweepX = ((now % 2500) / 2500) * w
+      ctx.fillStyle = '#00FF66'
+      ctx.fillRect(sweepX, botY + 2, 4, botH - 4)
+
+      // Live Timecode stamp in bottom right
+      const d = new Date()
+      const tc = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(Math.floor(d.getMilliseconds() / 100))}`
+      ctx.fillStyle = 'rgba(0,0,0,0.65)'
+      ctx.fillRect(w - 95, botY + 3, 90, botH - 6)
+      ctx.fillStyle = '#00FFCC'
+      ctx.font = 'bold 9.5px monospace'
+      ctx.textAlign = 'start'
+      ctx.fillText(tc, w - 90, botY + 16)
+
+      // Watermark in center
+      ctx.fillStyle = 'rgba(0,0,0,0.45)'
+      ctx.fillRect(w / 2 - 60, topHeight / 2 - 10, 120, 20)
+      ctx.fillStyle = '#FFFFFF'
+      ctx.font = 'bold 9.5px monospace'
+      ctx.textAlign = 'center'
+      ctx.fillText(source.name.slice(0, 16), w / 2, topHeight / 2 + 4)
+      ctx.textAlign = 'start'
+
+      animFrame = requestAnimationFrame(render)
+    }
+
+    render()
+    return () => cancelAnimationFrame(animFrame)
+  }, [source.name])
+
+  return <canvas ref={canvasRef} width={320} height={180} className="w-full h-full object-cover" />
 }
 
 /* =========================================================================

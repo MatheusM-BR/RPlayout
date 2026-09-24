@@ -184,7 +184,7 @@ export function SettingsView({
   }
 
   return (
-    <div className="bg-surface-base text-on-surface antialiased select-none flex flex-col min-h-screen font-body-md text-body-md">
+    <div className="bg-surface-base text-on-surface antialiased select-none flex flex-col h-screen overflow-hidden font-body-md text-body-md">
       {/* 1. CABEÇALHO PADRÃO RPLAYOUT */}
       <BroadcastHeader
         activeWorkspace="settings"
@@ -197,7 +197,7 @@ export function SettingsView({
         onOpenSettings={() => setActiveTab('canais')}
       />
 
-      <main className="w-full pt-16 bg-surface-base flex-1 flex flex-col">
+      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto broadcast-scroll">
         {/* 2. BARRA DE TÍTULO TÁTICA */}
         <div className="w-full bg-surface-card border-b border-border-subtle px-margin py-3 flex flex-wrap items-center justify-between gap-gutter shadow-sm">
           <div className="flex items-center gap-space-md">
@@ -372,7 +372,7 @@ export function SettingsView({
           </aside>
 
           {/* Área Central da Aba Selecionada */}
-          <section className="flex-1 flex flex-col gap-gutter min-w-0">
+          <section className="flex-1 min-h-0 flex flex-col gap-gutter min-w-0">
             {/* TAB 1: CANAIS E FORMATOS */}
             {activeTab === 'canais' && (
               <div className="flex flex-col gap-gutter">

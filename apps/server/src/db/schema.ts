@@ -53,7 +53,7 @@ export const outputProfiles = sqliteTable('output_profiles', {
   id: text('id').primaryKey(),
   channelId: text('channel_id').notNull(),
   name: text('name').notNull(),
-  kind: text('kind').$type<'RTMP' | 'SRT' | 'FILE' | 'SDI'>().notNull(),
+  kind: text('kind').$type<'RTMP' | 'SRT' | 'FILE' | 'SDI' | 'NDI' | 'OMT'>().notNull(),
   /** URL de rede ou caminho de arquivo. Vazio nos gerenciados: vem do servidor. */
   target: text('target').notNull().default(''),
   role: text('role').$type<'PROGRAM' | 'PREVIEW' | 'MONITOR' | 'EXTRA'>().notNull().default('EXTRA'),

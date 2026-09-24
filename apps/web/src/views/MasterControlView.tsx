@@ -19,7 +19,7 @@ import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { BroadcastMonitor } from '../components/broadcast/BroadcastMonitor.js'
 import { ContinuityCacheBadge } from '../components/broadcast/ContinuityCacheBadge.js'
 import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
-import { DynamicCgSecondaryBar } from '../components/broadcast/DynamicCgSecondaryBar.js'
+import { DynamicCgSecondaryBar, type DynamicCgState } from '../components/broadcast/DynamicCgSecondaryBar.js'
 import { MultiTrackTimeline } from '../components/broadcast/MultiTrackTimeline.js'
 import { ConflictDrawer } from '../components/broadcast/ConflictDrawer.js'
 
@@ -138,6 +138,9 @@ export function MasterControlView({
 
   // Fase E: Gaveta lateral interativa de Conflitos e Gaps (Conflict Drawer)
   const [isConflictDrawerOpen, setIsConflictDrawerOpen] = useState(false)
+
+  // Fase D: Estado ao vivo do CG Dinâmico e Marcadores SCTE-35 no PGM
+  const [activeCgState, setActiveCgState] = useState<DynamicCgState | undefined>(undefined)
 
   // Multiseleção na playlist (Ctrl / Shift)
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
@@ -622,7 +625,7 @@ export function MasterControlView({
   const rightPeakPercent = Math.min(100, Math.max(0, ((peak1 + 60) / 60) * 100))
 
   return (
-    <div className="bg-surface-base text-on-surface antialiased select-none min-h-screen flex flex-col font-body-md text-body-md">
+    <div className="bg-surface-base text-on-surface antialiased select-none h-screen flex flex-col font-body-md text-body-md overflow-hidden">
       {/* 1. HEADER PADRONIZADO RPLAYOUT (STITCH EXACT) */}
       <BroadcastHeader
         activeWorkspace="master"
@@ -639,14 +642,14 @@ export function MasterControlView({
         onOpenLiveInput={onOpenLiveInput}
       />
 
-      <main className="w-full pt-16 bg-surface-base flex-1 flex flex-col">
+      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto broadcast-scroll">
         {/* 1.1 WATCHDOG & SONDA DE PGM / SLATE DE EMERGÊNCIA (FASE C) */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0">
           <PgmProbeBanner />
         </div>
 
         {/* 2. TOP OPERATIONAL STRIP (Compact Switcher & Monitors for Variante 2 - 4 Colunas) */}
-        <section className="w-full bg-surface-card px-margin py-space-sm border-b border-border-subtle">
+        <section className="w-full bg-surface-card px-margin py-space-sm border-b border-border-subtle shrink-0">
           <div className="max-w-full mx-auto grid grid-cols-1 xl:grid-cols-12 gap-space-md items-stretch">
             {/* COLUNA 1: CARD NO AR [PGM] */}
             <div className="xl:col-span-3 flex flex-col gap-space-md justify-between">
@@ -663,7 +666,7 @@ export function MasterControlView({
                     </div>
                   </div>
                   <div className="flex items-start justify-between gap-2 pt-0.5">
-                    <h3 className="font-headline-md text-[17px] text-on-surface font-semibold tracking-wide leading-tight break-all" title={onAirItem?.asset?.title || onAirItem?.item.id || 'Nenhum item em reprodução'}>
+                    <h3 className="font-headline-md text-[17px] text-on-surface font-semibold tracking-wide leading-tight truncate" title={onAirItem?.asset?.title || onAirItem?.item.id || 'Nenhum item em reprodução'}>
                       {onAirItem?.asset?.title || onAirItem?.item.id || 'Nenhum item em reprodução'}
                     </h3>
                   </div>
@@ -711,6 +714,7 @@ export function MasterControlView({
                 isAudioMonitored={activeAudioBus === 'pgm'}
                 onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pgm' ? null : 'pgm'))}
                 onSeek={(frames) => onSeek('pgm', frames)}
+                cgState={activeCgState}
               />
             </div>
 
@@ -878,11 +882,14 @@ export function MasterControlView({
  
         {/* 2.1 PAINEL TÁTICO DE CG DINÂMICO (4 CAMADAS) & SCTE-35 CUE OUT (FASE D) */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0">
-          <DynamicCgSecondaryBar />
+          <DynamicCgSecondaryBar
+            channelId={channel.id}
+            onCgStateChange={setActiveCgState}
+          />
         </div>
  
         {/* 3. MAIN LOWER SECTION: BIBLIOTECA MAM (ESQUERDA) & MONUMENTAL RUNDOWN (DIREITA) */}
-        <section className="w-full px-margin py-space-sm flex-1 flex flex-col">
+        <section className="w-full px-margin py-space-sm flex-1 flex flex-col min-h-[520px]">
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-gutter items-stretch flex-1">
             {/* LEFT PANEL: BIBLIOTECA MAM (xl:col-span-3) */}
             <div className="xl:col-span-3 bg-surface-card border border-border-subtle p-space-lg rounded-xl flex flex-col gap-space-md shadow-sm h-full">

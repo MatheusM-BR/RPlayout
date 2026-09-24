@@ -13,7 +13,7 @@ export type OutputRole = 'PROGRAM' | 'PREVIEW' | 'MONITOR' | 'EXTRA'
  * sai crua no formato do canal e quem faz o relógio é a placa. O que se
  * escolhe nela é o conector, não o bitrate.
  */
-export type OutputKind = 'RTMP' | 'SRT' | 'FILE' | 'SDI'
+export type OutputKind = 'RTMP' | 'SRT' | 'FILE' | 'SDI' | 'NDI' | 'OMT'
 
 export interface OutputProfileRow {
   id: string
@@ -40,7 +40,7 @@ export interface OutputProfileRow {
  * herdado acompanhar quando o canal muda de formato.
  */
 interface EngineProfile {
-  kind: 'rtmp' | 'srt' | 'file'
+  kind: 'rtmp' | 'srt' | 'file' | 'ndi' | 'omt'
   target: string
   width?: number
   height?: number

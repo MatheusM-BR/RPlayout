@@ -128,6 +128,7 @@ export function PlaylistScheduleView({
   const [liveProgramTimeHms, setLiveProgramTimeHms] = useState('20:00:00')
   const [liveProgramDurationMin, setLiveProgramDurationMin] = useState(60)
   const [liveProgramSourceRef, setLiveProgramSourceRef] = useState('decklink://0')
+  const [liveSourceOption, setLiveSourceOption] = useState('decklink://0')
   const [isCreatingLive, setIsCreatingLive] = useState(false)
 
   const allMamAssets = useMemo<LibraryAsset[]>(() => {
@@ -344,9 +345,19 @@ export function PlaylistScheduleView({
     onOpenAutoFill(
       targetRundownId,
       (snapshot) => {
-        if (selectedDate !== todayDateIso && snapshot?.view) {
-          setDateRundownView(snapshot.view)
+        if (selectedDate !== todayDateIso) {
+          if (snapshot?.view) {
+            setDateRundownView(snapshot.view)
+          }
+          void loadDateRundown(selectedDate)
           void refreshAvailableRundowns()
+        } else {
+          // Hoje: recarrega a grade ativa e sincroniza com o master
+          if (snapshot?.view) {
+            setDateRundownView(snapshot.view)
+          }
+          onPublishToMaster?.()
+          void loadDateRundown(todayDateIso)
         }
       },
       options,
@@ -1982,20 +1993,56 @@ export function PlaylistScheduleView({
                 </div>
               </div>
 
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1.5">
                 <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
                   Fonte de Entrada (Hardware / NDI / SRT)
                 </label>
-                <input
-                  type="text"
-                  value={liveProgramSourceRef}
-                  onChange={(e) => setLiveProgramSourceRef(e.target.value)}
-                  placeholder="decklink://0 ou ndi://ESTUDIO-A"
-                  className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-mono text-xs text-on-surface focus:outline-none focus:border-primary"
-                />
-                <span className="text-[9.5px] text-outline">
-                  Ex: decklink://0 (SDI 1), ndi://STUDIO-1, srt://192.168.1.100:9000
-                </span>
+                <select
+                  value={liveSourceOption}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    setLiveSourceOption(val)
+                    if (val !== 'custom') {
+                      setLiveProgramSourceRef(val)
+                    } else if (
+                      liveProgramSourceRef === 'decklink://0' ||
+                      liveProgramSourceRef === 'decklink://1' ||
+                      liveProgramSourceRef === 'ndi://ESTUDIO-MASTER/PGM' ||
+                      liveProgramSourceRef === 'ndi://REDAÇÃO/JORNALISMO' ||
+                      liveProgramSourceRef === 'srt://127.0.0.1:9000?mode=listener'
+                    ) {
+                      setLiveProgramSourceRef('')
+                    }
+                  }}
+                  className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary cursor-pointer"
+                >
+                  <option value="decklink://0">decklink://0 (SDI 1 - DeckLink Studio 4K)</option>
+                  <option value="decklink://1">decklink://1 (SDI 2 - DeckLink Quad)</option>
+                  <option value="ndi://ESTUDIO-MASTER/PGM">ndi://ESTUDIO-MASTER/PGM (NDI Master Estúdio 1)</option>
+                  <option value="ndi://REDAÇÃO/JORNALISMO">ndi://REDAÇÃO/JORNALISMO (NDI Switcher Redação)</option>
+                  <option value="srt://127.0.0.1:9000?mode=listener">srt://127.0.0.1:9000?mode=listener (SRT Listener Central)</option>
+                  <option value="custom">custom (Outra URL / URI personalizada)</option>
+                </select>
+
+                {liveSourceOption === 'custom' ? (
+                  <div className="flex flex-col gap-1 mt-1">
+                    <input
+                      type="text"
+                      value={liveProgramSourceRef}
+                      onChange={(e) => setLiveProgramSourceRef(e.target.value)}
+                      placeholder="Ex: srt://192.168.1.100:9000?mode=caller ou rtmp://servidor/live"
+                      className="w-full bg-surface-base border border-primary/60 rounded px-2.5 py-1.5 font-mono text-xs text-on-surface focus:outline-none focus:border-primary"
+                      autoFocus
+                    />
+                    <span className="text-[9.5px] text-outline">
+                      Informe o URI broadcast completo (ex: decklink://N, ndi://FONTE, srt://IP:PORTA, rtmp://URL).
+                    </span>
+                  </div>
+                ) : (
+                  <span className="text-[9.5px] text-outline">
+                    Entrada broadcast canônica com roteamento direto para engine CasparCG/DeckLink.
+                  </span>
+                )}
               </div>
             </div>
 
@@ -2009,7 +2056,7 @@ export function PlaylistScheduleView({
               </button>
               <button
                 type="button"
-                disabled={isCreatingLive || !liveProgramTitle.trim()}
+                disabled={isCreatingLive || !liveProgramTitle.trim() || (liveSourceOption === 'custom' && !liveProgramSourceRef.trim())}
                 onClick={handleCreateLiveProgram}
                 className="px-3 py-1.5 rounded bg-error hover:bg-error/90 text-white font-label-caps text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50"
               >

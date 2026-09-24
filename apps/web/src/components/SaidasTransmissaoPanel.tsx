@@ -16,7 +16,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
   const [isSaving, setIsSaving] = useState(false)
 
   // Formulário para nova saída
-  const [newKind, setNewKind] = useState<'SDI' | 'SRT' | 'RTMP' | 'FILE'>('RTMP')
+  const [newKind, setNewKind] = useState<'SDI' | 'SRT' | 'RTMP' | 'FILE' | 'NDI' | 'OMT'>('RTMP')
   const [newName, setNewName] = useState('')
   const [newTarget, setNewTarget] = useState('')
   const [newBitrate, setNewBitrate] = useState(6000)
@@ -130,7 +130,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
   const channelDist = distribution?.channels?.find((c) => c.channelId === channel.id)
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-5 pb-16">
       {/* 1. CABEÇALHO DO PAINEL DE SAÍDAS */}
       <div className="bg-surface-card rounded-xl border border-border-subtle p-5 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -223,6 +223,8 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
               const isSrt = out.kind === 'SRT'
               const isRtmp = out.kind === 'RTMP'
               const isFile = out.kind === 'FILE'
+              const isNdi = out.kind === 'NDI'
+              const isOmt = out.kind === 'OMT'
 
               return (
                 <div
@@ -255,6 +257,16 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
                         {isFile && (
                           <span className="px-2 py-0.5 rounded font-label-caps text-[9px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">video_file</span> ARQUIVO
+                          </span>
+                        )}
+                        {isNdi && (
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[9px] bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 font-bold flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[13px]">hub</span> NDI STREAM
+                          </span>
+                        )}
+                        {isOmt && (
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[9px] bg-teal-500/20 text-teal-400 border border-teal-500/40 font-bold flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[13px]">lan</span> OMT IP
                           </span>
                         )}
                         <span className="font-headline-md text-[13.5px] text-on-surface font-bold truncate max-w-[180px]">
@@ -413,12 +425,16 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
                 if (val === 'RTMP' && !newTarget) setNewTarget('rtmp://127.0.0.1:1935/live/stream')
                 if (val === 'SRT' && !newTarget) setNewTarget('srt://127.0.0.1:9000?mode=caller')
                 if (val === 'FILE' && !newTarget) setNewTarget('gravações/canal-master.mp4')
+                if (val === 'NDI' && !newTarget) setNewTarget('ndi://RPLAYOUT_PGM_MASTER')
+                if (val === 'OMT' && !newTarget) setNewTarget('omt://239.255.0.1:5004')
               }}
               className="bg-surface-panel text-on-surface px-3 py-1.5 rounded border border-border-subtle font-body-sm text-[12px] outline-none focus:border-primary cursor-pointer"
             >
               <option value="RTMP">RTMP / CDN (YouTube, Facebook, Twitch)</option>
               <option value="SRT">SRT Stream (Caller / Listener)</option>
               <option value="SDI">DeckLink SDI / HDMI (Placa Física)</option>
+              <option value="NDI">NDI Broadcast IP (NewTek / TriCaster / vMix)</option>
+              <option value="OMT">OMT Stream (Open Media Transport SMPTE-2110)</option>
               <option value="FILE">Arquivo Local / Gravação Contínua</option>
             </select>
           </div>

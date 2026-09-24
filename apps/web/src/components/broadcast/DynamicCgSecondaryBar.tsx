@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import type { GraphicLayerType } from '../../types.js'
 
 export interface DynamicCgState {
@@ -22,9 +22,63 @@ interface Props {
   className?: string
   onMessage?: (msg: string) => void
   compact?: boolean
+  channelId?: string
+  onCgStateChange?: (state: DynamicCgState) => void
 }
 
-export function DynamicCgSecondaryBar({ className = '', onMessage, compact = false }: Props) {
+/** Dispara trigger de CG no backend (fire-and-forget, não bloqueia a UI) */
+async function triggerCgLayer(
+  channelId: string | undefined,
+  layer: 0 | 1 | 2 | 3,
+  action: 'SHOW' | 'HIDE',
+): Promise<void> {
+  if (!channelId) return
+  const layerNames: Record<number, GraphicLayerType> = {
+    0: 'STATION_LOGO',
+    1: 'ONAIR_CLOCK',
+    2: 'CRAWL_TICKER',
+    3: 'LOWER_THIRD',
+  }
+  try {
+    await fetch(`/api/v1/graphics/layers/${layer}/trigger`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channelId, action, layer: layerNames[layer] }),
+    })
+  } catch {
+    // fire-and-forget: UI não bloqueia por falha de rede
+  }
+}
+
+/** Dispara SCTE-35 Splice Insert no backend */
+async function triggerScte35Api(
+  channelId: string | undefined,
+  spliceEventId: number,
+): Promise<void> {
+  if (!channelId) return
+  try {
+    await fetch('/api/v1/scte/splice-insert', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        channelId,
+        spliceEventId,
+        prerollMs: 4000,
+        durationSeconds: 30,
+      }),
+    })
+  } catch {
+    // fire-and-forget
+  }
+}
+
+export function DynamicCgSecondaryBar({
+  className = '',
+  onMessage,
+  compact = false,
+  channelId,
+  onCgStateChange,
+}: Props) {
   const [isOpen, setIsOpen] = useState(false)
   const [cgState, setCgState] = useState<DynamicCgState>({
     layer0Logo: true,
@@ -42,6 +96,11 @@ export function DynamicCgSecondaryBar({ className = '', onMessage, compact = fal
     scte35TimeRemaining: 0,
     scte35EventId: 55102,
   })
+
+  // Propaga o estado para os monitores PGM em tempo real
+  useEffect(() => {
+    onCgStateChange?.(cgState)
+  }, [cgState, onCgStateChange])
 
   // Timer para Lower-Third (8 segundos de duração padrão)
   useEffect(() => {
@@ -104,18 +163,21 @@ export function DynamicCgSecondaryBar({ className = '', onMessage, compact = fal
   const toggleLayer0Logo = () => {
     const next = !cgState.layer0Logo
     setCgState((prev) => ({ ...prev, layer0Logo: next }))
+    void triggerCgLayer(channelId, 0, next ? 'SHOW' : 'HIDE')
     onMessage?.(`CG: Layer 0 (STATION_LOGO) ${next ? 'FADE IN no ar [90% Action Safe]' : 'FADE OUT [Oculto]'}`)
   }
 
   const toggleLayer1Clock = () => {
     const next = !cgState.layer1Clock
     setCgState((prev) => ({ ...prev, layer1Clock: next }))
+    void triggerCgLayer(channelId, 1, next ? 'SHOW' : 'HIDE')
     onMessage?.(`CG: Layer 1 (ONAIR_CLOCK) ${next ? 'ATIVADO no ar [NTP Stratum-1]' : 'OCULTADO'}`)
   }
 
   const toggleLayer2Ticker = () => {
     const next = !cgState.layer2Ticker
     setCgState((prev) => ({ ...prev, layer2Ticker: next }))
+    void triggerCgLayer(channelId, 2, next ? 'SHOW' : 'HIDE')
     onMessage?.(`CG: Layer 2 (CRAWL_TICKER) ${next ? 'INICIADO (3.5 px/f smooth GPU)' : 'PARADO'}`)
   }
 
@@ -125,6 +187,7 @@ export function DynamicCgSecondaryBar({ className = '', onMessage, compact = fal
       layer2Ticker: true,
       breakingNewsActive: true,
     }))
+    void triggerCgLayer(channelId, 2, 'SHOW')
     onMessage?.(`CG: Tarja de BREAKING NEWS injetada com prioridade na Layer 2: "${cgState.tickerText.slice(0, 40)}..."`)
   }
 
@@ -132,6 +195,7 @@ export function DynamicCgSecondaryBar({ className = '', onMessage, compact = fal
     if (cgState.lowerThirdActive) {
       // Forçar saída (Dismiss antecipado)
       setCgState((prev) => ({ ...prev, lowerThirdActive: false, lowerThirdTimeRemaining: 0 }))
+      void triggerCgLayer(channelId, 3, 'HIDE')
       onMessage?.('CG: Layer 3 (LOWER_THIRD) recolhida manualmente pelo operador')
     } else {
       // Disparar com 8 segundos de retenção
@@ -140,6 +204,7 @@ export function DynamicCgSecondaryBar({ className = '', onMessage, compact = fal
         lowerThirdActive: true,
         lowerThirdTimeRemaining: 8,
       }))
+      void triggerCgLayer(channelId, 3, 'SHOW')
       onMessage?.(`CG: Layer 3 (LOWER_THIRD) no ar: "${cgState.lowerThirdTitle}" (Duração: 8s / 240 frames)`)
     }
   }
@@ -165,6 +230,7 @@ export function DynamicCgSecondaryBar({ className = '', onMessage, compact = fal
         scte35TimeRemaining: 4.0,
         scte35EventId: newEventId,
       }))
+      void triggerScte35Api(channelId, newEventId)
       onMessage?.(`SCTE-35: Injetado comando CUE OUT 30s (Event ID: ${newEventId}, Pre-roll: 4000ms, PID 0x86)`)
     }
   }

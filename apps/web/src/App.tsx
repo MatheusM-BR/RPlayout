@@ -46,6 +46,7 @@ import { AiredView } from './views/AiredView.js'
 import { BroadcastHeader } from './components/broadcast/BroadcastHeader.js'
 import { DocsView } from './views/DocsView.js'
 import { SettingsView } from './views/SettingsView.js'
+import { SessionAlertsDialog } from './components/broadcast/SessionAlertsDialog.js'
 
 type Dialog =
   | { kind: 'trim'; view: ItemView }
@@ -54,6 +55,7 @@ type Dialog =
   | { kind: 'audio'; view: ItemView }
   | { kind: 'add'; assetId?: string; rundownId?: string; onApplied?: (snapshot: Snapshot) => void }
   | { kind: 'distribution' }
+  | { kind: 'alerts' }
   | { kind: 'graphics' }
   | { kind: 'itemGraphics'; view: ItemView }
   | { kind: 'asrun' }
@@ -1029,7 +1031,7 @@ export function App() {
           onOpenStill={(item: ItemView) => setDialog({ kind: 'still', view: item })}
           onRemoveItem={(itemId: string) => removerItem(itemId)}
           onMoveItem={(itemId: string, toIndex: number) => move(itemId, toIndex)}
-          onOpenAlerts={() => setDialog({ kind: 'distribution' })}
+          onOpenAlerts={() => setDialog({ kind: 'alerts' })}
           onOpenSettings={() => navigateWorkspace('settings')}
           problemasCount={problemas.length}
           sessionRole={sessionRole ?? 'Operador Master'}
@@ -1459,6 +1461,22 @@ export function App() {
           onAir={live?.graphic ?? null}
           onClose={() => setDialog(null)}
           onMessage={say}
+        />
+      )}
+      {dialog?.kind === 'alerts' && (
+        <SessionAlertsDialog
+          open={true}
+          problemas={problemas}
+          onLimpar={() => setProblemas([])}
+          onClose={() => setDialog(null)}
+          onOpenSettings={() => {
+            setDialog(null)
+            navigateWorkspace('settings')
+          }}
+          onOpenEngineering={() => {
+            setDialog(null)
+            navigateWorkspace('monitor')
+          }}
         />
       )}
       {dialog?.kind === 'distribution' && (

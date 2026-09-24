@@ -399,7 +399,7 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
         onOpenSettings={onOpenSettings || (() => onNavigate('settings'))}
       />
 
-      <main className="w-full pt-16 bg-surface-base flex-1 min-h-0 flex flex-col overflow-hidden">
+      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto broadcast-scroll">
         {/* 2. BARRA DE TÍTULO TÁTICA */}
         <div className="w-full bg-surface-card border-b border-border-subtle px-margin py-3 flex flex-wrap items-center justify-between gap-gutter shadow-sm">
           <div className="flex items-center gap-space-md">
@@ -689,8 +689,8 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
         </div>
 
         {/* 5. TABELA DENSA DE AS-RUN */}
-        <div className="px-margin py-space-md flex-1 min-h-0 flex flex-col overflow-hidden">
-          <div className="bg-surface-card rounded-xl border border-border-subtle shadow-md overflow-hidden flex flex-col flex-1 min-h-0">
+        <div className="px-margin py-space-md flex flex-col min-h-[400px]">
+          <div className="bg-surface-card rounded-xl border border-border-subtle shadow-md overflow-hidden flex flex-col min-h-[360px]">
             <div className="grid grid-cols-12 bg-surface-panel px-4 py-2 font-label-caps text-[9.5px] text-outline uppercase tracking-wider border-b border-border-subtle items-center select-none sticky top-0 z-10">
               <div className="col-span-1">#</div>
               <div className="col-span-2">Início NTP → Fim</div>

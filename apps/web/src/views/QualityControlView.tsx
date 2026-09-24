@@ -772,7 +772,7 @@ export function QualityControlView({
         onOpenSettings={onOpenSettings}
       />
 
-      <main className="w-full pt-16 bg-surface-base flex-1 min-h-0 flex flex-col overflow-hidden">
+      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-hidden">
         {/* 2. BARRA DE STATUS TÁTICO & FERRAMENTAS */}
         <div className="w-full bg-surface-card border-b border-border-subtle px-margin py-2 flex flex-wrap items-center justify-between gap-gutter shadow-sm shrink-0">
           <div className="flex items-center gap-space-md">

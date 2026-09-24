@@ -66,7 +66,7 @@ export interface Live {
 export interface OutputProfile {
   id: string
   name: string
-  kind: 'RTMP' | 'SRT' | 'FILE' | 'SDI'
+  kind: 'RTMP' | 'SRT' | 'FILE' | 'SDI' | 'NDI' | 'OMT'
   role: 'PROGRAM' | 'PREVIEW' | 'MONITOR' | 'EXTRA'
   target: string
   /** Destino efetivo: derivado nos gerenciados, guardado nos demais. */
