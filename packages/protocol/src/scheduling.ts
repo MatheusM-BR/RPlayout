@@ -1,5 +1,12 @@
 import type { Frames, Rate } from './rate.js'
-import type { Anchor, Elastic, OverrunPolicy } from './rundown.js'
+import type {
+  Anchor,
+  Elastic,
+  LiveSourceConfig,
+  OverrunPolicy,
+  ScheduleEventType,
+  TimingFlags,
+} from './rundown.js'
 
 /**
  * O que o scheduler consome. É uma projeção do RundownItem com a duração já
@@ -9,6 +16,7 @@ import type { Anchor, Elastic, OverrunPolicy } from './rundown.js'
 export interface PlanItem {
   readonly id: string
   readonly order: number
+  readonly title?: string
   /** Duração pretendida no ar, já com o trim aplicado. */
   readonly duration: Frames
   /** Piso do corte automático. */
@@ -18,6 +26,9 @@ export interface PlanItem {
   readonly elastic: Elastic | null
   readonly isFiller: boolean
   readonly locked: boolean
+  readonly eventType?: ScheduleEventType
+  readonly timingFlags?: TimingFlags
+  readonly liveConfig?: LiveSourceConfig | null
 }
 
 /**
@@ -123,10 +134,56 @@ export interface Suggestion {
   readonly message: string
 }
 
+export type CompensationActionType =
+  | 'TRIM_TAIL'
+  | 'DROP_ITEM'
+  | 'SHRINK_FILLER'
+  | 'EXPAND_FILLER'
+  | 'EMERGENCY_CUT'
+  | 'SHRUNK'
+  | 'EXPANDED'
+  | 'DROPPED'
+  | 'TRIMMED'
+  | 'INJECTED_FILLER'
+
+export interface CompensationAction {
+  readonly itemId: string
+  readonly itemTitle?: string
+  readonly actionType: CompensationActionType
+  readonly deltaFrames: number
+  readonly originalDuration?: number
+  readonly newDuration?: number
+  readonly plannedDurationFrames?: number
+  readonly effectiveDurationFrames?: number
+  readonly targetAnchorId?: string
+  readonly targetAnchorType?: 'HARD_TIME' | 'FIXED'
+  readonly reason: string
+  readonly timestamp?: string
+}
+
+export type ScheduleCompensationStatus =
+  | 'RESOLVED_CLEAN'
+  | 'RESOLVED_WITH_WARNINGS'
+  | 'HARD_TIME_VIOLATION_PREVENTED'
+  | 'CRITICAL_UNDERRUN'
+
+export interface ScheduleCompensationReport {
+  readonly rundownId?: string
+  readonly generatedAt: string
+  readonly rateNum: number
+  readonly rateDen: number
+  readonly initialDriftFrames: number
+  readonly compensatedDriftFrames: number
+  readonly residualDriftFrames: number
+  readonly actions: readonly CompensationAction[]
+  readonly status: ScheduleCompensationStatus
+}
+
 export interface ResolveResult {
   readonly items: readonly ResolvedItem[]
   readonly conflicts: readonly Conflict[]
   readonly suggestions: readonly Suggestion[]
   /** Fim projetado da grade. */
   readonly endsAt: Frames
+  readonly compensationReport?: ScheduleCompensationReport
 }

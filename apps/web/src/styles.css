@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /*
  * Paleta medida, não escolhida no olho.
  *
@@ -324,8 +328,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 /* Atalhos das configurações. */
 .atalhos { display: grid; gap: 6px; }
-/* Sem `flex` o `space-between` não faz nada, e o rótulo colava na descrição:
-   saía "FORMATO DE VÍDEO1080P50". */
+/* Sem `flex` o `space-between` não faz nada, e o rótulo colava na descrição. */
 .atalhos .btn {
   display: flex;
   align-items: center;
@@ -1932,3 +1935,40 @@ button.status-card { color: var(--text); text-align: left; cursor: pointer; }
   .qc-actions { width: 100%; margin-left: 0; flex-wrap: wrap; }
   .workspace-panel-head { align-items: flex-start; flex-wrap: wrap; }
 }
+
+/* ---------- Broadcast Stitch Utility Classes ---------- */
+.hazard-stripe-amber {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 149, 0, 0.18),
+    rgba(255, 149, 0, 0.18) 12px,
+    rgba(17, 24, 39, 0.9) 12px,
+    rgba(17, 24, 39, 0.9) 24px
+  );
+}
+
+.hazard-stripe-red {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 59, 48, 0.25),
+    rgba(255, 59, 48, 0.25) 12px,
+    rgba(17, 24, 39, 0.9) 12px,
+    rgba(17, 24, 39, 0.9) 24px
+  );
+}
+
+.broadcast-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.broadcast-scrollbar::-webkit-scrollbar-track {
+  background: #0b0e16;
+}
+.broadcast-scrollbar::-webkit-scrollbar-thumb {
+  background: #28354e;
+  border-radius: 3px;
+}
+.broadcast-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #3b82f6;
+}
+

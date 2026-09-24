@@ -6,6 +6,8 @@ import type {
   PublisherStatus,
   RelayStatus,
 } from '../types.js'
+import { SrtManagerPanel } from './broadcast/SrtManagerPanel.js'
+import { RedundancyFailoverPanel } from './broadcast/RedundancyFailoverPanel.js'
 
 interface Props {
   channelId: string
@@ -20,25 +22,11 @@ const RELAY_TONE: Record<RelayStatus['state'], string> = {
   FALHOU: 'bad',
 }
 
-/**
- * Como cada tipo de saída se chama para quem opera.
- *
- * "SDI" é o nome da norma; quem está com a placa na mão chama de Decklink, e
- * era em "Decklink" que se procurava na tela sem achar.
- */
 const TIPO_LABEL: Record<string, string> = {
   RTMP: 'RTMP',
   SRT: 'SRT',
   FILE: 'ARQUIVO',
   SDI: 'DECKLINK',
-}
-
-const PUBLISHER_TONE: Record<PublisherStatus['health'], string> = {
-  onAir: 'ok',
-  connecting: 'warn',
-  retrying: 'bad',
-  // Monitor parado não é falha: é uma janela que ninguém abriu.
-  idle: '',
 }
 
 const PUBLISHER_LABEL: Record<PublisherStatus['health'], string> = {
@@ -48,28 +36,17 @@ const PUBLISHER_LABEL: Record<PublisherStatus['health'], string> = {
   idle: 'EM ESPERA',
 }
 
-/** Copia e avisa. Endereço que o operador precisa digitar à mão é endereço errado. */
+/** Copia e avisa. */
 async function copy(text: string, say: (message: string) => void): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
-    say('Endereço copiado.')
+    say('Endereço copiado para a área de transferência.')
   } catch {
-    say('O navegador não deixou copiar. Selecione e copie à mão.')
+    say('O navegador não permitiu copiar automaticamente. Selecione e copie manualmente.')
   }
 }
 
-/**
- * Painel de distribuição.
- *
- * Não é tela de operação segundo a segundo -- é onde se configura quem recebe o
- * sinal e se confere quem está conectado. Por isso vive fora do rundown.
- */
-/**
- * Resumo do perfil em uma linha.
- *
- * Campo em branco herda do canal, e dizer isso é mais útil do que repetir o
- * valor: quando o canal muda de formato, o herdado acompanha e o escrito não.
- */
+/** Resumo do perfil em uma linha. */
 function profileSummary(output: OutputProfile): string {
   const parts: string[] = []
   if (output.width !== null && output.height !== null) {
@@ -83,11 +60,14 @@ function profileSummary(output: OutputProfile): string {
     parts.push(output.scan === 'INTERLACED' ? 'entrelaçada' : 'progressiva')
   }
 
-  if (parts.length === 0) return 'tudo como o canal'
+  if (parts.length === 0) return 'Herda padrão do canal'
   return `${parts.join(' · ')} · resto como o canal`
 }
 
+type TabKey = 'resumo' | 'saidas' | 'destinos' | 'srt_manager' | 'processos' | 'saude' | 'convidados'
+
 export function Distribution({ channelId, onClose, onMessage }: Props) {
+  const [activeTab, setActiveTab] = useState<TabKey>('resumo')
   const [data, setData] = useState<Payload | null>(null)
   const [processes, setProcesses] = useState<Awaited<ReturnType<typeof api.processes>>['processes']>([])
   const [healthEvents, setHealthEvents] = useState<Awaited<ReturnType<typeof api.healthEvents>>['events']>([])
@@ -110,12 +90,6 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [srtStreamId, setSrtStreamId] = useState('')
   const [srtPassphrase, setSrtPassphrase] = useState('')
   const [error, setError] = useState<string | null>(null)
-  /**
-   * O que está digitado no campo de qualidade, por saída.
-   *
-   * A lista se recarrega a cada dois segundos; sem guardar o que a pessoa está
-   * escrevendo, o número sumiria do campo no meio da digitação.
-   */
   const [rascunho, setRascunho] = useState<Record<string, string>>({})
 
   useEffect(() => {
@@ -175,11 +149,10 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
       await action()
       await refresh()
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Não consegui aplicar.')
+      setError(failure instanceof Error ? failure.message : 'Não consegui aplicar a configuração.')
     }
   }
 
-  /** Grava o que foi digitado. Campo vazio quer dizer "volte ao automático". */
   const salvarBitrate = (output: OutputProfile): void => {
     const digitado = rascunho[output.id]
     if (digitado === undefined) return
@@ -187,7 +160,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
     const limpo = digitado.trim()
     const valor = limpo === '' ? null : Number(limpo)
     if (valor !== null && (!Number.isFinite(valor) || valor < 500)) {
-      setError('Qualidade em kbps, de 500 para cima.')
+      setError('Qualidade em kbps deve ser a partir de 500.')
       return
     }
     if (valor === output.bitrateKbps) {
@@ -206,7 +179,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
         delete proximo[output.id]
         return proximo
       })
-      onMessage('Qualidade guardada. O canal foi reaplicado com a nova configuração.')
+      onMessage('Qualidade guardada. O canal foi reaplicado com a nova taxa de bits.')
     })
   }
 
@@ -219,14 +192,6 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   )
   const visibleHealthEvents = healthEvents.filter((event) => healthFilter === 'ALL' || event.severity === healthFilter)
 
-  /**
-   * O tipo que a saída de fato usa.
-   *
-   * Preview e monitor guardam `RTMP` desde o tempo em que todo mundo saía por
-   * RTMP, mas hoje vão por SRT -- é o único caminho daqui até o servidor de
-   * mídia que carrega Opus. Mostrar o campo guardado fazia a tela dizer RTMP
-   * para uma saída que é SRT.
-   */
   const tipoReal = (output: OutputProfile): string => {
     const alvo = output.resolvedTarget ?? ''
     if (alvo.startsWith('srt://')) return 'SRT'
@@ -234,508 +199,1170 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
     return TIPO_LABEL[output.kind] ?? output.kind
   }
 
-  /** A saúde que o engine reporta para esta saída, quando há. */
   const saudeDe = (output: OutputProfile) =>
     channel?.publishers.find((publisher) => publisher.url === output.resolvedTarget) ?? null
 
   return (
-    <div className="backdrop" onClick={onClose}>
-      <div className="dialog wide" onClick={(event) => event.stopPropagation()}>
-        <header>
-          <h2>Saídas do canal</h2>
-          <div className="sub">
-            {data === null && !error
-              ? 'carregando estado do servidor…'
-              : data?.server.running
-              ? `servidor local no ar em ${data.server.host}`
-              : 'servidor local desligado'}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface-card border border-border-subtle rounded-xl shadow-2xl w-full max-w-5xl h-[88vh] flex flex-col overflow-hidden text-on-surface"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {/* HEADER MODAL */}
+        <header className="px-6 py-4 border-b border-border-subtle flex items-center justify-between shrink-0 bg-surface-panel/40">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+              <span className="material-symbols-outlined text-[22px]">cell_tower</span>
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="font-headline-md text-base text-on-surface uppercase tracking-wider font-bold">
+                  Saídas do Canal &amp; Distribuição
+                </h2>
+                {data?.server.running ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    ONLINE ({data.server.host})
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30">
+                    OFFLINE
+                  </span>
+                )}
+                {data?.server.exposed && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                    <span className="material-symbols-outlined text-[13px]">warning</span>
+                    EXPOSTO EXTERNAMENTE
+                  </span>
+                )}
+              </div>
+              <span className="font-label-mono text-[10px] text-outline">
+                {data === null && !error
+                  ? 'Carregando estado do cluster de distribuição…'
+                  : `Canal ${channel?.channelId ?? channelId} · Transmissão, decodificadores e relays`}
+              </span>
+            </div>
           </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg hover:bg-surface-panel flex items-center justify-center text-outline hover:text-on-surface transition-colors cursor-pointer text-base font-bold"
+            title="Fechar (Esc)"
+          >
+            ✕
+          </button>
         </header>
 
-        <div className="body">
-          {error && <div className="note warn">{error}</div>}
-          <nav className="workspace-subnav" aria-label="Seções do monitoramento"><a href="#monitor-resumo">RESUMO</a><a href="#monitor-processos">PROCESSOS</a><a href="#monitor-saude">SAÚDE</a><a href="#monitor-saidas">SAÍDAS</a><a href="#monitor-entradas">ENTRADAS</a><a href="#monitor-destinos">DESTINOS</a></nav>
+        {/* ERRO BANNER */}
+        {error && (
+          <div className="px-6 py-2.5 bg-red-500/10 border-b border-red-500/30 text-red-400 text-xs font-label-mono flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-[16px]">error</span>
+              {error}
+            </span>
+            <button onClick={() => setError(null)} className="hover:underline cursor-pointer">fechar</button>
+          </div>
+        )}
 
-          {data?.server.exposed && (
-            <div className="note warn">
-              O servidor está aberto para todas as interfaces de rede, não só para a rede local.
-              Só mantenha assim se for isso mesmo que você quer.
-            </div>
-          )}
+        {/* NAVEGAÇÃO DE ABAS */}
+        <div className="px-6 pt-3 pb-0 bg-surface-base border-b border-border-subtle/70 flex items-center gap-2 shrink-0 overflow-x-auto broadcast-scroll">
+          <button
+            onClick={() => setActiveTab('resumo')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-label-caps transition-all cursor-pointer border-b-2 whitespace-nowrap ${
+              activeTab === 'resumo'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">cast</span>
+            Endereços &amp; Sinal
+          </button>
 
-          {channel?.format && (
-            <div className="note">
-              Canal em <b>{channel.format.channel}</b>
-              {channel.format.channel !== channel.format.network && (
-                <>
-                  {' '}
-                  · a saída de rede vai em <b>{channel.format.network}</b>, porque o RTMP não
-                  declara entrelaçamento e a maior parte dos destinos assume progressivo
-                </>
+          <button
+            onClick={() => setActiveTab('saidas')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-label-caps transition-all cursor-pointer border-b-2 whitespace-nowrap ${
+              activeTab === 'saidas'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">output</span>
+            Perfis de Saída
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[9px] font-label-mono text-outline">
+              {outputs.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('destinos')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-label-caps transition-all cursor-pointer border-b-2 whitespace-nowrap ${
+              activeTab === 'destinos'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">share</span>
+            Destinos &amp; Relays
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[9px] font-label-mono text-outline">
+              {data?.destinations.length ?? 0}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('srt_manager')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-label-caps transition-all cursor-pointer border-b-2 whitespace-nowrap ${
+              activeTab === 'srt_manager'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">satellite_alt</span>
+            SRT &amp; Redundância
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-accent-ice/20 text-accent-ice-bright text-[9px] font-label-mono font-bold">
+              FASE B
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('processos')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-label-caps transition-all cursor-pointer border-b-2 whitespace-nowrap ${
+              activeTab === 'processos'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">memory</span>
+            Processos ({visibleProcesses.length})
+          </button>
+
+          <button
+            onClick={() => setActiveTab('saude')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-label-caps transition-all cursor-pointer border-b-2 whitespace-nowrap ${
+              activeTab === 'saude'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">vital_signs</span>
+            Saúde &amp; Telemetria
+            {criticalPending > 0 ? (
+              <span className="ml-1 px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 font-label-mono text-[9px] font-bold">
+                {criticalPending}
+              </span>
+            ) : warnPending > 0 ? (
+              <span className="ml-1 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-label-mono text-[9px] font-bold">
+                {warnPending}
+              </span>
+            ) : null}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('convidados')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-label-caps transition-all cursor-pointer border-b-2 whitespace-nowrap ${
+              activeTab === 'convidados'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">person_add</span>
+            Convidados (SRT)
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[9px] font-label-mono text-outline">
+              {data?.guests.length ?? 0}
+            </span>
+          </button>
+        </div>
+
+        {/* CORPO MODAL COM SCROLL INTERNO */}
+        <div className="p-6 flex-1 min-h-0 overflow-y-auto broadcast-scroll flex flex-col gap-6">
+
+          {/* TAB 1: RESUMO / ENDEREÇOS */}
+          {activeTab === 'resumo' && (
+            <div className="flex flex-col gap-5">
+              {/* Formato do canal card */}
+              {channel?.format && (
+                <div className="p-4 rounded-xl bg-surface-panel/60 border border-border-subtle flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <span className="text-[10px] font-label-caps uppercase text-outline font-bold tracking-wider">
+                      PADRÃO DE RASTERIZAÇÃO DO CANAL
+                    </span>
+                    <div className="text-sm font-label-mono font-bold text-on-surface mt-0.5">
+                      Sinal mestre em <span className="text-primary">{channel.format.channel}</span>
+                      {channel.format.channel !== channel.format.network && (
+                        <span className="text-outline font-normal">
+                          {' '}· Saída de rede adaptada para <span className="text-emerald-400">{channel.format.network}</span> (progressivo)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="px-3 py-1 rounded-lg bg-surface-base border border-border-subtle text-[11px] font-label-mono text-primary font-bold shrink-0">
+                    59.94 Hz BROADCAST READY
+                  </span>
+                </div>
               )}
-            </div>
-          )}
 
-          {channel?.urls && (
-            <div className="field" id="monitor-resumo">
-              <label>Endereços do programa</label>
-              <div className="addresses">
-                {Object.entries(channel.urls).map(([protocol, url]) => (
-                  <button
-                    key={protocol}
-                    className="address"
-                    onClick={() => void copy(url, onMessage)}
-                    title="Clique para copiar"
-                  >
-                    <b>{protocol.toUpperCase()}</b>
-                    <span>{url}</span>
-                  </button>
-                ))}
+              {/* Endereços de programa para cópia rápida */}
+              {channel?.urls && (
+                <div className="flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[16px] text-primary">link</span>
+                      ENDEREÇOS DO PROGRAMA (INGRESS / EGRESS)
+                    </span>
+                    <span className="text-[10px] font-label-mono text-outline">
+                      Clique em qualquer link para copiar
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {Object.entries(channel.urls).map(([protocol, url]) => (
+                      <button
+                        key={protocol}
+                        type="button"
+                        onClick={() => void copy(url, onMessage)}
+                        className="p-3 rounded-lg bg-surface-panel hover:bg-surface-panel/80 border border-border-subtle hover:border-primary/50 text-left flex items-center justify-between gap-3 transition-colors cursor-pointer group"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-primary/20 text-primary border border-primary/30 uppercase">
+                              {protocol}
+                            </span>
+                            <span className="text-[10px] text-outline font-label-mono">STREAM FEED</span>
+                          </div>
+                          <p className="text-xs font-label-mono text-on-surface truncate mt-1 group-hover:text-primary">
+                            {url}
+                          </p>
+                        </div>
+                        <span className="material-symbols-outlined text-outline group-hover:text-primary shrink-0 text-[18px]">
+                          content_copy
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* O que está passando agora no servidor */}
+              <div className="flex flex-col gap-2.5 pt-2">
+                <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px] text-primary">sensors</span>
+                  FLUXOS ATIVOS NO SERVIDOR LOCAL
+                </span>
+                <div className="flex flex-col gap-2">
+                  {(data?.paths ?? []).map((path) => (
+                    <div
+                      key={path.name}
+                      className="p-3 rounded-lg bg-surface-panel/50 border border-border-subtle flex items-center justify-between gap-4"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="material-symbols-outlined text-primary text-[20px]">radio</span>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-label-mono font-bold text-on-surface">{path.name}</span>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-label-mono font-bold ${
+                                path.ready
+                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                  : 'bg-surface-base text-outline border border-border-subtle'
+                              }`}
+                            >
+                              {path.ready ? 'NO AR' : 'PARADO'}
+                            </span>
+                          </div>
+                          <span className="text-[11px] font-label-mono text-outline">
+                            {(path.bytesReceived / 1048576).toFixed(1)} MiB recebidos · {path.readers} {path.readers === 1 ? 'leitor ativo' : 'leitores ativos'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {(data?.paths ?? []).length === 0 && (
+                    <div className="p-6 rounded-lg bg-surface-panel/30 border border-border-subtle/50 text-center text-outline text-xs font-label-mono">
+                      {data === null && !error ? 'Carregando fluxos…' : 'Nenhum fluxo publicado no momento.'}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
 
-          <div className="field" id="monitor-processos">
-            <label>Processos do playout</label>
-            <div className="note">Monitores desligados não consomem encoder. O PID e a memória abaixo são lidos do sistema operacional.</div>
-            <div className="health-summary">
-              <select aria-label="filtrar processos por tipo" value={processKind} onChange={(event) => setProcessKind(event.target.value as typeof processKind)}>
-                <option value="ALL">todos os usos</option><option value="ENGINE">engines</option><option value="OUTPUT">saídas RTMP/SRT</option><option value="MEDIAMTX">MediaMTX</option>
-              </select>
-              <select aria-label="filtrar processos por canal" value={processChannel} onChange={(event) => setProcessChannel(event.target.value as typeof processChannel)}>
-                <option value="CURRENT">canal atual</option><option value="ALL">todos os canais</option>
-              </select>
-            </div>
-            <table className="asrun process-table">
-              <thead><tr><th>processo</th><th>PID</th><th>estado</th><th className="right">CPU acumulada</th><th className="right">memória</th><th>saídas</th></tr></thead>
-              <tbody>
-                {visibleProcesses.map((process) => {
-                  const publishers = Array.isArray(process.details?.publishers) ? process.details.publishers : []
-                  return <tr key={process.id}>
-                    <td>{process.kind === 'MEDIAMTX' ? 'MediaMTX' : process.kind === 'ENGINE' ? `Engine ${process.channelId ?? ''}` : `${String((process.details?.transport as string | undefined) ?? 'OUTPUT')} · ${String((process.details?.url as string | undefined) ?? process.id)}`}</td>
-                    <td className="mono">{process.pid ?? '—'}</td>
-                    <td>{process.state}</td>
-                    <td className="right mono">{process.cpuTimeMs === null ? '—' : `${(process.cpuTimeMs / 1000).toFixed(1)} s`}</td>
-                    <td className="right mono">{process.memoryBytes === null ? '—' : `${(process.memoryBytes / 1024 / 1024).toFixed(0)} MB`}</td>
-                    <td>{publishers.length > 0 ? publishers.map((publisher) => String((publisher as { health?: unknown }).health ?? '')).join(', ') : '—'}</td>
-                  </tr>
-                })}
-                {visibleProcesses.length === 0 && <tr><td colSpan={6} className="dim">nenhum processo corresponde ao filtro</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          <div className="field" id="monitor-saude">
-            <label>Histórico de saúde deste canal</label>
-            {scheduler && <div className="note">Faixa ativa: <b>{scheduler.activeRule?.name ?? 'nenhuma'}</b> · grade termina em aproximadamente <b>{scheduler.minutesRemaining} min</b> · cobertura {scheduler.coverageHours} h.</div>}
-            {n1?.configured && <div className="note">Peer N+1: <span className={`pill ${n1.reachable ? 'ok' : 'bad'}`}>{n1.reachable ? 'alcançável' : 'indisponível'}</span>{n1.latencyMs != null && ` · ${n1.latencyMs} ms`}{n1.error && ` · ${n1.error}`}</div>}
-            {timeline.length > 0 && <div className="timeline-strip" aria-label="timeline operacional">
-              {timeline.slice(0, 12).map((item) => <span key={item.itemId} className={`timeline-chip ${item.state === 'ON_AIR' ? 'active' : ''}`} title={`${item.title} · ${item.state}`}>{item.state === 'ON_AIR' ? '● ' : ''}{item.title}</span>)}
-            </div>}
-            <a className="btn small" href={`/api/health-events.csv?channelId=${encodeURIComponent(channelId)}`} download>baixar CSV de saúde</a>
-            <div className="health-summary"><span className="pill bad">críticos pendentes: {criticalPending}</span><span className="pill warn">atenção pendente: {warnPending}</span><select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value as typeof healthFilter)}><option value="ALL">todos os níveis</option><option value="CRITICAL">somente críticos</option><option value="WARN">somente atenção</option></select></div>
-            <table className="asrun process-table"><thead><tr><th>horário</th><th>componente</th><th>severidade</th><th>estado</th><th>mensagem</th></tr></thead><tbody>
-              {visibleHealthEvents.slice(0, 30).map((event) => <tr key={event.id}><td className="mono">{event.occurredAt.replace('T', ' ').slice(0, 19)}</td><td>{event.component}</td><td className={event.severity === 'CRITICAL' ? 'bad' : event.severity === 'WARN' ? 'warn' : 'ok'}>{event.severity}</td><td>{event.state}</td><td>{event.message ?? '—'} {event.acknowledgedAt ? <span className="pill">RECONHECIDO</span> : <button className="btn small" onClick={() => void api.acknowledgeHealth(event.id).then(refresh)}>reconhecer</button>}</td></tr>)}
-              {healthEvents.length === 0 && <tr><td colSpan={5} className="dim">nenhum evento registrado</td></tr>}
-            </tbody></table>
-          </div>
+          {/* TAB 2: PERFIS DE SAÍDA */}
+          {activeTab === 'saidas' && (
+            <div className="flex flex-col gap-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider">
+                    CONFIGURAÇÃO DE SAÍDAS (SDI, SRT, RTMP, ARQUIVO)
+                  </span>
+                  <p className="text-[11px] text-outline mt-0.5">
+                    Alterações nas taxas de bits ou ativação são aplicadas dinamicamente ao pipeline.
+                  </p>
+                </div>
+              </div>
 
-          {/* ---- perfis de saída ---- */}
-          <div className="field" id="monitor-saidas">
-            <label>Perfis de saída</label>
-            <div className="rows">
-              {outputs.map((output) => {
-                const saude = saudeDe(output)
-                return (
-                <div key={output.id} className="row-item">
-                  <div>
-                    <div className="t">
-                      {output.name}
-                      <span className="pill">{tipoReal(output)}</span>
-                      {output.role !== 'EXTRA' && <span className="pill">do sistema</span>}
-                      {!output.enabled && <span className="pill bad">desligada</span>}
-                      {/* A saúde vinha numa seção à parte, e a mesma saída
-                          aparecia duas vezes na tela: uma com o que ela é,
-                          outra com como ela está. Quem opera precisa das duas
-                          juntas -- é olhando para a saída que se pergunta se
-                          ela está no ar. */}
-                      {saude && (
-                        <span className={`pill ${PUBLISHER_TONE[saude.health]}`}>
-                          {PUBLISHER_LABEL[saude.health]}
+              {/* Lista de Saídas */}
+              <div className="flex flex-col gap-3">
+                {outputs.map((output) => {
+                  const saude = saudeDe(output)
+                  return (
+                    <div
+                      key={output.id}
+                      className="p-4 rounded-xl bg-surface-panel/70 border border-border-subtle flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                          <h4 className="font-headline-md text-sm font-bold text-on-surface">{output.name}</h4>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-primary/20 text-primary border border-primary/30">
+                            {tipoReal(output)}
+                          </span>
+                          {output.role !== 'EXTRA' ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono text-outline bg-surface-base border border-border-subtle">
+                              DO SISTEMA
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono text-armed-amber bg-armed-amber/10 border border-armed-amber/30">
+                              EXTRA
+                            </span>
+                          )}
+                          {!output.enabled ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30">
+                              DESLIGADA
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                              LIGADA
+                            </span>
+                          )}
+                          {saude && (
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-label-mono font-bold ${
+                                saude.health === 'onAir'
+                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                  : saude.health === 'connecting'
+                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                  : saude.health === 'retrying'
+                                  ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                  : 'bg-surface-base text-outline border border-border-subtle'
+                              }`}
+                            >
+                              {PUBLISHER_LABEL[saude.health]}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-1 flex flex-col gap-1.5">
+                          <p className="text-xs font-label-mono text-on-surface truncate">
+                            {output.displayUrl || output.target || output.resolvedTarget || '(sem destino configurado)'}
+                          </p>
+                          {output.streamUrls && (
+                            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                              {Object.entries(output.streamUrls).map(([proto, url]) => (
+                                <button
+                                  key={proto}
+                                  type="button"
+                                  onClick={() => void copy(url, onMessage)}
+                                  className="px-2 py-0.5 rounded bg-surface-base hover:bg-surface-card border border-border-subtle text-[10px] font-label-mono text-primary uppercase flex items-center gap-1 cursor-pointer transition-colors"
+                                  title={`Copiar ${proto.toUpperCase()}: ${url}`}
+                                >
+                                  <span className="font-bold">{proto}</span>
+                                  <span className="material-symbols-outlined text-[12px] text-outline">content_copy</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-[11px] font-label-mono text-outline mt-0.5">
+                          {profileSummary(output)}
+                        </p>
+
+                        {saude && (
+                          <div className="text-[10px] font-label-mono text-outline mt-1.5 flex items-center gap-2">
+                            <span>
+                              {saude.delivered > 0
+                                ? `${saude.delivered.toLocaleString('pt-BR')} pacotes entregues`
+                                : 'Aguardando fluxo de pacotes'}
+                            </span>
+                            {saude.attempts > 1 && <span>· {saude.attempts} tentativas</span>}
+                            {saude.error && <span className="text-red-400">· {saude.error}</span>}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Controle de Bitrate & Ações */}
+                      <div className="flex flex-wrap items-center gap-3 shrink-0">
+                        <div className="flex items-center gap-2 bg-surface-base px-2.5 py-1 rounded-lg border border-border-subtle">
+                          <label htmlFor={`br-${output.id}`} className="text-[10px] font-label-caps uppercase text-outline">
+                            Bitrate:
+                          </label>
+                          <input
+                            id={`br-${output.id}`}
+                            type="number"
+                            min={500}
+                            max={80000}
+                            step={250}
+                            value={rascunho[output.id] ?? output.bitrateKbps ?? ''}
+                            placeholder={
+                              output.suggestedBitrateKbps === null
+                                ? 'automático'
+                                : `auto (${output.suggestedBitrateKbps})`
+                            }
+                            onChange={(event) =>
+                              setRascunho((atual) => ({ ...atual, [output.id]: event.target.value }))
+                            }
+                            onBlur={() => salvarBitrate(output)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') event.currentTarget.blur()
+                              if (event.key === 'Escape') {
+                                setRascunho((atual) => {
+                                  const proximo = { ...atual }
+                                  delete proximo[output.id]
+                                  return proximo
+                                })
+                              }
+                            }}
+                            className="bg-transparent border-0 text-on-surface text-xs font-label-mono w-20 focus:outline-none"
+                          />
+                          <span className="text-[10px] font-label-mono text-outline">kbps</span>
+                          {output.bitrateKbps !== null && (
+                            <button
+                              type="button"
+                              className="px-1.5 py-0.5 text-[9px] font-label-mono font-bold rounded bg-surface-panel hover:bg-surface-panel/80 text-primary border border-border-subtle cursor-pointer"
+                              onClick={() =>
+                                void guard(async () => {
+                                  setRascunho((atual) => {
+                                    const proximo = { ...atual }
+                                    delete proximo[output.id]
+                                    return proximo
+                                  })
+                                  await api.patchOutput(output.id, { bitrateKbps: null })
+                                  onMessage('Taxa de bits redefinida para automático.')
+                                })
+                              }
+                              title="Restaurar modo automático sincronizado ao formato"
+                            >
+                              AUTO
+                            </button>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void guard(async () => {
+                              await api.patchOutput(output.id, { enabled: !output.enabled })
+                              onMessage(output.enabled ? 'Saída desligada com sucesso.' : 'Saída ligada com sucesso.')
+                            })
+                          }
+                          className={`px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border ${
+                            output.enabled
+                              ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/30 text-amber-400'
+                              : 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30 text-emerald-400'
+                          }`}
+                        >
+                          {output.enabled ? 'DESLIGAR' : 'LIGAR'}
+                        </button>
+
+                        {output.role === 'EXTRA' && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void guard(async () => {
+                                await api.removeOutput(output.id)
+                                onMessage('Saída removida.')
+                              })
+                            }
+                            className="px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border bg-red-500/10 hover:bg-red-500/20 border-red-500/30 text-red-400"
+                          >
+                            REMOVER
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Adicionar nova saída */}
+              <div className="p-4 rounded-xl bg-surface-panel/40 border border-border-subtle flex flex-col gap-3 mt-2">
+                <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px] text-primary">add_circle</span>
+                  CRIAR NOVA SAÍDA DE TRANSMISSÃO
+                </span>
+
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                  <input
+                    type="text"
+                    placeholder="Nome da saída (ex: DeckLink PGM 1)"
+                    value={outName}
+                    onChange={(event) => setOutName(event.target.value)}
+                    className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-xs font-label-mono px-3 py-2 rounded-lg focus:outline-none"
+                  />
+                  <select
+                    value={outKind}
+                    onChange={(event) => setOutKind(event.target.value as typeof outKind)}
+                    className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-xs font-label-mono px-3 py-2 rounded-lg focus:outline-none"
+                  >
+                    <option value="RTMP">RTMP (Servidor / CDN)</option>
+                    <option value="SRT">SRT (Baixa Latência)</option>
+                    <option value="FILE">Arquivo (Gravação Local)</option>
+                    <option value="SDI">SDI / DeckLink (Hardware)</option>
+                  </select>
+
+                  <div className="sm:col-span-2 flex items-center gap-2">
+                    {outKind === 'SDI' ? (
+                      <select
+                        value={outTarget}
+                        onChange={(event) => setOutTarget(event.target.value)}
+                        className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-xs font-label-mono px-3 py-2 rounded-lg focus:outline-none flex-1"
+                      >
+                        <option value="">Selecione o conector DeckLink…</option>
+                        {decklinkSources.map((source) => (
+                          <option key={source.reference} value={source.reference.replace(/^sdi:/i, '')}>
+                            {source.label} ({source.reference})
+                          </option>
+                        ))}
+                      </select>
+                    ) : outKind === 'FILE' ? (
+                      <div className="flex items-center gap-2 flex-1">
+                        <input
+                          type="text"
+                          value={outTarget}
+                          readOnly
+                          placeholder="Caminho do arquivo de gravação…"
+                          className="bg-surface-base border border-border-subtle text-on-surface text-xs font-label-mono px-3 py-2 rounded-lg flex-1"
+                        />
+                        <button
+                          type="button"
+                          className="px-3 py-2 rounded-lg bg-surface-panel hover:bg-surface-base border border-border-subtle text-xs font-label-caps text-on-surface cursor-pointer shrink-0"
+                          onClick={() =>
+                            void api.pickFile().then((path) => path && setOutTarget(path)).catch((f: Error) => onMessage(f.message))
+                          }
+                        >
+                          EXPLORAR…
+                        </button>
+                      </div>
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder="rtmp:// ou srt://..."
+                        value={outTarget}
+                        onChange={(event) => setOutTarget(event.target.value)}
+                        className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-xs font-label-mono px-3 py-2 rounded-lg focus:outline-none flex-1"
+                      />
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={!outName.trim() || !outTarget.trim()}
+                      onClick={() =>
+                        void guard(async () => {
+                          await api.addOutput(channelId, {
+                            name: outName.trim(),
+                            kind: outKind,
+                            target: outTarget.trim(),
+                          })
+                          setOutName('')
+                          setOutTarget('')
+                          onMessage('Saída criada e adicionada com sucesso.')
+                        })
+                      }
+                      className="px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-on-primary font-label-caps text-xs font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                    >
+                      ADICIONAR
+                    </button>
+                  </div>
+                </div>
+
+                {outKind === 'SDI' && decklinkSources.length === 0 && (
+                  <p className="text-[11px] text-amber-400 font-label-mono mt-1">
+                    Nenhuma placa DeckLink detectada no sistema operacional.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: DESTINOS / RELAYS */}
+          {activeTab === 'destinos' && (
+            <div className="flex flex-col gap-5">
+              <div>
+                <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider">
+                  DESTINOS DE TRANSMISSÃO EXTERNA (RELAYS)
+                </span>
+                <p className="text-[11px] text-outline mt-0.5">
+                  Reencaminhamento para YouTube, redes sociais, retransmissoras ou links SRT ponto a ponto.
+                </p>
+              </div>
+
+              {/* Lista de Destinos */}
+              <div className="flex flex-col gap-3">
+                {(data?.destinations ?? []).map((destination) => {
+                  const relay = data?.relays.find((entry) => entry.id === destination.id)
+                  return (
+                    <div
+                      key={destination.id}
+                      className="p-4 rounded-xl bg-surface-panel/70 border border-border-subtle flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                          <h4 className="font-headline-md text-sm font-bold text-on-surface">{destination.name}</h4>
+                          {relay && (
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-label-mono font-bold ${
+                                relay.state === 'NO AR'
+                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                  : relay.state === 'CONECTANDO'
+                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                  : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                              }`}
+                            >
+                              {relay.state}
+                            </span>
+                          )}
+                          {!destination.enabled && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-surface-base text-outline border border-border-subtle">
+                              DESLIGADO
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-xs font-label-mono text-on-surface truncate">{destination.url}</p>
+
+                        {relay && (
+                          <div className="text-[11px] font-label-mono text-outline mt-1.5 flex flex-wrap items-center gap-2">
+                            <span className="px-1.5 py-0.2 rounded bg-surface-base border border-border-subtle text-[9px] text-primary">
+                              {relay.transport}{relay.transport === 'SRT' ? ` · ${relay.mode}` : ''}
+                            </span>
+                            {relay.latencyMs != null && <span>· Latência: {relay.latencyMs} ms</span>}
+                            {relay.rttMs != null && <span>· RTT: {relay.rttMs} ms</span>}
+                            {relay.lossPct != null && <span>· Perda: {relay.lossPct.toFixed(1)}%</span>}
+                            {relay.bitrateKbps != null && (
+                              <span>· {relay.bitrateKbps.toLocaleString('pt-BR')} kbps</span>
+                            )}
+                            <span>· {relay.primary ? 'Primário' : `Backup de ${relay.backupFor ?? '—'}`}</span>
+                          </div>
+                        )}
+
+                        {relay && (
+                          <div className="text-[10px] font-label-mono text-outline mt-1">
+                            {relay.delivered > 0
+                              ? `${relay.delivered.toLocaleString('pt-BR')} pacotes entregues`
+                              : 'Aguardando entrega de pacotes'}
+                            {relay.attempts > 1 && ` · ${relay.attempts} tentativas`}
+                            {relay.reason && <span className="text-red-400"> · {relay.reason}</span>}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void guard(() =>
+                              api.setDestination(destination.id, { enabled: !destination.enabled }).then(() => undefined),
+                            )
+                          }
+                          className={`px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border ${
+                            destination.enabled
+                              ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/30 text-amber-400'
+                              : 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30 text-emerald-400'
+                          }`}
+                        >
+                          {destination.enabled ? 'DESLIGAR' : 'LIGAR'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void guard(() => api.removeDestination(destination.id).then(() => undefined))
+                          }
+                          className="px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border bg-red-500/10 hover:bg-red-500/20 border-red-500/30 text-red-400"
+                        >
+                          REMOVER
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+
+                {(data?.destinations ?? []).length === 0 && (
+                  <div className="p-6 rounded-lg bg-surface-panel/30 border border-border-subtle/50 text-center text-outline text-xs font-label-mono">
+                    Nenhum destino externo configurado. O sinal continua disponível na rede local via RTSP/SRT/HLS.
+                  </div>
+                )}
+              </div>
+
+              {/* Criar Destino Form */}
+              <div className="p-4 rounded-xl bg-surface-panel/40 border border-border-subtle flex flex-col gap-3 mt-2">
+                <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px] text-primary">add_link</span>
+                  CRIAR NOVO RELAY / DESTINO
+                </span>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <input
+                    type="text"
+                    placeholder="Nome (ex: YouTube Live)"
+                    value={destName}
+                    onChange={(event) => setDestName(event.target.value)}
+                    className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-xs font-label-mono px-3 py-2 rounded-lg focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="rtmp:// ou srt://..."
+                    value={destUrl}
+                    onChange={(event) => setDestUrl(event.target.value)}
+                    className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-xs font-label-mono px-3 py-2 rounded-lg focus:outline-none sm:col-span-2"
+                  />
+                </div>
+
+                {destUrl.trim().toLowerCase().startsWith('srt://') && (
+                  <div className="p-3 rounded-lg bg-surface-base border border-border-subtle flex flex-col gap-2 mt-1">
+                    <span className="text-[10px] font-label-caps text-outline uppercase font-bold">
+                      PARÂMETROS DE TRANSMISSÃO SRT
+                    </span>
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                      <select
+                        value={srtMode}
+                        onChange={(event) => setSrtMode(event.target.value as typeof srtMode)}
+                        className="bg-surface-panel border border-border-subtle text-on-surface text-xs font-label-mono px-2.5 py-1.5 rounded focus:outline-none"
+                      >
+                        <option value="caller">caller (origem)</option>
+                        <option value="listener">listener (escuta)</option>
+                        <option value="rendezvous">rendezvous (p2p)</option>
+                      </select>
+                      <input
+                        value={srtLatency}
+                        onChange={(event) => setSrtLatency(event.target.value)}
+                        placeholder="latência ms (800)"
+                        className="bg-surface-panel border border-border-subtle text-on-surface text-xs font-label-mono px-2.5 py-1.5 rounded focus:outline-none"
+                      />
+                      <input
+                        value={srtStreamId}
+                        onChange={(event) => setSrtStreamId(event.target.value)}
+                        placeholder="streamid (opcional)"
+                        className="bg-surface-panel border border-border-subtle text-on-surface text-xs font-label-mono px-2.5 py-1.5 rounded focus:outline-none"
+                      />
+                      <input
+                        type="password"
+                        value={srtPassphrase}
+                        onChange={(event) => setSrtPassphrase(event.target.value)}
+                        placeholder="passphrase AES (opcional)"
+                        className="bg-surface-panel border border-border-subtle text-on-surface text-xs font-label-mono px-2.5 py-1.5 rounded focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    disabled={destName.trim() === '' || destUrl.trim() === ''}
+                    onClick={() =>
+                      void guard(async () => {
+                        let destination = destUrl.trim()
+                        if (destination.toLowerCase().startsWith('srt://')) {
+                          const url = new URL(destination)
+                          url.searchParams.set('mode', srtMode)
+                          if (srtLatency.trim() !== '') url.searchParams.set('latency', srtLatency.trim())
+                          if (srtStreamId.trim() !== '') url.searchParams.set('streamid', srtStreamId.trim())
+                          if (srtPassphrase.trim() !== '') url.searchParams.set('passphrase', srtPassphrase.trim())
+                          destination = url.toString()
+                        }
+                        await api.addDestination(channelId, destName.trim(), destination)
+                        setDestName('')
+                        setDestUrl('')
+                        setSrtStreamId('')
+                        setSrtPassphrase('')
+                        onMessage('Destino criado. O relay começará a entregar em instantes.')
+                      })
+                    }
+                    className="px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-on-primary font-label-caps text-xs font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    ADICIONAR DESTINO
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: SRT MANAGER & REDUNDÂNCIA (FASE B) */}
+          {activeTab === 'srt_manager' && (
+            <div className="flex flex-col gap-6">
+              <div className="h-[460px]">
+                <SrtManagerPanel
+                  onReconnectLink={(id) => onMessage(`Reconectando socket SRT ${id}…`)}
+                  onMessage={onMessage}
+                />
+              </div>
+
+              <div className="h-[440px]">
+                <RedundancyFailoverPanel
+                  onSwitchStream={(target) => onMessage(`Transmissão comutada para o enlace ${target}.`)}
+                  onToggleAutoFailover={(enabled) => onMessage(`Guarda de Failover ${enabled ? 'ativada' : 'desativada'}.`)}
+                  onMessage={onMessage}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: PROCESSOS */}
+          {activeTab === 'processos' && (
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider">
+                    PROCESSOS DO ENGINE &amp; MONITORES
+                  </span>
+                  <p className="text-[11px] text-outline mt-0.5">
+                    PID, CPU acumulada e consumo de memória lidos diretamente do SO.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <select
+                    value={processKind}
+                    onChange={(event) => setProcessKind(event.target.value as typeof processKind)}
+                    className="bg-surface-panel border border-border-subtle text-on-surface text-xs font-label-mono px-3 py-1.5 rounded-lg focus:outline-none"
+                  >
+                    <option value="ALL">Todos os processos</option>
+                    <option value="ENGINE">Engines</option>
+                    <option value="OUTPUT">Saídas RTMP/SRT</option>
+                    <option value="MEDIAMTX">MediaMTX</option>
+                  </select>
+
+                  <select
+                    value={processChannel}
+                    onChange={(event) => setProcessChannel(event.target.value as typeof processChannel)}
+                    className="bg-surface-panel border border-border-subtle text-on-surface text-xs font-label-mono px-3 py-1.5 rounded-lg focus:outline-none"
+                  >
+                    <option value="CURRENT">Canal atual</option>
+                    <option value="ALL">Todos os canais</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Tabela de processos */}
+              <div className="rounded-xl border border-border-subtle overflow-hidden bg-surface-panel/40">
+                <table className="w-full text-left border-collapse text-xs font-label-mono">
+                  <thead>
+                    <tr className="bg-surface-base text-outline uppercase font-label-caps text-[10px] tracking-wider border-b border-border-subtle">
+                      <th className="py-2.5 px-3">Processo</th>
+                      <th className="py-2.5 px-3">PID</th>
+                      <th className="py-2.5 px-3">Estado</th>
+                      <th className="py-2.5 px-3 text-right">CPU Acumulada</th>
+                      <th className="py-2.5 px-3 text-right">Memória</th>
+                      <th className="py-2.5 px-3">Saídas Ativas</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleProcesses.map((process) => {
+                      const publishers = Array.isArray(process.details?.publishers) ? process.details.publishers : []
+                      return (
+                        <tr key={process.id} className="border-b border-border-subtle/50 hover:bg-surface-panel/60 transition-colors">
+                          <td className="py-2.5 px-3 font-semibold text-on-surface">
+                            {process.kind === 'MEDIAMTX'
+                              ? 'MediaMTX (RTSP/SRT Server)'
+                              : process.kind === 'ENGINE'
+                              ? `Engine Playout · ${process.channelId ?? ''}`
+                              : `${String((process.details?.transport as string | undefined) ?? 'OUTPUT')} · ${String(
+                                  (process.details?.url as string | undefined) ?? process.id,
+                                )}`}
+                          </td>
+                          <td className="py-2.5 px-3 text-outline">{process.pid ?? '—'}</td>
+                          <td className="py-2.5 px-3">
+                            <span className="px-2 py-0.5 rounded text-[10px] bg-surface-base border border-border-subtle text-emerald-400 font-bold">
+                              {process.state}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-on-surface">
+                            {process.cpuTimeMs === null ? '—' : `${(process.cpuTimeMs / 1000).toFixed(1)} s`}
+                          </td>
+                          <td className="py-2.5 px-3 text-right text-on-surface">
+                            {process.memoryBytes === null
+                              ? '—'
+                              : `${(process.memoryBytes / 1024 / 1024).toFixed(0)} MB`}
+                          </td>
+                          <td className="py-2.5 px-3 text-outline truncate max-w-xs">
+                            {publishers.length > 0
+                              ? publishers.map((pub) => String((pub as { health?: unknown }).health ?? '')).join(', ')
+                              : '—'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {visibleProcesses.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="py-6 text-center text-outline">
+                          Nenhum processo em execução para este filtro.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 5: SAÚDE & TELEMETRIA */}
+          {activeTab === 'saude' && (
+            <div className="flex flex-col gap-5">
+              {/* Telemetria Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {scheduler && (
+                  <div className="p-3.5 rounded-xl bg-surface-panel/60 border border-border-subtle flex flex-col gap-1">
+                    <span className="text-[10px] font-label-caps text-outline uppercase font-bold">
+                      Grade &amp; Scheduler
+                    </span>
+                    <span className="text-sm font-label-mono font-bold text-on-surface">
+                      {scheduler.activeRule?.name ?? 'Modo Direto / Manual'}
+                    </span>
+                    <span className="text-[11px] font-label-mono text-outline">
+                      {scheduler.minutesRemaining} min restantes · Cobertura {scheduler.coverageHours}h
+                    </span>
+                  </div>
+                )}
+
+                {n1?.configured && (
+                  <div className="p-3.5 rounded-xl bg-surface-panel/60 border border-border-subtle flex flex-col gap-1">
+                    <span className="text-[10px] font-label-caps text-outline uppercase font-bold">
+                      Redundância N+1
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-label-mono font-bold ${
+                          n1.reachable
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                        }`}
+                      >
+                        {n1.reachable ? 'ALCANÇÁVEL' : 'INDISPONÍVEL'}
+                      </span>
+                      {n1.latencyMs != null && (
+                        <span className="text-[11px] font-label-mono text-outline">
+                          {n1.latencyMs} ms
                         </span>
                       )}
                     </div>
-                    <div className="d mono">{output.resolvedTarget ?? '(sem destino)'}</div>
-                    <div className="d">{profileSummary(output)}</div>
-                    {saude && (
-                      <div className="d">
-                        {saude.delivered > 0
-                          ? `${saude.delivered.toLocaleString('pt-BR')} pacotes entregues`
-                          : 'nada entregue ainda'}
-                        {saude.attempts > 1 && ` · ${saude.attempts} tentativas`}
-                        {saude.error && ` · ${saude.error}`}
-                      </div>
+                  </div>
+                )}
+
+                <div className="p-3.5 rounded-xl bg-surface-panel/60 border border-border-subtle flex flex-col gap-1">
+                  <span className="text-[10px] font-label-caps text-outline uppercase font-bold">
+                    Eventos Pendentes
+                  </span>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 font-label-mono text-xs font-bold border border-red-500/30">
+                      Críticos: {criticalPending}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-label-mono text-xs font-bold border border-amber-500/30">
+                      Atenção: {warnPending}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Barra de Ações & Filtro */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+                <div className="flex items-center gap-2">
+                  <select
+                    value={healthFilter}
+                    onChange={(event) => setHealthFilter(event.target.value as typeof healthFilter)}
+                    className="bg-surface-panel border border-border-subtle text-on-surface text-xs font-label-mono px-3 py-1.5 rounded-lg focus:outline-none"
+                  >
+                    <option value="ALL">Todos os níveis de severidade</option>
+                    <option value="CRITICAL">Somente Críticos</option>
+                    <option value="WARN">Somente Atenção</option>
+                  </select>
+                </div>
+
+                <a
+                  className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-panel/80 border border-border-subtle text-xs font-label-caps text-primary font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                  href={`/api/health-events.csv?channelId=${encodeURIComponent(channelId)}`}
+                  download
+                >
+                  <span className="material-symbols-outlined text-[16px]">download</span>
+                  BAIXAR CSV DE TELEMETRIA
+                </a>
+              </div>
+
+              {/* Tabela de Eventos */}
+              <div className="rounded-xl border border-border-subtle overflow-hidden bg-surface-panel/40">
+                <table className="w-full text-left border-collapse text-xs font-label-mono">
+                  <thead>
+                    <tr className="bg-surface-base text-outline uppercase font-label-caps text-[10px] tracking-wider border-b border-border-subtle">
+                      <th className="py-2.5 px-3">Horário</th>
+                      <th className="py-2.5 px-3">Componente</th>
+                      <th className="py-2.5 px-3">Severidade</th>
+                      <th className="py-2.5 px-3">Estado</th>
+                      <th className="py-2.5 px-3">Mensagem &amp; Resolução</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleHealthEvents.slice(0, 30).map((event) => (
+                      <tr key={event.id} className="border-b border-border-subtle/50 hover:bg-surface-panel/60 transition-colors">
+                        <td className="py-2.5 px-3 text-outline">
+                          {event.occurredAt.replace('T', ' ').slice(0, 19)}
+                        </td>
+                        <td className="py-2.5 px-3 font-semibold text-on-surface">{event.component}</td>
+                        <td className="py-2.5 px-3">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              event.severity === 'CRITICAL'
+                                ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                : event.severity === 'WARN'
+                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            }`}
+                          >
+                            {event.severity}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-outline">{event.state}</td>
+                        <td className="py-2.5 px-3 text-on-surface">
+                          <div className="flex items-center justify-between gap-3">
+                            <span>{event.message ?? '—'}</span>
+                            {event.acknowledgedAt ? (
+                              <span className="px-2 py-0.5 rounded bg-surface-base text-outline text-[10px] font-bold">
+                                RECONHECIDO
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="px-2.5 py-1 rounded bg-primary/20 hover:bg-primary/30 text-primary text-[10px] font-label-caps font-bold cursor-pointer transition-colors shrink-0"
+                                onClick={() => void api.acknowledgeHealth(event.id).then(refresh)}
+                              >
+                                RECONHECER
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {visibleHealthEvents.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="py-6 text-center text-outline">
+                          Nenhum evento registrado para os filtros selecionados.
+                        </td>
+                      </tr>
                     )}
-                    {/* Qualidade por saída, escrita à mão.
-                        O mesmo canal costuma ir para lugares com fôlego
-                        diferente: a transmissão principal aguenta o que o
-                        arquivo de gravação nem precisa, e o YouTube tem outro
-                        teto que a operadora do estúdio. Um número só para todas
-                        obriga a escolher entre imagem pobre onde sobra banda e
-                        travamento onde falta. */}
-                    <div className="qualidade">
-                      <label htmlFor={`br-${output.id}`}>qualidade</label>
-                      <input
-                        id={`br-${output.id}`}
-                        type="number"
-                        min={500}
-                        max={80000}
-                        step={250}
-                        value={rascunho[output.id] ?? output.bitrateKbps ?? ''}
-                        placeholder={
-                          output.suggestedBitrateKbps === null
-                            ? 'automático'
-                            : `automático (${output.suggestedBitrateKbps})`
-                        }
-                        onChange={(event) =>
-                          setRascunho((atual) => ({ ...atual, [output.id]: event.target.value }))
-                        }
-                        onBlur={() => salvarBitrate(output)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') event.currentTarget.blur()
-                          if (event.key === 'Escape') {
-                            setRascunho((atual) => {
-                              const proximo = { ...atual }
-                              delete proximo[output.id]
-                              return proximo
-                            })
-                          }
-                        }}
-                      />
-                      <span className="unidade">kbps</span>
-                      {/* Apagar o campo volta ao automático, que acompanha o
-                          formato do canal quando ele muda. */}
-                      {output.bitrateKbps !== null && (
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 6: CONVIDADOS (SRT INGRESS) */}
+          {activeTab === 'convidados' && (
+            <div className="flex flex-col gap-5">
+              <div>
+                <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider">
+                  LINKS DE INGRESS PARA CONVIDADOS &amp; REPÓRTERES (SRT)
+                </span>
+                <p className="text-[11px] text-outline mt-0.5">
+                  Gera URLs dedicadas com chaves seguras para transmissão remota ao vivo diretamente no playout.
+                </p>
+              </div>
+
+              {/* Lista de Convidados */}
+              <div className="flex flex-col gap-3">
+                {(data?.guests ?? []).map((guest) => {
+                  const path = data?.paths.find((entry) => entry.name.endsWith(guest.streamKey))
+                  return (
+                    <div
+                      key={guest.id}
+                      className="p-4 rounded-xl bg-surface-panel/70 border border-border-subtle flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-headline-md text-sm font-bold text-on-surface">{guest.label}</span>
+                          {path?.ready && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                              CONECTADO
+                            </span>
+                          )}
+                        </div>
                         <button
-                          className="btn small"
+                          type="button"
+                          onClick={() => void copy(guest.publishUrl, onMessage)}
+                          className="text-xs font-label-mono text-outline hover:text-primary transition-colors cursor-pointer text-left truncate max-w-xl block"
+                          title="Clique para copiar a URL de publicação"
+                        >
+                          {guest.publishUrl}
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => void copy(guest.publishUrl, onMessage)}
+                          className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-panel/80 border border-border-subtle text-xs font-label-caps text-on-surface font-bold cursor-pointer transition-colors"
+                        >
+                          COPIAR LINK
+                        </button>
+                        <button
+                          type="button"
                           onClick={() =>
                             void guard(async () => {
-                              setRascunho((atual) => {
-                                const proximo = { ...atual }
-                                delete proximo[output.id]
-                                return proximo
-                              })
-                              await api.patchOutput(output.id, { bitrateKbps: null })
-                              onMessage('Qualidade no automático. O canal foi reaplicado.')
+                              await api.removeGuest(guest.id)
+                              onMessage(`Chave de acesso de ${guest.label} foi revogada.`)
                             })
                           }
-                          title="Volta a acompanhar o formato do canal"
+                          className="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-xs font-label-caps text-red-400 font-bold cursor-pointer transition-colors"
                         >
-                          AUTO
+                          REVOGAR
                         </button>
-                      )}
+                      </div>
                     </div>
+                  )
+                })}
+
+                {(data?.guests ?? []).length === 0 && (
+                  <div className="p-6 rounded-lg bg-surface-panel/30 border border-border-subtle/50 text-center text-outline text-xs font-label-mono">
+                    Nenhum convidado cadastrado. Crie um nome abaixo para gerar uma URL de transmissão remota.
                   </div>
-                  <div className="actions">
-                    <button
-                      className="btn small"
-                      onClick={() =>
-                        void guard(async () => {
-                          await api.patchOutput(output.id, { enabled: !output.enabled })
-                          onMessage(output.enabled ? 'Saída desligada e canal atualizado.' : 'Saída ligada e canal atualizado.')
-                        })
-                      }
-                    >
-                      {output.enabled ? 'DESLIGAR' : 'LIGAR'}
-                    </button>
-                    {output.role === 'EXTRA' && (
-                      <button
-                        className="btn small"
-                        onClick={() =>
-                          void guard(async () => {
-                            await api.removeOutput(output.id)
-                          })
-                        }
-                      >
-                        REMOVER
-                      </button>
-                    )}
-                  </div>
-                </div>
-                )
-              })}
-            </div>
-            <div className="note ok">Ligar, desligar ou alterar um perfil reaplica as saídas imediatamente, sem reiniciar o servidor.</div>
-            <div className="add-row">
-              <input
-                type="text"
-                placeholder="nome"
-                value={outName}
-                onChange={(event) => setOutName(event.target.value)}
-              />
-              <select
-                value={outKind}
-                onChange={(event) => setOutKind(event.target.value as typeof outKind)}
-              >
-                <option value="RTMP">RTMP</option>
-                <option value="SRT">SRT</option>
-                <option value="FILE">Arquivo</option>
-                <option value="SDI">SDI / Decklink (placa)</option>
-              </select>
-              {outKind === 'SDI' ? (
-                <select value={outTarget} onChange={(event) => setOutTarget(event.target.value)} aria-label="placa e conector DeckLink">
-                  <option value="">selecione a placa/conector</option>
-                  {decklinkSources.map((source) => <option key={source.reference} value={source.reference.replace(/^sdi:/i, '')}>{source.label} ({source.reference})</option>)}
-                </select>
-              ) : outKind === 'FILE' ? (
-                <div className="file-picker-inline">
-                  <input type="text" value={outTarget} readOnly placeholder="nenhum arquivo selecionado" />
-                  <button className="btn small" onClick={() => void api.pickFile().then((path) => path && setOutTarget(path)).catch((failure: Error) => onMessage(failure.message))}>EXPLORAR…</button>
-                </div>
-              ) : (
+                )}
+              </div>
+
+              {/* Criar Convidado Form */}
+              <div className="p-4 rounded-xl bg-surface-panel/40 border border-border-subtle flex flex-col sm:flex-row items-center gap-3 mt-2">
                 <input
                   type="text"
-                  placeholder="rtmp://..."
-                  value={outTarget}
-                  onChange={(event) => setOutTarget(event.target.value)}
+                  placeholder="Nome do repórter ou estúdio remoto (ex: Link Externo SP)"
+                  value={guestLabel}
+                  onChange={(event) => setGuestLabel(event.target.value)}
+                  className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-xs font-label-mono px-3 py-2 rounded-lg focus:outline-none flex-1 w-full"
                 />
-              )}
-              {outKind === 'SDI' && decklinkSources.length === 0 && <div className="sub bad">Nenhuma placa DeckLink disponível. Instale o driver Blackmagic e o plugin DeckLink do GStreamer.</div>}
-              <button
-                className="btn small"
-                disabled={!outName.trim() || !outTarget.trim()}
-                onClick={() =>
-                  void guard(async () => {
-                    await api.addOutput(channelId, {
-                      name: outName.trim(),
-                      kind: outKind,
-                      target: outTarget.trim(),
+                <button
+                  type="button"
+                  disabled={guestLabel.trim() === ''}
+                  onClick={() =>
+                    void guard(async () => {
+                      const created = await api.addGuest(channelId, guestLabel.trim())
+                      setGuestLabel('')
+                      await copy(created.publishUrl, onMessage)
                     })
-                    setOutName('')
-                    setOutTarget('')
-                    onMessage('Saída criada e aplicada ao canal.')
-                  })
-                }
-              >
-                ADICIONAR
-              </button>
+                  }
+                  className="px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-on-primary font-label-caps text-xs font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0 w-full sm:w-auto"
+                >
+                  CRIAR CHAVE &amp; COPIAR URL
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* ---- convidados ---- */}
-          <div className="field" id="monitor-entradas">
-            <label>Convidados</label>
-            <div className="rows">
-              {(data?.guests ?? []).map((guest) => {
-                const path = data?.paths.find((entry) => entry.name.endsWith(guest.streamKey))
-                return (
-                  <div key={guest.id} className="row-item">
-                    <div>
-                      <div className="t">
-                        {guest.label}
-                        {path?.ready && <span className="pill ok">conectado</span>}
-                      </div>
-                      <button
-                        className="mono-link"
-                        onClick={() => void copy(guest.publishUrl, onMessage)}
-                        title="Clique para copiar"
-                      >
-                        {guest.publishUrl}
-                      </button>
-                    </div>
-                    <button
-                      className="btn small"
-                      onClick={() =>
-                        void guard(async () => {
-                          await api.removeGuest(guest.id)
-                          onMessage(`Chave de ${guest.label} revogada.`)
-                        })
-                      }
-                    >
-                      revogar
-                    </button>
-                  </div>
-                )
-              })}
-              {(data?.guests ?? []).length === 0 && (
-                <div className="empty">Nenhum convidado. Crie uma chave para alguém publicar.</div>
-              )}
-            </div>
-            <div className="inline">
-              <input
-                type="text"
-                placeholder="nome do convidado"
-                value={guestLabel}
-                onChange={(event) => setGuestLabel(event.target.value)}
-              />
-              <button
-                className="btn"
-                disabled={guestLabel.trim() === ''}
-                onClick={() =>
-                  void guard(async () => {
-                    const created = await api.addGuest(channelId, guestLabel.trim())
-                    setGuestLabel('')
-                    await copy(created.publishUrl, onMessage)
-                  })
-                }
-              >
-                criar chave
-              </button>
-            </div>
-          </div>
-
-          {/* ---- destinos ---- */}
-          <div className="field" id="monitor-destinos">
-            <label>Destinos</label>
-            <div className="rows">
-              {(data?.destinations ?? []).map((destination) => {
-                const relay = data?.relays.find((entry) => entry.id === destination.id)
-                return (
-                  <div key={destination.id} className="row-item">
-                    <div>
-                      <div className="t">
-                        {destination.name}
-                        {relay && (
-                          <span className={`pill ${RELAY_TONE[relay.state]}`}>{relay.state}</span>
-                        )}
-                      </div>
-                      <div className="d mono">{destination.url}</div>
-                      {relay && (
-                        <div className="d">
-                          <span className="pill">{relay.transport}{relay.transport === 'SRT' ? ` · ${relay.mode}` : ''}</span>
-                          {relay.latencyMs != null && ` · latência ${relay.latencyMs} ms`}
-                          {relay.rttMs != null && ` · RTT ${relay.rttMs} ms`}
-                          {relay.lossPct != null && ` · perda ${relay.lossPct.toFixed(1)}%`}
-                          {relay.bitrateKbps != null && ` · ${relay.bitrateKbps.toLocaleString('pt-BR')} kbps`}
-                          {` · ${relay.primary ? 'primário' : `backup de ${relay.backupFor ?? '—'}`}`}
-                        </div>
-                      )}
-                      {relay && (
-                        <div className="d">
-                          {relay.delivered > 0
-                            ? `${relay.delivered.toLocaleString('pt-BR')} pacotes entregues`
-                            : 'nada entregue ainda'}
-                          {relay.attempts > 1 && ` · ${relay.attempts} tentativas`}
-                          {relay.reason && ` · ${relay.reason}`}
-                        </div>
-                      )}
-                    </div>
-                    <div className="actions">
-                      <button
-                        className="btn small"
-                        onClick={() =>
-                          void guard(() =>
-                            api
-                              .setDestination(destination.id, { enabled: !destination.enabled })
-                              .then(() => undefined),
-                          )
-                        }
-                      >
-                        {destination.enabled ? 'desligar' : 'ligar'}
-                      </button>{' '}
-                      <button
-                        className="btn small"
-                        onClick={() =>
-                          void guard(() =>
-                            api.removeDestination(destination.id).then(() => undefined),
-                          )
-                        }
-                      >
-                        remover
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
-              {(data?.destinations ?? []).length === 0 && (
-                <div className="empty">
-                  Nenhum destino. O programa continua disponível na rede local.
-                </div>
-              )}
-            </div>
-            <div className="inline">
-              <input
-                type="text"
-                placeholder="nome"
-                value={destName}
-                onChange={(event) => setDestName(event.target.value)}
-              />
-              <input
-                type="text"
-                placeholder="rtmp://..."
-                value={destUrl}
-                onChange={(event) => setDestUrl(event.target.value)}
-              />
-              <button
-                className="btn"
-                disabled={destName.trim() === '' || destUrl.trim() === ''}
-                onClick={() =>
-                  void guard(async () => {
-                    let destination = destUrl.trim()
-                    if (destination.toLowerCase().startsWith('srt://')) {
-                      const url = new URL(destination)
-                      url.searchParams.set('mode', srtMode)
-                      if (srtLatency.trim() !== '') url.searchParams.set('latency', srtLatency.trim())
-                      if (srtStreamId.trim() !== '') url.searchParams.set('streamid', srtStreamId.trim())
-                      if (srtPassphrase.trim() !== '') url.searchParams.set('passphrase', srtPassphrase.trim())
-                      destination = url.toString()
-                    }
-                    await api.addDestination(channelId, destName.trim(), destination)
-                    setDestName('')
-                    setDestUrl('')
-                    setSrtStreamId('')
-                    setSrtPassphrase('')
-                    onMessage('Destino criado. O relay começa a entregar em alguns segundos.')
-                  })
-                }
-              >
-                adicionar
-              </button>
-            </div>
-            {destUrl.trim().toLowerCase().startsWith('srt://') && (
-              <details className="field compact" open>
-                <summary>opções SRT</summary>
-                <div className="inline">
-                  <select value={srtMode} onChange={(event) => setSrtMode(event.target.value as typeof srtMode)} aria-label="modo SRT">
-                    <option value="caller">caller</option><option value="listener">listener</option><option value="rendezvous">rendezvous</option>
-                  </select>
-                  <input value={srtLatency} onChange={(event) => setSrtLatency(event.target.value)} placeholder="latência ms" aria-label="latência SRT" />
-                  <input value={srtStreamId} onChange={(event) => setSrtStreamId(event.target.value)} placeholder="streamid (opcional)" aria-label="streamid SRT" />
-                  <input type="password" value={srtPassphrase} onChange={(event) => setSrtPassphrase(event.target.value)} placeholder="passphrase (opcional)" aria-label="passphrase SRT" />
-                </div>
-              </details>
-            )}
-          </div>
-
-          {/* ---- o que está passando ---- */}
-          <div className="field">
-            <label>No servidor agora</label>
-            <div className="rows">
-              {(data?.paths ?? []).map((path) => (
-                <div key={path.name} className="row-item">
-                  <div>
-                    <div className="t mono">
-                      {path.name}
-                      <span className={`pill ${path.ready ? 'ok' : ''}`}>
-                        {path.ready ? 'no ar' : 'parado'}
-                      </span>
-                    </div>
-                    <div className="d">
-                      {(path.bytesReceived / 1048576).toFixed(1)} MiB recebidos ·{' '}
-                      {path.readers} {path.readers === 1 ? 'leitor' : 'leitores'}
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {(data?.paths ?? []).length === 0 && (
-                <div className="empty">{data === null && !error ? 'Carregando fluxos…' : error ? 'O servidor local não está respondendo.' : 'Nenhum fluxo publicado agora.'}</div>
-              )}
-            </div>
-          </div>
         </div>
 
-        <footer>
-          <button className="btn" onClick={onClose}>
-            fechar
+        {/* FOOTER MODAL */}
+        <footer className="px-6 py-3.5 border-t border-border-subtle flex items-center justify-between shrink-0 bg-surface-panel/40">
+          <span className="text-[11px] font-label-mono text-outline">
+            RPlayout Broadcast Distribution Server · Padrão SMPTE / ITU-R
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-5 py-2 rounded-lg bg-surface-panel hover:bg-surface-panel/80 border border-border-subtle text-xs font-label-caps text-on-surface font-bold cursor-pointer transition-colors"
+          >
+            FECHAR
           </button>
         </footer>
       </div>

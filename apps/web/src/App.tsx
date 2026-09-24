@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
-import type { AudioLevel, Channel, EditScope, Fit, Trim } from '@rplayout/protocol'
+import type { AudioLevel, Channel, EditScope, Fit, Trim, ScheduleEventType, TimingFlags } from '@rplayout/protocol'
 import { api } from './api.js'
 import { clock, dur } from './format.js'
 import type {
@@ -38,18 +38,35 @@ import { UsersPanel } from './components/UsersPanel.js'
 import { DocumentationPanel } from './components/DocumentationPanel.js'
 import { WorkspaceShell, type WorkspaceId } from './components/WorkspaceShell.js'
 import { QualityControlPanel } from './components/QualityControlPanel.js'
+import { MasterControlView } from './views/MasterControlView.js'
+import { PlaylistScheduleView } from './views/PlaylistScheduleView.js'
+import { QualityControlView } from './views/QualityControlView.js'
+import { EngineeringDistributionView } from './views/EngineeringDistributionView.js'
+import { AiredView } from './views/AiredView.js'
+import { BroadcastHeader } from './components/broadcast/BroadcastHeader.js'
+import { DocsView } from './views/DocsView.js'
+import { SettingsView } from './views/SettingsView.js'
 
 type Dialog =
   | { kind: 'trim'; view: ItemView }
   | { kind: 'playlists' }
   | { kind: 'still'; view: ItemView }
   | { kind: 'audio'; view: ItemView }
-  | { kind: 'add'; assetId?: string }
+  | { kind: 'add'; assetId?: string; rundownId?: string; onApplied?: (snapshot: Snapshot) => void }
   | { kind: 'distribution' }
   | { kind: 'graphics' }
   | { kind: 'itemGraphics'; view: ItemView }
   | { kind: 'asrun' }
-  | { kind: 'autofill' }
+  | {
+      kind: 'autofill'
+      rundownId?: string
+      onApplied?: (snapshot: Snapshot) => void
+      initialHours?: number
+      initialMinutes?: number
+      initialStart?: string
+      initialEnd?: string
+      autoPreview?: boolean
+    }
   | { kind: 'channel' }
   | { kind: 'settings' }
   | { kind: 'users' }
@@ -129,6 +146,53 @@ export function App() {
    */
   const channelRef = useRef<string | null>(null)
   const toastTimer = useRef<number | null>(null)
+
+  const [currentWorkspace, setCurrentWorkspace] = useState<WorkspaceId>(() => {
+    const requested = new URLSearchParams(window.location.search).get('workspace')
+    const known: WorkspaceId[] = [
+      'master',
+      'playlist',
+      'users',
+      'monitor',
+      'aired',
+      'audit',
+      'qc',
+      'docs',
+      'settings',
+    ]
+    return known.includes(requested as WorkspaceId) ? (requested as WorkspaceId) : 'master'
+  })
+
+  const navigateWorkspace = (target: WorkspaceId): void => {
+    setCurrentWorkspace(target)
+    const url = new URL(window.location.href)
+    if (target === 'master') {
+      url.searchParams.delete('workspace')
+    } else {
+      url.searchParams.set('workspace', target)
+    }
+    window.history.pushState({}, '', url.toString())
+  }
+
+  useEffect(() => {
+    const onPopState = () => {
+      const requested = new URLSearchParams(window.location.search).get('workspace')
+      const known: WorkspaceId[] = [
+        'master',
+        'playlist',
+        'users',
+        'monitor',
+        'aired',
+        'audit',
+        'qc',
+        'docs',
+        'settings',
+      ]
+      setCurrentWorkspace(known.includes(requested as WorkspaceId) ? (requested as WorkspaceId) : 'master')
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
 
   useEffect(() => {
     document.documentElement.classList.toggle('follow-lock', followOnAir)
@@ -364,6 +428,8 @@ export function App() {
 
   channelRef.current = view?.channel.id ?? null
 
+  const rate = view?.channel.rate ?? { num: 30000, den: 1001 }
+
   const schedule = useMemo(
     () => new Map((view?.schedule.items ?? []).map((item) => [item.id, item])),
     [view],
@@ -551,14 +617,18 @@ export function App() {
    * Caixa de confirmação em ferramenta de todo dia vira clique automático, e aí
    * não protege ninguém.
    */
-  const removerItem = (id: string): void => {
+  const removerItem = (id: string, targetRundownId?: string, onRemoved?: (id: string) => void): void => {
     if (id === onAirId) {
       say('O item no ar não sai da grade. Pare antes.')
       return
     }
     const alvo = view?.items.find((entry) => entry.item.id === id)
     void guard(async () => {
-      absorb(await api.removeItem(id))
+      const snapshot = await api.removeItem(id)
+      if (!targetRundownId || targetRundownId === view?.rundown.id) {
+        absorb(snapshot)
+      }
+      onRemoved?.(id)
       say(`"${alvo?.item.title ?? 'Item'}" saiu da grade — Ctrl+Z traz de volta.`)
     })
   }
@@ -623,11 +693,20 @@ export function App() {
     })
   }
 
-  const addItem = (request: NewItem): void => {
+  const addItem = (
+    request: NewItem,
+    targetRundownId?: string,
+    onApplied?: (snapshot: Snapshot) => void,
+  ): void => {
     if (!view) return
+    const targetId = targetRundownId ?? view.rundown.id
     setDialog(null)
     void guard(async () => {
-      absorb(await api.addItem(view.rundown.id, request))
+      const snapshot = await api.addItem(targetId, request)
+      if (targetId === view.rundown.id) {
+        absorb(snapshot)
+      }
+      onApplied?.(snapshot)
       const at = anchorTarget(request.anchor)
       say(
         at === null
@@ -769,6 +848,95 @@ export function App() {
     })
   }
 
+  const aceitarDoAcervo = (assetId: string): void => {
+    void guard(async () => {
+      await api.patchAsset(assetId, { ignored: false })
+      await refreshLibrary()
+      say('Arquivo aceito no acervo ativo.')
+    })
+  }
+
+  const ignorarNoAcervo = (assetId: string): void => {
+    void guard(async () => {
+      await api.patchAsset(assetId, { ignored: true })
+      await refreshLibrary()
+      say('Arquivo movido para os ignorados.')
+    })
+  }
+
+  const trocarCanal = (channelId: string): void => {
+    const rundownId = rundownOf[channelId]
+    if (!rundownId || channelId === view?.channel.id) return
+    void guard(async () => absorb(await api.rundown(rundownId)))
+  }
+
+  const exportCsv = (): void => {
+    if (!view) return
+    const a = document.createElement('a')
+    a.href = `/api/rundowns/${view.rundown.id}/export.csv`
+    a.download = `grade-${view.channel.name.toLowerCase().replace(/\s+/g, '-')}.csv`
+    a.click()
+  }
+
+  const inserirItemNaGrade = (
+    assetId: string | null,
+    atIndex?: number,
+    liveConfig?: { sourceRef: string; title: string; durationOverride?: number },
+    options?: {
+      eventType?: ScheduleEventType
+      timingFlags?: TimingFlags
+    },
+  ): void => {
+    if (!view) return
+    void guard(async () => {
+      const isHardTime = options?.eventType === 'HARD_TIME'
+      const isFixed = options?.eventType === 'FIXED'
+      const itemAnchor = isHardTime
+        ? { kind: 'HARD_TIME' as const, at: 0 }
+        : isFixed
+          ? { kind: 'FIXED' as const, at: 0 }
+          : { kind: 'FLOW' as const }
+
+      if (liveConfig) {
+        absorb(
+          await api.addItem(view.rundown.id, {
+            sourceRef: liveConfig.sourceRef,
+            type: 'LIVE',
+            title: liveConfig.title,
+            durationOverride: liveConfig.durationOverride,
+            anchor: itemAnchor,
+            eventType: options?.eventType,
+            timingFlags: options?.timingFlags,
+            trimmable: options?.timingFlags?.trimmable,
+            optional: options?.timingFlags?.optional,
+            protected: options?.timingFlags?.protected,
+            atIndex,
+          }),
+        )
+        say(`Fonte ao vivo "${liveConfig.title}" inserida na grade.`)
+      } else if (assetId) {
+        const asset = assets.find((candidate) => candidate.id === assetId)
+        absorb(
+          await api.addItem(view.rundown.id, {
+            mediaId: assetId,
+            type: options?.eventType === 'FILLER' ? 'FILLER' : 'VT',
+            title: asset?.title,
+            anchor: itemAnchor,
+            eventType: options?.eventType,
+            timingFlags: options?.timingFlags,
+            trimmable: options?.timingFlags?.trimmable,
+            optional: options?.timingFlags?.optional,
+            protected: options?.timingFlags?.protected,
+            atIndex,
+          }),
+        )
+        say(`"${asset?.title ?? 'Arquivo'}" inserido na grade.`)
+      }
+    })
+  }
+
+  if (authRequired && !authenticated) return <Login onLogin={login} error={authError} />
+
   // Instalação nova: banco sem canal nenhum. Antes disto a tela ficava em
   // "carregando" para sempre, que é a pior primeira impressão possível --
   // parece defeito e é só falta de canal.
@@ -797,7 +965,7 @@ export function App() {
             </button>
           </div>
           <p className="hint">
-            O canal nasce em 1920×1080 a 50 quadros, com uma grade vazia. Depois aponte
+            O canal nasce no padrão broadcast 1080i59.94 (ou 1080p59.94), com uma grade vazia. Depois aponte
             <code>RPLAYOUT_MEDIA</code> para a sua pasta de vídeos e use <b>LER PASTA</b>: o
             acervo é lido do disco, com duração, loudness e miniatura de cada arquivo.
           </p>
@@ -806,24 +974,6 @@ export function App() {
       </div>
     )
   }
-
-  const aceitarDoAcervo = (assetId: string): void => {
-    void guard(async () => {
-      await api.patchAsset(assetId, { ignored: false })
-      await refreshLibrary()
-      say('Arquivo aceito no acervo ativo.')
-    })
-  }
-
-  const ignorarNoAcervo = (assetId: string): void => {
-    void guard(async () => {
-      await api.patchAsset(assetId, { ignored: true })
-      await refreshLibrary()
-      say('Arquivo movido para os ignorados.')
-    })
-  }
-
-  if (authRequired && !authenticated) return <Login onLogin={login} error={authError} />
 
   if (!view || !live) {
     return (
@@ -840,411 +990,320 @@ export function App() {
     )
   }
 
-  const requestedWorkspace = new URLSearchParams(window.location.search).get('workspace')
-  const knownWorkspaces: WorkspaceId[] = ['master', 'playlist', 'users', 'monitor', 'aired', 'audit', 'qc', 'docs']
-  const workspace: WorkspaceId = knownWorkspaces.includes(requestedWorkspace as WorkspaceId) ? requestedWorkspace as WorkspaceId : 'master'
-  const workspaceHref = (target: WorkspaceId): string => target === 'master' ? window.location.pathname : `${window.location.pathname}?workspace=${target}`
-  const abrirMaster = (): void => { window.location.href = workspaceHref('master') }
-  const shell = (active: WorkspaceId, title: string, description: string, content: ReactNode) => <WorkspaceShell active={active} channelName={view.channel.name} role={sessionRole ?? 'Operador'} authRequired={authRequired} title={title} description={description}>{content}{toast && <div className="toast" role="status">{toast}</div>}</WorkspaceShell>
-  if (workspace === 'playlist') {
-    return shell('playlist', 'Programação', 'organização e publicação de playlists 24h', <div className="playlist-workspace"><PlaylistsDialog
-      rundownId={view.rundown.id}
-      onCancel={abrirMaster}
-      onLoaded={(snapshot, message) => { absorb(snapshot); say(message) }}
-      onMessage={say}
-    /></div>)
-  }
-  if (workspace === 'users') {
-    return shell('users', 'Usuários e acesso', 'contas, papéis e permissões', <section className="workspace-panel"><header className="workspace-panel-head"><div><h1>Usuários e acesso</h1><p>Controle quem opera, programa e administra o canal.</p></div><span className={`auth-state${authRequired ? ' protected' : ' local'}`}>{authRequired ? 'LOGIN ATIVO' : 'MODO LOCAL SEM LOGIN'}</span></header>{!authRequired && <div className="action-banner warn"><div><strong>Este servidor está em modo local.</strong><span>Configure RPLAYOUT_ADMIN_USER e RPLAYOUT_ADMIN_PASSWORD para exigir login no próximo início.</span></div></div>}<UsersPanel onMessage={say} /></section>)
-  }
-  if (workspace === 'monitor') {
-    return shell('monitor', 'Monitoramento', 'saídas, processos, saúde e continuidade', <Distribution channelId={view.channel.id} onClose={abrirMaster} onMessage={say} />)
-  }
-  if (workspace === 'aired') {
-    return shell('aired', 'Aired', 'o que realmente foi ao ar', <AsRunPanel channelId={view.channel.id} rate={view.channel.rate} onClose={abrirMaster} />)
-  }
-  if (workspace === 'audit') {
-    return shell('audit', 'Auditoria', 'ações de operadores e do sistema', <AuditPanel onClose={abrirMaster} />)
-  }
-  if (workspace === 'docs') {
-    return shell('docs', 'Ajuda operacional', 'procedimentos e recuperação de falhas', <DocumentationPanel onClose={abrirMaster} />)
-  }
-  if (workspace === 'qc') {
-    return shell('qc', 'Controle de qualidade', 'análise, aceite e rejeição de mídia', <QualityControlPanel folders={folders} scan={scan} onAccept={aceitarDoAcervo} onIgnore={ignorarNoAcervo} onScan={(measure) => void startScan(measure)} />)
-  }
-
-  const rate = view.channel.rate
-  const near = commitment !== null && commitment.left <= 60 * (rate.num / rate.den)
-
-  /**
-   * Lista arrastada de qualquer lugar da máquina para dentro da janela.
-   *
-   * O navegador não entrega o caminho de um arquivo arrastado -- só o nome e o
-   * conteúdo --, então quem lê é o servidor, a partir do texto. É por isso que
-   * dá para arrastar um `.m3u` que nem está numa pasta do acervo.
-   */
-  const soltarLista = (event: React.DragEvent): void => {
-    event.preventDefault()
-    setListaSobrevoando(false)
-    const arquivo = [...(event.dataTransfer.files ?? [])].find((entrada) =>
-      /\.m3u8?$/i.test(entrada.name),
-    )
-    if (!arquivo) return
-
-    void arquivo
-      .text()
-      .then(async (texto) => {
-        const resposta = await api.loadPlaylistText(view.rundown.id, texto, false)
-        absorb(resposta)
-        say(
-          resposta.skipped > 0
-            ? `"${arquivo.name}": ${resposta.loaded} item(ns) na grade, ${resposta.skipped} sem arquivo no acervo.`
-            : `"${arquivo.name}": ${resposta.loaded} item(ns) na grade.`,
-        )
-      })
-      .catch((falha: Error) => setError(falha.message))
-  }
-
   return (
-    <div
-      className={`app${listaSobrevoando ? ' recebendo-lista' : ''}`}
-      onDragOver={(event) => {
-        // Só reage a arquivo vindo de fora: arrastar item dentro da grade não
-        // pode acender a tela inteira.
-        if (!event.dataTransfer.types.includes('Files')) return
-        event.preventDefault()
-        setListaSobrevoando(true)
-      }}
-      onDragLeave={(event) => {
-        if (event.currentTarget === event.target) setListaSobrevoando(false)
-      }}
-      onDrop={soltarLista}
-    >
-      {listaSobrevoando && (
-        <div className="solta-aqui">solte a lista .m3u para carregar na grade</div>
-      )}
-      <header className="topbar">
-        <div className="brand">
-          RPlayout<span>.</span>
-        </div>
-        <div className={`tally${onAirId ? ' live' : ''}`}>
-          <span className="dot" />
-          {onAirId ? 'NO AR' : 'FORA DO AR'}
-        </div>
-        {live.transport.standby && <div className="standby">PREPARADO</div>}
-        <nav className="channel-tabs" aria-label="Canais">
-          {/* Abas em vez de lista suspensa: com dois ou três canais, ver todos
-              de uma vez é a diferença entre olhar e procurar. */}
-          {channels.map((entrada) => (
-            <button
-              key={entrada.id}
-              className={`aba${entrada.id === view.channel.id ? ' on' : ''}`}
-              aria-current={entrada.id === view.channel.id ? 'page' : undefined}
-              onClick={() => {
-                const rundownId = rundownOf[entrada.id]
-                if (!rundownId || entrada.id === view.channel.id) return
-                void guard(async () => absorb(await api.rundown(rundownId)))
-              }}
-            >
-              {entrada.name}
-            </button>
-          ))}
-          <button
-            className="aba engrenagem"
-            title="Configurações e canais"
-            aria-label="Configurações e canais"
-            onClick={() => setDialog({ kind: 'settings' })}
-          >
-            ⚙
-          </button>
-          <a className="aba" href={workspaceHref('playlist')} title="Organizar e publicar a programação de 24 horas">PLAYLISTS</a>
-          <a className="aba" href={workspaceHref('qc')} title="Revisar mídias com problemas de imagem, áudio ou formato">QC</a>
-          <a className="aba" href={workspaceHref('monitor')} title="Abrir saídas, processos e saúde do canal">MONITOR</a>
-          <a className="aba acesso" href={workspaceHref('users')} title="Abrir gerenciamento de usuários">USUÁRIOS</a>
-          <a className="aba" href={workspaceHref('docs')} title="Documentação e procedimentos do RPlayout">AJUDA</a>
-        </nav>
-
-        {commitment && (
-          <div className={`commitment${near ? ' near' : ''}`}>
-            <div>
-              <div className="lbl">entra às {clock(commitment.at, rate)}</div>
-              <div className="who">{commitment.title}</div>
-            </div>
-            <div className="cd">{dur(commitment.left, rate)}</div>
-          </div>
-        )}
-
-        {/* O que está quebrado aparece na tela em que o operador já está
-            olhando, não escondido atrás de um painel que ele só abre quando
-            já desconfia. */}
-        {live.alerts.length > 0 && (
-          <div className="alerts" title={live.alerts.map((alert) => alert.message).join('\n')}>
-            <span className="dot" />
-            {live.alerts[0]?.message}
-            {live.alerts.length > 1 && <b>+{live.alerts.length - 1}</b>}
-          </div>
-        )}
-
-        <div className="spacer" />
-        <div className={`session-role${authRequired ? '' : ' local'}`} title={authRequired ? 'papel da sessão autenticada' : 'servidor em modo local sem exigência de login'}>{authRequired ? (sessionRole ?? 'Operador') : 'ACESSO LOCAL'}</div>
-        {authRequired && <button className="btn small" title="Encerrar sessão" onClick={() => {
-          void fetch('/api/auth/logout', { method: 'POST' }).finally(() => {
-            setAuthenticated(false)
-            setSessionRole(null)
-          })
-        }}>SAIR</button>}
-        <div className="bigclock">{clock(live.now, rate)}</div>
-      </header>
-
-      <div className="main">
-        <aside className="pane">
-          <div className="pane-title">
-            arquivos<span className="count">{assets.length}</span>
-          </div>
-          <Explorer
-            folders={folders}
-            rate={rate}
-            openAssetId={openAssetId}
-            categories={categories}
-            categoryColors={coresDeCategoria}
-            onPreview={(assetId) => void command('cue', { assetId })}
-            // O caminho de todo dia é pôr no fim da grade. Quem precisa de hora
-            // marcada usa INSERIR ITEM, que é onde as âncoras moram.
-            onInsert={inserirNoFim}
-            onRemove={removerDoAcervo}
-            onAccept={aceitarDoAcervo}
-            onCategorize={categorizar}
-            onPrune={limparQuebrados}
-            scan={scan}
-            onScan={(measure) => void startScan(measure)}
-            // Acrescentar pasta mora aqui, e não só na engrenagem: é olhando a
-            // lista de arquivos que o operador percebe que falta uma pasta.
-            onPickRoot={async () => {
-              try {
-                const picked = await api.pickMediaRoot()
-                if (!picked) return null
-                await refreshLibrary()
-                void startScan(false)
-                return null
-              } catch (falha) {
-                return falha instanceof Error ? falha.message : 'Não consegui ler essa pasta.'
-              }
-            }}
-            onRemoveRoot={(rootId) => {
-              if (!window.confirm('Remover esta pasta do acervo? Os vídeos já usados nas grades continuam disponíveis.')) return
-              void api.removeMediaRoot(rootId)
-                .then(() => refreshLibrary())
-                .catch((failure) => setError(failure instanceof Error ? failure.message : 'Não consegui remover a pasta.'))
-            }}
-            onOpenInsert={() => setDialog({ kind: 'add' })}
-          />
-        </aside>
-
-        <section className="pane" style={{ background: 'var(--bg)' }}>
-          <div className="pane-title">
-            {view.rundown.name}
-            <span className="count">
-              {view.items.length} itens · {dur(totalDuration, rate)}
-              {view.rundown.loop && ' · em loop'}
-            </span>
-            {/* Desfazer, refazer e as-run moram em cima da grade, e não na barra
-                de baixo: são ações sobre a grade, e a mão que acabou de mexer
-                nela está aqui. As-run fica um pouco afastado -- é consulta, não
-                edição, e encostar nos outros dois convida ao clique errado. */}
-            <div className="acoes-grade">
-              <button
-                className="btn small"
-                disabled={!history.canUndo}
-                onClick={() => void undo('undo')}
-                title={history.undoLabel ? `Desfazer: ${history.undoLabel}` : 'Nada para desfazer'}
-              >
-                DESFAZER
-              </button>
-              <button
-                className="btn small"
-                disabled={!history.canRedo}
-                onClick={() => void undo('redo')}
-                title={history.redoLabel ? `Refazer: ${history.redoLabel}` : 'Nada para refazer'}
-              >
-                REFAZER
-              </button>
-              <a className="btn small afastado" href={workspaceHref('aired')} title="O que realmente foi ao ar">AIRED</a>
-              <a className="btn small" href={`/api/rundowns/${view.rundown.id}/export.csv`} download title="Exportar a grade proposta em CSV">
-                EXPORTAR GRADE
-              </a>
-              <button
-                className={`btn small${followOnAir ? ' on' : ''}`}
-                onClick={() => setFollowOnAir((value) => !value)}
-                title={followOnAir ? 'Acompanhamento fixo ativo; clique para liberar a rolagem' : 'Fixar a grade no item que está no PGM'}
-              >
-                {followOnAir ? 'PGM FIXADO' : 'FIXAR PGM'}
-              </button>
-            </div>
-          </div>
-          <section className={`operation-state${live.alerts.length ? ' failed' : onAirId ? ' live' : ' idle'}`} aria-label="Estado operacional do canal">
-            <div><span>ESTADO</span><strong>{live.alerts.length ? 'ATENÇÃO' : onAirId ? 'NO AR' : live.transport.standby ? 'PREPARADO' : 'PARADO'}</strong></div>
-            <div className="operation-item"><span>ITEM</span><strong>{onAirItem?.item.title ?? 'nenhum item no ar'}</strong></div>
-            <div><span>RESTANTE</span><strong className="mono">{onAirId ? dur(remainingOnAir, rate) : '—'}</strong></div>
-            <div className="operation-item"><span>PRÓXIMO</span><strong>{nextScheduledItem?.item.title ?? 'fim da grade'}</strong></div>
-            {live.alerts.length > 0 ? <a className="btn small" href={workspaceHref('monitor')}>ABRIR DIAGNÓSTICO</a> : !onAirId ? <button className="btn small" onClick={() => void command('park')}>PREPARAR PRIMEIRO</button> : null}
-          </section>
-          <div className={`pane-body${followOnAir ? ' following' : ''}`}>
-            <Rundown
-              items={view.items}
-              schedule={schedule}
-              rate={rate}
-              channel={view.channel}
-              selectedId={selectedId}
-              onAirId={onAirId}
-              preparedId={live?.transport.preparedItemId ?? null}
-              preparingId={live?.transport.preparingItemId ?? null}
-              followOnAir={followOnAir}
-              onToggleFollowOnAir={() => setFollowOnAir((value) => !value)}
-              remainingOnAir={remainingOnAir}
-              errorIds={errorIds}
-              marked={marked}
-              onSelect={select}
-              onMove={move}
-              onUngroup={ungroup}
-              onOpenTrim={(item) =>
-                // Imagem parada não tem o que marcar: o I/O dela é a duração.
-                setDialog({
-                  kind: item.asset && isStill(item.asset) ? 'still' : 'trim',
-                  view: item,
-                })
-              }
-              onOpenAudio={(item) => setDialog({ kind: 'audio', view: item })}
-              onSetFit={setFit}
-              onOpenGraphics={(item) => setDialog({ kind: 'itemGraphics', view: item })}
-              onDropAsset={inserirEm}
-              onRemove={removerItem}
-              categoryColors={coresDeCategoria}
-              onNotes={saveNotes}
-            />
-          </div>
-        </section>
-
-        <aside className="pane">
-          <Monitors
-            channel={view.channel}
-            live={live}
-            onAirItem={onAirItem}
-            onAirRemaining={remainingOnAir}
-            preview={previewCard}
-            monitors={monitors}
-            onSeek={(bus, frames) => void command('seek', { bus, frames, itemId: bus === 'pgm' ? onAirId ?? undefined : selectedId ?? undefined })}
-          />
-          <div className="pane-title">
-            conflitos
-            <span className="count">{view.schedule.conflicts.length}</span>
-          </div>
-          <div className="pane-body conflicts-body">
-            {view.schedule.conflicts.length === 0 ? (
-              <div className="empty">A grade fecha. Nenhuma âncora em risco.</div>
-            ) : (
-              view.schedule.conflicts.map((conflict, index) => {
-                const owner = view.items.find((item) => item.item.id === conflict.itemId)
-                const fix = view.schedule.suggestions.find(
-                  (suggestion) => suggestion.itemId === conflict.itemId,
-                )
-                return (
-                  <div
-                    key={index}
-                    className={`conflict${conflict.severity === 'ERROR' ? ' err' : ''}`}
-                    onClick={() => void command('cue', { itemId: conflict.itemId })}
-                  >
-                    <div className="who">{owner?.item.title ?? conflict.itemId}</div>
-                    <div>{conflict.message}</div>
-                    {fix && <div className="fix">→ {fix.message}</div>}
-                  </div>
-                )
-              })
-            )}
-          </div>
-        </aside>
-      </div>
-
-      <footer className="transport">
-        {/* A barra tinha nove botões do mesmo tamanho e de pesos muito
-            diferentes: take e parar, que mexem no que está no ar agora, do lado
-            de listas e montar, que são preparação para depois. A mão que corre
-            para o parar não pode ter que ler. Agora são três grupos, separados
-            e com tamanhos diferentes: o ar primeiro e maior, o item
-            selecionado no meio, a grade e os ajustes por último. */}
-        <div className="grupo ar">
-        <button
-          className="btn take"
-          disabled={!selectedId}
-          onClick={() => selectedId && void command('take', { itemId: selectedId })}
-          title="Põe o item selecionado no ar (barra de espaço)"
-        >
-          <span className="glifo" aria-hidden="true">▶</span>
-          take<kbd>espaço</kbd>
-        </button>
-        <button className="btn stop" disabled={!onAirId} onClick={() => void command('stop')}>
-          <span className="glifo" aria-hidden="true">■</span>
-          parar
-        </button>
-        <button
-          className="btn"
-          onClick={() => void command('park')}
-          title="Prepara o primeiro item, parado, pronto para entrar"
-        >
-          preparar
-        </button>
-        <button
-          className={`btn${live?.graphic ? ' on' : ''}`}
-          onClick={() => setDialog({ kind: 'graphics' })}
-          title="Gerador de caracteres — o que está no ar por cima da imagem"
-        >
-          gc{live?.graphic ? ' no ar' : ''}
-        </button>
-        </div>
-
-        <div className="grupo item">
-        <button
-          className="btn small"
-          disabled={!selected?.asset}
-          onClick={() => selected?.asset && setDialog({ kind: isStill(selected.asset) ? 'still' : 'trim', view: selected })}
-          title="Marcação de entrada e saída (tecla I)"
-        >
-          in/out<kbd>i</kbd>
-        </button>
-        <button
-          className="btn small"
-          disabled={!selected?.asset}
-          onClick={() => selected && setDialog({ kind: 'audio', view: selected })}
-          title="Nível de áudio do item (tecla N)"
-        >
-          nível<kbd>n</kbd>
-        </button>
-        </div>
-
-        <div className="grupo grade">
-        <button className="btn small" onClick={() => setDialog({ kind: 'autofill' })}>
-          montar
-        </button>
-        <a className="btn small" href={workspaceHref('monitor')} title="Abrir saídas, processos e saúde do canal">MONITORAMENTO</a>
-        </div>
-        {marked.size >= 2 && (
-          <button className="btn take" onClick={group}>
-            agrupar {marked.size} itens
-          </button>
-        )}
-        <div className="spacer" />
-        {error && (
-          <div className="transport-error" role="alert">
-            {error}
-          </div>
-        )}
-        <Problemas
-          problemas={problemas}
-          onLimpar={() => {
-            vistos.current.clear()
-            setProblemas([])
-          }}
+    <div className="w-screen h-screen bg-surface-base text-on-surface select-none overflow-hidden font-sans">
+      {currentWorkspace === 'master' && (
+        <MasterControlView
+          channel={view.channel}
+          channels={channels}
+          view={view}
+          live={live}
+          folders={folders}
+          scan={scan}
+          categorias={categorias}
+          monitors={monitors}
+          followOnAir={followOnAir}
+          onToggleFollowOnAir={() => setFollowOnAir((value) => !value)}
+          onTake={(itemId?: string) => void command('take', itemId ? { itemId } : {})}
+          onStop={() => void command('stop')}
+          onCue={(itemId?: string) => void command('cue', { itemId })}
+          onSeek={(bus: 'pvw' | 'pgm', frames: number) =>
+            void command('seek', {
+              bus,
+              frames,
+              itemId: bus === 'pgm' ? onAirId ?? undefined : selectedId ?? undefined,
+            })
+          }
+          onStartScan={(measure: boolean) => void startScan(measure)}
+          onAddItem={() => setDialog({ kind: 'add' })}
+          onAutoFill={() => setDialog({ kind: 'autofill' })}
+          onExportCsv={exportCsv}
+          onOpenTrim={(item: ItemView) =>
+            setDialog({
+              kind: item.asset && isStill(item.asset) ? 'still' : 'trim',
+              view: item,
+            })
+          }
+          onOpenAudio={(item: ItemView) => setDialog({ kind: 'audio', view: item })}
+          onOpenGraphics={(item: ItemView) => setDialog({ kind: 'itemGraphics', view: item })}
+          onOpenStill={(item: ItemView) => setDialog({ kind: 'still', view: item })}
+          onRemoveItem={(itemId: string) => removerItem(itemId)}
+          onMoveItem={(itemId: string, toIndex: number) => move(itemId, toIndex)}
+          onOpenAlerts={() => setDialog({ kind: 'distribution' })}
+          onOpenSettings={() => navigateWorkspace('settings')}
+          problemasCount={problemas.length}
+          sessionRole={sessionRole ?? 'Operador Master'}
+          authRequired={authRequired}
+          onNavigate={navigateWorkspace}
+          onSelectChannel={trocarCanal}
+          onPreviewAsset={(asset: LibraryAsset) => void command('cue', { assetId: asset.id })}
+          onInsertAsset={inserirItemNaGrade}
+          onOpenConflicts={() => setDialog({ kind: 'distribution' })}
         />
-      </footer>
+      )}
+
+      {currentWorkspace === 'playlist' && (
+        <PlaylistScheduleView
+          channel={view.channel}
+          channels={channels}
+          view={view}
+          folders={folders}
+          categorias={categorias}
+          onInsertAsset={inserirItemNaGrade}
+          onPreviewAsset={(asset: LibraryAsset) => void command('cue', { assetId: asset.id })}
+          onNavigate={navigateWorkspace}
+          onSelectChannel={trocarCanal}
+          onPublishToMaster={() => {
+            void guard(async () => {
+              absorb(await api.rundown(view.rundown.id))
+              say('Programação sincronizada com o Master com sucesso!')
+            })
+          }}
+          onOpenAutoFill={(
+            rundownId?: string,
+            onApplied?: (snapshot: Snapshot) => void,
+            options?: {
+              initialHours?: number
+              initialMinutes?: number
+              initialStart?: string
+              initialEnd?: string
+              autoPreview?: boolean
+            },
+          ) =>
+            setDialog({
+              kind: 'autofill',
+              rundownId,
+              onApplied,
+              initialHours: options?.initialHours,
+              initialMinutes: options?.initialMinutes,
+              initialStart: options?.initialStart,
+              initialEnd: options?.initialEnd,
+              autoPreview: options?.autoPreview,
+            })
+          }
+          sessionRole={sessionRole ?? 'Operador Master'}
+          authRequired={authRequired}
+          onAddItem={(rundownId?: string, onApplied?: (snapshot: Snapshot) => void) =>
+            setDialog({ kind: 'add', rundownId, onApplied })
+          }
+          onExportCsv={exportCsv}
+          onOpenTrim={(item: ItemView) =>
+            setDialog({
+              kind: item.asset && isStill(item.asset) ? 'still' : 'trim',
+              view: item,
+            })
+          }
+          onOpenAudio={(item: ItemView) => setDialog({ kind: 'audio', view: item })}
+          onRemoveItem={(itemId: string, rundownId?: string, onRemoved?: (id: string) => void) =>
+            removerItem(itemId, rundownId, onRemoved)
+          }
+          onOpenSettings={() => navigateWorkspace('settings')}
+        />
+      )}
+
+      {currentWorkspace === 'qc' && (
+        <QualityControlView
+          channel={view.channel}
+          channels={channels}
+          folders={folders}
+          scan={scan}
+          onAccept={aceitarDoAcervo}
+          onIgnore={ignorarNoAcervo}
+          onScan={(measure: boolean) => void startScan(measure)}
+          onNavigate={navigateWorkspace}
+          onSelectChannel={trocarCanal}
+          onOpenSettings={() => navigateWorkspace('settings')}
+          sessionRole={sessionRole ?? 'Operador Master'}
+          authRequired={authRequired}
+        />
+      )}
+
+      {currentWorkspace === 'monitor' && (
+        <EngineeringDistributionView
+          channel={view.channel}
+          channels={channels}
+          onNavigate={navigateWorkspace}
+          onSelectChannel={trocarCanal}
+          onMessage={say}
+          sessionRole={sessionRole ?? 'Operador Master'}
+          authRequired={authRequired}
+          onOpenSettings={() => navigateWorkspace('settings')}
+        />
+      )}
+
+      {currentWorkspace === 'aired' && (
+        <AiredView
+          channel={view.channel}
+          channels={channels}
+          onNavigate={navigateWorkspace}
+          onSelectChannel={trocarCanal}
+          sessionRole={sessionRole ?? 'Operador Master'}
+          authRequired={authRequired}
+          onOpenSettings={() => navigateWorkspace('settings')}
+        />
+      )}
+
+      {currentWorkspace === 'docs' && (
+        <DocsView
+          channel={view.channel}
+          channels={channels}
+          onNavigate={navigateWorkspace}
+          onSelectChannel={trocarCanal}
+          sessionRole={sessionRole ?? 'Operador Master'}
+          authRequired={authRequired}
+          onOpenSettings={() => navigateWorkspace('settings')}
+        />
+      )}
+
+      {currentWorkspace === 'settings' && (
+        <SettingsView
+          channel={view.channel}
+          channels={channels}
+          onNavigate={navigateWorkspace}
+          onSelectChannel={trocarCanal}
+          sessionRole={sessionRole ?? 'Operador Master'}
+          authRequired={authRequired}
+          onMessage={say}
+          onChanged={() => {
+            void guard(async () => {
+              const state = await api.state()
+              setChannels(state.channels)
+              const map: Record<string, string> = {}
+              for (const rundown of state.rundowns) map[rundown.channelId] ??= rundown.id
+              setRundownOf(map)
+              const alvo = map[view.channel.id] ?? state.rundowns[0]?.id
+              if (alvo) absorb(await api.rundown(alvo))
+            })
+          }}
+          onOpenFormat={(channelId: string) => {
+            if (channelId === view.channel.id) {
+              setDialog({ kind: 'channel' })
+              return
+            }
+            const rundownId = rundownOf[channelId]
+            if (!rundownId) {
+              say('Esse canal ainda não tem grade para abrir.')
+              return
+            }
+            void guard(async () => {
+              absorb(await api.rundown(rundownId))
+              setDialog({ kind: 'channel' })
+            })
+          }}
+          onOpenDistribution={() => setDialog({ kind: 'distribution' })}
+          onOpenGraphics={() => setDialog({ kind: 'graphics' })}
+          onOpenAudit={() => setDialog({ kind: 'audit' })}
+        />
+      )}
+
+      {currentWorkspace === 'users' && (
+        <div className="flex flex-col h-screen w-screen bg-surface-base text-on-surface overflow-hidden">
+          <BroadcastHeader
+            activeWorkspace="settings"
+            channel={view.channel}
+            channels={channels}
+            onSelectChannel={trocarCanal}
+            onNavigate={navigateWorkspace}
+            sessionRole={sessionRole ?? 'Operador Master'}
+            authRequired={authRequired}
+            onOpenSettings={() => navigateWorkspace('settings')}
+          />
+          <main className="flex-1 overflow-y-auto p-gutter broadcast-scroll bg-surface-base">
+            <div className="max-w-7xl mx-auto flex flex-col gap-gutter">
+              {/* Header da Seção */}
+              <div className="flex items-center justify-between border-b border-border-subtle pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+                    <span className="material-symbols-outlined text-[24px]">group</span>
+                  </div>
+                  <div>
+                    <h1 className="font-headline-lg text-headline-lg font-bold text-on-surface uppercase tracking-wide">
+                      Usuários e Controle de Acesso
+                    </h1>
+                    <p className="font-body-sm text-body-sm text-outline">
+                      Controle quem opera o canal, programa a grade de 24h e administra o sistema.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={`font-label-caps text-xs px-3 py-1 rounded font-bold ${
+                    authRequired
+                      ? 'bg-status-ok/20 text-status-ok-bright border border-status-ok/40'
+                      : 'bg-primary/20 text-primary border border-primary/40'
+                  }`}>
+                    {authRequired ? 'LOGIN AUTENTICADO ATIVO' : 'MODO LOCAL DESENVOLVIMENTO'}
+                  </span>
+                  <button
+                    onClick={() => navigateWorkspace('master')}
+                    className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-label-caps text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">play_circle</span>
+                    <span>Voltar ao Master</span>
+                  </button>
+                </div>
+              </div>
+
+              {!authRequired && (
+                <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 px-4 py-3 rounded-lg flex items-center gap-3">
+                  <span className="material-symbols-outlined text-amber-400 text-[20px]">warning</span>
+                  <div className="font-body-sm text-xs">
+                    <strong>Este servidor está operando em modo local sem senha.</strong>
+                    <span className="ml-1 opacity-80">
+                      Configure as variáveis de ambiente RPLAYOUT_ADMIN_USER e RPLAYOUT_ADMIN_PASSWORD para exigir login RBAC.
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <UsersPanel onMessage={say} />
+            </div>
+          </main>
+        </div>
+      )}
+
+      {currentWorkspace === 'audit' && (
+        <div className="flex flex-col h-screen w-screen bg-surface-base text-on-surface overflow-hidden">
+          <BroadcastHeader
+            activeWorkspace="settings"
+            channel={view.channel}
+            channels={channels}
+            onSelectChannel={trocarCanal}
+            onNavigate={navigateWorkspace}
+            sessionRole={sessionRole ?? 'Operador Master'}
+            authRequired={authRequired}
+            onOpenSettings={() => navigateWorkspace('settings')}
+          />
+          <main className="flex-1 overflow-hidden p-gutter bg-surface-base">
+            <div className="max-w-7xl mx-auto h-full flex flex-col gap-gutter">
+              <div className="flex items-center justify-between border-b border-border-subtle pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+                    <span className="material-symbols-outlined text-[24px]">policy</span>
+                  </div>
+                  <div>
+                    <h1 className="font-headline-lg text-headline-lg font-bold text-on-surface uppercase tracking-wide">
+                      Trilha de Auditoria & Segurança
+                    </h1>
+                    <p className="font-body-sm text-body-sm text-outline">
+                      Auditoria de comandos operacionais, disparos TAKE e ações do sistema.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => navigateWorkspace('master')}
+                  className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-label-caps text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-[16px]">play_circle</span>
+                  <span>Voltar ao Master</span>
+                </button>
+              </div>
+              <div className="flex-1 min-h-0">
+                <AuditPanel onClose={() => navigateWorkspace('master')} isModal={false} />
+              </div>
+            </div>
+          </main>
+        </div>
+      )}
 
       {dialog?.kind === 'playlists' && (
         <PlaylistsDialog
@@ -1299,7 +1358,7 @@ export function App() {
           rate={rate}
           suggestedAt={view.schedule.endsAt}
           onCancel={() => setDialog(null)}
-          onAdd={addItem}
+          onAdd={(req) => addItem(req, dialog.rundownId, dialog.onApplied)}
         />
       )}
 
@@ -1364,15 +1423,23 @@ export function App() {
       )}
       {dialog?.kind === 'autofill' && (
         <AutoFillDialog
-          rundownId={view.rundown.id}
+          rundownId={dialog.rundownId ?? view.rundown.id}
           channelId={view.channel.id}
           categories={[
             ...new Set(assets.map((asset) => asset.categoryId).filter((id): id is string => !!id)),
           ].sort()}
           rate={rate}
+          initialHours={dialog.initialHours}
+          initialMinutes={dialog.initialMinutes}
+          initialStart={dialog.initialStart}
+          initialEnd={dialog.initialEnd}
+          autoPreview={dialog.autoPreview}
           onCancel={() => setDialog(null)}
           onApplied={(snapshot, message) => {
-            absorb(snapshot)
+            if (!dialog.rundownId || dialog.rundownId === view.rundown.id) {
+              absorb(snapshot)
+            }
+            dialog.onApplied?.(snapshot)
             setDialog(null)
             say(message)
           }}

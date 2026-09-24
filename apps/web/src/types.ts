@@ -71,6 +71,8 @@ export interface OutputProfile {
   target: string
   /** Destino efetivo: derivado nos gerenciados, guardado nos demais. */
   resolvedTarget: string | null
+  displayUrl?: string | null
+  streamUrls?: Record<string, string> | null
   width: number | null
   height: number | null
   rateNum: number | null

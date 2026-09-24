@@ -68,30 +68,72 @@ export const toRundown = (row: RundownRow): Rundown => ({
   updatedAt: row.updatedAt,
 })
 
-export const toItem = (row: ItemRow): RundownItem => ({
-  id: row.id,
-  rundownId: row.rundownId,
-  order: row.sortOrder,
-  type: row.type,
-  title: row.title,
-  mediaId: row.mediaId,
-  sourceRef: row.sourceRef,
-  trim: row.trim ?? null,
-  audio: row.audio ?? null,
-  durationOverride: row.durationOverride,
-  minDuration: row.minDuration,
-  anchor: row.anchor,
-  onOverrun: row.onOverrun,
-  elastic: row.elastic ?? null,
-  blockId: row.blockId,
-  // Coluna acrescentada depois: item antigo é pillarbox, como sempre foi.
-  fit: row.fit ?? DEFAULT_FIT,
-  audioTrack: row.audioTrack,
-  locked: row.locked,
-  autoNext: row.autoNext,
-  loop: row.loop,
-  notes: row.notes,
-})
+export const toItem = (row: ItemRow): RundownItem => {
+  const eventType =
+    row.eventType ??
+    (row.type === 'LIVE'
+      ? 'LIVE'
+      : row.type === 'FILLER'
+        ? 'FILLER'
+        : row.anchor.kind === 'FIXED' || row.anchor.kind === 'HARD_TIME'
+          ? row.anchor.kind
+          : 'SEQUENTIAL')
+
+  const timingFlags = {
+    trimmable: row.trimmable ?? row.onOverrun === 'TRIM_PREV',
+    optional: row.optional ?? (row.onOverrun === 'DROP_FILLER' || row.onOverrun === 'SKIP'),
+    protected: row.protected ?? row.locked,
+  }
+
+  const liveConfig =
+    row.liveSourceType && (row.liveEndpoint || row.sourceRef)
+      ? {
+          sourceType: row.liveSourceType,
+          sourceEndpoint: row.liveEndpoint ?? row.sourceRef ?? '',
+          estimatedDuration: row.liveEstimatedDuration ?? row.durationOverride ?? 0,
+          maxDuration: row.liveMaxDuration ?? null,
+          autoFollowOnEnd: row.liveAutoFollowOnEnd ?? false,
+          fallbackMediaId: row.liveFallbackMediaId ?? null,
+        }
+      : null
+
+  return {
+    id: row.id,
+    rundownId: row.rundownId,
+    order: row.sortOrder,
+    type: row.type,
+    eventType,
+    timingFlags,
+    liveConfig,
+    trimmable: row.trimmable,
+    optional: row.optional,
+    protected: row.protected,
+    liveSourceType: row.liveSourceType,
+    liveEndpoint: row.liveEndpoint,
+    liveEstimatedDuration: row.liveEstimatedDuration,
+    liveMaxDuration: row.liveMaxDuration,
+    liveAutoFollowOnEnd: row.liveAutoFollowOnEnd,
+    liveFallbackMediaId: row.liveFallbackMediaId,
+    title: row.title,
+    mediaId: row.mediaId,
+    sourceRef: row.sourceRef,
+    trim: row.trim ?? null,
+    audio: row.audio ?? null,
+    durationOverride: row.durationOverride,
+    minDuration: row.minDuration,
+    anchor: row.anchor,
+    onOverrun: row.onOverrun,
+    elastic: row.elastic ?? null,
+    blockId: row.blockId,
+    // Coluna acrescentada depois: item antigo é pillarbox, como sempre foi.
+    fit: row.fit ?? DEFAULT_FIT,
+    audioTrack: row.audioTrack,
+    locked: row.locked,
+    autoNext: row.autoNext,
+    loop: row.loop,
+    notes: row.notes,
+  }
+}
 
 export async function listChannels(db: Db): Promise<Channel[]> {
   return (await db.select().from(channels).orderBy(asc(channels.name))).map(toChannel)

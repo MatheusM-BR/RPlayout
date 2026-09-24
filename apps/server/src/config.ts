@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 export const DB_FILE = process.env.RPLAYOUT_DB ?? resolve(process.cwd(), 'rplayout.db')
@@ -29,7 +30,13 @@ export const ENGINE_BITRATE_KBPS_EXPLICITO =
     : Number(process.env.RPLAYOUT_ENGINE_BITRATE)
 
 /** Binário do MediaMTX. Vazio desliga o servidor local por completo. */
-export const MEDIAMTX_BINARY = process.env.RPLAYOUT_MEDIAMTX ?? ''
+const defaultMediamtx = [
+  resolve(process.cwd(), 'mediamtx', 'mediamtx.exe'),
+  resolve(process.cwd(), '..', '..', 'mediamtx', 'mediamtx.exe'),
+  'C:/IA/RPlayout/mediamtx/mediamtx.exe',
+].find((p) => existsSync(p)) ?? ''
+
+export const MEDIAMTX_BINARY = process.env.RPLAYOUT_MEDIAMTX ?? defaultMediamtx
 
 /**
  * Em qual interface o servidor local escuta.

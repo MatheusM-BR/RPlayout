@@ -19,3 +19,5 @@ apps/server/midia/
 backups/
 apps/server/backups/
 release/
+*.exe
+scratch/

@@ -71,6 +71,20 @@ export interface Transport {
   /**
    * Saúde do motor: quantas vezes teve de ser levantado, por qual motivo, e o
    * último erro. Separar morte do processo de travamento importa: são defeitos
+  /**
+   * Liga ou desliga um monitor ("pvw", "mon") sem encostar no programa.
+   *
+   * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
+   * e com quatro canais são quatro codificações desperdiçadas.
+   */
+  setMonitor(bus: 'pvw' | 'mon', on: boolean): void
+  /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
+  graphic(svg: string | null, fadeMs: number): void
+  /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */
+  watchdog(): void
+  /**
+   * Saúde do motor: quantas vezes teve de ser levantado, por qual motivo, e o
+   * último erro. Separar morte do processo de travamento importa: são defeitos
    * diferentes, e o alerta que junta os dois não ajuda ninguém a procurar.
    */
   health(): { restarts: number; deaths: number; stalls: number; error: string | null; ready: boolean }
@@ -100,16 +114,37 @@ export class SimulatedTransport implements Transport {
   ) {}
 
   state(): TransportState {
+    const view = this.view()
+    let preview = this.preview
+    let preparedItemId = preview?.kind === 'ITEM' ? preview.id : null
+
+    // Se nenhum item foi explicitamente armado no preview, seleciona automaticamente o próximo evento
+    if (!preparedItemId && view && view.items.length > 0) {
+      if (this.onAirItemId) {
+        const idx = view.items.findIndex((v) => v.item.id === this.onAirItemId)
+        if (idx >= 0 && idx + 1 < view.items.length) {
+          preparedItemId = view.items[idx + 1]?.item.id ?? null
+        } else if (view.rundown.loop) {
+          preparedItemId = view.items[0]?.item.id ?? null
+        }
+      } else {
+        preparedItemId = view.items[0]?.item.id ?? null
+      }
+      if (!preview && preparedItemId) {
+        preview = { kind: 'ITEM', id: preparedItemId }
+      }
+    }
+
     return {
       channelId: this.channelId,
       rundownId: this.rundownId,
       onAir: this.onAir(),
-      preview: this.preview,
+      preview,
       previewPosition: null,
-      preparedItemId: null,
+      preparedItemId,
       preparingItemId: null,
       playing: this.playing,
-      standby: !this.playing && this.preview?.kind === 'ITEM',
+      standby: !this.playing && (preview?.kind === 'ITEM' || preparedItemId !== null),
     }
   }
 
@@ -133,7 +168,21 @@ export class SimulatedTransport implements Transport {
     this.onAirItemId = itemId
     this.startedAt = this.nowFrames()
     this.playing = true
-    this.preview = null
+
+    // Ao ir para o ar, já pré-arma o próximo da fila para o preview
+    const view = this.view()
+    if (view && view.items.length > 0) {
+      const idx = view.items.findIndex((v) => v.item.id === itemId)
+      if (idx >= 0 && idx + 1 < view.items.length) {
+        this.preview = { kind: 'ITEM', id: view.items[idx + 1]!.item.id }
+      } else if (view.rundown.loop) {
+        this.preview = { kind: 'ITEM', id: view.items[0]!.item.id }
+      } else {
+        this.preview = null
+      }
+    } else {
+      this.preview = null
+    }
   }
 
   cue(target: PreviewTarget | null): void {
@@ -152,8 +201,6 @@ export class SimulatedTransport implements Transport {
 
   /** Arma a grade no primeiro item, parada, pronta para entrar no ar. */
   park(itemId: string): void {
-    this.playing = false
-    this.onAirItemId = null
     this.preview = { kind: 'ITEM', id: itemId }
   }
 
@@ -200,6 +247,17 @@ export class SimulatedTransport implements Transport {
 
     this.onAirItemId = next
     this.startedAt = this.startedAt + duration
+
+    // Auto-arma o próximo evento no PVW
+    const nextIdx = view.items.findIndex((v) => v.item.id === next)
+    if (nextIdx >= 0 && nextIdx + 1 < view.items.length) {
+      this.preview = { kind: 'ITEM', id: view.items[nextIdx + 1]!.item.id }
+    } else if (view.rundown.loop) {
+      this.preview = { kind: 'ITEM', id: view.items[0]!.item.id }
+    } else {
+      this.preview = null
+    }
+
     return true
   }
   /** O simulado não sai para lugar nenhum: quem publica é o engine. */

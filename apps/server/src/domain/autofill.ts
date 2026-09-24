@@ -45,7 +45,7 @@ export async function buildCandidates(
   )
 
   return assets
-    .filter((asset) => asset.probeError === null)
+    .filter((asset) => asset.probeError === null && !asset.ignored)
     .map((asset) => ({
       id: asset.id,
       durationFrames: assetDuration(asset, channel),

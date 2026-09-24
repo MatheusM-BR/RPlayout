@@ -19,6 +19,8 @@ interface Props {
   positionFrames?: number
   durationFrames?: number
   onSeek?: (frames: number) => void
+  hideControls?: boolean
+  onErrorFallback?: (reason: string) => void
 }
 
 type Status = 'off' | 'connecting' | 'live' | 'failed'
@@ -44,7 +46,17 @@ const tempo = (seconds: number): string => {
  * nunca com um IP que o servidor ache que tem: quem abre por `localhost` e quem
  * abre pela rede precisam ver a mesma coisa.
  */
-export function Whep({ path, port, onWatching, frameRate = 25, positionFrames = 0, durationFrames = 0, onSeek }: Props) {
+export function Whep({
+  path,
+  port,
+  onWatching,
+  frameRate = 25,
+  positionFrames = 0,
+  durationFrames = 0,
+  onSeek,
+  hideControls = false,
+  onErrorFallback,
+}: Props) {
   const video = useRef<HTMLVideoElement>(null)
   const [status, setStatus] = useState<Status>('off')
   const [reason, setReason] = useState<string | null>(null)
@@ -192,6 +204,7 @@ export function Whep({ path, port, onWatching, frameRate = 25, positionFrames = 
       const codec = message === 'CODEC'
       setReason(codec ? 'CODEC INCOMPATÍVEL COM O NAVEGADOR' : `MONITOR INDISPONÍVEL: ${message || 'falha de conexão'}`)
       setStatus('failed')
+      if (onErrorFallback) onErrorFallback(message || 'falha de conexão')
       // Canal que ainda não subiu volta sozinho; navegador sem H.264 não muda
       // de ideia, então insistir só gastaria conexão.
       if (!codec && !retry) retry = window.setTimeout(() => setAttempt((n) => n + 1), 3000)
@@ -236,7 +249,7 @@ export function Whep({ path, port, onWatching, frameRate = 25, positionFrames = 
         onLoadedData={() => { setStatus('live'); setReason(null) }}
         hidden={status !== 'live'}
       />
-      {status === 'live' && (
+      {!hideControls && status === 'live' && (
         <div className="monitor-seekbar" data-seekable={onSeek && durationFrames > 0 ? 'true' : 'false'}>
           <span className="monitor-time" aria-live="off">{tempo((scrub ?? positionFrames) / frameRate)} / {durationFrames > 0 ? tempo(durationFrames / frameRate) : 'AO VIVO'}</span>
           <button type="button" className="btn small frame-step" aria-label="voltar um quadro no engine" disabled={!onSeek || durationFrames <= 0} onClick={() => onSeek?.(Math.max(0, positionFrames - 1))}>−1f</button>
@@ -244,7 +257,7 @@ export function Whep({ path, port, onWatching, frameRate = 25, positionFrames = 
           <button type="button" className="btn small frame-step" aria-label="avançar um quadro no engine" disabled={!onSeek || durationFrames <= 0} onClick={() => onSeek?.(Math.min(durationFrames, positionFrames + 1))}>+1f</button>
         </div>
       )}
-      {status === 'live' && (
+      {!hideControls && status === 'live' && (
         <div className="monitor-audio">
         <button
           type="button"

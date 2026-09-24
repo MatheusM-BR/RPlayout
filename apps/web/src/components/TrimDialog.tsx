@@ -20,21 +20,15 @@ interface Props {
 }
 
 const SOURCE_LABEL: Record<string, string> = {
-  ITEM: 'corte próprio deste item',
-  ASSET: 'herdado do padrão do acervo',
-  FILE: 'arquivo inteiro, sem corte',
-  NONE: 'sem arquivo',
+  ITEM: 'Corte próprio deste item',
+  ASSET: 'Herdado do padrão do acervo',
+  FILE: 'Arquivo inteiro, sem corte',
+  NONE: 'Sem arquivo',
 }
 
 /** Quantos quadros formam a fita embaixo da régua. */
 const FITA = 16
 
-/**
- * O que cada extensão é, para perguntar ao navegador se ele toca antes de
- * tentar. Perguntar sai de graça e é instantâneo; tentar custa abrir uma
- * conexão, baixar o cabeçalho de um arquivo grande e só então descobrir que
- * não dava -- com a tela preta esse tempo todo.
- */
 const MIME: Record<string, string> = {
   mp4: 'video/mp4',
   m4v: 'video/mp4',
@@ -44,17 +38,6 @@ const MIME: Record<string, string> = {
   ogv: 'video/ogg',
 }
 
-/**
- * Vale a pena tentar tocar este arquivo no navegador?
- *
- * Só responde "não" quando a resposta é sabida: extensão conhecida cujo tipo o
- * navegador recusa de saída, como Matroska. Extensão que não está na tabela
- * ganha o benefício da dúvida e vai para o `<video>` -- errar para o "não"
- * aqui custava caro: `.ts`, `.avi` e `.mxf` não estavam na lista, então o
- * player nem era montado e o operador via uma imagem parada sem entender por
- * quê. Tentar e falhar custa um erro imediato, e o `onError` já sabe cair na
- * imagem parada.
- */
 function podeTocar(path: string | undefined): boolean {
   if (path === undefined) return false
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -63,32 +46,23 @@ function podeTocar(path: string | undefined): boolean {
   return document.createElement('video').canPlayType(tipo) !== ''
 }
 
-/** O que o navegador disse sobre o arquivo, quando ele desistiu. */
 function motivoDoErro(video: HTMLVideoElement | null): string {
   const erro = video?.error
-  if (!erro) return 'o navegador não conseguiu abrir o arquivo'
+  if (!erro) return 'O navegador não conseguiu abrir o arquivo'
   switch (erro.code) {
     case MediaError.MEDIA_ERR_DECODE:
     case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-      return 'o navegador não decodifica este formato'
+      return 'O navegador não decodifica este formato de vídeo'
     case MediaError.MEDIA_ERR_NETWORK:
-      return 'a leitura do arquivo foi interrompida'
+      return 'A leitura do arquivo foi interrompida na rede'
     case MediaError.MEDIA_ERR_ABORTED:
-      return 'a leitura foi cancelada'
+      return 'A leitura do vídeo foi cancelada'
     default:
-      return 'o navegador não conseguiu abrir o arquivo'
+      return 'O navegador não conseguiu abrir o arquivo'
   }
 }
 
-/**
- * Quadros disponíveis para a imagem parada quando o navegador não toca o
- * arquivo. Arrastar mostra o mais próximo destes: a imagem pula de fatia em
- * fatia, mas o ponto marcado é o exato de onde o dedo parou -- quem manda no
- * valor é o pixel, não a imagem que ilustra.
- */
 const PARADOS = 64
-
-/** O que o dedo está segurando. */
 type Alça = 'in' | 'out' | 'cabeça' | null
 
 export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
@@ -108,23 +82,11 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
   /** Onde a cabeça de leitura está, em frames. */
   const [cabeça, setCabeça] = useState(view.trim.in)
   const [tocando, setTocando] = useState(false)
-  /** O navegador aceitou decodificar este arquivo? */
   const [tocável, setTocável] = useState(() => podeTocar(asset?.path))
-  /** O que ele disse quando recusou, para a tela não ficar só com um sumiço. */
   const [motivo, setMotivo] = useState<string | null>(null)
-
-  /** O que o dedo está segurando agora. Nulo quando ninguém está arrastando. */
   const [pegando, setPegando] = useState<Alça>(null)
 
   const video = useRef<HTMLVideoElement | null>(null)
-  /**
-   * O som nasce desligado.
-   *
-   * Marcar entrada e saída é trabalho de tela cheia de janelas abertas; quatro
-   * delas somando som ao mesmo tempo não é monitoração, é barulho. Quem quer
-   * ouvir liga -- e o navegador só deixa tocar com som depois de um gesto,
-   * então nascer mudo também é o que faz a imagem aparecer sozinha.
-   */
   const [mudo, setMudo] = useState(true)
   const [volume, setVolume] = useState(0.8)
   const régua = useRef<HTMLDivElement | null>(null)
@@ -137,31 +99,18 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
     return Array.from({ length: FITA }, (_, i) => `/api/assets/${asset.id}/frame/${i}.jpg?total=${FITA}`)
   }, [asset])
 
-  /**
-   * A cabeça de leitura depois que ela parou de andar.
-   *
-   * Cada quadro parado custa abrir o arquivo e posicionar. Pedir um a cada
-   * pixel de arrasto poria dezenas de leituras na fila para mostrar só a
-   * última; esperar a mão parar pede uma.
-   */
   const [assentada, setAssentada] = useState(view.trim.in)
   useEffect(() => {
     const t = setTimeout(() => setAssentada(cabeça), 220)
     return () => clearTimeout(t)
   }, [cabeça])
 
-  /**
-   * A imagem parada para a posição da cabeça. Serve de espelho quando o
-   * navegador não toca o arquivo -- e de nada quando toca, porque aí o
-   * `<video>` já mostra o quadro certo.
-   */
   const parado = useMemo(() => {
     if (!asset || total <= 0) return null
     const fatia = Math.min(PARADOS - 1, Math.max(0, Math.floor((assentada / total) * PARADOS)))
     return `/api/assets/${asset.id}/frame/${fatia}.jpg?total=${PARADOS}`
   }, [asset, assentada, total])
 
-  /** Frame correspondente a uma posição de mouse dentro da régua. */
   const frameNoPonto = (clientX: number): number => {
     const caixa = régua.current?.getBoundingClientRect()
     if (!caixa || caixa.width === 0 || total <= 0) return 0
@@ -176,22 +125,18 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
     if (el && tocável) el.currentTime = emSegundos(alvo)
   }
 
-  /** Arrastar fora da régua ainda vale: o dedo sai da caixa e volta. */
   useEffect(() => {
     if (pegando === null) return undefined
 
     const mover = (event: PointerEvent): void => {
       const frame = frameNoPonto(event.clientX)
       if (pegando === 'in') {
-        // A entrada nunca passa da saída: um corte invertido não existe.
         const limite = outFrames === null ? total : outFrames - 1
         setInText(formatTimecode(Math.min(frame, Math.max(0, limite)), rate))
       } else if (pegando === 'out') {
         const limite = inFrames === null ? 0 : inFrames + 1
         setOutText(formatTimecode(Math.max(frame, Math.min(total, limite)), rate))
       }
-      // A imagem acompanha o dedo nas três alças: arrastar a saída sem ver o
-      // quadro da saída seria marcar no escuro.
       irPara(frame)
     }
     const soltar = (): void => setPegando(null)
@@ -208,11 +153,9 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
     event.preventDefault()
     event.stopPropagation()
     setPegando(alça)
-    // Clicar na régua já leva a cabeça para lá, sem precisar arrastar.
     if (alça === 'cabeça') irPara(frameNoPonto(event.clientX))
   }
 
-  /** Tocar para conferir o corte: para sozinho na saída. */
   useEffect(() => {
     const el = video.current
     if (!el || !tocável) return undefined
@@ -236,7 +179,6 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
       setTocando(false)
       return
     }
-    // Dar play parado depois do OUT não mostraria nada: volta para o IN.
     if (outFrames !== null && cabeça >= outFrames) irPara(inFrames ?? 0)
     void el.play()
     setTocando(true)
@@ -252,32 +194,47 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
     `${total > 0 ? Math.min(100, Math.max(0, (frames / total) * 100)) : 0}%`
 
   return (
-    <div className="backdrop" onClick={onCancel}>
-      <div className="dialog trim-dialog" onClick={(event) => event.stopPropagation()}>
-        <header>
-          <h2>Marcação de entrada e saída</h2>
-          <div className="sub">
-            {view.item.title} · arquivo {dur(total, rate)} · {SOURCE_LABEL[view.trimSource]}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-surface-card w-full max-w-4xl border border-border-subtle rounded shadow-2xl flex flex-col overflow-hidden max-h-[95vh]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-space-lg py-space-sm bg-surface-panel border-b border-border-subtle flex items-center justify-between">
+          <div className="flex items-center gap-space-sm">
+            <span className="material-symbols-outlined text-primary text-[22px]">content_cut</span>
+            <div>
+              <h2 className="font-headline-md text-headline-md uppercase text-on-surface font-bold tracking-wide">
+                Marcação de Entrada e Saída (Trim In / Out)
+              </h2>
+              <p className="font-label-mono text-label-mono text-outline">
+                {view.item.title} · Arquivo {dur(total, rate)} · {SOURCE_LABEL[view.trimSource]}
+              </p>
+            </div>
           </div>
-        </header>
+          <button
+            onClick={onCancel}
+            className="p-1 rounded text-outline hover:text-on-surface hover:bg-surface-container transition-colors"
+          >
+            <span className="material-symbols-outlined text-[20px]">close</span>
+          </button>
+        </div>
 
-        <div className="body">
+        <div className="p-space-lg flex flex-col gap-space-md overflow-y-auto scrollbar-thin">
           {asset && (
-            <div className="trim">
-              <div className="tela">
-                {/* O `<video>` é o caminho bom: dá movimento e quadro exato.
-                    Formato que o navegador não decodifica cai no `onError` e a
-                    imagem parada assume -- extraída pelo GStreamer, que abre
-                    tudo que o canal abre. */}
+            <div className="flex flex-col gap-space-sm">
+              {/* CLEAN VIDEO PLAYER (Sem barras/elementos sobrepondo a imagem) */}
+              <div className="relative w-full aspect-video bg-surface-container-lowest rounded border border-border-subtle overflow-hidden flex items-center justify-center shadow-inner">
                 {tocável ? (
                   <video
                     ref={video}
                     src={`/api/assets/${asset.id}/media`}
-                    // A miniatura já existe no acervo e aparece imediatamente.
-                    // A fita de frames é reservada para a régua, que pode
-                    // carregar depois sem deixar a tela preta.
                     poster={`/api/assets/${asset.id}/thumbnail.svg`}
                     preload="metadata"
+                    className="w-full h-full object-contain"
                     onError={() => {
                       setMotivo(motivoDoErro(video.current))
                       setTocável(false)
@@ -290,15 +247,132 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                     }}
                   />
                 ) : (
-                  <img src={parado ?? `/api/assets/${asset.id}/thumbnail.svg`} alt="" />
+                  <img
+                    src={parado ?? `/api/assets/${asset.id}/thumbnail.svg`}
+                    alt=""
+                    className="w-full h-full object-contain"
+                  />
                 )}
-                <div className="tc">{formatTimecode(cabeça, rate)}</div>
+
+                {/* Badge Discreta do Frame Atual */}
+                <div className="absolute top-2 right-2 bg-surface-base/80 px-2 py-1 rounded font-timecode-display text-timecode-display text-on-surface border border-border-subtle pointer-events-none tabular-nums">
+                  {formatTimecode(cabeça, rate)}
+                </div>
+
+                {!tocável && (
+                  <div className="absolute bottom-2 inset-x-2 bg-surface-base/90 text-armed-amber p-1.5 rounded font-label-mono text-label-mono text-center border border-border-subtle">
+                    {motivo ?? 'Formato decodificado via GStreamer'} · Arrastando a régua, a imagem exibe o quadro correspondente
+                  </div>
+                )}
+              </div>
+
+              {/* TIMELINE RULER NA PARTE INFERIOR COM MARCADORES I / O */}
+              <div className="flex flex-col gap-1 pt-space-xs">
+                <div
+                  ref={régua}
+                  onPointerDown={pegar('cabeça')}
+                  className="relative h-14 w-full bg-surface-container-lowest rounded border border-border-subtle overflow-hidden cursor-pointer select-none"
+                >
+                  {/* Fita de Miniaturas */}
+                  <div className="absolute inset-0 flex">
+                    {fita.map((src) => (
+                      <div key={src} className="flex-1 h-full border-r border-border-subtle/30 overflow-hidden">
+                        <img src={src} alt="" draggable={false} className="w-full h-full object-cover opacity-60 pointer-events-none" />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Sombreamento das Áreas Descartadas */}
+                  <div
+                    className="absolute top-0 bottom-0 left-0 bg-black/70 pointer-events-none"
+                    style={{ width: pct(inFrames ?? 0) }}
+                  />
+                  <div
+                    className="absolute top-0 bottom-0 right-0 bg-black/70 pointer-events-none"
+                    style={{ left: pct(outFrames ?? total), width: 'auto' }}
+                  />
+
+                  {/* Marcador de Entrada (I) */}
+                  <div
+                    onPointerDown={pegar('in')}
+                    className="absolute top-0 bottom-0 w-3 -ml-1.5 bg-on-air-crimson cursor-ew-resize z-20 flex items-center justify-center shadow-lg hover:brightness-125"
+                    style={{ left: pct(inFrames ?? 0) }}
+                    title="Arrastar Entrada (IN)"
+                  >
+                    <span className="text-[10px] text-surface-base font-bold">I</span>
+                  </div>
+
+                  {/* Marcador de Saída (O) */}
+                  <div
+                    onPointerDown={pegar('out')}
+                    className="absolute top-0 bottom-0 w-3 -ml-1.5 bg-on-air-crimson cursor-ew-resize z-20 flex items-center justify-center shadow-lg hover:brightness-125"
+                    style={{ left: pct(outFrames ?? total) }}
+                    title="Arrastar Saída (OUT)"
+                  >
+                    <span className="text-[10px] text-surface-base font-bold">O</span>
+                  </div>
+
+                  {/* Agulha Playhead */}
+                  <div
+                    className="absolute top-0 bottom-0 w-1 bg-white z-10 pointer-events-none shadow-[0_0_6px_#fff]"
+                    style={{ left: pct(cabeça) }}
+                  />
+                </div>
+
+                {/* Escala Graduada em Frames */}
+                <div className="flex justify-between font-label-mono text-[10px] text-outline px-1">
+                  <span>00:00:00:00</span>
+                  <span>{formatTimecode(Math.round(total / 2), rate)}</span>
+                  <span>{formatTimecode(total, rate)}</span>
+                </div>
+              </div>
+
+              {/* BOTÕES TÁTEIS DE OPERAÇÃO */}
+              <div className="flex flex-wrap items-center justify-between gap-space-sm p-space-xs bg-surface-panel rounded border border-border-subtle">
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={tocar}
+                    disabled={!tocável}
+                    className="px-space-md py-1.5 rounded bg-surface-card hover:bg-surface-container text-on-surface font-label-caps text-label-caps font-bold border border-border-subtle flex items-center gap-1 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">
+                      {tocando ? 'pause' : 'play_arrow'}
+                    </span>
+                    {tocando ? 'PAUSAR' : 'REPRODUZIR'}
+                  </button>
+
+                  <div className="h-5 w-px bg-border-subtle mx-1"></div>
+
+                  <button
+                    onClick={() => setInText(formatTimecode(cabeça, rate))}
+                    className="px-space-md py-1.5 rounded bg-surface-card hover:bg-surface-container text-on-air-crimson font-label-caps text-label-caps font-bold border border-border-subtle transition-colors"
+                  >
+                    MARCAR ENTRADA (I)
+                  </button>
+                  <button
+                    onClick={() => setOutText(formatTimecode(cabeça, rate))}
+                    className="px-space-md py-1.5 rounded bg-surface-card hover:bg-surface-container text-on-air-crimson font-label-caps text-label-caps font-bold border border-border-subtle transition-colors"
+                  >
+                    MARCAR SAÍDA (O)
+                  </button>
+                  <button
+                    onClick={() => irPara(inFrames ?? 0)}
+                    className="px-space-md py-1.5 rounded bg-surface-card hover:bg-surface-container text-outline hover:text-on-surface font-label-caps text-label-caps font-bold border border-border-subtle transition-colors"
+                  >
+                    IR À ENTRADA
+                  </button>
+                  <button
+                    onClick={() => irPara(outFrames ?? total)}
+                    className="px-space-md py-1.5 rounded bg-surface-card hover:bg-surface-container text-outline hover:text-on-surface font-label-caps text-label-caps font-bold border border-border-subtle transition-colors"
+                  >
+                    IR À SAÍDA
+                  </button>
+                </div>
+
+                {/* Controles de Áudio do Player */}
                 {tocável && (
-                  <div className="som" onPointerDown={(event) => event.stopPropagation()}>
+                  <div className="flex items-center gap-space-xs px-2">
                     <button
-                      className={`btn small${mudo ? '' : ' on'}`}
-                      title={mudo ? 'Ligar o som' : 'Cortar o som'}
-                      aria-label={mudo ? 'Ligar o som' : 'Cortar o som'}
                       onClick={() => {
                         const el = video.current
                         setMudo((antes) => {
@@ -307,8 +381,12 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                           return agora
                         })
                       }}
+                      className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
+                      title={mudo ? 'Desmutar' : 'Mutar'}
                     >
-                      {mudo ? 'MUDO' : 'SOM'}
+                      <span className="material-symbols-outlined text-[18px]">
+                        {mudo ? 'volume_off' : 'volume_up'}
+                      </span>
                     </button>
                     <input
                       type="range"
@@ -317,14 +395,13 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                       step={0.02}
                       value={volume}
                       aria-label="Volume"
+                      className="w-20 accent-primary cursor-pointer"
                       onChange={(event) => {
                         const valor = Number(event.target.value)
                         setVolume(valor)
                         const el = video.current
                         if (el) {
                           el.volume = valor
-                          // Mexer no volume é dizer que se quer ouvir: destravar
-                          // o mudo aqui evita o "arrastei e não saiu som".
                           if (valor > 0 && el.muted) {
                             el.muted = false
                             setMudo(false)
@@ -334,112 +411,59 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                     />
                   </div>
                 )}
-                {!tocável && (
-                  <div className="aviso">
-                    {motivo ?? 'o navegador não toca este formato'} · arrastando,
-                    a imagem mostra o quadro mais próximo
-                  </div>
-                )}
-              </div>
-
-              <div className="régua" ref={régua} onPointerDown={pegar('cabeça')}>
-                {/* Os dezesseis pedidos saem juntos de propósito: o servidor
-                    extrai a fita inteira numa leitura só, e quem chega depois
-                    espera a mesma. Pedir um de cada vez só faria a fita
-                    aparecer devagar sem economizar nada. */}
-                <div className="fita">
-                  {fita.map((src) => (
-                    <div className="quadro" key={src}>
-                      <img src={src} alt="" draggable={false} />
-                    </div>
-                  ))}
-                </div>
-
-                {/* O que fica de fora do corte some por baixo de um véu: o
-                    operador vê o programa, não o arquivo. */}
-                <div className="fora" style={{ left: 0, width: pct(inFrames ?? 0) }} />
-                <div
-                  className="fora"
-                  style={{ left: pct(outFrames ?? total), right: 0, width: 'auto' }}
-                />
-
-                <div
-                  className={`alça in${pegando === 'in' ? ' pego' : ''}`}
-                  style={{ left: pct(inFrames ?? 0) }}
-                  onPointerDown={pegar('in')}
-                  title="Arraste a entrada"
-                />
-                <div
-                  className={`alça out${pegando === 'out' ? ' pego' : ''}`}
-                  style={{ left: pct(outFrames ?? total) }}
-                  onPointerDown={pegar('out')}
-                  title="Arraste a saída"
-                />
-                <div className="cabeça" style={{ left: pct(cabeça) }} />
-              </div>
-
-              <div className="controles">
-                <button className="btn small" onClick={tocar} disabled={!tocável}>
-                  {tocando ? '■' : '▶'}
-                </button>
-                <button
-                  className="btn small"
-                  onClick={() => setInText(formatTimecode(cabeça, rate))}
-                  title="Marca a entrada onde a cabeça está"
-                >
-                  marcar entrada
-                </button>
-                <button
-                  className="btn small"
-                  onClick={() => setOutText(formatTimecode(cabeça, rate))}
-                  title="Marca a saída onde a cabeça está"
-                >
-                  marcar saída
-                </button>
-                <button className="btn small" onClick={() => irPara(inFrames ?? 0)}>
-                  ir à entrada
-                </button>
-                <button className="btn small" onClick={() => irPara(outFrames ?? total)}>
-                  ir à saída
-                </button>
               </div>
             </div>
           )}
 
-          <div className="row">
-            <div className="field">
-              <label>Entrada (I)</label>
+          {/* Timecode Inputs & Math */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-space-md p-space-md bg-surface-container-lowest rounded border border-border-subtle">
+            <div className="flex flex-col gap-1">
+              <label className="font-label-caps text-label-caps text-outline uppercase">Entrada (IN Timecode)</label>
               <input
                 type="text"
-                className={inBad ? 'bad' : ''}
                 value={inText}
                 onChange={(event) => setInText(event.target.value)}
+                className={`bg-surface-card text-on-surface p-2 rounded border font-timecode-table text-timecode-table outline-none ${
+                  inBad ? 'border-on-air-crimson text-on-air-crimson' : 'border-border-subtle focus:border-primary'
+                }`}
               />
             </div>
-            <div className="field">
-              <label>Saída (O)</label>
+
+            <div className="flex flex-col gap-1">
+              <label className="font-label-caps text-label-caps text-outline uppercase">Saída (OUT Timecode)</label>
               <input
                 type="text"
-                className={outBad ? 'bad' : ''}
                 value={outText}
                 onChange={(event) => setOutText(event.target.value)}
+                className={`bg-surface-card text-on-surface p-2 rounded border font-timecode-table text-timecode-table outline-none ${
+                  outBad ? 'border-on-air-crimson text-on-air-crimson' : 'border-border-subtle focus:border-primary'
+                }`}
               />
             </div>
           </div>
 
-          <div className="note">
-            Duração no ar:{' '}
-            <b>{valid ? dur(outFrames - inFrames, rate) : '—'}</b>
-            {valid && total > 0 && (
-              <> · descarta {dur(total - (outFrames - inFrames), rate)} do arquivo</>
+          <div className="flex items-center justify-between p-space-sm bg-surface-panel rounded border border-border-subtle font-label-mono text-label-mono">
+            <div>
+              DURAÇÃO RESULTANTE NO AR:{' '}
+              <strong className="text-status-ok-bright text-body-lg">
+                {valid ? dur(outFrames - inFrames, rate) : '—'}
+              </strong>
+              {valid && total > 0 && (
+                <span className="text-outline ml-2">
+                  (Descarta {dur(total - (outFrames - inFrames), rate)} de sobra)
+                </span>
+              )}
+            </div>
+
+            {asset?.suggestedTrim && (
+              <button
+                onClick={applySuggested}
+                className="px-space-sm py-1 rounded bg-surface-card hover:bg-surface-container text-armed-amber font-label-caps text-label-caps font-bold border border-border-subtle transition-colors"
+              >
+                USAR PONTAS DETECTADAS ({dur(asset.suggestedTrim.in, rate)} PRETO INICIAL)
+              </button>
             )}
           </div>
-
-          {asset?.suggestedTrim && (
-            <button className="btn small" onClick={applySuggested}>
-              usar pontas detectadas ({dur(asset.suggestedTrim.in, rate)} de preto na cabeça)
-            </button>
-          )}
 
           <ScopePicker
             value={scope}
@@ -450,18 +474,25 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
           />
         </div>
 
-        <footer>
-          <button className="btn" onClick={onCancel}>
-            cancelar
+        {/* Footer Actions */}
+        <div className="px-space-lg py-space-sm bg-surface-panel border-t border-border-subtle flex items-center justify-end gap-space-sm">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-space-lg py-2 rounded bg-surface-card hover:bg-surface-container text-on-surface font-label-caps text-label-caps uppercase transition-colors border border-border-subtle"
+          >
+            Cancelar
           </button>
           <button
-            className="btn take"
+            type="button"
             disabled={!valid}
             onClick={() => valid && onApply({ in: inFrames, out: outFrames }, scope)}
+            className="px-space-lg py-2 rounded bg-primary-container text-on-primary-container hover:brightness-110 font-label-caps text-label-caps uppercase font-bold transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
           >
-            aplicar
+            <span className="material-symbols-outlined text-[16px]">check_circle</span>
+            Aplicar Trim
           </button>
-        </footer>
+        </div>
       </div>
     </div>
   )

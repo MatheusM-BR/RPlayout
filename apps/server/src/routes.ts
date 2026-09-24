@@ -29,12 +29,22 @@ import {
   type App,
   type ChannelRuntime,
 } from './app.js'
-import { getChannel, listAssets, listChannels, listRundowns } from './db/repo.js'
+import {
+  assetMap,
+  getChannel,
+  getItem,
+  getRundown,
+  listAssets,
+  listChannels,
+  listItems,
+  listRundowns,
+  renumber,
+} from './db/repo.js'
 import { listAsRun } from './domain/asrun.js'
 import { buildCandidates, planFill } from './domain/autofill.js'
 import { backupDatabase, listBackups } from './domain/backup.js'
 import { syncDistribution } from './app.js'
-import { PORTS } from './domain/mediamtx.js'
+import { MediaMtx, PORTS } from './domain/mediamtx.js'
 import { can, parseRole, roleLabel, type Action } from './domain/permissions.js'
 import { hashPassword, verifyPassword } from './domain/auth.js'
 import { emitIntegrationEvent } from './domain/integrations.js'
@@ -63,7 +73,21 @@ import {
   sessions,
   healthEvents,
   integrations,
+  liveSources,
+  multiviewConfigs,
 } from './db/schema.js'
+import {
+  globalSrtManager,
+  listLiveSources,
+  getLiveSource,
+  createLiveSource,
+  updateLiveSource,
+  deleteLiveSource,
+  getMultiviewConfig,
+  saveMultiviewConfig,
+  type MultiviewCell,
+  type MultiviewLayout,
+} from './domain/srt.js'
 import { asRun, operatorDecisions } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
@@ -78,7 +102,7 @@ import {
 } from './domain/outputs.js'
 import { thumbnailSvg } from './domain/thumbnail.js'
 import * as Playlists from './domain/playlists.js'
-import type { RundownView } from './domain/plan.js'
+import { buildView, type RundownView } from './domain/plan.js'
 
 /**
  * Só o que um navegador tem chance de tocar. O resto sai como octet-stream e o
@@ -149,6 +173,7 @@ const prioritySchema = z.union([
 const anchorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('FLOW') }),
   z.object({ kind: z.literal('FIXED'), at: z.number().int().min(0) }),
+  z.object({ kind: z.literal('HARD_TIME'), at: z.number().int().min(0) }),
   z.object({
     kind: z.literal('SOFT'),
     at: z.number().int().min(0),
@@ -574,7 +599,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     // Canal sem grade não tem o que operar: ele nasce com uma, começando agora.
     const rundownId = randomUUID()
-    const rate = { num: body.data.rateNum ?? reference?.rate.num ?? 50, den: body.data.rateDen ?? reference?.rate.den ?? 1 }
+    const rate = { num: body.data.rateNum ?? reference?.rate.num ?? RATE_PADRAO.num, den: body.data.rateDen ?? reference?.rate.den ?? RATE_PADRAO.den }
     await app.db.insert(rundowns).values({
       id: rundownId,
       channelId: id,
@@ -655,6 +680,131 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (runtime && rundownId) await runtime.load(rundownId)
     onChange()
     return { ok: true, restarted: previous !== undefined, formatChanged }
+  })
+
+  /**
+   * Lista as grades do canal ou carrega a grade e visão de uma data específica.
+   */
+  server.get('/api/channels/:id/rundowns', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const { date } = request.query as { date?: string }
+    const channel = await getChannel(app.db, id)
+    if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
+
+    const channelRundowns = await listRundowns(app.db, id)
+    if (!date) {
+      return { rundowns: channelRundowns }
+    }
+
+    const matched = channelRundowns.find((r) => r.date === date)
+    if (!matched) {
+      return { rundowns: channelRundowns, rundown: null, view: null }
+    }
+
+    const [items, assets] = await Promise.all([
+      listItems(app.db, matched.id),
+      assetMap(app.db),
+    ])
+
+    const view = buildView(matched, channel, items, assets, null, null)
+    return { rundowns: channelRundowns, rundown: matched, view }
+  })
+
+  /**
+   * Cria uma nova grade para o canal numa data, opcionalmente clonando os itens de outra grade.
+   */
+  server.post('/api/channels/:id/rundowns', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode criar grades.' })
+    }
+
+    const { id } = request.params as { id: string }
+    const channel = await getChannel(app.db, id)
+    if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
+
+    const body = z
+      .object({
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        name: z.string().min(1).optional(),
+        copyFromRundownId: z.string().optional(),
+      })
+      .safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    const newRundownId = randomUUID()
+    const nowIso = new Date().toISOString()
+    const rundownName = body.data.name ?? `Grade — ${channel.name} — ${body.data.date}`
+
+    await app.db.insert(rundowns).values({
+      id: newRundownId,
+      channelId: id,
+      name: rundownName,
+      plannedStart: 0,
+      loop: true,
+      date: body.data.date,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
+
+    if (body.data.copyFromRundownId) {
+      const sourceItems = await listItems(app.db, body.data.copyFromRundownId)
+      for (const item of sourceItems) {
+        await app.db.insert(rundownItems).values({
+          id: randomUUID(),
+          rundownId: newRundownId,
+          sortOrder: item.order,
+          type: item.type,
+          title: item.title,
+          mediaId: item.mediaId,
+          sourceRef: item.sourceRef,
+          trim: item.trim,
+          audio: item.audio,
+          durationOverride: item.durationOverride,
+          minDuration: item.minDuration,
+          anchor: item.anchor,
+          onOverrun: item.onOverrun,
+          elastic: item.elastic,
+          blockId: item.blockId,
+          fit: item.fit,
+          audioTrack: item.audioTrack,
+          locked: item.locked,
+          autoNext: item.autoNext,
+          loop: item.loop,
+          notes: item.notes,
+        })
+      }
+    }
+
+    const created = await getRundown(app.db, newRundownId)
+    const [items, assets] = await Promise.all([
+      listItems(app.db, newRundownId),
+      assetMap(app.db),
+    ])
+    const view = buildView(created!, channel, items, assets, null, null)
+    onChange()
+    return { rundown: created, view }
+  })
+
+  /**
+   * Carrega uma grade no runtime ativo do canal.
+   */
+  server.post('/api/channels/:id/load-rundown', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_PUBLISH'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode carregar grades no ar.' })
+    }
+
+    const { id } = request.params as { id: string }
+    const body = z.object({ rundownId: z.string().min(1) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Indique o ID da grade.' })
+
+    const runtime = await runtimeFor(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+
+    const loadedView = await runtime.load(body.data.rundownId)
+    if (!loadedView) return reply.code(404).send({ error: 'Grade não encontrada.' })
+
+    onChange()
+    return snapshot(app, runtime)
   })
 
   server.get('/api/assets', async () => ({ assets: await listAssets(app.db) }))
@@ -766,6 +916,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * Formato que o navegador não decodifica (MXF, ProRes) simplesmente não toca,
    * e a régua de quadros continua servindo: quem extrai lá é o GStreamer.
    */
+  server.get('/api/assets/:id/file', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    return reply.redirect(`/api/assets/${id}/media`)
+  })
+
   server.get('/api/assets/:id/media', async (request, reply) => {
     const { id } = request.params as { id: string }
     const assets = await listAssets(app.db)
@@ -1428,16 +1583,85 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return `\ufeff${lines.join('\n')}`
   })
 
+  server.get('/api/v1/schedule/compensation-report', async (request, reply) => {
+    const query = request.query as { channelId?: string; rundownId?: string }
+    let runtime: ChannelRuntime | null = null
+    if (query.rundownId) {
+      runtime = await runtimeForRundown(app, query.rundownId)
+    } else if (query.channelId) {
+      runtime = (await runtimeFor(app, query.channelId)) ?? null
+    } else {
+      runtime = app.runtimes.values().next().value ?? null
+    }
+    if (!runtime?.view) return reply.code(404).send({ error: 'Grade não encontrada.' })
+    return runtime.view.schedule.compensationReport ?? {
+      rundownId: runtime.view.rundown.id,
+      generatedAt: new Date().toISOString(),
+      rateNum: runtime.channel.rate.num,
+      rateDen: runtime.channel.rate.den,
+      initialDriftFrames: 0,
+      compensatedDriftFrames: 0,
+      residualDriftFrames: 0,
+      actions: [],
+      status: 'RESOLVED_CLEAN',
+    }
+  })
+
+  server.get('/api/rundowns/:id/compensation-report', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const runtime = await runtimeForRundown(app, id)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Grade não encontrada.' })
+    return runtime.view.schedule.compensationReport ?? {
+      rundownId: runtime.view.rundown.id,
+      generatedAt: new Date().toISOString(),
+      rateNum: runtime.channel.rate.num,
+      rateDen: runtime.channel.rate.den,
+      initialDriftFrames: 0,
+      compensatedDriftFrames: 0,
+      residualDriftFrames: 0,
+      actions: [],
+      status: 'RESOLVED_CLEAN',
+    }
+  })
+
   // ---- itens -----------------------------------------------------------
 
   const addItemSchema = z.object({
     mediaId: z.string().nullable().optional(),
     sourceRef: z.string().nullable().optional(),
     type: z.enum(['VT', 'LIVE', 'GFX', 'SLATE', 'COMMERCIAL', 'FILLER']),
+    eventType: z.enum(['FIXED', 'SEQUENTIAL', 'HARD_TIME', 'LIVE', 'FILLER']).optional(),
     title: z.string().min(1).optional(),
     anchor: anchorSchema.optional(),
     durationOverride: z.number().int().min(0).nullable().optional(),
+    minDuration: z.number().int().min(0).optional(),
     atIndex: z.number().int().min(0).optional(),
+    trimmable: z.boolean().optional(),
+    optional: z.boolean().optional(),
+    protected: z.boolean().optional(),
+    timingFlags: z
+      .object({
+        trimmable: z.boolean(),
+        optional: z.boolean(),
+        protected: z.boolean(),
+      })
+      .optional(),
+    liveSourceType: z.enum(['SDI', 'NDI', 'SRT', 'RTMP', 'WEBRTC']).optional(),
+    liveEndpoint: z.string().optional(),
+    liveEstimatedDuration: z.number().int().min(0).optional(),
+    liveMaxDuration: z.number().int().min(0).nullable().optional(),
+    liveAutoFollowOnEnd: z.boolean().optional(),
+    liveFallbackMediaId: z.string().nullable().optional(),
+    liveConfig: z
+      .object({
+        sourceType: z.enum(['SDI', 'NDI', 'SRT', 'RTMP', 'WEBRTC']),
+        sourceEndpoint: z.string(),
+        estimatedDuration: z.number().int().min(0),
+        maxDuration: z.number().int().min(0).nullable().optional(),
+        autoFollowOnEnd: z.boolean(),
+        fallbackMediaId: z.string().nullable().optional(),
+      })
+      .optional(),
   })
 
   server.post('/api/rundowns/:id/items', async (request, reply) => {
@@ -1475,7 +1699,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const anchor = body.data.anchor ?? { kind: 'FLOW' as const }
     const index =
       body.data.atIndex ??
-      (anchor.kind === 'FIXED'
+      (anchor.kind === 'FIXED' || anchor.kind === 'HARD_TIME'
         ? insertionIndexForTime(runtime.view, anchor.at)
         : anchor.kind === 'SOFT'
           ? insertionIndexForTime(runtime.view, anchor.at)
@@ -1487,22 +1711,72 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const ordered = runtime.view.items.map((v) => v.item.id)
     ordered.splice(index, 0, itemId)
 
+    const eventType =
+      body.data.eventType ??
+      (body.data.type === 'LIVE'
+        ? 'LIVE'
+        : body.data.type === 'FILLER'
+          ? 'FILLER'
+          : anchor.kind === 'HARD_TIME'
+            ? 'HARD_TIME'
+            : anchor.kind === 'FIXED'
+              ? 'FIXED'
+              : 'SEQUENTIAL')
+
+    const trimmable = body.data.timingFlags?.trimmable ?? body.data.trimmable ?? false
+    const optional = body.data.timingFlags?.optional ?? body.data.optional ?? false
+    const isProtected = body.data.timingFlags?.protected ?? body.data.protected ?? false
+
+    const liveCfg = body.data.liveConfig
+    const liveSourceType =
+      liveCfg?.sourceType ?? body.data.liveSourceType ?? (body.data.type === 'LIVE' ? 'SRT' : null)
+    const liveEndpoint =
+      liveCfg?.sourceEndpoint ?? body.data.liveEndpoint ?? body.data.sourceRef ?? null
+    const liveEstimatedDuration =
+      liveCfg?.estimatedDuration ?? body.data.liveEstimatedDuration ?? duration
+    const liveMaxDuration =
+      liveCfg?.maxDuration !== undefined ? liveCfg.maxDuration : (body.data.liveMaxDuration ?? null)
+    const liveAutoFollowOnEnd =
+      liveCfg?.autoFollowOnEnd ?? body.data.liveAutoFollowOnEnd ?? false
+    const liveFallbackMediaId =
+      liveCfg?.fallbackMediaId ?? body.data.liveFallbackMediaId ?? null
+
     await app.db.insert(rundownItems).values({
       id: itemId,
       rundownId: id,
       sortOrder: 0,
       type: body.data.type,
+      eventType,
       title: body.data.title ?? asset?.title ?? 'Novo item',
       mediaId: body.data.mediaId ?? null,
-      sourceRef: body.data.sourceRef ?? null,
+      sourceRef: liveEndpoint ?? body.data.sourceRef ?? null,
+      trimmable,
+      optional,
+      protected: isProtected,
+      liveSourceType,
+      liveEndpoint,
+      liveEstimatedDuration,
+      liveMaxDuration,
+      liveAutoFollowOnEnd,
+      liveFallbackMediaId,
       trim: null,
       audio: null,
-      durationOverride: body.data.durationOverride ?? stillDefault,
-      minDuration: duration,
+      durationOverride:
+        body.data.durationOverride ??
+        stillDefault ??
+        (eventType === 'LIVE' ? liveEstimatedDuration : null),
+      minDuration: body.data.minDuration ?? duration,
       anchor,
-      onOverrun: body.data.type === 'FILLER' ? 'DROP_FILLER' : 'PUSH',
+      onOverrun:
+        body.data.type === 'FILLER' || eventType === 'FILLER'
+          ? 'DROP_FILLER'
+          : trimmable
+            ? 'TRIM_PREV'
+            : optional
+              ? 'SKIP'
+              : 'PUSH',
       elastic: null,
-      locked: false,
+      locked: isProtected,
       autoNext: true,
       loop: false,
       notes: null,
@@ -1521,6 +1795,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       anchor,
       index,
       mediaId: body.data.mediaId ?? null,
+      eventType,
     })
     await runtime.refresh()
     onChange()
@@ -1529,6 +1804,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   const patchSchema = z.object({
     title: z.string().min(1).optional(),
+    eventType: z.enum(['FIXED', 'SEQUENTIAL', 'HARD_TIME', 'LIVE', 'FILLER']).optional(),
     anchor: anchorSchema.optional(),
     onOverrun: z.enum(['TRIM_PREV', 'DROP_FILLER', 'PUSH', 'SKIP']).optional(),
     minDuration: z.number().int().min(0).optional(),
@@ -1543,6 +1819,33 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     autoNext: z.boolean().optional(),
     loop: z.boolean().optional(),
     notes: z.string().nullable().optional(),
+    trimmable: z.boolean().optional(),
+    optional: z.boolean().optional(),
+    protected: z.boolean().optional(),
+    timingFlags: z
+      .object({
+        trimmable: z.boolean(),
+        optional: z.boolean(),
+        protected: z.boolean(),
+      })
+      .optional(),
+    liveSourceType: z.enum(['SDI', 'NDI', 'SRT', 'RTMP', 'WEBRTC']).nullable().optional(),
+    liveEndpoint: z.string().nullable().optional(),
+    liveEstimatedDuration: z.number().int().min(0).nullable().optional(),
+    liveMaxDuration: z.number().int().min(0).nullable().optional(),
+    liveAutoFollowOnEnd: z.boolean().optional(),
+    liveFallbackMediaId: z.string().nullable().optional(),
+    liveConfig: z
+      .object({
+        sourceType: z.enum(['SDI', 'NDI', 'SRT', 'RTMP', 'WEBRTC']),
+        sourceEndpoint: z.string(),
+        estimatedDuration: z.number().int().min(0),
+        maxDuration: z.number().int().min(0).nullable().optional(),
+        autoFollowOnEnd: z.boolean(),
+        fallbackMediaId: z.string().nullable().optional(),
+      })
+      .nullable()
+      .optional(),
   })
 
   server.patch('/api/items/:id', async (request, reply) => {
@@ -1554,8 +1857,38 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
+    const updatePayload: Record<string, unknown> = { ...body.data }
+
+    if (body.data.timingFlags) {
+      updatePayload.trimmable = body.data.timingFlags.trimmable
+      updatePayload.optional = body.data.timingFlags.optional
+      updatePayload.protected = body.data.timingFlags.protected
+      if (body.data.timingFlags.protected) {
+        updatePayload.locked = true
+      }
+      delete updatePayload.timingFlags
+    }
+    if (body.data.liveConfig !== undefined) {
+      if (body.data.liveConfig) {
+        updatePayload.liveSourceType = body.data.liveConfig.sourceType
+        updatePayload.liveEndpoint = body.data.liveConfig.sourceEndpoint
+        updatePayload.liveEstimatedDuration = body.data.liveConfig.estimatedDuration
+        updatePayload.liveMaxDuration = body.data.liveConfig.maxDuration ?? null
+        updatePayload.liveAutoFollowOnEnd = body.data.liveConfig.autoFollowOnEnd
+        updatePayload.liveFallbackMediaId = body.data.liveConfig.fallbackMediaId ?? null
+      } else {
+        updatePayload.liveSourceType = null
+        updatePayload.liveEndpoint = null
+        updatePayload.liveEstimatedDuration = null
+        updatePayload.liveMaxDuration = null
+        updatePayload.liveAutoFollowOnEnd = false
+        updatePayload.liveFallbackMediaId = null
+      }
+      delete updatePayload.liveConfig
+    }
+
     await app.history.capture(app.db, runtime.view.rundown.id, 'editar item', { itemIds: [id] })
-    await app.db.update(rundownItems).set(body.data).where(eq(rundownItems.id, id))
+    await app.db.update(rundownItems).set(updatePayload).where(eq(rundownItems.id, id))
     await logDecision(app, runtime.view.rundown.id, id, 'ITEM_EDITED', body.data)
     await runtime.refresh()
     onChange()
@@ -1842,7 +2175,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         program: path.program,
         clean: path.clean,
         preview: path.preview,
-        urls: app.mediamtx?.urls(path.program, host) ?? null,
+        urls: app.mediamtx?.urls(path.program, host) ?? MediaMtx.urlsFor(path.program, host),
         // Saídas do engine deste canal. Caminho declarado no servidor não é
         // prova de nada: só a entrega do engine diz que o canal está saindo.
         publishers: app.runtimes.get(path.channelId)?.transport.publishers() ?? [],
@@ -1868,6 +2201,265 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const { refresh } = request.query as { refresh?: string }
     return app.sources.list(refresh === '1')
   })
+
+  // ==========================================
+  // FASE B: SRT MANAGER, FAILOVER & MULTIVIEW
+  // ==========================================
+
+  // Telemetria SRT em tempo real
+  const handleSrtTelemetry = async (request: any) => {
+    const { sourceId } = request.query as { sourceId?: string }
+    if (sourceId) {
+      const tel = globalSrtManager.getTelemetry(sourceId)
+      return tel ?? { error: 'Telemetria não encontrada para a fonte informada' }
+    }
+    return globalSrtManager.getAllTelemetry()
+  }
+  server.get('/api/v1/srt/telemetry', handleSrtTelemetry)
+  server.get('/api/srt/telemetry', handleSrtTelemetry)
+
+  // Disparo manual ou automatizado de chaveamento de contingência (Failover)
+  const handleFailoverTrigger = async (request: any, reply: any) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Seu papel não tem permissão para acionar failover técnico.' })
+    }
+
+    const body = z
+      .object({
+        sourceId: z.string().min(1, 'sourceId é obrigatório'),
+        targetRole: z.enum(['PRIMARY', 'BACKUP']).optional(),
+        reason: z.string().optional(),
+      })
+      .safeParse(request.body)
+
+    if (!body.success) {
+      return reply.code(400).send({ error: body.error.flatten() })
+    }
+
+    const source = await getLiveSource(app.db, body.data.sourceId, true)
+    if (!source) {
+      return reply.code(404).send({ error: 'Fonte ao vivo não encontrada.' })
+    }
+
+    const currentRole = globalSrtManager.failover.getActiveRole(source.id, source.role)
+    const targetRole = body.data.targetRole ?? (currentRole === 'PRIMARY' ? 'BACKUP' : 'PRIMARY')
+    const operator = await usernameOf(request)
+    const reason = body.data.reason ?? `Comutação manual de contingência disparada por ${operator}`
+
+    const event = globalSrtManager.failover.triggerSwitch(source, targetRole, reason, {
+      operator: operator ?? undefined,
+      automatic: false,
+    })
+
+    // Registra evento de AsRun e Auditoria
+    await app.db.insert(healthEvents).values({
+      id: randomUUID(),
+      channelId: source.channelId,
+      component: 'FAILOVER_CONTROLLER',
+      state: targetRole,
+      severity: 'WARN',
+      message: `Comutação ${event.fromRole} -> ${targetRole}: ${reason}`,
+      occurredAt: event.timestamp,
+    })
+
+    void emitIntegrationEvent(app.db, 'source.failover', { ...event }, source.channelId)
+    onChange()
+
+    return {
+      ok: true,
+      event,
+    }
+  }
+  server.post('/api/v1/engineering/failover/trigger', handleFailoverTrigger)
+  server.post('/api/engineering/failover/trigger', handleFailoverTrigger)
+
+  // Multiview Layout & Configuração
+  const handleGetMultiview = async (request: any) => {
+    const { channelId } = request.query as { channelId?: string }
+    return getMultiviewConfig(app.db, channelId)
+  }
+  server.get('/api/v1/multiview/config', handleGetMultiview)
+  server.get('/api/multiview/config', handleGetMultiview)
+
+  const handlePutMultiview = async (request: any, reply: any) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode alterar layout de multiview.' })
+    }
+
+    const body = z
+      .object({
+        channelId: z.string().optional(),
+        layout: z.enum(['GRID_2X2', 'GRID_1_PLUS_3', 'COMPACT_LIST']).default('GRID_2X2'),
+        cells: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+              sourceUrl: z.string(),
+              tally: z.enum(['ON_AIR', 'NEXT', 'CUED', 'OFFLINE']),
+              audioPeakDb: z.tuple([z.number(), z.number()]),
+              syncState: z.enum(['LOCKED', 'DRIFT', 'LOST']),
+              srtTelemetry: z.any().optional(),
+            }),
+          )
+          .default([]),
+      })
+      .safeParse(request.body)
+
+    if (!body.success) {
+      return reply.code(400).send({ error: body.error.flatten() })
+    }
+
+    const saved = await saveMultiviewConfig(
+      app.db,
+      body.data.channelId,
+      body.data.layout as MultiviewLayout,
+      body.data.cells as MultiviewCell[],
+    )
+    onChange()
+    return saved
+  }
+  server.put('/api/v1/multiview/config', handlePutMultiview)
+  server.put('/api/multiview/config', handlePutMultiview)
+
+  // Gerenciamento de Fontes ao Vivo (Live Sources CRUD)
+  const liveSourceSchema = z.object({
+    channelId: z.string().min(1, 'channelId é obrigatório'),
+    name: z.string().min(1, 'name é obrigatório'),
+    kind: z.enum(['SRT', 'RTMP', 'SDI', 'NDI']),
+    targetUrl: z.string().optional(),
+    srtConfig: z
+      .object({
+        mode: z.enum(['caller', 'listener', 'rendezvous']),
+        host: z.string().default(''),
+        port: z.number().int().min(1024).max(65535).default(9000),
+        latencyMs: z.number().int().min(120).max(2000).default(800),
+        passphrase: z.string().min(10).max(79).optional(),
+        pbkeylen: z.union([z.literal(16), z.literal(24), z.literal(32)]).optional(),
+        streamId: z.string().max(512).optional(),
+        pollTimeoutMs: z.number().int().min(50).max(1000).optional(),
+      })
+      .optional(),
+    role: z.enum(['PRIMARY', 'BACKUP']).default('PRIMARY'),
+    pairedSourceId: z.string().optional(),
+    autoFailover: z.boolean().default(true),
+    failoverConfig: z
+      .object({
+        autoFailover: z.boolean().default(true),
+        maxLossPercent: z.number().default(15.0),
+        maxTimeoutMs: z.number().default(1500),
+        maxRttMs: z.number().default(2400),
+        switchDelayMs: z.number().default(120),
+      })
+      .optional(),
+    enabled: z.boolean().default(true),
+  })
+
+  const handleListLiveSources = async (request: any) => {
+    const { channelId } = request.query as { channelId?: string }
+    return listLiveSources(app.db, channelId, false)
+  }
+  server.get('/api/v1/sources/live', handleListLiveSources)
+  server.get('/api/sources/live', handleListLiveSources)
+
+  const handleCreateLiveSource = async (request: any, reply: any) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Seu papel não tem permissão para cadastrar fontes ao vivo.' })
+    }
+
+    const body = liveSourceSchema.safeParse(request.body)
+    if (!body.success) {
+      return reply.code(400).send({ error: body.error.flatten() })
+    }
+
+    const created = await createLiveSource(app.db, body.data)
+    onChange()
+    return reply.code(201).send(created)
+  }
+  server.post('/api/v1/sources/live', handleCreateLiveSource)
+  server.post('/api/sources/live', handleCreateLiveSource)
+
+  const handleGetLiveSource = async (request: any, reply: any) => {
+    const { id } = request.params as { id: string }
+    const source = await getLiveSource(app.db, id, false)
+    if (!source) {
+      return reply.code(404).send({ error: 'Fonte ao vivo não encontrada.' })
+    }
+    return source
+  }
+  server.get('/api/v1/sources/live/:id', handleGetLiveSource)
+  server.get('/api/sources/live/:id', handleGetLiveSource)
+
+  const handleUpdateLiveSource = async (request: any, reply: any) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode editar fontes ao vivo.' })
+    }
+
+    const { id } = request.params as { id: string }
+    const body = liveSourceSchema.partial().safeParse(request.body)
+    if (!body.success) {
+      return reply.code(400).send({ error: body.error.flatten() })
+    }
+
+    const updated = await updateLiveSource(app.db, id, body.data)
+    if (!updated) {
+      return reply.code(404).send({ error: 'Fonte ao vivo não encontrada.' })
+    }
+    onChange()
+    return updated
+  }
+  server.put('/api/v1/sources/live/:id', handleUpdateLiveSource)
+  server.put('/api/sources/live/:id', handleUpdateLiveSource)
+
+  const handleDeleteLiveSource = async (request: any, reply: any) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode remover fontes ao vivo.' })
+    }
+
+    const { id } = request.params as { id: string }
+    await deleteLiveSource(app.db, id)
+    onChange()
+    return { ok: true }
+  }
+  server.delete('/api/v1/sources/live/:id', handleDeleteLiveSource)
+  server.delete('/api/sources/live/:id', handleDeleteLiveSource)
+
+  const handleForceFailover = async (request: any, reply: any) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode forçar comutação de redundância.' })
+    }
+
+    const { id } = request.params as { id: string }
+    const source = await getLiveSource(app.db, id, true)
+    if (!source) {
+      return reply.code(404).send({ error: 'Fonte ao vivo não encontrada.' })
+    }
+
+    const currentRole = globalSrtManager.failover.getActiveRole(source.id, source.role)
+    const targetRole = currentRole === 'PRIMARY' ? 'BACKUP' : 'PRIMARY'
+    const operator = await usernameOf(request)
+    const reason = `Comutação forçada manual pelo operador ${operator}`
+
+    const event = globalSrtManager.failover.triggerSwitch(source, targetRole, reason, {
+      operator: operator ?? undefined,
+      automatic: false,
+    })
+
+    await app.db.insert(healthEvents).values({
+      id: randomUUID(),
+      channelId: source.channelId,
+      component: 'FAILOVER_CONTROLLER',
+      state: targetRole,
+      severity: 'WARN',
+      message: `Comutação forçada ${event.fromRole} -> ${targetRole}: ${reason}`,
+      occurredAt: event.timestamp,
+    })
+
+    onChange()
+    return { ok: true, event }
+  }
+  server.post('/api/v1/sources/live/:id/force-failover', handleForceFailover)
+  server.post('/api/sources/live/:id/force-failover', handleForceFailover)
 
   server.patch('/api/channels/:id/slate', async (request, reply) => {
     const { id } = request.params as { id: string }
@@ -2084,12 +2676,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/channels/:id/asrun.csv', async (request, reply) => {
     const { id } = request.params as { id: string }
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Seu papel não pode exportar relatórios.' })
-    const { since, nome, categoria, data, hora } = request.query as { since?: string; nome?: string; categoria?: string; data?: string; hora?: string }
+    const { since, until, nome, categoria, data, hora } = request.query as { since?: string; until?: string; nome?: string; categoria?: string; data?: string; hora?: string }
     const channel = await getChannel(app.db, id)
     if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
-    const start = since ?? new Date(new Date().setHours(0, 0, 0, 0)).toISOString()
-    const entries = (await listAsRun(app.db, id, start, 5000)).filter((entry) =>
+    const defaultSince = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+    const start = since !== undefined ? since : defaultSince
+    const entries = (await listAsRun(app.db, id, start, 5000, until)).filter((entry) =>
       (!nome || entry.title.toLowerCase().includes(nome.toLowerCase())) &&
       (!categoria || entry.type === categoria) &&
       (!data || entry.startedAt.slice(0, 10) === data) &&
@@ -2140,12 +2733,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   const fillSchema = z.object({
     /** Quanto tempo preencher, em minutos. */
-    minutes: z.number().int().min(1).max(720),
+    minutes: z.number().int().min(1).max(1440),
     categories: z.array(z.string()).optional(),
     /** Não repetir o que foi ao ar nas últimas N horas. */
     avoidHours: z.number().min(0).max(720).optional(),
     /** Só planejar, sem gravar. É o que a interface mostra antes de aplicar. */
     preview: z.boolean().optional(),
+    /** Minuto do dia (0 a 1440) para inserção exata do GAP */
+    insertAtMinute: z.number().min(0).max(1440).optional(),
+    /** Inserir logo após este item específico da grade */
+    insertAfterItemId: z.string().optional(),
+    /** Inserir nesta ordem específica */
+    insertAtOrder: z.number().optional(),
   })
 
   server.post('/api/rundowns/:id/autofill', async (request, reply) => {
@@ -2163,7 +2762,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       runtime.channel,
       secondsToFrames(body.data.minutes * 60, runtime.channel.rate),
       body.data.categories ?? [],
-      (body.data.avoidHours ?? 6) * 60,
+      (body.data.avoidHours ?? 0) * 60,
     )
 
     const byId = new Map(assets.map((asset) => [asset.id, asset]))
@@ -2185,15 +2784,39 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     await app.history.capture(app.db, id, 'montagem automática', { wholeRundown: true })
 
-    let order = (runtime.view.items.at(-1)?.item.order ?? 0) + 10
+    // Determina onde os novos itens devem ser posicionados na grade
+    let targetIdx = runtime.view.items.length
+    if (body.data.insertAfterItemId) {
+      const found = runtime.view.items.findIndex((it) => it.item.id === body.data.insertAfterItemId)
+      if (found >= 0) targetIdx = found + 1
+    } else if (body.data.insertAtMinute !== undefined) {
+      const atFrames = secondsToFrames(body.data.insertAtMinute * 60, runtime.channel.rate)
+      targetIdx = insertionIndexForTime(runtime.view, atFrames)
+    } else if (body.data.insertAtOrder !== undefined) {
+      const found = runtime.view.items.findIndex((it) => it.item.order >= body.data.insertAtOrder!)
+      if (found >= 0) targetIdx = found
+    }
+
+    const existingIds = runtime.view.items.map((it) => it.item.id)
+    const newIds: string[] = []
+    let isFirst = true
+
     for (const item of plan.items) {
       const asset = byId.get(item.id)
       if (!asset) continue
       const itemId = randomUUID()
+      newIds.push(itemId)
+
+      const anchor =
+        isFirst && body.data.insertAtMinute !== undefined
+          ? { kind: 'FIXED' as const, at: secondsToFrames(body.data.insertAtMinute * 60, runtime.channel.rate) }
+          : { kind: 'FLOW' as const }
+      isFirst = false
+
       await app.db.insert(rundownItems).values({
         id: itemId,
         rundownId: id,
-        sortOrder: order,
+        sortOrder: 0,
         type: 'VT',
         title: asset.title,
         mediaId: asset.id,
@@ -2202,7 +2825,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         audio: null,
         durationOverride: null,
         minDuration: item.durationFrames,
-        anchor: { kind: 'FLOW' },
+        anchor,
         onOverrun: 'PUSH',
         elastic: null,
         locked: false,
@@ -2210,11 +2833,16 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         loop: false,
         notes: null,
       })
-      // A montagem automática também vira decisão: o que ela propôs e o
-      // operador manteve é aprendizado tanto quanto o que ele inseriu na mão.
       await logDecision(app, id, itemId, 'AUTO_FILLED', { mediaId: asset.id })
-      order += 10
     }
+
+    const combinedIds = [
+      ...existingIds.slice(0, targetIdx),
+      ...newIds,
+      ...existingIds.slice(targetIdx),
+    ]
+
+    await renumber(app.db, id, combinedIds)
 
     await runtime.refresh()
     onChange()
@@ -2225,7 +2853,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.get('/api/channels/:id/asrun', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const { since } = request.query as { since?: string }
+    const { since, until, limit } = request.query as { since?: string; until?: string; limit?: string }
     const channel = await getChannel(app.db, id)
     if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
@@ -2235,11 +2863,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = app.runtimes.get(id)
     if (runtime) await runtime.followAsRun()
 
-    // Sem `since`, o dia de hoje: é o recorte que o operador quer ver, e um
-    // as-run inteiro de meses não cabe numa tela nem numa resposta.
-    const start = since ?? new Date(new Date().setHours(0, 0, 0, 0)).toISOString()
-    const entries = await listAsRun(app.db, id, start)
-    return { since: start, entries }
+    // Sem `since`, o padrão de 24 horas: é a janela móvel de auditoria regulatória
+    const defaultSince = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+    const start = since !== undefined ? since : defaultSince
+    const maxEntries = limit ? parseInt(limit, 10) || 1000 : 2000
+    const entries = await listAsRun(app.db, id, start, maxEntries, until)
+    return { since: start, until: until ?? null, entries }
   })
 
   // ---- grafismo ----------------------------------------------------------
@@ -2428,7 +3057,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.post('/api/channels/:id/watching', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = z.object({ bus: z.enum(['pvw', 'mon']) }).safeParse(request.body)
+    const body = z.object({ bus: z.enum(['pvw', 'mon']), watching: z.boolean().optional() }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Barramento inválido.' })
 
     const runtime = await runtimeFor(app, id)
@@ -2445,27 +3074,45 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.get('/api/channels/:id/outputs', async (request) => {
     const { id } = request.params as { id: string }
+    const host = lanAddress()
     const path = app.paths.find((entry) => entry.channelId === id)
     const rows = await listOutputs(app.db, id)
     const canal = await getChannel(app.db, id)
     return {
-      outputs: rows.map((row) => ({
-        ...row,
-        // Destino efetivo: derivado nos gerenciados, guardado nos demais.
-        resolvedTarget: targetOf(row, path),
-        // Quanto esta saída usaria se ninguém escrevesse um número. Mostrar
-        // isso é o que deixa a escolha ser uma escolha: "automático" sozinho
-        // não diz se são 4 Mbps ou 12.
-        suggestedBitrateKbps: canal
-          ? suggestedBitrateKbps(
-              row.width ?? canal.width,
-              row.height ?? canal.height,
-              row.rateNum !== null && row.rateDen !== null
-                ? { num: row.rateNum, den: row.rateDen }
-                : canal.rate,
-            )
-          : null,
-      })),
+      outputs: rows.map((row) => {
+        const streamPath =
+          row.role === 'PROGRAM'
+            ? path?.program
+            : row.role === 'PREVIEW'
+            ? path?.preview
+            : row.role === 'MONITOR'
+            ? path?.monitor
+            : null
+        const streamUrls = streamPath ? MediaMtx.urlsFor(streamPath, host) : null
+        const primaryUrl =
+          streamUrls?.rtsp ??
+          (row.target ? row.target : targetOf(row, path))
+        return {
+          ...row,
+          // Destino efetivo: derivado nos gerenciados, guardado nos demais.
+          resolvedTarget: targetOf(row, path),
+          displayUrl: primaryUrl,
+          streamUrls,
+          target: row.target || primaryUrl || '',
+          // Quanto esta saída usaria se ninguém escrevesse um número. Mostrar
+          // isso é o que deixa a escolha ser uma escolha: "automático" sozinho
+          // não diz se são 4 Mbps ou 12.
+          suggestedBitrateKbps: canal
+            ? suggestedBitrateKbps(
+                row.width ?? canal.width,
+                row.height ?? canal.height,
+                row.rateNum !== null && row.rateDen !== null
+                  ? { num: row.rateNum, den: row.rateDen }
+                  : canal.rate,
+              )
+            : null,
+        }
+      }),
     }
   })
 

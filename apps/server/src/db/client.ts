@@ -74,9 +74,19 @@ CREATE TABLE IF NOT EXISTS rundown_items (
   rundown_id TEXT NOT NULL REFERENCES rundowns (id) ON DELETE CASCADE,
   sort_order INTEGER NOT NULL,
   type TEXT NOT NULL,
+  event_type TEXT NOT NULL DEFAULT 'SEQUENTIAL',
   title TEXT NOT NULL,
   media_id TEXT REFERENCES media_assets (id),
   source_ref TEXT,
+  trimmable INTEGER NOT NULL DEFAULT 0,
+  optional INTEGER NOT NULL DEFAULT 0,
+  protected INTEGER NOT NULL DEFAULT 0,
+  live_source_type TEXT,
+  live_endpoint TEXT,
+  live_estimated_duration INTEGER,
+  live_max_duration INTEGER,
+  live_auto_follow_on_end INTEGER DEFAULT 0,
+  live_fallback_media_id TEXT,
   trim TEXT,
   audio TEXT,
   duration_override INTEGER,
@@ -160,7 +170,6 @@ CREATE TABLE IF NOT EXISTS destinations (
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
-
 
 CREATE TABLE IF NOT EXISTS graphic_templates (
   id TEXT PRIMARY KEY,
@@ -246,6 +255,30 @@ CREATE TABLE IF NOT EXISTS operator_decisions (
   payload TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS live_sources (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  target_url TEXT NOT NULL,
+  srt_config TEXT,
+  role TEXT NOT NULL DEFAULT 'PRIMARY',
+  paired_source_id TEXT,
+  auto_failover INTEGER NOT NULL DEFAULT 1,
+  failover_config TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS live_sources_channel ON live_sources (channel_id);
+
+CREATE TABLE IF NOT EXISTS multiview_configs (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT,
+  layout TEXT NOT NULL DEFAULT 'GRID_2X2',
+  cells TEXT,
+  updated_at TEXT NOT NULL
+);
 `
 
 export type Db = ReturnType<typeof openDatabase>['db']
@@ -301,6 +334,16 @@ export function openDatabase(file: string) {
     'ALTER TABLE channels ADD COLUMN slate_template_id TEXT',
     'ALTER TABLE rundown_items ADD COLUMN fit TEXT',
     'ALTER TABLE rundown_items ADD COLUMN audio_track INTEGER',
+    "ALTER TABLE rundown_items ADD COLUMN event_type TEXT NOT NULL DEFAULT 'SEQUENTIAL'",
+    'ALTER TABLE rundown_items ADD COLUMN trimmable INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE rundown_items ADD COLUMN optional INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE rundown_items ADD COLUMN protected INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE rundown_items ADD COLUMN live_source_type TEXT',
+    'ALTER TABLE rundown_items ADD COLUMN live_endpoint TEXT',
+    'ALTER TABLE rundown_items ADD COLUMN live_estimated_duration INTEGER',
+    'ALTER TABLE rundown_items ADD COLUMN live_max_duration INTEGER',
+    'ALTER TABLE rundown_items ADD COLUMN live_auto_follow_on_end INTEGER DEFAULT 0',
+    'ALTER TABLE rundown_items ADD COLUMN live_fallback_media_id TEXT',
     'ALTER TABLE media_assets ADD COLUMN audio_tracks TEXT',
     'ALTER TABLE media_assets ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE operator_decisions ADD COLUMN actor_username TEXT',

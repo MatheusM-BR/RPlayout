@@ -23,5 +23,57 @@ describe('planejamento com arquivos indisponíveis', () => {
     expect(view.schedule.items[0]?.state).not.toBe('DROPPED')
     expect(view.schedule.conflicts.some((row) => row.kind === 'MEDIA_UNAVAILABLE')).toBe(false)
   })
+
+  it('gera relatório de compensação com cascata de sacrifício e suporte a LIVE e HARD_TIME', () => {
+    const liveItem: RundownItem = {
+      ...item('live-1'),
+      type: 'LIVE',
+      eventType: 'LIVE',
+      mediaId: null,
+      sourceRef: 'srt://test:9000',
+      liveConfig: {
+        sourceType: 'SRT',
+        sourceEndpoint: 'srt://test:9000',
+        estimatedDuration: 500,
+        autoFollowOnEnd: true,
+      },
+    }
+
+    const fillerItem: RundownItem = {
+      ...item('filler-1'),
+      type: 'FILLER',
+      eventType: 'FILLER',
+      durationOverride: 200,
+      minDuration: 50,
+      elastic: { min: 50, max: 500 },
+      mediaId: null,
+    }
+
+    const hardTimeItem: RundownItem = {
+      ...item('hard-1'),
+      eventType: 'HARD_TIME',
+      anchor: { kind: 'HARD_TIME', at: 600 },
+      durationOverride: 500,
+      mediaId: null,
+    }
+
+    const view = buildView(
+      { ...rundown, plannedStart: 0, loop: false },
+      channel,
+      [liveItem, fillerItem, hardTimeItem],
+      new Map(),
+      null,
+      null,
+    )
+
+    expect(view.schedule.compensationReport).toBeDefined()
+    expect(view.schedule.compensationReport?.actions.length).toBeGreaterThan(0)
+    // O filler deve ter sido encolhido de 200 para 100 para o HARD_TIME entrar em 600 (live 500 + filler 100 = 600)
+    const resolvedFiller = view.schedule.items.find((i) => i.id === 'filler-1')!
+    expect(resolvedFiller.duration).toBe(100)
+    const resolvedHard = view.schedule.items.find((i) => i.id === 'hard-1')!
+    expect(resolvedHard.start).toBe(600)
+  })
 })
+
 

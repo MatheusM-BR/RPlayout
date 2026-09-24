@@ -13,6 +13,8 @@ export type Anchor =
   | { readonly kind: 'FLOW' }
   /** Hora obrigatória. O scheduler tem que respeitar. */
   | { readonly kind: 'FIXED'; readonly at: Frames }
+  /** Ponto de sincronismo obrigatório e inegociável de rede com disparo mandatório no frame zero. */
+  | { readonly kind: 'HARD_TIME'; readonly at: Frames }
   /** Hora alvo com tolerância para os dois lados. */
   | {
       readonly kind: 'SOFT'
@@ -38,6 +40,7 @@ export function anchorWindow(anchor: Anchor): { from: Frames; to: Frames } | nul
     case 'FLOW':
       return null
     case 'FIXED':
+    case 'HARD_TIME':
       return { from: anchor.at, to: anchor.at }
     case 'SOFT':
       return { from: anchor.at - anchor.tolerance, to: anchor.at + anchor.tolerance }
@@ -52,6 +55,7 @@ export function anchorTarget(anchor: Anchor): Frames | null {
     case 'FLOW':
       return null
     case 'FIXED':
+    case 'HARD_TIME':
       return anchor.at
     case 'SOFT':
       return anchor.at
@@ -65,11 +69,33 @@ export function anchorPriority(anchor: Anchor): Priority {
     case 'FLOW':
       return 1
     case 'FIXED':
+    case 'HARD_TIME':
       return 5
     case 'SOFT':
     case 'WINDOW':
       return anchor.priority
   }
+}
+
+export type ScheduleEventType = 'FIXED' | 'SEQUENTIAL' | 'HARD_TIME' | 'LIVE' | 'FILLER'
+
+export interface TimingFlags {
+  readonly trimmable: boolean
+  readonly optional: boolean
+  readonly protected: boolean
+}
+
+export type LiveSourceType = 'SDI' | 'NDI' | 'SRT' | 'RTMP' | 'WEBRTC'
+
+export interface LiveSourceConfig {
+  readonly sourceType: LiveSourceType
+  readonly sourceEndpoint: string
+  readonly estimatedDuration: Frames
+  readonly maxDuration?: Frames | null
+  readonly autoFollowOnEnd: boolean
+  readonly fallbackMediaId?: string | null
+  readonly audioGainDb?: number
+  readonly audioChannels?: number
 }
 
 /** O que fazer com este item quando o tempo não fecha. */
@@ -107,6 +133,18 @@ export interface RundownItem {
   readonly rundownId: string
   readonly order: number
   readonly type: ItemType
+  readonly eventType?: ScheduleEventType
+  readonly timingFlags?: TimingFlags
+  readonly liveConfig?: LiveSourceConfig | null
+  readonly trimmable?: boolean
+  readonly optional?: boolean
+  readonly protected?: boolean
+  readonly liveSourceType?: LiveSourceType | null
+  readonly liveEndpoint?: string | null
+  readonly liveEstimatedDuration?: Frames | null
+  readonly liveMaxDuration?: Frames | null
+  readonly liveAutoFollowOnEnd?: boolean | null
+  readonly liveFallbackMediaId?: string | null
   readonly title: string
 
   /** Arquivo do acervo, quando é VT, comercial, filler ou slate. */

@@ -29,6 +29,7 @@ fn main() -> Result<()> {
         else if nome_executavel.contains("monitor") { Some("monitor".to_owned()) }
         else if nome_executavel.contains("aired") { Some("aired".to_owned()) }
         else if nome_executavel.contains("qc") { Some("qc".to_owned()) }
+        else if nome_executavel.contains("master") { Some("master".to_owned()) }
         else { None }
     });
     println!("RPlayout · instalação em {}", raiz.display());

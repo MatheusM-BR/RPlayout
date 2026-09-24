@@ -176,9 +176,9 @@ export class MediaMtx {
       'api: yes',
       `apiAddress: 127.0.0.1:${PORTS.api}`,
       '',
-      '# Leitura interna dos relays. Loopback, nunca a rede.',
+      '# Leitura dos relays e clientes de rede (VLC, OBS, vMix).',
       'rtsp: yes',
-      `rtspAddress: 127.0.0.1:${PORTS.rtsp}`,
+      `rtspAddress: ${this.options.bind}:${PORTS.rtsp}`,
       'rtmp: yes',
       `rtmpAddress: ${this.options.bind}:${PORTS.rtmp}`,
       'srt: yes',
@@ -284,13 +284,18 @@ export class MediaMtx {
   }
 
   /** Endereços prontos para copiar, já com o endereço da máquina na rede. */
-  urls(path: string, host: string): Record<string, string> {
+  static urlsFor(path: string, host: string): Record<string, string> {
     return {
+      rtsp: `rtsp://${host}:${PORTS.rtsp}/${path}`,
       rtmp: `rtmp://${host}:${PORTS.rtmp}/${path}`,
       srt: `srt://${host}:${PORTS.srt}?streamid=read:${path}`,
       hls: `http://${host}:${PORTS.hls}/${path}`,
       webrtc: `http://${host}:${PORTS.webrtc}/${path}`,
     }
+  }
+
+  urls(path: string, host: string): Record<string, string> {
+    return MediaMtx.urlsFor(path, host)
   }
 
   /** Onde o engine publica: sempre loopback, nunca a rede. */

@@ -127,9 +127,8 @@ export async function ensureManagedOutputs(
       rateDen: null,
       scan: null,
       bitrateKbps: null,
-      // Saídas gerenciadas começam desligadas para não iniciar encoders e
-      // conexões sem uma decisão explícita do operador.
-      enabled: false,
+      // Saídas gerenciadas de programa e preview
+      enabled: true,
       createdAt: new Date().toISOString(),
       ...entry.defaults,
     })

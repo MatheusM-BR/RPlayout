@@ -7,12 +7,19 @@ import type {
   Fit,
   GraphicField,
   ItemType,
+  LiveSourceType,
   LoudnessMeasurement,
   FieldOrder,
   MediaKind,
   OverrunPolicy,
   Scan,
+  ScheduleEventType,
   Trim,
+  FailoverConfig,
+  MultiviewCell,
+  MultiviewLayout,
+  RedundancyRole,
+  SrtConfig,
 } from '@rplayout/protocol'
 
 export const channels = sqliteTable('channels', {
@@ -161,9 +168,19 @@ export const rundownItems = sqliteTable('rundown_items', {
   rundownId: text('rundown_id').notNull(),
   sortOrder: integer('sort_order').notNull(),
   type: text('type').$type<ItemType>().notNull(),
+  eventType: text('event_type').$type<ScheduleEventType>().notNull().default('SEQUENTIAL'),
   title: text('title').notNull(),
   mediaId: text('media_id'),
   sourceRef: text('source_ref'),
+  trimmable: integer('trimmable', { mode: 'boolean' }).notNull().default(false),
+  optional: integer('optional', { mode: 'boolean' }).notNull().default(false),
+  protected: integer('protected', { mode: 'boolean' }).notNull().default(false),
+  liveSourceType: text('live_source_type').$type<LiveSourceType>(),
+  liveEndpoint: text('live_endpoint'),
+  liveEstimatedDuration: integer('live_estimated_duration'),
+  liveMaxDuration: integer('live_max_duration'),
+  liveAutoFollowOnEnd: integer('live_auto_follow_on_end', { mode: 'boolean' }).default(false),
+  liveFallbackMediaId: text('live_fallback_media_id'),
   /** Corte só deste item. Nulo herda do asset. */
   trim: text('trim', { mode: 'json' }).$type<Trim | null>(),
   /** Nivelamento só deste item. Nulo herda do asset. */
@@ -333,4 +350,34 @@ export const categories = sqliteTable('categories', {
   /** Cor em hex, `#rrggbb`. */
   color: text('color').notNull(),
   createdAt: text('created_at').notNull(),
+})
+
+/**
+ * Fontes ao vivo gerenciadas (SRT Caller/Listener/Rendezvous, NDI, RTMP, SDI)
+ * com suporte nativo a contingência e paridade redundante (Primary / Backup).
+ */
+export const liveSources = sqliteTable('live_sources', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id').notNull(),
+  name: text('name').notNull(),
+  kind: text('kind').$type<'SRT' | 'RTMP' | 'SDI' | 'NDI'>().notNull(),
+  targetUrl: text('target_url').notNull(),
+  srtConfig: text('srt_config', { mode: 'json' }).$type<SrtConfig | null>(),
+  role: text('role').$type<RedundancyRole>().notNull().default('PRIMARY'),
+  pairedSourceId: text('paired_source_id'),
+  autoFailover: integer('auto_failover', { mode: 'boolean' }).notNull().default(true),
+  failoverConfig: text('failover_config', { mode: 'json' }).$type<FailoverConfig | null>(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+})
+
+/**
+ * Configuração de Multiview operacional do MCR por canal ou geral.
+ */
+export const multiviewConfigs = sqliteTable('multiview_configs', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id'),
+  layout: text('layout').$type<MultiviewLayout>().notNull().default('GRID_2X2'),
+  cells: text('cells', { mode: 'json' }).$type<MultiviewCell[] | null>(),
+  updatedAt: text('updated_at').notNull(),
 })

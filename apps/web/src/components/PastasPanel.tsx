@@ -68,7 +68,10 @@ export function PastasPanel({ onMessage, onChanged }: Props) {
   const acrescentar = (): void => {
     guard(async () => {
       const picked = await api.pickMediaRoot()
-      if (!picked) return
+      if (!picked) {
+        onMessage('Seleção de pasta cancelada pelo operador.')
+        return
+      }
       const { root, scanning } = picked
       setVarrendo(scanning)
       onMessage(

@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +24,13 @@ const LIVE_HZ = 20
 
 async function main(): Promise<void> {
   const app = await createApp(DB_FILE)
+  if (app.mediaRoot) {
+    try {
+      mkdirSync(resolve(app.mediaRoot), { recursive: true })
+    } catch {
+      // Ignora erro se não conseguir criar pasta de mídia padrão
+    }
+  }
   const server = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } })
 
   await server.register(cors, { origin: true })

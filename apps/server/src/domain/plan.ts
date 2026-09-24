@@ -19,13 +19,19 @@ import { resolve } from '@rplayout/scheduler'
 
 /**
  * Duração no ar do item: o corte manda quando existe arquivo; sem arquivo,
- * vale a duração declarada. É esta a duração que o scheduler recebe.
+ * vale a duração declarada ou estimada do live. É esta a duração que o scheduler recebe.
  */
 export function itemDuration(
   item: RundownItem,
   asset: MediaAsset | undefined,
   rate: Rate,
 ): Frames {
+  if (item.type === 'LIVE' || item.eventType === 'LIVE') {
+    const liveEst = item.liveConfig?.estimatedDuration ?? item.liveEstimatedDuration
+    if (liveEst && liveEst > 0) return liveEst
+    if (item.durationOverride !== null && item.durationOverride > 0) return item.durationOverride
+    return 0
+  }
   if (!asset) return item.durationOverride ?? 0
   if (item.durationOverride !== null) return item.durationOverride
   return trimDuration(resolveTrim(item.trim, asset, rate).value)
@@ -37,17 +43,52 @@ export function toPlanItem(
   rate: Rate,
 ): PlanItem {
   const duration = itemDuration(item, asset, rate)
+  const eventType =
+    item.eventType ??
+    (item.type === 'LIVE'
+      ? 'LIVE'
+      : item.type === 'FILLER'
+        ? 'FILLER'
+        : item.anchor.kind === 'HARD_TIME'
+          ? 'HARD_TIME'
+          : item.anchor.kind === 'FIXED'
+            ? 'FIXED'
+            : 'SEQUENTIAL')
+
+  const timingFlags = item.timingFlags ?? {
+    trimmable: item.trimmable ?? item.onOverrun === 'TRIM_PREV',
+    optional: item.optional ?? (item.onOverrun === 'DROP_FILLER' || item.onOverrun === 'SKIP'),
+    protected: item.protected ?? item.locked,
+  }
+
+  const liveConfig =
+    item.liveConfig ??
+    (item.type === 'LIVE' || item.sourceRef || item.liveEndpoint
+      ? {
+          sourceType: (item.liveSourceType ?? 'SRT') as any,
+          sourceEndpoint: item.liveEndpoint ?? item.sourceRef ?? '',
+          estimatedDuration: item.liveEstimatedDuration ?? item.durationOverride ?? 0,
+          maxDuration: item.liveMaxDuration ?? null,
+          autoFollowOnEnd: item.liveAutoFollowOnEnd ?? false,
+          fallbackMediaId: item.liveFallbackMediaId ?? null,
+        }
+      : null)
+
   return {
     id: item.id,
     order: item.order,
+    title: item.title,
     duration,
     // Um mínimo maior que a duração travaria o corte; o piso nunca passa dela.
     minDuration: Math.min(item.minDuration, duration),
     anchor: item.anchor,
     onOverrun: item.onOverrun,
     elastic: item.elastic,
-    isFiller: item.type === 'FILLER',
-    locked: item.locked,
+    isFiller: item.type === 'FILLER' || eventType === 'FILLER',
+    locked: item.locked || timingFlags.protected,
+    eventType,
+    timingFlags,
+    liveConfig,
   }
 }
 
@@ -118,6 +159,22 @@ export function buildView(
     }
   })
 
+  // Alinha o início planejado da grade com a hora real atual:
+  // Se a grade está em loop contínuo ou o início planejado já passou em relação a agora,
+  // projeta a grade a partir do horário real corrente (now ou onAir.startedAt).
+  const effectivePlannedStart = (() => {
+    if (now === null) return rundown.plannedStart
+    if (onAir) return onAir.startedAt
+    if (
+      rundown.loop ||
+      rundown.plannedStart < now ||
+      Math.abs(rundown.plannedStart - now) > 12 * 3600 * (channel.rate.num / channel.rate.den)
+    ) {
+      return now
+    }
+    return rundown.plannedStart
+  })()
+
   const schedule = resolve({
     rate: channel.rate,
     items: ordered.map((item) => {
@@ -130,8 +187,9 @@ export function buildView(
     }),
     now,
     onAir,
-    plannedStart: rundown.plannedStart,
-  })
+    plannedStart: effectivePlannedStart,
+    rundownId: rundown.id,
+  } as any)
 
   const unavailable = views.filter((entry) => entry.item.id !== onAir?.itemId &&
     entry.item.mediaId && (!entry.asset || entry.asset.probeError))

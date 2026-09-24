@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import type { Rate } from '@rplayout/protocol'
 import { api } from '../api.js'
 import { dur } from '../format.js'
@@ -10,18 +10,16 @@ interface Props {
   /** Categorias que existem no acervo, para a faixa escolher entre elas. */
   categories: string[]
   rate: Rate
+  initialHours?: number
+  initialMinutes?: number
+  initialStart?: string
+  initialEnd?: string
+  autoPreview?: boolean
   onCancel: () => void
   onApplied: (snapshot: Snapshot, message: string) => void
   onMessage: (text: string) => void
 }
 
-/**
- * Montagem automática.
- *
- * Planejar é de graça e aplicar mexe na grade, então são dois passos: o
- * operador vê a proposta inteira antes de ela virar programação. Grade que
- * aparece pronta sem ninguém ter visto é grade que o operador desmonta na mão.
- */
 const WEEKDAYS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb']
 
 const hhmm = (minute: number): string =>
@@ -39,18 +37,56 @@ export function AutoFillDialog({
   channelId,
   categories,
   rate,
+  initialHours,
+  initialMinutes,
+  initialStart,
+  initialEnd,
+  autoPreview = false,
   onCancel,
   onApplied,
   onMessage,
 }: Props) {
-  const [minutes, setMinutes] = useState(30)
-  const [ate, setAte] = useState('')
-  const [avoidHours, setAvoidHours] = useState(6)
+  // Modo de preenchimento: 'duration' (horas + minutos), 'range' (De... Até...), ou 'rules' (Pauta diária)
+  const [mode, setMode] = useState<'duration' | 'range' | 'rules'>('duration')
+
+  // Inputs de Duração (Horas e Minutos)
+  const [hours, setHours] = useState(() => (initialHours != null ? initialHours : 0))
+  const [minutesInput, setMinutesInput] = useState(() => (initialMinutes != null ? initialMinutes : initialHours != null ? 0 : 30))
+
+  // Inputs de Intervalo Horário (De... Até...)
+  const [timeFrom, setTimeFrom] = useState(() => {
+    if (initialStart) return initialStart
+    const now = new Date()
+    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+  })
+  const [timeTo, setTimeTo] = useState(() => {
+    if (initialEnd) return initialEnd
+    const future = new Date(Date.now() + 60 * 60 * 1000)
+    return `${String(future.getHours()).padStart(2, '0')}:${String(future.getMinutes()).padStart(2, '0')}`
+  })
+
+  // "Não repetir por padrão venha zerado" -> padrão 0!
+  const [avoidHours, setAvoidHours] = useState(0)
+
+  // Ponto de Inserção na Grade para o Modo Duração: 'gap' (no GAP), 'time' (no horário), 'end' (fim da grade)
+  const [insertTarget, setInsertTarget] = useState<'gap' | 'time' | 'end'>(() => (initialStart ? 'gap' : 'end'))
+  const [customInsertTime, setCustomInsertTime] = useState(() => initialStart ?? '12:00')
+
+  // Estado do plano
   const [plan, setPlan] = useState<FillPlan | null>(null)
   const [busy, setBusy] = useState(false)
+
+  // Regras de Pauta Diária
   const [rules, setRules] = useState<ScheduleRule[] | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editing, setEditing] = useState({ name: '', from: '06:00', to: '12:00', weekdays: '0123456', categories: [] as string[], avoidHours: 6 })
+  const [editing, setEditing] = useState({
+    name: '',
+    from: '06:00',
+    to: '12:00',
+    weekdays: '0123456',
+    categories: [] as string[],
+    avoidHours: 0,
+  })
   const [draft, setDraft] = useState({
     name: '',
     from: '06:00',
@@ -58,6 +94,33 @@ export function AutoFillDialog({
     weekdays: '0123456',
     categories: [] as string[],
   })
+
+  // Cálculo de minutos efetivos a preencher dependendo do modo ativo
+  const calculatedMinutes = useMemo(() => {
+    if (mode === 'duration') {
+      return Math.max(1, (Math.max(0, hours) * 60) + Math.max(0, minutesInput))
+    }
+    if (mode === 'range') {
+      const from = parseHhmm(timeFrom)
+      const to = parseHhmm(timeTo)
+      if (from !== null && to !== null) {
+        if (to > from) return to - from
+        // Se cruzar meia-noite (ex: 23:00 até 01:00)
+        return (1440 - from) + to
+      }
+      return 60
+    }
+    return 60
+  }, [mode, hours, minutesInput, timeFrom, timeTo])
+
+  // Formatação legível do tempo calculado
+  const durationSummary = useMemo(() => {
+    const h = Math.floor(calculatedMinutes / 60)
+    const m = calculatedMinutes % 60
+    if (h === 0) return `${m} min`
+    if (m === 0) return `${h}h`
+    return `${h}h ${String(m).padStart(2, '0')}m (${calculatedMinutes} min)`
+  }, [calculatedMinutes])
 
   useEffect(() => {
     let alive = true
@@ -69,6 +132,80 @@ export function AutoFillDialog({
       alive = false
     }
   }, [channelId])
+
+  // Auto-propor se aberto via GAP
+  const autoPreviewRanRef = useRef(false)
+  useEffect(() => {
+    if (autoPreview && !autoPreviewRanRef.current && calculatedMinutes > 0) {
+      autoPreviewRanRef.current = true
+      run(true)
+    }
+  }, [autoPreview, calculatedMinutes])
+
+  const run = (preview: boolean): void => {
+    const janela = calculatedMinutes
+    if (janela <= 0) {
+      onMessage('Defina um tempo válido maior que 0 minutos para preencher.')
+      return
+    }
+    setBusy(true)
+
+    // Calcula se os itens devem ser encaixados no GAP/horário ou anexados ao fim
+    let insertAtMinute: number | undefined = undefined
+    if (mode === 'range') {
+      const from = parseHhmm(timeFrom)
+      if (from !== null) insertAtMinute = from
+    } else if (mode === 'duration') {
+      if (insertTarget === 'gap' && initialStart) {
+        insertAtMinute = parseHhmm(initialStart) ?? undefined
+      } else if (insertTarget === 'time') {
+        insertAtMinute = parseHhmm(customInsertTime) ?? undefined
+      }
+    }
+
+    api
+      .autoFill(rundownId, {
+        minutes: janela,
+        avoidHours,
+        preview,
+        insertAtMinute,
+      })
+      .then((result) => {
+        setPlan(result.plan)
+        if (!preview && result.view) {
+          const locStr =
+            insertAtMinute !== undefined
+              ? `inseridos na grade a partir das ${hhmm(insertAtMinute)}`
+              : 'montados no fim da grade'
+          onApplied(
+            result as Snapshot,
+            `${result.plan.items.length} itens ${locStr} com sucesso.`,
+          )
+        } else if (preview) {
+          const locStr =
+            insertAtMinute !== undefined
+              ? ` no ponto ${hhmm(insertAtMinute)}`
+              : ' no fim da grade'
+          onMessage(
+            `Proposta calculada: ${result.plan.items.length} itens encontrados para preencher ${durationSummary}${locStr}.`,
+          )
+        }
+      })
+      .catch((failure: Error) => onMessage(failure.message))
+      .finally(() => setBusy(false))
+  }
+
+  const fillDay = (): void => {
+    setBusy(true)
+    api
+      .autoFillDay(rundownId)
+      .then((result) => {
+        const filled = result.bands.reduce((total, band) => total + band.items, 0)
+        onApplied(result, `Dia montado pela pauta: ${filled} itens em ${result.bands.length} faixas.`)
+      })
+      .catch((failure: Error) => onMessage(failure.message))
+      .finally(() => setBusy(false))
+  }
 
   const addRule = (): void => {
     const from = parseHhmm(draft.from)
@@ -102,234 +239,681 @@ export function AutoFillDialog({
 
   const editRule = (rule: ScheduleRule): void => {
     setEditingId(rule.id)
-    setEditing({ name: rule.name, from: hhmm(rule.startMinute), to: hhmm(rule.endMinute), weekdays: rule.weekdays, categories: rule.categories, avoidHours: rule.avoidHours })
+    setEditing({
+      name: rule.name,
+      from: hhmm(rule.startMinute),
+      to: hhmm(rule.endMinute),
+      weekdays: rule.weekdays,
+      categories: rule.categories,
+      avoidHours: rule.avoidHours,
+    })
   }
 
   const saveRule = (): void => {
     if (!editingId) return
-    const from = parseHhmm(editing.from); const to = parseHhmm(editing.to)
-    if (!editing.name.trim() || from === null || to === null || to <= from) { onMessage('A faixa precisa de nome e horário válido.'); return }
-    api.updateRule(editingId, { name: editing.name.trim(), startMinute: from, endMinute: to, weekdays: editing.weekdays, categories: editing.categories, avoidHours: editing.avoidHours })
-      .then((result) => { setRules((current) => (current ?? []).map((rule) => rule.id === editingId ? result.rule : rule).sort((a, b) => a.startMinute - b.startMinute)); setEditingId(null); onMessage('Faixa atualizada.') })
-      .catch((failure: Error) => onMessage(failure.message))
-  }
-
-  const fillDay = (): void => {
-    setBusy(true)
-    api
-      .autoFillDay(rundownId)
-      .then((result) => {
-        const filled = result.bands.reduce((total, band) => total + band.items, 0)
-        onApplied(result, `Dia montado pela pauta: ${filled} itens em ${result.bands.length} faixas.`)
-      })
-      .catch((failure: Error) => onMessage(failure.message))
-      .finally(() => setBusy(false))
-  }
-
-  const run = (preview: boolean): void => {
-    let janela = minutes
-    if (ate.trim() !== '') {
-      const fim = parseHhmm(ate)
-      const agora = new Date()
-      const inicio = agora.getHours() * 60 + agora.getMinutes()
-      if (fim === null || fim <= inicio) { onMessage('Informe um horário futuro para preencher até.'); return }
-      janela = fim - inicio
+    const from = parseHhmm(editing.from)
+    const to = parseHhmm(editing.to)
+    if (!editing.name.trim() || from === null || to === null || to <= from) {
+      onMessage('A faixa precisa de nome e horário válido.')
+      return
     }
-    setBusy(true)
     api
-      .autoFill(rundownId, { minutes: janela, avoidHours, preview })
+      .updateRule(editingId, {
+        name: editing.name.trim(),
+        startMinute: from,
+        endMinute: to,
+        weekdays: editing.weekdays,
+        categories: editing.categories,
+        avoidHours: editing.avoidHours,
+      })
       .then((result) => {
-        setPlan(result.plan)
-        if (!preview && result.view) {
-          onApplied(
-            result as Snapshot,
-            `${result.plan.items.length} itens montados no fim da grade.`,
-          )
-        }
+        setRules((current) =>
+          (current ?? []).map((rule) => (rule.id === editingId ? result.rule : rule)).sort((a, b) => a.startMinute - b.startMinute),
+        )
+        setEditingId(null)
+        onMessage('Faixa atualizada.')
       })
       .catch((failure: Error) => onMessage(failure.message))
-      .finally(() => setBusy(false))
   }
 
   return (
-    <div className="backdrop" onClick={onCancel}>
-      <div className="dialog wide" onClick={(event) => event.stopPropagation()}>
-        <header>
-          <h2>Assistente inteligente de programação</h2>
-          <div className="sub">o sistema pontua; o operador revisa e decide</div>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-[#0c101a] border border-border-subtle rounded-xl shadow-2xl max-w-3xl w-full max-h-[92vh] flex flex-col overflow-hidden text-on-surface select-none"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* CABEÇALHO */}
+        <header className="px-5 py-3.5 bg-surface-container-high border-b border-border-subtle flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-armed-amber/20 border border-armed-amber/50 flex items-center justify-center text-armed-amber">
+              <span className="material-symbols-outlined text-[20px]">auto_fix_high</span>
+            </div>
+            <div className="flex flex-col">
+              <h2 className="font-headline-sm text-sm font-bold text-on-surface tracking-wide uppercase flex items-center gap-2">
+                Assistente de AutoFill
+                <span className="px-1.5 py-0.2 rounded bg-primary/20 text-primary text-[9px] font-label-mono">
+                  MAM AI 24H
+                </span>
+              </h2>
+              <span className="font-label-mono text-[10px] text-outline">
+                Preenchimento inteligente e ponderado de gaps e faixas da grade linear
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={onCancel}
+            className="w-7 h-7 rounded hover:bg-surface-panel flex items-center justify-center text-outline hover:text-on-surface transition-colors cursor-pointer text-sm font-bold"
+            title="Fechar (Esc)"
+          >
+            ✕
+          </button>
         </header>
 
-        <div className="body">
-          <div className="row">
-            <div className="field">
-              <label>Preencher (minutos)</label>
-              <input
-                type="number"
-                min="1"
-                max="720"
-                value={minutes}
-                onChange={(event) => setMinutes(Number(event.target.value))}
-              />
-            </div>
-            <div className="field">
-              <label>Não repetir nas últimas (horas)</label>
-              <input
-                type="number"
-                min="0"
-                max="240"
-                value={avoidHours}
-                onChange={(event) => setAvoidHours(Number(event.target.value))}
-              />
-            </div>
-          </div>
+        {/* NAVEGAÇÃO DE MODOS / ABAS */}
+        <div className="px-5 pt-3 pb-1 bg-surface-base border-b border-border-subtle/70 flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setMode('duration')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-t text-[11px] font-label-caps transition-all cursor-pointer border-b-2 ${
+              mode === 'duration'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[15px]">timer</span>
+            Por Duração (Horas e Minutos)
+          </button>
 
-          <div className="note">
-            A escolha pesa três coisas: o encaixe no tempo que falta, há quanto tempo o arquivo
-            não vai ao ar, e o que você costuma inserir ou tirar. Nada é sorteado — a grade
-            precisa poder explicar por que cada item entrou.
-          </div>
+          <button
+            onClick={() => setMode('range')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-t text-[11px] font-label-caps transition-all cursor-pointer border-b-2 ${
+              mode === 'range'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[15px]">schedule</span>
+            Por Intervalo (De ... Até ...)
+          </button>
 
-          {plan && (
-            <>
-              <div className={`note${plan.reason === 'OUT_OF_MATERIAL' ? ' warn' : ''}`}>
-                {plan.reason === 'FILLED'
-                  ? `Janela preenchida; sobraram ${dur(plan.leftover, rate)}.`
-                  : `O acervo acabou antes: faltaram ${dur(plan.leftover, rate)} para fechar a janela.`}
+          <button
+            onClick={() => setMode('rules')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-t text-[11px] font-label-caps transition-all cursor-pointer border-b-2 ${
+              mode === 'rules'
+                ? 'border-primary text-primary font-bold bg-surface-panel/80'
+                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[15px]">calendar_view_day</span>
+            Pauta Diária &amp; Faixas
+          </button>
+        </div>
+
+        {/* CORPO SCROLLÁVEL */}
+        <div className="p-5 flex-1 min-h-0 overflow-y-auto broadcast-scroll flex flex-col gap-4">
+          {mode === 'duration' && (
+            <div className="bg-surface-panel p-4 rounded-lg border border-border-subtle flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <span className="font-label-caps text-[10px] text-outline font-bold uppercase tracking-wider">
+                  TEMPO A PREENCHER
+                </span>
+                <span className="px-2 py-0.5 rounded bg-primary/20 text-primary font-label-mono font-bold text-xs">
+                  {durationSummary}
+                </span>
               </div>
-              <ul className="cues">
-                {plan.items.map((item, index) => (
-                  <li key={`${item.mediaId}-${index}`}>
-                    <b>{dur(item.durationFrames, rate)}</b>
-                    <span>{item.title}</span>
-                    <i>{item.explanation?.category ?? 'sem categoria'} · {item.explanation?.lastAiredAt ? `último ar ${new Date(item.explanation.lastAiredAt).toLocaleString()}` : 'nunca foi ao ar'} · preferência {item.explanation?.preference ?? 0}</i>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
 
-          <div className="field">
-            <label>Pauta do dia</label>
-            {rules?.length === 0 && (
-              <div className="note">
-                Sem faixas. Uma faixa diz o que entra em cada hora do dia — é a diferença entre
-                montar trinta minutos e montar o dia.
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-label-mono text-outline flex items-center justify-between">
+                    <span>Horas</span>
+                    <span className="text-[10px] text-primary font-bold">h</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="24"
+                    value={hours}
+                    onChange={(e) => setHours(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-base font-label-mono px-3 py-2 rounded focus:outline-none"
+                    placeholder="0"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-label-mono text-outline flex items-center justify-between">
+                    <span>Minutos</span>
+                    <span className="text-[10px] text-primary font-bold">m</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="59"
+                    value={minutesInput}
+                    onChange={(e) => setMinutesInput(Math.max(0, Math.min(59, parseInt(e.target.value) || 0)))}
+                    className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-base font-label-mono px-3 py-2 rounded focus:outline-none"
+                    placeholder="30"
+                  />
+                </div>
               </div>
-            )}
-            {rules && rules.length > 0 && (
-              <ul className="cues">
-                {rules.map((rule) => (
-                  <li key={rule.id}>
-                    <b>
-                      {hhmm(rule.startMinute)}–{hhmm(rule.endMinute)}
-                    </b>
-                    <span>{rule.name}</span>
-                    <i>
-                      {rule.categories.length === 0 ? 'qualquer categoria' : rule.categories.join(', ')}
-                      {' · '}
-                      {[...rule.weekdays].map((day) => WEEKDAYS[Number(day)]).join(' ')}
-                    </i>
-                    <button className="btn small" onClick={() => editRule(rule)}>editar</button>
-                    <button className="btn small" onClick={() => removeRule(rule.id)}>tirar</button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
 
-          <div className="row">
-            <div className="field">
-              <label>Nome da faixa</label>
-              <input
-                type="text"
-                placeholder="Manhã"
-                value={draft.name}
-                onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-              />
-            </div>
-            <div className="field">
-              <label>Das</label>
-              <input
-                type="text"
-                value={draft.from}
-                onChange={(event) => setDraft({ ...draft, from: event.target.value })}
-              />
-            </div>
-            <div className="field">
-              <label>Até</label>
-              <input
-                type="text"
-                value={draft.to}
-                onChange={(event) => setDraft({ ...draft, to: event.target.value })}
-              />
-            </div>
-          </div>
-
-          {categories.length > 0 && (
-            <div className="field">
-              <label>Categorias da faixa</label>
-              <div className="seg-group wrap">
-                {categories.map((category) => (
+              {/* Atalhos Rápidos de Duração */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <span className="text-[9px] font-label-caps text-outline mr-1">ATALHOS:</span>
+                {[
+                  { label: '15m', h: 0, m: 15 },
+                  { label: '30m', h: 0, m: 30 },
+                  { label: '45m', h: 0, m: 45 },
+                  { label: '1h 00m', h: 1, m: 0 },
+                  { label: '1h 30m', h: 1, m: 30 },
+                  { label: '2h 00m', h: 2, m: 0 },
+                  { label: '3h 00m', h: 3, m: 0 },
+                  { label: '4h 00m', h: 4, m: 0 },
+                ].map((chip) => (
                   <button
-                    key={category}
-                    className={draft.categories.includes(category) ? 'on' : ''}
-                    onClick={() =>
-                      setDraft({
-                        ...draft,
-                        categories: draft.categories.includes(category)
-                          ? draft.categories.filter((entry) => entry !== category)
-                          : [...draft.categories, category],
-                      })
-                    }
+                    key={chip.label}
+                    type="button"
+                    onClick={() => {
+                      setHours(chip.h)
+                      setMinutesInput(chip.m)
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-label-mono transition-colors cursor-pointer border ${
+                      hours === chip.h && minutesInput === chip.m
+                        ? 'bg-primary text-surface-base border-primary font-bold'
+                        : 'bg-surface-container border-border-subtle text-outline hover:text-on-surface hover:border-primary/50'
+                    }`}
                   >
-                    {category}
+                    {chip.label}
                   </button>
                 ))}
               </div>
+
+              {/* Ponto de Inserção na Grade (Modo Duração) */}
+              <div className="pt-3 mt-1 border-t border-border-subtle/60 flex flex-col gap-2">
+                <span className="font-label-caps text-[10px] text-outline font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[15px] text-primary">add_location_alt</span>
+                  PONTO DE INSERÇÃO NA GRADE
+                </span>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {initialStart && (
+                    <button
+                      type="button"
+                      onClick={() => setInsertTarget('gap')}
+                      className={`p-2.5 rounded-lg border text-left flex flex-col gap-0.5 cursor-pointer transition-colors ${
+                        insertTarget === 'gap'
+                          ? 'bg-armed-amber/15 border-armed-amber text-armed-amber font-semibold shadow-sm'
+                          : 'bg-surface-base border-border-subtle text-outline hover:text-on-surface'
+                      }`}
+                    >
+                      <span className="font-label-caps text-[10px] font-bold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-armed-amber"></span>
+                        No GAP Selecionado
+                      </span>
+                      <span className="text-[9px] font-label-mono opacity-80">
+                        A partir das {initialStart}
+                      </span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setInsertTarget('time')}
+                    className={`p-2.5 rounded-lg border text-left flex flex-col gap-0.5 cursor-pointer transition-colors ${
+                      insertTarget === 'time'
+                        ? 'bg-primary/20 border-primary text-primary font-semibold shadow-sm'
+                        : 'bg-surface-base border-border-subtle text-outline hover:text-on-surface'
+                    }`}
+                  >
+                    <span className="font-label-caps text-[10px] font-bold flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[13px]">schedule</span>
+                      No Horário Específico
+                    </span>
+                    <span className="text-[9px] font-label-mono opacity-80">
+                      Definir hora de início (hh:mm)
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setInsertTarget('end')}
+                    className={`p-2.5 rounded-lg border text-left flex flex-col gap-0.5 cursor-pointer transition-colors ${
+                      insertTarget === 'end'
+                        ? 'bg-primary/20 border-primary text-primary font-semibold shadow-sm'
+                        : 'bg-surface-base border-border-subtle text-outline hover:text-on-surface'
+                    }`}
+                  >
+                    <span className="font-label-caps text-[10px] font-bold flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[13px]">vertical_align_bottom</span>
+                      No Final da Grade
+                    </span>
+                    <span className="text-[9px] font-label-mono opacity-80">
+                      Após o último item programado
+                    </span>
+                  </button>
+                </div>
+
+                {insertTarget === 'time' && (
+                  <div className="flex items-center gap-2 mt-1 bg-surface-base p-2 rounded border border-border-subtle">
+                    <label className="text-[11px] font-label-mono text-outline">
+                      Iniciar inserção às:
+                    </label>
+                    <input
+                      type="text"
+                      value={customInsertTime}
+                      onChange={(e) => setCustomInsertTime(e.target.value)}
+                      placeholder="ex: 14:30"
+                      className="bg-surface-panel border border-border-subtle focus:border-primary text-on-surface text-sm font-label-mono px-2.5 py-1 rounded w-28 focus:outline-none"
+                    />
+                    <span className="text-[10px] text-outline font-label-mono">
+                      (Os itens serão acomodados nesta hora e os subsequentes reorganizados)
+                    </span>
+                  </div>
+                )}
+
+                <div className="p-2 rounded bg-surface-base/80 border border-border-subtle/60 text-[10px] text-outline leading-relaxed flex items-start gap-1.5 mt-1">
+                  <span className="material-symbols-outlined text-[15px] text-primary shrink-0">info</span>
+                  <span>
+                    <strong>Como funciona o Modo Duração:</strong> Você define o tempo total a ser preenchido ({durationSummary}). O sistema seleciona os vídeos do MAM mais adequados e os insere <strong>{insertTarget === 'gap' ? `exatamente no GAP detectado às ${initialStart}` : insertTarget === 'time' ? `no ponto horário ${customInsertTime}` : 'no fim da programação atual'}</strong>, recalculando os horários da grade sem criar novos buracos.
+                  </span>
+                </div>
+              </div>
             </div>
           )}
 
-          <div className="field">
-            <label>Ou preencher até (horário)</label>
-            <input type="text" placeholder="ex.: 18:00" value={ate} onChange={(event) => setAte(event.target.value)} />
-            <div className="note">Útil para evento ao vivo: informe o horário de término e o sistema calcula o espaço restante.</div>
-          </div>
-          {editingId && (
-            <div className="field">
-              <label>Editando faixa</label>
-              <div className="row">
-                <input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} />
-                <input value={editing.from} onChange={(event) => setEditing({ ...editing, from: event.target.value })} />
-                <input value={editing.to} onChange={(event) => setEditing({ ...editing, to: event.target.value })} />
-                <input type="number" min="0" max="240" title="não repetir nas últimas horas" value={editing.avoidHours} onChange={(event) => setEditing({ ...editing, avoidHours: Number(event.target.value) })} />
+          {mode === 'range' && (
+            <div className="bg-surface-panel p-4 rounded-lg border border-border-subtle flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <span className="font-label-caps text-[10px] text-outline font-bold uppercase tracking-wider">
+                  FAIXA HORÁRIA DE EXIBIÇÃO
+                </span>
+                <span className="px-2 py-0.5 rounded bg-primary/20 text-primary font-label-mono font-bold text-xs">
+                  {durationSummary}
+                </span>
               </div>
-              <div className="seg-group wrap">
-                {WEEKDAYS.map((day, index) => <button key={day} className={editing.weekdays.includes(String(index)) ? 'on' : ''} onClick={() => setEditing({ ...editing, weekdays: editing.weekdays.includes(String(index)) ? editing.weekdays.replace(String(index), '') : `${editing.weekdays}${index}` })}>{day}</button>)}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-label-mono text-outline">
+                    De (Horário de Início):
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="ex: 14:00"
+                    value={timeFrom}
+                    onChange={(e) => setTimeFrom(e.target.value)}
+                    className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-sm font-label-mono px-3 py-2 rounded focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-label-mono text-outline">
+                    Até (Horário de Término):
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="ex: 16:30"
+                    value={timeTo}
+                    onChange={(e) => setTimeTo(e.target.value)}
+                    className="bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-sm font-label-mono px-3 py-2 rounded focus:outline-none"
+                  />
+                </div>
               </div>
-              {categories.length > 0 && <div className="seg-group wrap">
-                {categories.map((category) => <button key={category} className={editing.categories.includes(category) ? 'on' : ''} onClick={() => setEditing({ ...editing, categories: editing.categories.includes(category) ? editing.categories.filter((entry) => entry !== category) : [...editing.categories, category] })}>{category}</button>)}
-              </div>}
+
+              <div className="p-2 rounded bg-surface-base/80 border border-border-subtle/60 text-[10px] text-outline leading-relaxed flex items-start gap-1.5">
+                <span className="material-symbols-outlined text-[15px] text-primary shrink-0">info</span>
+                <span>
+                  <strong>Como funciona o Modo Intervalo:</strong> Você especifica a janela exata do relógio ({timeFrom} até {timeTo}). O sistema calcula a duração ({durationSummary}) e insere os vídeos a partir das <strong>{timeFrom}</strong>, preenchendo a lacuna entre programas.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* PARÂMETRO NÃO REPETIR: ZERADO POR PADRÃO */}
+          {mode !== 'rules' && (
+            <div className="bg-surface-panel p-4 rounded-lg border border-border-subtle flex flex-col gap-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-outline text-[16px]">history</span>
+                  <label className="text-[11px] font-label-caps text-outline font-bold uppercase">
+                    Não Repetir nas Últimas (Horas)
+                  </label>
+                </div>
+                <span className="font-label-mono text-xs text-status-ok-bright font-bold">
+                  {avoidHours === 0 ? '0h (Tudo Liberado)' : `${avoidHours} horas`}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min="0"
+                  max="240"
+                  value={avoidHours}
+                  onChange={(e) => setAvoidHours(Math.max(0, parseInt(e.target.value) || 0))}
+                  className="w-28 bg-surface-base border border-border-subtle focus:border-primary text-on-surface text-sm font-label-mono px-3 py-1.5 rounded focus:outline-none"
+                  placeholder="0"
+                />
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[
+                    { label: '0h (Padrão)', val: 0 },
+                    { label: '2h', val: 2 },
+                    { label: '6h', val: 6 },
+                    { label: '12h', val: 12 },
+                    { label: '24h', val: 24 },
+                  ].map((chip) => (
+                    <button
+                      key={chip.label}
+                      type="button"
+                      onClick={() => setAvoidHours(chip.val)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-label-mono transition-colors cursor-pointer border ${
+                        avoidHours === chip.val
+                          ? 'bg-status-ok text-surface-base border-status-ok font-bold'
+                          : 'bg-surface-container border-border-subtle text-outline hover:text-on-surface'
+                      }`}
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <p className="text-[10px] text-outline font-body-sm leading-relaxed">
+                Padrão zero (0h): todos os arquivos aprovados no acervo podem ser propostos. Se você aumentar, o sistema protege contra reprises muito próximas.
+              </p>
+            </div>
+          )}
+
+          {/* PLANO DE PREENCHIMENTO PROPOSTO (PREVIEW) */}
+          {mode !== 'rules' && plan && (
+            <div className="bg-surface-panel rounded-lg border border-border-subtle overflow-hidden flex flex-col">
+              <div
+                className={`p-3 border-b flex items-center justify-between ${
+                  plan.reason === 'FILLED'
+                    ? 'bg-status-ok/10 border-status-ok/30 text-status-ok-bright'
+                    : 'bg-armed-amber/10 border-armed-amber/30 text-armed-amber'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">
+                    {plan.reason === 'FILLED' ? 'check_circle' : 'warning'}
+                  </span>
+                  <span className="font-label-caps text-[11px] font-bold">
+                    {plan.reason === 'FILLED'
+                      ? `Janela 100% Preenchida (${plan.items.length} itens)`
+                      : `Acervo Insuficiente (${plan.items.length} itens)`}
+                  </span>
+                </div>
+                <span className="font-label-mono text-[11px]">
+                  {plan.reason === 'FILLED'
+                    ? `Sobra: ${dur(plan.leftover, rate)}`
+                    : `Faltaram: ${dur(plan.leftover, rate)}`}
+                </span>
+              </div>
+
+              <div className="max-h-56 overflow-y-auto divide-y divide-border-subtle/40 broadcast-scroll bg-surface-base">
+                {plan.items.length === 0 ? (
+                  <div className="p-4 text-center text-outline text-xs">
+                    Nenhum item do acervo atendeu aos critérios configurados.
+                  </div>
+                ) : (
+                  plan.items.map((item, index) => (
+                    <div
+                      key={`${item.mediaId}-${index}`}
+                      className="px-3 py-2 flex items-center justify-between text-body-sm hover:bg-surface-panel/60 transition-colors"
+                    >
+                      <div className="flex items-center gap-2.5 truncate pr-2">
+                        <span className="font-label-mono text-[10px] text-outline w-5 shrink-0">
+                          {index + 1}.
+                        </span>
+                        <span className="font-label-mono text-[11px] text-primary font-bold shrink-0">
+                          {dur(item.durationFrames, rate)}
+                        </span>
+                        <div className="flex flex-col truncate">
+                          <span className="font-bold text-on-surface text-xs truncate">
+                            {item.title}
+                          </span>
+                          <span className="text-[9px] font-label-mono text-outline truncate">
+                            {item.explanation?.category ?? 'Geral'} ·{' '}
+                            {item.explanation?.lastAiredAt
+                              ? `Último ar: ${new Date(item.explanation.lastAiredAt).toLocaleDateString('pt-BR')}`
+                              : 'Nunca exibido'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="px-1.5 py-0.5 rounded bg-surface-container text-outline text-[9px] font-label-mono">
+                          Score {item.explanation?.preference ?? 0}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ABA DE PAUTA DIÁRIA & REGRAS */}
+          {mode === 'rules' && (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <span className="font-label-caps text-xs text-outline font-bold uppercase">
+                  FAIXAS PROGRAMADAS DO CANAL
+                </span>
+                <button
+                  type="button"
+                  disabled={busy || !rules?.length}
+                  onClick={fillDay}
+                  className="bg-primary hover:bg-primary-fixed text-surface-base px-3 py-1.5 rounded font-label-caps text-[10px] font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[14px]">auto_awesome</span>
+                  MONTAR O DIA INTEIRO
+                </button>
+              </div>
+
+              {rules?.length === 0 && (
+                <div className="p-4 bg-surface-panel rounded border border-border-subtle text-center text-outline text-xs">
+                  Sem faixas configuradas. Cadastre faixas horárias abaixo para automatizar o dia inteiro da grade linear.
+                </div>
+              )}
+
+              {rules && rules.length > 0 && (
+                <div className="divide-y divide-border-subtle rounded border border-border-subtle overflow-hidden bg-surface-base">
+                  {rules.map((rule) => (
+                    <div
+                      key={rule.id}
+                      className="p-3 flex items-center justify-between hover:bg-surface-panel/50 transition-colors"
+                    >
+                      <div className="flex flex-col gap-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-label-mono text-xs font-bold text-primary">
+                            {hhmm(rule.startMinute)} – {hhmm(rule.endMinute)}
+                          </span>
+                          <span className="font-bold text-xs text-on-surface">{rule.name}</span>
+                        </div>
+                        <span className="text-[10px] font-label-mono text-outline">
+                          {rule.categories.length === 0 ? 'Qualquer categoria' : rule.categories.join(', ')} ·{' '}
+                          {[...rule.weekdays].map((day) => WEEKDAYS[Number(day)]).join(' ')} ·{' '}
+                          evitar {rule.avoidHours}h
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => editRule(rule)}
+                          className="px-2 py-1 rounded bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface text-[10px] font-label-caps cursor-pointer"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeRule(rule.id)}
+                          className="px-2 py-1 rounded bg-error-container/30 hover:bg-error-container text-on-error-container text-[10px] font-label-caps cursor-pointer"
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Formulário Nova Faixa */}
+              <div className="bg-surface-panel p-3.5 rounded border border-border-subtle flex flex-col gap-3">
+                <span className="font-label-caps text-[10px] text-outline font-bold uppercase">
+                  + NOVA FAIXA PROGRAMÁTICA
+                </span>
+                <div className="grid grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    placeholder="Nome da Faixa (ex: Manhã)"
+                    value={draft.name}
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                    className="bg-surface-base border border-border-subtle text-xs px-2.5 py-1.5 rounded text-on-surface focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Das (06:00)"
+                    value={draft.from}
+                    onChange={(e) => setDraft({ ...draft, from: e.target.value })}
+                    className="bg-surface-base border border-border-subtle text-xs font-label-mono px-2.5 py-1.5 rounded text-on-surface focus:outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Até (12:00)"
+                    value={draft.to}
+                    onChange={(e) => setDraft({ ...draft, to: e.target.value })}
+                    className="bg-surface-base border border-border-subtle text-xs font-label-mono px-2.5 py-1.5 rounded text-on-surface focus:outline-none"
+                  />
+                </div>
+
+                {categories.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className="text-[9px] font-label-caps text-outline mr-1">CATEGORIAS:</span>
+                    {categories.map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() =>
+                          setDraft({
+                            ...draft,
+                            categories: draft.categories.includes(cat)
+                              ? draft.categories.filter((c) => c !== cat)
+                              : [...draft.categories, cat],
+                          })
+                        }
+                        className={`px-2 py-0.5 rounded text-[9.5px] font-label-mono cursor-pointer border ${
+                          draft.categories.includes(cat)
+                            ? 'bg-primary text-surface-base border-primary font-bold'
+                            : 'bg-surface-container border-border-subtle text-outline hover:text-on-surface'
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={addRule}
+                    className="bg-surface-container hover:bg-surface-container-high border border-border-subtle text-on-surface px-3 py-1 rounded text-xs font-label-caps cursor-pointer"
+                  >
+                    + Salvar Nova Faixa
+                  </button>
+                </div>
+              </div>
+
+              {/* Edição de Faixa Existente */}
+              {editingId && (
+                <div className="bg-surface-container p-3 rounded border border-primary/50 flex flex-col gap-2">
+                  <span className="font-label-caps text-[10px] text-primary font-bold uppercase">
+                    EDITANDO FAIXA
+                  </span>
+                  <div className="grid grid-cols-4 gap-2">
+                    <input
+                      value={editing.name}
+                      onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                      className="bg-surface-base border border-border-subtle text-xs px-2 py-1 rounded text-on-surface"
+                    />
+                    <input
+                      value={editing.from}
+                      onChange={(e) => setEditing({ ...editing, from: e.target.value })}
+                      className="bg-surface-base border border-border-subtle text-xs font-label-mono px-2 py-1 rounded text-on-surface"
+                    />
+                    <input
+                      value={editing.to}
+                      onChange={(e) => setEditing({ ...editing, to: e.target.value })}
+                      className="bg-surface-base border border-border-subtle text-xs font-label-mono px-2 py-1 rounded text-on-surface"
+                    />
+                    <button
+                      type="button"
+                      onClick={saveRule}
+                      className="bg-primary text-surface-base text-xs font-label-caps font-bold px-3 py-1 rounded cursor-pointer"
+                    >
+                      Salvar
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        <footer>
-          <button className="btn" onClick={onCancel}>
-            cancelar
+        {/* RODAPÉ DE AÇÕES */}
+        <footer className="px-5 py-3.5 bg-surface-container-high border-t border-border-subtle flex items-center justify-between shrink-0">
+          <button
+            type="button"
+            className="px-4 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface text-xs font-label-caps transition-colors cursor-pointer"
+            onClick={onCancel}
+          >
+            Cancelar
           </button>
-          <button className="btn" onClick={addRule}>
-            guardar faixa
-          </button>
-          {editingId && <button className="btn take" onClick={saveRule}>salvar edição</button>}
-          <button className="btn" disabled={busy || !rules?.length} onClick={fillDay}>
-            montar o dia
-          </button>
-          <button className="btn" disabled={busy} onClick={() => run(true)}>
-            propor
-          </button>
-          <button className="btn take" disabled={busy || plan === null} onClick={() => run(false)}>
-            aplicar na grade
-          </button>
+
+          <div className="flex items-center gap-2">
+            {mode !== 'rules' && (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => run(true)}
+                  className="px-4 py-1.5 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface text-xs font-label-caps font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[16px] text-armed-amber">
+                    {busy ? 'sync' : 'search'}
+                  </span>
+                  <span>{busy ? 'Calculando...' : 'Propor Preenchimento'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={busy || plan === null || plan.items.length === 0}
+                  onClick={() => run(false)}
+                  className="px-4 py-1.5 rounded bg-status-ok hover:brightness-110 text-surface-base text-xs font-label-caps font-bold flex items-center gap-1.5 shadow-[0_0_12px_rgba(0,255,102,0.4)] transition-all cursor-pointer disabled:opacity-50 disabled:shadow-none"
+                >
+                  <span className="material-symbols-outlined text-[16px]">add_task</span>
+                  <span>Aplicar na Grade</span>
+                </button>
+              </>
+            )}
+
+            {mode === 'rules' && (
+              <button
+                type="button"
+                disabled={busy || !rules?.length}
+                onClick={fillDay}
+                className="px-4 py-1.5 rounded bg-primary hover:bg-primary-fixed text-surface-base text-xs font-label-caps font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
+                <span>Montar o Dia Inteiro</span>
+              </button>
+            )}
+          </div>
         </footer>
       </div>
     </div>

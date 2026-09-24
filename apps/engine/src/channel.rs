@@ -480,7 +480,17 @@ fn source_for(spec: &ItemSpec) -> Result<LiveInput> {
         src.set_property("uri", source);
         // Fonte ao vivo não pode ficar remoendo: o buffer que interessa é o
         // mínimo que segura o jitter da rede, e o resto é atraso no ar.
-        src.set_property("buffer-duration", 500_000_000i64);
+        let mut buffer_duration = 500_000_000i64;
+        if source.starts_with("srt://") {
+            if let Some(pos) = source.find("latency=") {
+                let tail = &source[pos + 8..];
+                let num_str: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(ms) = num_str.parse::<i64>() {
+                    buffer_duration = (ms * 1_000_000).max(120_000_000).min(3_000_000_000);
+                }
+            }
+        }
+        src.set_property("buffer-duration", buffer_duration);
         return Ok(LiveInput { video: src, audio: None, dynamic: true });
     }
 
@@ -1652,6 +1662,7 @@ impl Channel {
         // pedir. Em `auto` o elemento deixa material progressivo passar.
         let vdeint = make("deinterlace")?;
         vdeint.set_property_from_str("mode", "auto");
+        let _ = vdeint.set_property_from_str("method", "yadif");
         let vscale = make("videoscale")?;
         // Proporção diferente da do canal não pode virar deformação. Em
         // `Pillarbox` o `videoscale` põe a barra preta sozinho -- é o padrão
@@ -1667,6 +1678,8 @@ impl Channel {
             }
         };
         let vrate = make("videorate")?;
+        vrate.set_property("drop-only", false);
+        vrate.set_property("skip-to-first", true);
         let vcaps = make("capsfilter")?;
         vcaps.set_property("caps", caps);
         let vqueue = make("queue")?;
@@ -1675,6 +1688,7 @@ impl Channel {
 
         let aconv = make("audioconvert")?;
         let ares = make("audioresample")?;
+        ares.set_property("quality", 8i32);
         let volume = make("volume")?;
         volume.set_property("volume", linear_gain(spec.gain_db));
         let acaps = make("capsfilter")?;

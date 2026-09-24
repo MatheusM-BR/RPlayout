@@ -21,6 +21,10 @@ pub struct ItemSpec {
     /// quem decide quando ele sai é a grade, não o arquivo.
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub fallback_path: Option<String>,
     pub trim_in: i64,
     pub trim_out: i64,
     /// Ganho de nivelamento já resolvido pelo servidor.
@@ -34,6 +38,10 @@ pub struct ItemSpec {
     /// pegar sempre a primeira é escolha, não padrão neutro.
     #[serde(default)]
     pub audio_track: usize,
+    #[serde(default)]
+    pub auto_follow_on_end: bool,
+    #[serde(default)]
+    pub emergency_cut_fade_ms: Option<u64>,
 }
 
 /// Proporção diferente da do canal. Deformar não é opção.

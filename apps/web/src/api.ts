@@ -5,6 +5,9 @@ import type {
   GraphicTemplate,
   ItemGraphic,
   Trim,
+  ScheduleEventType,
+  TimingFlags,
+  LiveSourceConfig,
 } from '@rplayout/protocol'
 import type { Channel, MediaAsset, Rundown } from '@rplayout/protocol'
 import type {
@@ -18,6 +21,7 @@ import type {
   Categoria,
   PlaylistEntryView,
   PlaylistFile,
+  RundownView,
   ScanStatus,
   Snapshot,
   SourceList,
@@ -175,6 +179,12 @@ export const api = {
       anchor?: Anchor
       durationOverride?: number | null
       atIndex?: number
+      eventType?: ScheduleEventType
+      timingFlags?: TimingFlags
+      trimmable?: boolean
+      optional?: boolean
+      protected?: boolean
+      liveConfig?: LiveSourceConfig | null
     },
   ) => post<Snapshot>(`/api/rundowns/${rundownId}/items`, body),
 
@@ -216,8 +226,52 @@ export const api = {
 
   autoFill: (
     rundownId: string,
-    body: { minutes: number; avoidHours: number; preview: boolean },
+    body: {
+      minutes: number
+      avoidHours?: number
+      preview?: boolean
+      insertAtMinute?: number
+      insertAfterItemId?: string
+      insertAtOrder?: number
+    },
   ) => post<Partial<Snapshot> & { plan: FillPlan }>(`/api/rundowns/${rundownId}/autofill`, body),
+
+  asRun: (
+    channelId: string,
+    options?: { since?: string; until?: string; limit?: number },
+  ) => {
+    const params = new URLSearchParams()
+    if (options?.since) params.set('since', options.since)
+    if (options?.until) params.set('until', options.until)
+    if (options?.limit) params.set('limit', String(options.limit))
+    const qs = params.toString() ? `?${params.toString()}` : ''
+    return send<{ entries: AsRunEntry[]; since?: string; until?: string | null }>(
+      `/api/channels/${encodeURIComponent(channelId)}/asrun${qs}`,
+    )
+  },
+
+  channelRundowns: (channelId: string, date?: string) =>
+    send<{
+      rundowns?: Rundown[]
+      rundown?: Rundown | null
+      view?: RundownView | null
+    }>(
+      `/api/channels/${encodeURIComponent(channelId)}/rundowns${
+        date ? `?date=${encodeURIComponent(date)}` : ''
+      }`,
+    ),
+
+  createChannelRundown: (
+    channelId: string,
+    body: { date: string; name?: string; copyFromRundownId?: string },
+  ) =>
+    post<{ rundown: any; view: RundownView }>(
+      `/api/channels/${encodeURIComponent(channelId)}/rundowns`,
+      body,
+    ),
+
+  loadChannelRundown: (channelId: string, rundownId: string) =>
+    post<Snapshot>(`/api/channels/${encodeURIComponent(channelId)}/load-rundown`, { rundownId }),
 
   rules: (channelId: string) =>
     send<{ rules: ScheduleRule[] }>(`/api/channels/${channelId}/rules`),
@@ -234,7 +288,9 @@ export const api = {
   ) => post<{ rule: ScheduleRule }>(`/api/channels/${channelId}/rules`, body),
   /** "Estou com este monitor aberto." O engine só codifica enquanto há aviso. */
   watching: (channelId: string, bus: 'pvw' | 'mon') =>
-    post<{ ok: true }>(`/api/channels/${channelId}/watching`, { bus }),
+    post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, { bus }),
+  setWatching: (channelId: string, bus: 'pvw' | 'mon', watching = true) =>
+    post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, { bus, watching }),
 
   playlists: () =>
     send<{ playlists: PlaylistFile[]; today: string | null; date: string }>('/api/playlists'),
@@ -277,9 +333,6 @@ export const api = {
       `/api/rundowns/${rundownId}/autofill-day`,
       {},
     ),
-
-  asRun: (channelId: string) =>
-    send<{ since: string; entries: AsRunEntry[] }>(`/api/channels/${channelId}/asrun`),
 
   graphics: (channelId: string) =>
     send<{ templates: GraphicTemplate[] }>(`/api/graphics?channelId=${channelId}`),

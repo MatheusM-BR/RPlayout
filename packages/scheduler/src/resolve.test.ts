@@ -433,3 +433,272 @@ describe('determinismo', () => {
     expect(JSON.stringify(items)).toBe(snapshot)
   })
 })
+
+describe('Fase A: Automação 24/7 e Compensação Determinística (SPEC BDD)', () => {
+  const rate30 = { num: 30, den: 1 }
+
+  it('Cenário 1: Evento atrasa 45s (1350 quadros) antes de HARD_TIME das 19:00:00:00', () => {
+    // 19:00:00 a 30fps = 19 * 3600 * 30 = 2.052.000 frames
+    const hardTimeAt = 19 * 3600 * 30
+    // Cursor previsto para chegar às 19:00:45 (atraso de 1350 quadros)
+    const plannedStart = hardTimeAt - (900 + 150 + 600 + 450) + 1350
+
+    order = 0
+    const items: PlanItem[] = [
+      {
+        id: 'item-2',
+        order: 1,
+        title: 'VT Promocional',
+        duration: 900,
+        minDuration: 300,
+        anchor: FLOW,
+        onOverrun: 'PUSH',
+        elastic: null,
+        isFiller: false,
+        locked: false,
+        timingFlags: { trimmable: true, optional: false, protected: false },
+      },
+      {
+        id: 'item-3',
+        order: 2,
+        title: 'Vinheta Patrocínio',
+        duration: 150,
+        minDuration: 150,
+        anchor: FLOW,
+        onOverrun: 'PUSH',
+        elastic: null,
+        isFiller: false,
+        locked: false,
+        timingFlags: { trimmable: false, optional: false, protected: true },
+      },
+      {
+        id: 'item-4',
+        order: 3,
+        title: 'Chamada Cultural',
+        duration: 600,
+        minDuration: 600,
+        anchor: FLOW,
+        onOverrun: 'PUSH',
+        elastic: null,
+        isFiller: false,
+        locked: false,
+        timingFlags: { trimmable: false, optional: true, protected: false },
+      },
+      {
+        id: 'item-5',
+        order: 4,
+        title: 'Filler de Alinhamento',
+        duration: 450,
+        minDuration: 150,
+        anchor: FLOW,
+        onOverrun: 'PUSH',
+        elastic: { min: 150, max: 900 },
+        isFiller: true,
+        eventType: 'FILLER',
+        locked: false,
+      },
+      {
+        id: 'item-6',
+        order: 5,
+        title: 'Voz do Brasil / Rede Nacional',
+        duration: 1800,
+        minDuration: 1800,
+        anchor: { kind: 'HARD_TIME', at: hardTimeAt },
+        onOverrun: 'PUSH',
+        elastic: null,
+        isFiller: false,
+        eventType: 'HARD_TIME',
+        locked: true,
+      },
+    ]
+
+    const result = resolve({
+      rate: rate30,
+      items,
+      now: null,
+      onAir: null,
+      plannedStart,
+    })
+
+    const item2 = result.items.find((i) => i.id === 'item-2')!
+    const item3 = result.items.find((i) => i.id === 'item-3')!
+    const item4 = result.items.find((i) => i.id === 'item-4')!
+    const item5 = result.items.find((i) => i.id === 'item-5')!
+    const item6 = result.items.find((i) => i.id === 'item-6')!
+
+    // Passo 1: Filler encolhido de 450 para 150 (-300)
+    expect(item5.duration).toBe(150)
+    // Passo 2: Opcional descartado (-600)
+    expect(item4.state).toBe('DROPPED')
+    // Passo 3: Trimmable cortado em 450 quadros (de 900 para 450)
+    expect(item2.duration).toBe(450)
+    // Passo 4: Protected intacto (150 quadros)
+    expect(item3.duration).toBe(150)
+    expect(item3.state).toBe('PENDING')
+    // Resultado: HARD_TIME entra exatamente no frame planejado (19:00:00:00)
+    expect(item6.start).toBe(hardTimeAt)
+
+    // Auditoria de compensação
+    expect(result.compensationReport).toBeDefined()
+    const report = result.compensationReport!
+    expect(report.initialDriftFrames).toBe(1350)
+    expect(report.compensatedDriftFrames).toBe(1350)
+    expect(report.actions).toHaveLength(3)
+
+    const fillerAction = report.actions.find((a) => a.itemId === 'item-5')!
+    expect(fillerAction.actionType).toBe('SHRINK_FILLER')
+    expect(fillerAction.deltaFrames).toBe(300)
+
+    const dropAction = report.actions.find((a) => a.itemId === 'item-4')!
+    expect(dropAction.actionType).toBe('DROP_ITEM')
+    expect(dropAction.deltaFrames).toBe(600)
+
+    const trimAction = report.actions.find((a) => a.itemId === 'item-2')!
+    expect(trimAction.actionType).toBe('TRIM_TAIL')
+    expect(trimAction.deltaFrames).toBe(450)
+  })
+
+  it('Passo 5: Aplica Emergency Truncation no frame zero se o atraso exceder a margem recuperável antes do HARD_TIME', () => {
+    const hardTimeAt = 19 * 3600 * 30
+    // Atraso de 2000 quadros (muito além dos 300+600+600=1500 que os itens podem ceder)
+    const plannedStart = hardTimeAt - (900 + 150 + 600 + 450) + 2000
+
+    order = 0
+    const items: PlanItem[] = [
+      {
+        id: 'item-2',
+        order: 1,
+        title: 'VT Promocional',
+        duration: 900,
+        minDuration: 300,
+        anchor: FLOW,
+        onOverrun: 'PUSH',
+        elastic: null,
+        isFiller: false,
+        locked: false,
+        timingFlags: { trimmable: true, optional: false, protected: false },
+      },
+      {
+        id: 'item-3',
+        order: 2,
+        title: 'Vinheta Patrocínio',
+        duration: 150,
+        minDuration: 150,
+        anchor: FLOW,
+        onOverrun: 'PUSH',
+        elastic: null,
+        isFiller: false,
+        locked: false,
+        timingFlags: { trimmable: false, optional: false, protected: true },
+      },
+      {
+        id: 'item-4',
+        order: 3,
+        title: 'Chamada Cultural',
+        duration: 600,
+        minDuration: 600,
+        anchor: FLOW,
+        onOverrun: 'PUSH',
+        elastic: null,
+        isFiller: false,
+        locked: false,
+        timingFlags: { trimmable: false, optional: true, protected: false },
+      },
+      {
+        id: 'item-5',
+        order: 4,
+        title: 'Filler de Alinhamento',
+        duration: 450,
+        minDuration: 150,
+        anchor: FLOW,
+        onOverrun: 'PUSH',
+        elastic: { min: 150, max: 900 },
+        isFiller: true,
+        eventType: 'FILLER',
+        locked: false,
+      },
+      {
+        id: 'item-6',
+        order: 5,
+        title: 'Voz do Brasil / Rede Nacional',
+        duration: 1800,
+        minDuration: 1800,
+        anchor: { kind: 'HARD_TIME', at: hardTimeAt },
+        onOverrun: 'PUSH',
+        elastic: null,
+        isFiller: false,
+        eventType: 'HARD_TIME',
+        locked: true,
+      },
+    ]
+
+    const result = resolve({
+      rate: rate30,
+      items,
+      now: null,
+      onAir: null,
+      plannedStart,
+    })
+
+    const item6 = result.items.find((i) => i.id === 'item-6')!
+    expect(item6.start).toBe(hardTimeAt)
+    expect(result.compensationReport?.status).toBe('HARD_TIME_VIOLATION_PREVENTED')
+    expect(result.compensationReport?.actions.some((a) => a.actionType === 'EMERGENCY_CUT')).toBe(true)
+  })
+
+  it('Suporte a evento LIVE com dynamic overrun e alerta de maxDuration', () => {
+    order = 0
+    const liveItem: PlanItem = {
+      id: 'live-1',
+      order: 1,
+      title: 'Transmissão Ao Vivo Estúdio',
+      duration: 18000,
+      minDuration: 0,
+      anchor: FLOW,
+      onOverrun: 'PUSH',
+      elastic: null,
+      isFiller: false,
+      eventType: 'LIVE',
+      locked: false,
+      liveConfig: {
+        sourceType: 'SRT',
+        sourceEndpoint: 'srt://127.0.0.1:9000',
+        estimatedDuration: 18000, // 10 min
+        maxDuration: 27000, // 15 min
+        autoFollowOnEnd: true,
+      },
+    }
+
+    const nextItem: PlanItem = {
+      id: 'vt-next',
+      order: 2,
+      title: 'VT Sequencial',
+      duration: 3000,
+      minDuration: 1000,
+      anchor: FLOW,
+      onOverrun: 'PUSH',
+      elastic: null,
+      isFiller: false,
+      locked: false,
+    }
+
+    // LIVE estendeu para 28.000 quadros (excedeu maxDuration de 27.000)
+    const result = resolve({
+      rate: rate30,
+      items: [liveItem, nextItem],
+      now: 10000,
+      onAir: { itemId: 'live-1', startedAt: 0, elapsed: 28000 },
+      plannedStart: 0,
+    })
+
+    const resolvedLive = result.items.find((i) => i.id === 'live-1')!
+    const resolvedNext = result.items.find((i) => i.id === 'vt-next')!
+
+    // Duração do item no ar expandida dinamicamente para o playhead real
+    expect(resolvedLive.duration).toBe(28000)
+    expect(resolvedNext.start).toBe(28000)
+    // Alerta de estouro de maxDuration emitido
+    expect(result.conflicts.some((c) => c.kind === 'OVERRUN' && c.itemId === 'live-1')).toBe(true)
+  })
+})
+

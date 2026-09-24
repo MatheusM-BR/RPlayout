@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, desc, eq, gte } from 'drizzle-orm'
+import { and, desc, eq, gte, lte } from 'drizzle-orm'
 import { framesSinceMidnight, msToFrames } from '@rplayout/protocol'
 import type { Channel } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
@@ -18,7 +18,6 @@ export type AsRunEntry = typeof asRun.$inferSelect
  * sucesso não serve para explicar o dia em que algo falhou.
  */
 export class AsRun {
-  /** A linha aberta agora, para fechá-la quando o item sair. */
   private open: { id: string; itemId: string; startedMs: number } | null = null
 
   constructor(
@@ -27,15 +26,20 @@ export class AsRun {
   ) {}
 
   /**
-   * Registra o item que está no ar. Chamado a cada volta do laço: barato
-   * porque só escreve quando o que está no ar muda.
+   * Atualiza o log com base no item atualmente em exibição no PGM.
+   *
+   * Idempotente para o mesmo item: só escreve se a chave mudar.
    */
-  async follow(itemId: string | null, view: RundownView | null): Promise<void> {
-    if (this.open?.itemId === itemId) return
+  async follow(itemId: string | null, view: RundownView | null = null): Promise<void> {
+    if (this.open && this.open.itemId === itemId) return
 
-    if (this.open) await this.close(this.open, itemId === null ? 'STOP' : 'NEXT')
-    if (!itemId) {
+    if (this.open) {
+      await this.close(this.open, itemId ? 'NEXT' : 'STOP')
       this.open = null
+    }
+
+    if (!itemId) {
+      void emitIntegrationEvent(this.db, 'asrun.gap', { startedAt: new Date().toISOString() }, this.channel.id)
       return
     }
 
@@ -88,17 +92,25 @@ export class AsRun {
   }
 }
 
-/** As linhas de um canal a partir de um instante, mais novas primeiro. */
+/** As linhas de um canal a partir de um instante (ou intervalo de datas), mais novas primeiro. */
 export async function listAsRun(
   db: Db,
   channelId: string,
-  since: string,
-  limit = 200,
+  since?: string,
+  limit = 1000,
+  until?: string,
 ): Promise<AsRunEntry[]> {
+  const conditions = [eq(asRun.channelId, channelId)]
+  if (since) {
+    conditions.push(gte(asRun.startedAt, since))
+  }
+  if (until) {
+    conditions.push(lte(asRun.startedAt, until))
+  }
   return db
     .select()
     .from(asRun)
-    .where(and(eq(asRun.channelId, channelId), gte(asRun.startedAt, since)))
+    .where(conditions.length === 1 ? conditions[0]! : and(...conditions))
     .orderBy(desc(asRun.startedAt))
     .limit(limit)
 }
