@@ -3,6 +3,7 @@ import type { MediaAsset, Rate } from '@rplayout/protocol'
 import { dur, formatStandardRate } from '../../format.js'
 import type { LibraryAsset } from '../../types.js'
 import { Whep } from '../Whep.js'
+import { PgmProbeBanner } from './PgmProbeBanner.js'
 
 export interface BroadcastMonitorProps {
   bus: 'pgm' | 'pvw'
@@ -213,6 +214,9 @@ export function BroadcastMonitor({
             </span>
             <span>{!effectiveMuted ? `ÁUDIO ${bus.toUpperCase()}` : `OUVIR ${bus.toUpperCase()}`}</span>
           </button>
+
+          {/* Sonda de Qualidade de PGM (Fase C: Black/Silence/Freeze/Emergency Slate) */}
+          {isPgm && <PgmProbeBanner compact={true} />}
 
           <span
             className={`font-label-mono text-[9px] border px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${

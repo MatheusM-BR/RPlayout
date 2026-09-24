@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import type { Channel } from '@rplayout/protocol'
 import type { WorkspaceId } from '../WorkspaceShell.js'
 import { formatStandardRate } from '../../format.js'
+import { ContinuityCacheBadge } from './ContinuityCacheBadge.js'
 
 interface Props {
   activeWorkspace: WorkspaceId
@@ -167,6 +168,9 @@ export function BroadcastHeader({
             </span>
             <span className="w-2 h-2 rounded-full bg-status-ok shadow-[0_0_6px_#34C759] animate-pulse"></span>
           </div>
+
+          {/* Badge de Continuidade e Cache 48h (XMirror) */}
+          <ContinuityCacheBadge className="hidden xl:inline-flex" />
         </div>
 
         {/* Right: Nav & User Profile & Quick Dialogs */}

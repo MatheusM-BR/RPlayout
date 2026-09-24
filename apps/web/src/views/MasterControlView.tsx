@@ -17,6 +17,11 @@ import { api } from '../api.js'
 import { Whep } from '../components/Whep.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { BroadcastMonitor } from '../components/broadcast/BroadcastMonitor.js'
+import { ContinuityCacheBadge } from '../components/broadcast/ContinuityCacheBadge.js'
+import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
+import { DynamicCgSecondaryBar } from '../components/broadcast/DynamicCgSecondaryBar.js'
+import { MultiTrackTimeline } from '../components/broadcast/MultiTrackTimeline.js'
+import { ConflictDrawer } from '../components/broadcast/ConflictDrawer.js'
 
 interface Props {
   channel: Channel
@@ -127,6 +132,12 @@ export function MasterControlView({
   const [liveInputModalOpen, setLiveInputModalOpen] = useState(false)
   const [addLineModalOpen, setAddLineModalOpen] = useState(false)
   const [folderModalOpen, setFolderModalOpen] = useState(false)
+
+  // Fase E: Alternância entre Grade Linear e Timeline Visual Multicamada 24H
+  const [viewMode, setViewMode] = useState<'LINEAR' | 'TIMELINE'>('LINEAR')
+
+  // Fase E: Gaveta lateral interativa de Conflitos e Gaps (Conflict Drawer)
+  const [isConflictDrawerOpen, setIsConflictDrawerOpen] = useState(false)
 
   // Multiseleção na playlist (Ctrl / Shift)
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
@@ -386,6 +397,11 @@ export function MasterControlView({
     return view.items[0] ?? null
   }, [live.transport.preparedItemId, onAirIndex, view.items])
 
+  const cuedIndex = useMemo(() => {
+    if (!armedItem) return -1
+    return view.items.findIndex((item) => item.item.id === armedItem.item.id)
+  }, [armedItem, view.items])
+
   // Seleção direta de preview (via MAM ou grade)
   const [selectedPreviewAsset, setSelectedPreviewAsset] = useState<LibraryAsset | null>(null)
 
@@ -624,6 +640,11 @@ export function MasterControlView({
       />
 
       <main className="w-full pt-16 bg-surface-base flex-1 flex flex-col">
+        {/* 1.1 WATCHDOG & SONDA DE PGM / SLATE DE EMERGÊNCIA (FASE C) */}
+        <div className="w-full px-margin pt-2 pb-1 shrink-0">
+          <PgmProbeBanner />
+        </div>
+
         {/* 2. TOP OPERATIONAL STRIP (Compact Switcher & Monitors for Variante 2 - 4 Colunas) */}
         <section className="w-full bg-surface-card px-margin py-space-sm border-b border-border-subtle">
           <div className="max-w-full mx-auto grid grid-cols-1 xl:grid-cols-12 gap-space-md items-stretch">
@@ -854,7 +875,12 @@ export function MasterControlView({
             </div>
           </div>
         </section>
-
+ 
+        {/* 2.1 PAINEL TÁTICO DE CG DINÂMICO (4 CAMADAS) & SCTE-35 CUE OUT (FASE D) */}
+        <div className="w-full px-margin pt-2 pb-1 shrink-0">
+          <DynamicCgSecondaryBar />
+        </div>
+ 
         {/* 3. MAIN LOWER SECTION: BIBLIOTECA MAM (ESQUERDA) & MONUMENTAL RUNDOWN (DIREITA) */}
         <section className="w-full px-margin py-space-sm flex-1 flex flex-col">
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-gutter items-stretch flex-1">
@@ -1025,14 +1051,39 @@ export function MasterControlView({
             <div className="xl:col-span-9 flex flex-col gap-space-md min-w-0">
               <div className="bg-surface-card border border-border-subtle p-space-lg rounded-xl flex flex-col gap-space-md shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3 pb-1">
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center gap-2">
                       <span className="font-headline-md text-headline-md uppercase text-on-surface font-semibold tracking-wide">
                         Grade de Exibição
                       </span>
-                      <span className="font-label-mono text-label-mono bg-surface-container px-2 py-0.5 rounded text-outline">
-                        24 Horas Linear • Foco Monumental
-                      </span>
+                    </div>
+
+                    {/* SELETOR DE VISUALIZAÇÃO: GRADE LINEAR vs TIMELINE MULTICAMADA 24H (FASE E) */}
+                    <div className="flex items-center bg-surface-base p-1 rounded-lg border border-border-subtle">
+                      <button
+                        onClick={() => setViewMode('LINEAR')}
+                        className={`px-3 py-1 rounded font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                          viewMode === 'LINEAR'
+                            ? 'bg-surface-panel text-accent-ice border border-accent-ice/50 shadow-sm'
+                            : 'text-outline hover:text-on-surface hover:bg-surface-container'
+                        }`}
+                        title="Visualização em Lista Tabular Monumental"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">table_rows</span>
+                        GRADE LINEAR
+                      </button>
+                      <button
+                        onClick={() => setViewMode('TIMELINE')}
+                        className={`px-3 py-1 rounded font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                          viewMode === 'TIMELINE'
+                            ? 'bg-accent-ice text-white shadow-sm ring-1 ring-accent-ice/80'
+                            : 'text-outline hover:text-on-surface hover:bg-surface-container'
+                        }`}
+                        title="Visualização Contínua em 4 Pistas (NTP, CG, SCTE, R128)"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">view_timeline</span>
+                        TIMELINE MULTICAMADA (24H)
+                      </button>
                     </div>
                   </div>
 
@@ -1069,15 +1120,16 @@ export function MasterControlView({
                     >
                       <span className="material-symbols-outlined text-[16px]">sync</span> EPG / Autofill
                     </button>
-                    {onOpenConflicts && (
-                      <button
-                        onClick={onOpenConflicts}
-                        className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-armed-amber font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
-                        title="Verificar Conflitos da Grade"
-                      >
-                        <span className="material-symbols-outlined text-[16px]">rule</span> Conflitos
-                      </button>
-                    )}
+                    <button
+                      onClick={() => {
+                        onOpenConflicts?.()
+                        setIsConflictDrawerOpen(true)
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-armed-amber font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+                      title="Verificar Conflitos da Grade (Conflict Drawer)"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">rule</span> Conflitos
+                    </button>
                     <button
                       onClick={onExportCsv}
                       className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
@@ -1087,9 +1139,27 @@ export function MasterControlView({
                   </div>
                 </div>
 
-                {/* Monumental Rundown Table */}
-                <div
-                  ref={gridContainerRef}
+                {/* Visualização Condicional: TIMELINE MULTICAMADA vs GRADE LINEAR MONUMENTAL */}
+                {viewMode === 'TIMELINE' ? (
+                  <MultiTrackTimeline
+                    channel={channel}
+                    items={view.items}
+                    onAirIndex={onAirIndex}
+                    cuedIndex={cuedIndex}
+                    elapsedFrames={elapsedFrames}
+                    remainingFrames={remainingFrames}
+                    onSelectItem={(index) => {
+                      const target = view.items[index]
+                      if (target) onCue(target.item.id)
+                    }}
+                    onAutoFill={onAutoFill}
+                    rundownId={view.rundown?.id}
+                  />
+                ) : (
+                  <>
+                    {/* Monumental Rundown Table */}
+                    <div
+                      ref={gridContainerRef}
                   onDragOver={(e) => {
                     e.preventDefault()
                     e.dataTransfer.dropEffect = 'copy'
@@ -1448,7 +1518,9 @@ export function MasterControlView({
                     <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span> AUTOMAÇÃO ATIVA
                   </span>
                 </div>
-              </div>
+              </>
+            )}
+          </div>
 
               {/* Integrated Horizontal Bottom Bar Widget: Audio EBU R128 Loudness Bar */}
               <div className="bg-surface-card border border-border-subtle px-space-lg py-space-sm rounded-xl flex items-center justify-between gap-space-lg shadow-sm">
@@ -1498,6 +1570,9 @@ export function MasterControlView({
                   <span className="text-status-ok flex items-center gap-1 font-semibold">
                     <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span> EM FASE
                   </span>
+                  <div className="h-4 w-px bg-border-subtle"></div>
+                  {/* Badge de Cobertura do Cache de Continuidade (Fase C: 48h AIR-GAP) */}
+                  <ContinuityCacheBadge />
                 </div>
               </div>
             </div>
@@ -2262,6 +2337,15 @@ export function MasterControlView({
           </div>
         </div>
       )}
+
+      {/* 8. CONFLICT & GAP RESOLUTION DRAWER (FASE E) */}
+      <ConflictDrawer
+        open={isConflictDrawerOpen}
+        onClose={() => setIsConflictDrawerOpen(false)}
+        items={view.items}
+        rate={channel.rate}
+        onAutoFill={onAutoFill}
+      />
     </div>
   )
 }

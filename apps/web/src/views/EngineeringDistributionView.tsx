@@ -5,6 +5,9 @@ import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { OperationalMultiview } from '../components/broadcast/OperationalMultiview.js'
 import { SrtManagerPanel } from '../components/broadcast/SrtManagerPanel.js'
 import { RedundancyFailoverPanel } from '../components/broadcast/RedundancyFailoverPanel.js'
+import { ContinuityCacheBadge } from '../components/broadcast/ContinuityCacheBadge.js'
+import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
+import { StudioAutomationPanel } from '../components/broadcast/StudioAutomationPanel.js'
 
 interface Props {
   channel: Channel
@@ -17,7 +20,7 @@ interface Props {
   onOpenSettings?: () => void
 }
 
-type EngineeringSection = 'DASHBOARD' | 'MULTIVIEW' | 'SRT' | 'REDUNDANCY' | 'OUTPUTS' | 'LOGS'
+type EngineeringSection = 'DASHBOARD' | 'MULTIVIEW' | 'SRT' | 'REDUNDANCY' | 'OUTPUTS' | 'AUTOMATION' | 'LOGS'
 
 export function EngineeringDistributionView({
   channel,
@@ -223,6 +226,7 @@ export function EngineeringDistributionView({
               { id: 'SRT' as const, label: 'SRT MANAGER & LINKS', icon: 'satellite_alt' },
               { id: 'REDUNDANCY' as const, label: 'REDUNDÂNCIA N+1 / FAILOVER', icon: 'verified_user' },
               { id: 'OUTPUTS' as const, label: 'MATRIZ DE SAÍDAS (SDI/NDI)', icon: 'hub' },
+              { id: 'AUTOMATION' as const, label: 'AUTOMAÇÃO & ESTÚDIO', icon: 'precision_manufacturing' },
               { id: 'LOGS' as const, label: 'LOGS TÉCNICOS', icon: 'terminal' },
             ].map((tab) => (
               <button
@@ -247,11 +251,21 @@ export function EngineeringDistributionView({
               <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span>
               24/7 BROADCAST CONTINUOUS
             </span>
+            <div className="h-3.5 w-px bg-border-subtle"></div>
+            {/* Badge de Cobertura do Cache de Continuidade (Fase C: 48h AIR-GAP) */}
+            <ContinuityCacheBadge />
           </div>
         </div>
 
         {/* 4. CONTEÚDO PRINCIPAL DINÂMICO CONFORME A SUB-SEÇÃO */}
-        <div className="flex-1 min-h-0 p-3.5 overflow-hidden flex flex-col">
+        <div className="flex-1 min-h-0 p-3.5 overflow-hidden flex flex-col gap-2.5">
+          {/* WATCHDOG DE SONDA PGM & SLATE DE EMERGÊNCIA (FASE C) */}
+          <PgmProbeBanner
+            onSlateTriggered={(active) =>
+              onMessage(`Watchdog PGM: Slate de Emergência ${active ? 'INJETADO no PGM' : 'DESARMADO'}`)
+            }
+          />
+
           {/* SEÇÃO 1: VISÃO INTEGRADA MCR (DASHBOARD) */}
           {activeSection === 'DASHBOARD' && (
             <div className="flex-1 min-h-0 flex flex-col gap-3.5 overflow-y-auto broadcast-scroll">
@@ -283,6 +297,9 @@ export function EngineeringDistributionView({
                   />
                 </div>
               </div>
+
+              {/* PARTE INFERIOR 2: AUTOMAÇÃO DE ESTÚDIO & CONTROLE EXTERNO (FASE D) */}
+              <StudioAutomationPanel onMessage={onMessage} />
             </div>
           )}
 
@@ -456,7 +473,14 @@ export function EngineeringDistributionView({
             </div>
           )}
 
-          {/* SEÇÃO 6: TERMINAL DE LOGS TÉCNICOS */}
+          {/* SEÇÃO 6: AUTOMAÇÃO DE ESTÚDIO & CONTROLE EXTERNO (FASE D) */}
+          {activeSection === 'AUTOMATION' && (
+            <div className="flex-1 min-h-0 overflow-y-auto broadcast-scroll flex flex-col gap-3">
+              <StudioAutomationPanel onMessage={onMessage} />
+            </div>
+          )}
+
+          {/* SEÇÃO 7: TERMINAL DE LOGS TÉCNICOS */}
           {activeSection === 'LOGS' && (
             <div className="flex-1 min-h-0 flex flex-col gap-3">
               <div className="bg-surface-card p-3 rounded-lg border border-border-subtle flex items-center justify-between shadow-sm">

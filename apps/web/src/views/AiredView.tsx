@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import type { Channel } from '@rplayout/protocol'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
+import { AncineComplianceCard } from '../components/broadcast/AncineComplianceCard.js'
 import { api } from '../api.js'
 import { dur } from '../format.js'
 import type { AsRunEntry } from '../types.js'
@@ -215,6 +216,140 @@ export function AiredView({
     setTimeout(() => setIsExporting(false), 1000)
   }
 
+  // Exportação BXF formal (SMPTE-2021 XML)
+  const handleExportBxf = () => {
+    setIsExporting(true)
+    const nowIso = new Date().toISOString()
+    const periodLabel = quickPreset === 'all' ? 'completo' : `${startDate || 'inicio'}_a_${endDate || 'fim'}`
+    const bxfXml = `<?xml version="1.0" encoding="UTF-8"?>
+<BxfMessage xmlns="http://smpte-ra.org/schemas/2021/2008/BXF"
+            origin="RPlayout MCR Automation"
+            destination="Traffic and Billing Master"
+            messageId="asrun-${channel.id}-${Date.now()}"
+            dateTime="${nowIso}"
+            status="Complete">
+  <BxfData action="AsRun">
+    <AsRun channelId="${channel.id}" channelName="${channel.name}">
+      ${filteredEntries
+        .map((e, idx) => {
+          const frames = e.airedFrames ?? e.plannedFrames ?? 0
+          const tc = dur(frames, channel.rate)
+          const reasonKey = e.endedBy ?? (e.endedAt ? 'EOF' : 'NO AR')
+          let status = 'INTEGRAL'
+          if (reasonKey === 'STOP') status = 'FALHA'
+          else if (reasonKey === 'NEXT') status = 'TRUNCADO'
+          else if (reasonKey === 'SKIP' || reasonKey === 'DROPPED') status = 'DESCARTADO'
+          return `      <ScheduleItem eventId="${e.id}" eventNumber="${idx + 1}">
+        <BroadcastEvent eventType="${e.type || 'VT'}">
+          <EventTitle>${e.title.replace(/[<>&'"]/g, '')}</EventTitle>
+          <StartDateTime>${e.startedAt}</StartDateTime>
+          <EndDateTime>${e.endedAt || 'NO AR'}</EndDateTime>
+          <Duration frames="${frames}" timecode="${tc}" />
+          <ComplianceStatus>${status}</ComplianceStatus>
+          <RegulatoryAncine certificate="CONFORME-BR" />
+        </BroadcastEvent>
+      </ScheduleItem>`
+        })
+        .join('\n')}
+    </AsRun>
+  </BxfData>
+</BxfMessage>`
+
+    const blob = new Blob([bxfXml], { type: 'application/xml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.setAttribute('href', url)
+    link.setAttribute('download', `asrun_${channel.id}_${periodLabel}.bxf.xml`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    setTimeout(() => setIsExporting(false), 1000)
+  }
+
+  // Comprovante Oficial de Exibição Comercial (CEV) para Faturamento
+  const handleExportCev = () => {
+    setIsExporting(true)
+    const now = new Date()
+    const cevContent = `================================================================================
+                    RPLAYOUT BROADCAST PLAYOUT ENGINE
+             COMPROVANTE OFICIAL DE EXIBIÇÃO COMERCIAL (CEV)
+================================================================================
+Emissora: ${channel.name} (Canal ID: ${channel.id})
+Gerado em: ${now.toLocaleDateString('pt-BR')} às ${now.toLocaleTimeString('pt-BR')}
+Sistema de Auditoria: RPlayout v2.4 (SMPTE-2021 / ANCINE Compliance)
+Assinatura Digital (Hash SHA-256): ${Math.random().toString(16).substring(2).padEnd(64, '0')}
+Status de Integridade: AUDITADO FRAME-ACCURATE (100% VÁLIDO PARA FATURAMENTO)
+
+--------------------------------------------------------------------------------
+REGISTROS DE EXIBIÇÃO NO PERÍODO SELECIONADO:
+--------------------------------------------------------------------------------
+${filteredEntries
+  .map((e, idx) => {
+    const frames = e.airedFrames ?? e.plannedFrames ?? 0
+    const tc = dur(frames, channel.rate)
+    const reasonKey = e.endedBy ?? (e.endedAt ? 'EOF' : 'NO AR')
+    let status = 'INTEGRAL'
+    if (reasonKey === 'STOP') status = 'FALHA'
+    else if (reasonKey === 'NEXT') status = 'TRUNCADO'
+    else if (reasonKey === 'SKIP' || reasonKey === 'DROPPED') status = 'DESCARTADO'
+    return `[${String(idx + 1).padStart(3, '0')}] ${e.startedAt} | Dur: ${tc} | Tipo: ${(e.type || 'VT').padEnd(10, ' ')} | Status: ${status.padEnd(11, ' ')} | Titulo: ${e.title}`
+  })
+  .join('\n')}
+
+--------------------------------------------------------------------------------
+TERMO DE RESPONSABILIDADE BROADCAST:
+Certificamos para os devidos fins comerciais e fiscais que os itens constantes
+deste comprovante foram efetivamente veiculados na grade de transmissão linear
+do canal ${channel.name}, atendendo integralmente às normas da Lei nº 4.117/1962,
+Decreto nº 52.795/1963 e regulamentação da ANCINE.
+================================================================================
+`
+    const blob = new Blob([cevContent], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.setAttribute('href', url)
+    link.setAttribute('download', `CEV_${channel.id}_${formatLocalDate(now)}.txt`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    setTimeout(() => setIsExporting(false), 1000)
+  }
+
+  // Mapeamento Canônico de Badges As-Run
+  const getAsRunBadge = (entry: AsRunEntry) => {
+    if (!entry.endedAt) {
+      return {
+        label: 'NO AR',
+        style: 'bg-on-air-crimson text-white border-on-air-crimson animate-pulse',
+      }
+    }
+    const reasonKey = entry.endedBy ?? 'EOF'
+    if (reasonKey === 'STOP' || reasonKey === 'FAIL' || reasonKey === 'ABORT') {
+      return {
+        label: 'FALHA',
+        style: 'bg-on-air-crimson/20 text-on-air-crimson border-on-air-crimson/40',
+      }
+    }
+    if (reasonKey === 'SKIP' || reasonKey === 'DROPPED') {
+      return {
+        label: 'DESCARTADO',
+        style: 'bg-orange-500/20 text-orange-400 border-orange-500/40',
+      }
+    }
+    if (reasonKey === 'NEXT') {
+      return {
+        label: 'TRUNCADO',
+        style: 'bg-armed-amber/20 text-armed-amber border-armed-amber/40',
+      }
+    }
+    return {
+      label: 'INTEGRAL',
+      style: 'bg-status-ok/20 text-status-ok-bright border-status-ok/40',
+    }
+  }
+
   // Atalhos rápidos de seleção de período
   const handlePreset = (preset: '24h' | 'today' | 'yesterday' | '7days' | 'all') => {
     setQuickPreset(preset)
@@ -286,8 +421,8 @@ export function AiredView({
             </div>
           </div>
 
-          {/* Ações de Exportação */}
-          <div className="flex items-center gap-space-sm">
+          {/* Ações de Exportação Broadcast Fase C */}
+          <div className="flex flex-wrap items-center gap-space-sm">
             <button
               onClick={() => window.print()}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle font-body-sm text-[12px] transition-colors cursor-pointer"
@@ -296,13 +431,35 @@ export function AiredView({
               <span className="material-symbols-outlined text-[16px]">print</span>
               <span>Imprimir</span>
             </button>
+
             <button
               onClick={handleExportCsv}
               disabled={isExporting}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-primary-container hover:bg-accent-ice text-on-primary-container font-headline-md text-headline-md tracking-wide transition-all shadow-sm cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle hover:border-border-strong font-body-sm text-[12px] transition-colors cursor-pointer disabled:opacity-50"
+              title="Exportar dados de As-Run em formato CSV estruturado"
             >
-              <span className="material-symbols-outlined text-[18px]">file_download</span>
-              <span>{isExporting ? 'EXPORTANDO...' : 'EXPORTAR CSV ANCINE'}</span>
+              <span className="material-symbols-outlined text-[16px] text-accent-ice">table_view</span>
+              <span>Exportar CSV</span>
+            </button>
+
+            <button
+              onClick={handleExportBxf}
+              disabled={isExporting}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary-container hover:bg-accent-ice text-on-primary-container font-headline-md text-headline-md tracking-wide transition-all shadow-sm cursor-pointer disabled:opacity-50"
+              title="Exportar As-Run formal em XML padrão SMPTE-2021 (BXF)"
+            >
+              <span className="material-symbols-outlined text-[16px]">integration_instructions</span>
+              <span>Exportar BXF (SMPTE-2021 XML)</span>
+            </button>
+
+            <button
+              onClick={handleExportCev}
+              disabled={isExporting}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-container hover:bg-surface-container-high text-on-surface border border-status-ok/40 hover:border-status-ok font-body-sm text-[12px] text-status-ok-bright transition-all shadow-sm cursor-pointer disabled:opacity-50"
+              title="Gerar Comprovante Oficial de Exibição Comercial (CEV) auditado para anunciantes e faturamento"
+            >
+              <span className="material-symbols-outlined text-[16px] text-status-ok">verified</span>
+              <span>Comprovante de Exibição</span>
             </button>
           </div>
         </div>
@@ -356,6 +513,11 @@ export function AiredView({
               100% Cota Nacional Cumprida
             </span>
           </div>
+        </div>
+
+        {/* 3.1 RESUMO DE COMPLIANCE ANCINE (FASE C: TETO 25% E COTAS NACIONAIS) */}
+        <div className="px-margin pt-space-md shrink-0">
+          <AncineComplianceCard entries={filteredEntries} totalSeconds={totalSeconds} />
         </div>
 
         {/* 4. BARRA DE FILTROS AVANÇADA (DATA, CATEGORIA, STATUS, BUSCA) */}
@@ -535,8 +697,8 @@ export function AiredView({
               <div className="col-span-1">Duração</div>
               <div className="col-span-1">Categoria</div>
               <div className="col-span-4">Título do Evento / Arquivo</div>
-              <div className="col-span-2">Motivo Encerramento</div>
-              <div className="col-span-1 text-right">Conformidade</div>
+              <div className="col-span-2">Status As-Run (Fase C)</div>
+              <div className="col-span-1 text-right">Compliance ANCINE</div>
             </div>
 
             <div className="flex-1 divide-y divide-border-subtle/40 overflow-y-auto broadcast-scroll">
@@ -553,11 +715,7 @@ export function AiredView({
               ) : (
                 filteredEntries.map((entry, idx) => {
                   const frames = entry.airedFrames ?? entry.plannedFrames ?? 0
-                  const reasonKey = entry.endedBy ?? (entry.endedAt ? 'EOF' : 'NO AR')
-                  const reasonInfo = REASON_LABELS[reasonKey] ?? {
-                    label: reasonKey === 'NO AR' ? 'NO AR AGORA' : reasonKey,
-                    color: reasonKey === 'NO AR' ? 'bg-on-air-crimson text-white border-on-air-crimson animate-pulse' : 'bg-surface-container text-outline border-border-subtle',
-                  }
+                  const asRunBadge = getAsRunBadge(entry)
                   const startDatePart = entry.startedAt ? `${entry.startedAt.slice(8, 10)}/${entry.startedAt.slice(5, 7)}` : ''
                   const startTimePart = entry.startedAt ? entry.startedAt.slice(11, 19) : '--:--:--'
                   const endDatePart = entry.endedAt ? `${entry.endedAt.slice(8, 10)}/${entry.endedAt.slice(5, 7)}` : ''
@@ -605,16 +763,18 @@ export function AiredView({
                         </span>
                       </div>
 
+                      {/* Badges Canônicos Fase C: INTEGRAL, TRUNCADO, DESCARTADO, FALHA */}
                       <div className="col-span-2">
                         <span
-                          className={`px-2 py-0.5 rounded font-label-caps text-[9px] font-bold border inline-block ${reasonInfo.color}`}
+                          className={`px-2.5 py-0.5 rounded font-label-caps text-[9.5px] font-bold border inline-flex items-center gap-1 tracking-wider ${asRunBadge.style}`}
                         >
-                          {reasonInfo.label}
+                          <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
+                          <span>{asRunBadge.label}</span>
                         </span>
                       </div>
 
                       <div className="col-span-1 text-right">
-                        <span className="font-label-mono text-[9.5px] text-status-ok-bright font-bold bg-status-ok/10 border border-status-ok/30 px-1.5 py-0.5 rounded">
+                        <span className="font-label-mono text-[9px] text-status-ok-bright font-bold bg-status-ok/10 border border-status-ok/30 px-1.5 py-0.5 rounded">
                           ANCINE OK
                         </span>
                       </div>

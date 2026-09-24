@@ -7,6 +7,10 @@ import {
   fieldsUsedIn,
   dateInName,
   formatVideoFormat,
+  formatTimecode,
+  type GraphicsLayer,
+  type Scte35Message,
+  type ExternalDeviceCommand,
   framesSinceMidnight,
   isStill,
   RATE_PADRAO,
@@ -40,7 +44,12 @@ import {
   listRundowns,
   renumber,
 } from './db/repo.js'
-import { listAsRun } from './domain/asrun.js'
+import {
+  listAsRun,
+  exportAsRunBxf,
+  exportAsRunCsv,
+  getAncineComplianceSummary,
+} from './domain/asrun.js'
 import { buildCandidates, planFill } from './domain/autofill.js'
 import { backupDatabase, listBackups } from './domain/backup.js'
 import { syncDistribution } from './app.js'
@@ -88,6 +97,8 @@ import {
   type MultiviewCell,
   type MultiviewLayout,
 } from './domain/srt.js'
+import { globalScteDispatcher } from './domain/scte.js'
+import { globalStudioAutomationGateway } from './domain/external-control.js'
 import { asRun, operatorDecisions } from './db/schema.js'
 import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
@@ -103,6 +114,9 @@ import {
 import { thumbnailSvg } from './domain/thumbnail.js'
 import * as Playlists from './domain/playlists.js'
 import { buildView, type RundownView } from './domain/plan.js'
+import { generateTimelineMultiTrack } from './domain/timeline.js'
+import { globalConcurrencyManager } from './domain/concurrency.js'
+import type { TimelineZoomLevel, ConflictResolutionDecision } from '@rplayout/protocol'
 
 /**
  * Só o que um navegador tem chance de tocar. O resto sai como octet-stream e o
@@ -3474,6 +3488,659 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     await runtime.refresh()
     onChange()
     return snapshot(app, runtime)
+  })
+
+  // ==========================================
+  // FASE C: CONTINUIDADE, COMPLIANCE E SONDA DE PGM
+  // ==========================================
+
+  // 1. Telemetria e Cobertura de Cache de Continuidade (48h/7d)
+  const getCacheStatusHandler = async (
+    request: { headers: Record<string, string | string[] | undefined> },
+    reply: { code: (code: number) => { send: (body: unknown) => unknown } },
+  ) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) {
+      return reply.code(403).send({ error: 'Sem permissão para consultar cache de continuidade.' })
+    }
+    const assets = await listAssets(app.db)
+    return app.continuityCache.getStatus(assets)
+  }
+  server.get('/api/v1/continuity/cache/status', getCacheStatusHandler)
+  server.get('/api/v1/cache/status', getCacheStatusHandler)
+
+  // 2. Pré-aquecimento de Cache de Continuidade
+  const warmCacheHandler = async (
+    request: { headers: Record<string, string | string[] | undefined> },
+    reply: { code: (code: number) => { send: (body: unknown) => unknown } },
+  ) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Sem permissão para pré-aquecer cache.' })
+    }
+    const assets = await listAssets(app.db)
+    const result = await app.continuityCache.warmSchedule(assets, assets)
+    const status = await app.continuityCache.getStatus(assets)
+    return {
+      ok: true,
+      cached48h: result.cached48h,
+      missing48h: result.missing48h,
+      cached7d: result.cached7d,
+      missing7d: result.missing7d,
+      status,
+    }
+  }
+  server.post('/api/v1/continuity/cache/warm', warmCacheHandler)
+  server.post('/api/v1/cache/prewarm', warmCacheHandler)
+
+  // 3. Telemetria da Sonda de Qualidade de PGM
+  const getPgmProbeStatusHandler = async (
+    request: { headers: Record<string, string | string[] | undefined> },
+    reply: { code: (code: number) => { send: (body: unknown) => unknown } },
+  ) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) {
+      return reply.code(403).send({ error: 'Sem permissão para acessar telemetria de engenharia.' })
+    }
+    return app.pgmProbe.getStatus()
+  }
+  server.get('/api/v1/engineering/pgm-probe/status', getPgmProbeStatusHandler)
+  server.get('/api/v1/probe/pgm/status', getPgmProbeStatusHandler)
+
+  // 4. Disparo Manual / Reset de Slate de Emergência
+  server.post('/api/v1/engineering/pgm-probe/emergency-slate', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Sem permissão para acionar intervenções de emergência.' })
+    }
+    const body = (request.body as { action?: string; reason?: string } | undefined) ?? {}
+    if (body.action === 'RESET') {
+      app.pgmProbe.resetEmergencySlate()
+      return { ok: true, emergencySlateActive: false, status: app.pgmProbe.getStatus() }
+    }
+    const alert = app.pgmProbe.triggerEmergencySlate(body.reason ?? 'MANUAL_EMERGENCY_DISPATCH')
+    for (const runtime of app.runtimes.values()) {
+      void emitIntegrationEvent(app.db, 'pgm_probe.emergency_slate', { alert }, runtime.channel.id)
+    }
+    return {
+      ok: true,
+      emergencySlateActive: true,
+      alert,
+      status: app.pgmProbe.getStatus(),
+    }
+  })
+
+  // 5. Exportação de As-Run em BXF XML (SMPTE-2021)
+  const getAsRunBxfHandler = async (
+    request: {
+      headers: Record<string, string | string[] | undefined>
+      query: { channelId?: string; since?: string; until?: string; channelName?: string; limit?: string }
+    },
+    reply: {
+      code: (code: number) => { send: (body: unknown) => unknown }
+      header: (name: string, value: string) => {
+        header: (name: string, value: string) => { send: (body: string) => unknown }
+        send: (body: string) => unknown
+      }
+    },
+  ) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) {
+      return reply.code(403).send({ error: 'Sem permissão para exportar relatórios.' })
+    }
+    const query = request.query
+    const limit = Math.min(2000, Math.max(1, Number(query.limit ?? 1000) || 1000))
+    const entries = await listAsRun(app.db, query.channelId, query.since, limit, query.until)
+    const channel = query.channelId ? await getChannel(app.db, query.channelId) : null
+    const bxfXml = exportAsRunBxf(entries, {
+      channelName: query.channelName ?? channel?.name ?? 'RPlayout Master',
+      channelId: query.channelId ?? channel?.id ?? 'CH-01',
+      rate: channel?.rate ?? RATE_PADRAO,
+    })
+    return reply
+      .header('content-type', 'application/xml; charset=utf-8')
+      .header('content-disposition', 'attachment; filename="asrun.bxf.xml"')
+      .send(bxfXml)
+  }
+  server.get('/api/v1/compliance/asrun/bxf', getAsRunBxfHandler as any)
+  server.get('/api/v1/as-run/export/bxf', getAsRunBxfHandler as any)
+
+  // 6. Resumo de Conformidade Regulatória ANCINE (Cotas e Limite de 25%)
+  const getAncineSummaryHandler = async (
+    request: {
+      headers: Record<string, string | string[] | undefined>
+      query: { channelId?: string; date?: string; targetHour?: string }
+    },
+    reply: { code: (code: number) => { send: (body: unknown) => unknown } },
+  ) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) {
+      return reply.code(403).send({ error: 'Sem permissão para consultar conformidade regulatória.' })
+    }
+    const query = request.query
+    const channel = query.channelId ? await getChannel(app.db, query.channelId) : null
+    const summary = await getAncineComplianceSummary(
+      app.db,
+      query.channelId,
+      query.date ?? query.targetHour,
+      channel?.rate ?? RATE_PADRAO,
+    )
+    return summary
+  }
+  server.get('/api/v1/compliance/ancine/summary', getAncineSummaryHandler as any)
+  server.get('/api/v1/as-run/compliance/ancine', getAncineSummaryHandler as any)
+
+  // 7. Exportação de As-Run em CSV estruturado
+  server.get('/api/v1/compliance/asrun/csv', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) {
+      return reply.code(403).send({ error: 'Sem permissão para exportar relatórios.' })
+    }
+    const query = request.query as { channelId?: string; since?: string; until?: string; limit?: string }
+    const limit = Math.min(2000, Math.max(1, Number(query.limit ?? 1000) || 1000))
+    const entries = await listAsRun(app.db, query.channelId, query.since, limit, query.until)
+    const channel = query.channelId ? await getChannel(app.db, query.channelId) : null
+    const csv = exportAsRunCsv(entries, channel?.rate ?? RATE_PADRAO)
+    return reply
+      .header('content-type', 'text/csv; charset=utf-8')
+      .header('content-disposition', 'attachment; filename="asrun.csv"')
+      .send(csv)
+  })
+
+  // ==========================================
+  // FASE D: ROTAS DE EVENTOS SECUNDÁRIOS, SCTE E CONTROLE EXTERNO
+  // ==========================================
+
+  // 1. Consulta de camadas de GC
+  server.get('/api/v1/graphics/layers', async (request, reply) => {
+    const query = request.query as { channelId?: string }
+    const channelId = query.channelId ?? (await listChannels(app.db))[0]?.id
+    if (!channelId) {
+      return reply.code(404).send({ error: 'Nenhum canal encontrado.' })
+    }
+    const runtime = await runtimeFor(app, channelId)
+    if (!runtime) {
+      return reply.code(404).send({ error: 'Canal não inicializado.' })
+    }
+    return {
+      channelId,
+      layers: runtime.graphics.getLayers(),
+    }
+  })
+
+  // 2. Disparo e controle de camadas de GC
+  server.post('/api/v1/graphics/layers/:layer/trigger', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
+      return reply.code(403).send({ error: 'Sem permissão para controlar grafismo.' })
+    }
+    const params = request.params as { layer: string }
+    const validLayers: GraphicsLayer[] = ['STATION_LOGO', 'ONAIR_CLOCK', 'CRAWL_TICKER', 'LOWER_THIRD']
+    const layer = params.layer.toUpperCase() as GraphicsLayer
+    if (!validLayers.includes(layer)) {
+      return reply.code(400).send({ error: `Camada gráfica inválida: ${params.layer}. Válidas: ${validLayers.join(', ')}` })
+    }
+    const body = z.object({
+      channelId: z.string().optional(),
+      action: z.enum(['SHOW', 'HIDE', 'UPDATE']).default('SHOW'),
+      templateId: z.string().optional(),
+      name: z.string().optional(),
+      payload: z.record(z.unknown()).optional(),
+      values: z.record(z.string()).optional(),
+      fadeMs: z.number().int().min(0).max(5000).optional(),
+      durationFrames: z.number().int().min(0).optional(),
+      opacity: z.number().min(0).max(1).optional(),
+    }).safeParse(request.body)
+    if (!body.success) {
+      return reply.code(400).send({ error: 'Parâmetros inválidos.', details: body.error.format() })
+    }
+    const channelId = body.data.channelId ?? (await listChannels(app.db))[0]?.id
+    if (!channelId) {
+      return reply.code(404).send({ error: 'Nenhum canal encontrado.' })
+    }
+    const runtime = await runtimeFor(app, channelId)
+    if (!runtime) {
+      return reply.code(404).send({ error: 'Canal não inicializado.' })
+    }
+    let template: import('@rplayout/protocol').GraphicTemplate | undefined
+    if (body.data.templateId) {
+      const [t] = await app.db.select().from(graphicTemplates).where(eq(graphicTemplates.id, body.data.templateId))
+      template = t
+    }
+    const result = runtime.graphics.triggerLayer(layer, body.data.action, {
+      templateId: body.data.templateId,
+      template,
+      name: body.data.name,
+      payload: body.data.payload,
+      values: body.data.values,
+      fadeMs: body.data.fadeMs,
+      durationFrames: body.data.durationFrames,
+      opacity: body.data.opacity,
+    })
+    return { success: true, layerState: result }
+  })
+
+  // 3. Disparo de marcador SCTE-35 / SCTE-104
+  server.post('/api/v1/scte/splice-insert', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
+      return reply.code(403).send({ error: 'Sem permissão para acionar sinalização SCTE.' })
+    }
+    const body = z.object({
+      channelId: z.string().optional(),
+      spliceEventId: z.number().int().optional(),
+      ptsTime: z.number().optional(),
+      durationSeconds: z.number().positive().optional().default(30.0),
+      autoReturn: z.boolean().optional().default(true),
+      prerollMs: z.number().int().min(0).max(60000).optional().default(4000),
+      uniqueProgramId: z.number().int().optional(),
+      segmentationTypeId: z.number().int().optional(),
+      availNum: z.number().int().optional(),
+      availsExpected: z.number().int().optional(),
+      outOfNetwork: z.boolean().optional().default(true),
+    }).safeParse(request.body)
+    if (!body.success) {
+      return reply.code(400).send({ error: 'Parâmetros de SCTE-35 inválidos.', details: body.error.format() })
+    }
+    const channelId = body.data.channelId ?? (await listChannels(app.db))[0]?.id
+    const channel = channelId ? await getChannel(app.db, channelId) : null
+    const rate = channel?.rate ?? RATE_PADRAO
+    const nowFrames = framesSinceMidnight(new Date(), rate)
+    const ptsCalculated = body.data.ptsTime ?? Math.floor((nowFrames / (rate.num / rate.den)) * 90000)
+    const scteMessage: Scte35Message = {
+      spliceEventId: body.data.spliceEventId ?? Math.floor(10000 + Math.random() * 89999),
+      ptsTime: ptsCalculated,
+      durationSeconds: body.data.durationSeconds,
+      autoReturn: body.data.autoReturn,
+      prerollMs: body.data.prerollMs,
+      uniqueProgramId: body.data.uniqueProgramId ?? 1,
+      segmentationTypeId: body.data.segmentationTypeId,
+      availNum: body.data.availNum,
+      availsExpected: body.data.availsExpected,
+      outOfNetwork: body.data.outOfNetwork,
+      commandType: 'SPLICE_INSERT',
+    }
+    const result = globalScteDispatcher.dispatchSpliceInsert(scteMessage)
+    return {
+      success: true,
+      spliceEventId: scteMessage.spliceEventId,
+      prerollMs: scteMessage.prerollMs,
+      durationSeconds: scteMessage.durationSeconds,
+      scte35Hex: result.scte35.toString('hex'),
+      scte104Hex: result.scte104.payload.toString('hex'),
+      vancLine: result.scte104.line,
+      latencyMs: result.latencyMs,
+      status: result.status,
+    }
+  })
+
+  // 4. Acionamento de hardware externo (ATEM, Videohub, GPIO) protegido por token
+  server.post('/api/v1/external/control', async (request, reply) => {
+    const rawHeaderToken = request.headers['x-rplayout-control-token']
+    const headerToken = Array.isArray(rawHeaderToken) ? rawHeaderToken[0] : rawHeaderToken
+
+    const body = z.object({
+      targetDevice: z.enum(['ATEM_SWITCHER', 'VIDEOHUB_ROUTER', 'GPIO_RELAY', 'BLACKMAGIC_ATEM', 'LEITCH_ROUTER']),
+      action: z.string().min(1),
+      parameters: z.record(z.unknown()).optional(),
+      params: z.record(z.unknown()).optional(),
+      token: z.string().optional(),
+      channelId: z.string().optional(),
+      clientMetadata: z.record(z.unknown()).optional(),
+    }).safeParse(request.body)
+
+    if (!body.success) {
+      return reply.code(400).send({ error: 'Parâmetros de comando externo inválidos.', details: body.error.format() })
+    }
+
+    const token = body.data.token ?? headerToken
+    if (EXTERNAL_CONTROL_TOKEN && EXTERNAL_CONTROL_TOKEN.trim() !== '') {
+      if (!token || token.trim() !== EXTERNAL_CONTROL_TOKEN.trim()) {
+        return reply.code(401).send({ error: 'Chave de controle externo inválida ou ausente (X-RPlayout-Control-Token).' })
+      }
+    } else {
+      if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
+        return reply.code(403).send({ error: 'Sem permissão para operar dispositivos externos.' })
+      }
+    }
+
+    const command: ExternalDeviceCommand = {
+      targetDevice: (body.data.targetDevice === 'BLACKMAGIC_ATEM' ? 'ATEM_SWITCHER' : body.data.targetDevice as any),
+      action: body.data.action,
+      params: body.data.parameters ?? body.data.params ?? {},
+      token,
+    }
+
+    const channelId = body.data.channelId ?? (await listChannels(app.db))[0]?.id
+    const channel = channelId ? await getChannel(app.db, channelId) : null
+    const rate = channel?.rate ?? RATE_PADRAO
+    const nowFrames = framesSinceMidnight(new Date(), rate)
+    const pgmTimecode = formatTimecode(nowFrames, rate)
+
+    const execution = await globalStudioAutomationGateway.execute(command, token, pgmTimecode)
+    if (!execution.success && execution.status === 'FAILED' && execution.error?.includes('inválida')) {
+      return reply.code(401).send(execution)
+    }
+
+    return execution
+  })
+
+  // ==========================================
+  // FASE E: TIMELINE VISUAL MULTICAMADA & OPERAÇÃO DISTRIBUÍDA
+  // ==========================================
+
+  // 1. Consulta completa das 4 pistas da timeline 24h
+  server.get('/api/v1/timeline/:rundownId/multitrack', async (request, reply) => {
+    const { rundownId } = request.params as { rundownId: string }
+    const query = request.query as {
+      zoom?: TimelineZoomLevel
+      windowStartMs?: string
+      currentPlayheadFrames?: string
+      tenantId?: string
+      channelId?: string
+    }
+
+    try {
+      const data = await generateTimelineMultiTrack(app.db, rundownId, {
+        zoomLevel: query.zoom,
+        windowStartMs: query.windowStartMs ? Number(query.windowStartMs) : undefined,
+        currentPlayheadFrames: query.currentPlayheadFrames ? Number(query.currentPlayheadFrames) : undefined,
+        tenantId: query.tenantId,
+        channelId: query.channelId,
+      })
+
+      if (data.eTag) {
+        void reply.header('ETag', data.eTag)
+      }
+
+      return data
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.includes('não encontrado')) {
+        return reply.code(404).send({ error: message })
+      }
+      return reply.code(500).send({ error: 'Erro ao gerar timeline multicamada.', details: message })
+    }
+  })
+
+  // Alias canal/tenant para timeline
+  server.get('/api/v1/tenants/:tenantId/channels/:channelId/timeline', async (request, reply) => {
+    const { tenantId, channelId } = request.params as { tenantId: string; channelId: string }
+    const query = request.query as {
+      date?: string
+      zoom?: TimelineZoomLevel
+      windowStartMs?: string
+      currentPlayheadFrames?: string
+    }
+
+    const rundownsList = await listRundowns(app.db, channelId)
+    const targetRundown = query.date
+      ? rundownsList.find((r) => r.date === query.date) ?? rundownsList[0]
+      : rundownsList[0]
+
+    if (!targetRundown) {
+      return reply.code(404).send({ error: `Nenhuma grade encontrada para o canal ${channelId}` })
+    }
+
+    const data = await generateTimelineMultiTrack(app.db, targetRundown.id, {
+      zoomLevel: query.zoom,
+      windowStartMs: query.windowStartMs ? Number(query.windowStartMs) : undefined,
+      currentPlayheadFrames: query.currentPlayheadFrames ? Number(query.currentPlayheadFrames) : undefined,
+      tenantId,
+      channelId,
+    })
+
+    if (data.eTag) {
+      void reply.header('ETag', data.eTag)
+    }
+
+    return data
+  })
+
+  // 2. Controle de presença e bloqueio otimista de linha
+  server.post('/api/v1/rundowns/:id/acquire-lock', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z.object({
+      itemId: z.string().optional(),
+      userId: z.string().optional(),
+      userName: z.string().optional(),
+    }).safeParse(request.body ?? {})
+
+    if (!body.success) {
+      return reply.code(400).send({ error: 'Parâmetros de lock inválidos.', details: body.error.format() })
+    }
+
+    const userId = body.data.userId ?? (await usernameOf(request)) ?? 'operador_mcr'
+    const userName = body.data.userName ?? userId
+
+    const result = globalConcurrencyManager.acquireLock({
+      rundownId: id,
+      itemId: body.data.itemId,
+      userId,
+      userName,
+    })
+
+    if (!result.success) {
+      return reply.code(409).send({ error: result.error, lockState: result.lockState })
+    }
+
+    return { success: true, lockState: result.lockState }
+  })
+
+  server.post('/api/v1/rundowns/:id/release-lock', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z.object({
+      itemId: z.string().optional(),
+      userId: z.string().optional(),
+    }).safeParse(request.body ?? {})
+
+    if (!body.success) {
+      return reply.code(400).send({ error: 'Parâmetros de release inválidos.', details: body.error.format() })
+    }
+
+    const userId = body.data.userId ?? (await usernameOf(request)) ?? 'operador_mcr'
+    const result = globalConcurrencyManager.releaseLock({
+      rundownId: id,
+      itemId: body.data.itemId,
+      userId,
+    })
+
+    return { success: true, lockState: result.lockState }
+  })
+
+  // 3. Resolução e merge assistido de conflitos concorrentes
+  server.post('/api/v1/rundowns/:id/resolve-conflict', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z.object({
+      conflictId: z.string().optional(),
+      itemId: z.string().min(1),
+      clientRundownVersion: z.number().int().default(1),
+      resolutionStrategy: z.enum(['OVERWRITE_FORCE', 'DISCARD_MINE', 'APPLY_MERGED_FIELDS']),
+      mergedData: z.record(z.unknown()).optional(),
+      patch: z.record(z.unknown()).optional(),
+    }).safeParse(request.body)
+
+    if (!body.success) {
+      return reply.code(400).send({ error: 'Parâmetros de resolução de conflito inválidos.', details: body.error.format() })
+    }
+
+    const item = await getItem(app.db, body.data.itemId)
+    if (!item) {
+      return reply.code(404).send({ error: `Item não encontrado: ${body.data.itemId}` })
+    }
+
+    const result = globalConcurrencyManager.resolveConflict({
+      rundownId: id,
+      itemId: body.data.itemId,
+      decision: body.data as ConflictResolutionDecision,
+      currentItemState: item as any,
+      clientPatch: body.data.patch ?? body.data.mergedData,
+    })
+
+    // Aplica alterações permitidas no banco de dados
+    const patch = result.resolvedData
+    const updates: Record<string, unknown> = {}
+    if (typeof patch.title === 'string') updates.title = patch.title
+    if (typeof patch.durationOverride === 'number') updates.durationOverride = patch.durationOverride
+    if (typeof patch.minDuration === 'number') updates.minDuration = patch.minDuration
+    if (typeof patch.trimmable === 'boolean') updates.trimmable = patch.trimmable
+    if (typeof patch.optional === 'boolean') updates.optional = patch.optional
+    if (typeof patch.protected === 'boolean') updates.protected = patch.protected
+    if (typeof patch.notes === 'string') updates.notes = patch.notes
+
+    if (Object.keys(updates).length > 0) {
+      await app.db.update(rundownItems).set(updates).where(eq(rundownItems.id, body.data.itemId))
+    }
+
+    for (const runtime of app.runtimes.values()) {
+      if (runtime.view?.rundown.id === id) {
+        await runtime.refresh()
+      }
+    }
+    onChange()
+
+    return {
+      success: true,
+      newRundownVersion: result.newRundownVersion,
+      newLineVersion: result.newLineVersion,
+      resolvedData: result.resolvedData,
+    }
+  })
+
+  // 4. Atualização de item com validação de versão otimista e detecção de 409 Conflict
+  server.put('/api/v1/rundowns/:id/items/:itemId', async (request, reply) => {
+    const { id, itemId } = request.params as { id: string; itemId: string }
+    const rawIfMatch = request.headers['if-match']
+    const ifMatchHeader = Array.isArray(rawIfMatch) ? rawIfMatch[0] : rawIfMatch
+
+    const body = z.object({
+      expectedRundownVersion: z.number().int().optional(),
+      expectedLineVersion: z.number().int().optional(),
+      patch: z.record(z.unknown()),
+    }).safeParse(request.body)
+
+    if (!body.success) {
+      return reply.code(400).send({ error: 'Payload de atualização de item inválido.', details: body.error.format() })
+    }
+
+    const item = await getItem(app.db, itemId)
+    if (!item) {
+      return reply.code(404).send({ error: `Item não encontrado: ${itemId}` })
+    }
+
+    const validation = globalConcurrencyManager.validateOptimisticLock({
+      rundownId: id,
+      itemId,
+      expectedRundownVersion: body.data.expectedRundownVersion,
+      expectedLineVersion: body.data.expectedLineVersion,
+      ifMatchHeader,
+      serverItemState: item as any,
+      clientPatch: body.data.patch,
+    })
+
+    if (!validation.valid && validation.errorPayload) {
+      return reply.code(409).send(validation.errorPayload)
+    }
+
+    // Aplica alterações na linha
+    const patch = body.data.patch
+    const updates: Record<string, unknown> = {}
+    if (typeof patch.title === 'string') updates.title = patch.title
+    if (typeof patch.durationOverride === 'number') updates.durationOverride = patch.durationOverride
+    if (typeof patch.minDuration === 'number') updates.minDuration = patch.minDuration
+    if (typeof patch.trimmable === 'boolean') updates.trimmable = patch.trimmable
+    if (typeof patch.optional === 'boolean') updates.optional = patch.optional
+    if (typeof patch.protected === 'boolean') updates.protected = patch.protected
+    if (typeof patch.notes === 'string') updates.notes = patch.notes
+
+    if (Object.keys(updates).length > 0) {
+      await app.db.update(rundownItems).set(updates).where(eq(rundownItems.id, itemId))
+    }
+
+    const newRundownVersion = globalConcurrencyManager.incrementRundownVersion(id)
+    const newLineVersion = globalConcurrencyManager.incrementLineVersion(id, itemId)
+    const eTag = globalConcurrencyManager.generateETag(id, itemId)
+    void reply.header('ETag', eTag)
+
+    for (const runtime of app.runtimes.values()) {
+      if (runtime.view?.rundown.id === id) {
+        await runtime.refresh()
+      }
+    }
+    onChange()
+
+    return {
+      success: true,
+      newRundownVersion,
+      newLineVersion,
+      item: { ...item, ...updates },
+    }
+  })
+
+  // 5. Autofill inteligente de gap em 1-clique
+  server.post('/api/v1/rundowns/:id/autofill-gap', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z.object({
+      gapStartMs: z.number().optional(),
+      gapDurationMs: z.number().positive().default(30000),
+      preferredCategory: z.string().optional().default('FILLER'),
+      allowExtendPrevious: z.boolean().optional().default(true),
+    }).safeParse(request.body ?? {})
+
+    if (!body.success) {
+      return reply.code(400).send({ error: 'Parâmetros de autofill inválidos.', details: body.error.format() })
+    }
+
+    const rundown = await getRundown(app.db, id)
+    if (!rundown) {
+      return reply.code(404).send({ error: `Rundown não encontrado: ${id}` })
+    }
+
+    const channel = await getChannel(app.db, rundown.channelId)
+    const rate = channel?.rate ?? RATE_PADRAO
+    const gapFrames = Math.round((body.data.gapDurationMs * rate.num) / (1000 * rate.den))
+
+    // Localiza asset compatível no acervo
+    const assets = await listAssets(app.db)
+    const fillerAsset = assets.find((a) => !a.ignored && (a.categoryId === 'FILLER' || a.title.toLowerCase().includes('filler') || a.title.toLowerCase().includes('promo')))
+
+    const existingItems = await listItems(app.db, id)
+    const nextOrder = existingItems.length > 0 ? Math.max(...existingItems.map((i) => i.order)) + 1 : 0
+
+    const insertedId = randomUUID()
+    await app.db.insert(rundownItems).values({
+      id: insertedId,
+      rundownId: id,
+      sortOrder: nextOrder,
+      type: 'FILLER',
+      eventType: 'FILLER',
+      title: fillerAsset ? `[AUTOFILL] ${fillerAsset.title}` : `[AUTOFILL] Contingência (${Math.round(body.data.gapDurationMs / 1000)}s)`,
+      mediaId: fillerAsset?.id ?? null,
+      sourceRef: null,
+      trimmable: true,
+      optional: true,
+      protected: false,
+      durationOverride: gapFrames,
+      minDuration: 1,
+      anchor: { kind: 'FLOW' },
+      onOverrun: 'TRIM_PREV',
+      elastic: null,
+      blockId: null,
+      fit: 'PILLARBOX',
+      audioTrack: null,
+      locked: false,
+      autoNext: true,
+      loop: false,
+      notes: 'Inserido automaticamente pelo Autofill Inteligente de Gap',
+    })
+
+    const newRundownVersion = globalConcurrencyManager.incrementRundownVersion(id)
+
+    for (const runtime of app.runtimes.values()) {
+      if (runtime.view?.rundown.id === id) {
+        await runtime.refresh()
+      }
+    }
+    onChange()
+
+    return {
+      success: true,
+      strategyApplied: 'INSERT_OPTIMAL_FILLER',
+      insertedItemId: insertedId,
+      newRundownVersion,
+      remainingGapMs: 0,
+    }
   })
 }
 

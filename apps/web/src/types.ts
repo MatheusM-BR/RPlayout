@@ -313,3 +313,10 @@ export interface PlaylistEntryView {
   mediaId: string | null
   matchedBy: 'path' | 'name' | null
 }
+
+/** Fase D: Tipos de Camadas Gráficas do CG Dinâmico (RGBA) */
+export type GraphicLayerType =
+  | 'STATION_LOGO'   // Layer 0: Logotipo / Station Bug
+  | 'ONAIR_CLOCK'    // Layer 1: Relógio NTP & Temperatura
+  | 'CRAWL_TICKER'   // Layer 2: Rodapé de Notícias Contínuo
+  | 'LOWER_THIRD'    // Layer 3: Tarja de Apresentador e Programa

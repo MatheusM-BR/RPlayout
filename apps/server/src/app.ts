@@ -46,9 +46,10 @@ import {
 } from './domain/outputs.js'
 import { RelaySupervisor } from './domain/relays.js'
 import { destinations, guestKeys } from './db/schema.js'
-import { resolve as resolvePath } from 'node:path'
 import { existsSync } from 'node:fs'
+import { resolve as resolvePath } from 'node:path'
 import { ContinuityCache } from './domain/continuity-cache.js'
+import { PgmProbe } from './domain/pgm-probe.js'
 
 /**
  * Runtime de um canal. Guarda a grade já resolvida em cache porque o
@@ -296,12 +297,20 @@ export class ChannelRuntime {
     const onAir = this.transport.state().onAir
     if (!onAir) {
       this.cuesFor = null
+      this.graphics.scheduler.resetItem(null)
       return false
     }
     if (this.cuesFor !== onAir.itemId) {
       this.cuesFor = onAir.itemId
       this.fired = new Set()
+      this.graphics.scheduler.resetItem(onAir.itemId)
     }
+
+    const itemEntry = this.view?.items.find((entry) => entry.item.id === onAir.itemId)
+    const duration = itemEntry?.item.durationOverride ?? itemEntry?.asset?.durationFrames ?? 18000
+    void this.graphics.scheduler.tick(onAir.itemId, onAir.elapsed, duration)
+
+
 
     let changed = false
     for (const cue of this.cues.get(onAir.itemId) ?? []) {
@@ -529,6 +538,7 @@ export interface App {
   readonly sqlite: Database.Database
   readonly backupDir: string
   readonly continuityCache: ContinuityCache
+  readonly pgmProbe: PgmProbe
   /** Fecha o que precisa de escrita antes de o processo sair. */
   flush(): Promise<void>
   close(): void
@@ -560,6 +570,7 @@ export async function createApp(file: string): Promise<App> {
     sqlite,
     backupDir: BACKUP_DIR,
     continuityCache: new ContinuityCache(process.env.RPLAYOUT_CACHE ?? resolvePath(process.cwd(), '.continuity-cache'), CONTINUITY_CACHE_MAX_BYTES),
+    pgmProbe: new PgmProbe(),
     /**
      * Fecha as linhas de as-run abertas antes de o processo sair.
      *

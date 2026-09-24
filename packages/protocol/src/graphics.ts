@@ -102,3 +102,55 @@ export function fieldsUsedIn(svg: string): string[] {
   }
   return [...found]
 }
+
+/**
+ * Camadas canônicas de grafismo (Fase D).
+ *
+ * Em conformidade com EBU R95 / SMPTE RP 2046-1:
+ * - STATION_LOGO: Marca d'água / DVE bug em Action Safe (90%)
+ * - ONAIR_CLOCK: Relógio oficial NTP/PTP e temperatura
+ * - CRAWL_TICKER: Rodapé contínuo de notícias / breaking news em Title Safe (80%)
+ * - LOWER_THIRD: Tarja contextual de apresentador e programa
+ */
+export type GraphicsLayer = 'STATION_LOGO' | 'ONAIR_CLOCK' | 'CRAWL_TICKER' | 'LOWER_THIRD'
+export type GraphicLayerType = GraphicsLayer
+
+/** Modos de disparo de evento secundário em relação ao bloco. */
+export type TriggerOffsetMode = 'OFFSET_FROM_START' | 'OFFSET_BEFORE_END' | 'MANUAL' | 'MANUAL_OVERRIDE'
+
+/**
+ * Evento secundário acoplado a item da grade ou manual.
+ */
+export interface SecondaryEvent {
+  readonly id: string
+  readonly channelId?: string
+  readonly rundownItemId?: string
+  readonly name?: string
+  readonly targetLayer: GraphicsLayer
+  readonly triggerMode: 'OFFSET_FROM_START' | 'OFFSET_BEFORE_END' | 'MANUAL'
+  readonly offsetFrames: number
+  readonly durationFrames?: number
+  readonly templateId: string
+  readonly payload: Record<string, unknown>
+  readonly enabled: boolean
+  readonly type?: 'GRAPHICS_OVERLAY' | 'SCTE_TRIGGER' | 'DEVICE_AUTOMATION'
+  readonly scteConfig?: import('./scte.js').Scte35Message
+  readonly deviceConfig?: import('./scte.js').ExternalDeviceCommand
+  readonly executionState?: 'ARMED' | 'FIRING' | 'EXECUTED' | 'CANCELLED' | 'FAILED'
+  readonly executedAt?: string
+  readonly executionLatencyMs?: number
+}
+
+/** Estado operacional de uma camada de grafismo. */
+export interface GraphicLayerState {
+  readonly layer: GraphicsLayer
+  readonly active: boolean
+  readonly templateId?: string
+  readonly name?: string
+  readonly payload?: Record<string, unknown>
+  readonly svg?: string
+  readonly opacity?: number
+  readonly updatedAt?: string
+  readonly expiresAtFrames?: number | null
+}
+
