@@ -48,10 +48,10 @@ export function PgmProbeBanner({ className = '', compact = false, onSlateTrigger
   // Se estiver em modo compacto (ex: embutido no monitor ou cabeçalho)
   if (compact) {
     return (
-      <div className={`flex items-center gap-2 ${className}`}>
-        {/* Indicador de status do Watchdog */}
+      <div className={`flex items-center gap-1.5 ${className}`}>
+        {/* Indicador de status do Watchdog em 2 linhas */}
         <div
-          className={`flex items-center gap-1.5 px-2 py-0.5 rounded border text-[9.5px] font-label-mono ${
+          className={`flex flex-col items-center justify-center px-2 py-1 rounded border text-center select-none ${
             isEmergencySlateActive
               ? 'bg-on-air-crimson/20 border-on-air-crimson text-on-air-crimson animate-pulse font-bold'
               : currentIncident
@@ -59,31 +59,35 @@ export function PgmProbeBanner({ className = '', compact = false, onSlateTrigger
               : 'bg-surface-panel border-border-subtle text-status-ok'
           }`}
         >
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${
-              isEmergencySlateActive ? 'bg-on-air-crimson' : currentIncident ? 'bg-armed-amber' : 'bg-status-ok'
-            }`}
-          ></span>
-          <span>
-            {isEmergencySlateActive
-              ? 'SLATE NO AR'
-              : currentIncident
-              ? `ALERTA: ${currentIncident.type}`
-              : 'SONDA PGM: OK'}
+          <span className="font-label-caps text-[8.5px] uppercase font-bold tracking-wider leading-none">
+            SONDA
           </span>
+          <div className="flex items-center gap-1 mt-0.5 font-label-mono text-[9px] font-bold leading-none">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                isEmergencySlateActive ? 'bg-on-air-crimson' : currentIncident ? 'bg-armed-amber' : 'bg-status-ok'
+              }`}
+            />
+            <span>{isEmergencySlateActive ? 'SLATE' : currentIncident ? 'ALERTA' : 'PGM: OK'}</span>
+          </div>
         </div>
 
-        {/* Botão de Disparo / Desarme do Slate */}
+        {/* Botão de Disparo / Desarme do Slate em 2 linhas */}
         <button
           onClick={handleTriggerSlate}
-          className={`px-2 py-0.5 rounded font-label-caps text-[9px] font-bold transition-all cursor-pointer border ${
+          className={`flex flex-col items-center justify-center px-2.5 py-1 rounded font-label-caps text-center transition-all cursor-pointer border ${
             isEmergencySlateActive
               ? 'bg-on-air-crimson text-white border-on-air-glow shadow-sm'
               : 'bg-surface-panel hover:bg-on-air-crimson/20 text-outline hover:text-on-air-crimson border-border-subtle hover:border-on-air-crimson/40'
           }`}
           title={isEmergencySlateActive ? 'Clique para retirar slate de emergência do PGM' : 'Disparo manual do Slate de Emergência'}
         >
-          {isEmergencySlateActive ? 'DESARMAR SLATE' : 'SLATE EMERGÊNCIA'}
+          <span className="text-[8.5px] font-bold uppercase tracking-wider leading-none">
+            {isEmergencySlateActive ? 'DESARMAR' : 'SLATE'}
+          </span>
+          <span className="text-[8.5px] font-bold uppercase tracking-wider leading-none mt-0.5">
+            {isEmergencySlateActive ? 'SLATE' : 'EMERGÊNCIA'}
+          </span>
         </button>
       </div>
     )

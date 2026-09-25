@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import type { Channel } from '@rplayout/protocol'
 import { api } from '../api.js'
 import type { Distribution, OutputProfile } from '../types.js'
+import { CanonicalProtocolSelector } from './broadcast/CanonicalProtocolSelector.js'
 
 interface Props {
   channel: Channel
@@ -412,70 +413,32 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          {/* Tipo de Saída */}
-          <div className="flex flex-col gap-1">
-            <label className="font-label-caps text-[9.5px] text-outline uppercase font-bold">Tipo de Saída</label>
-            <select
-              value={newKind}
-              onChange={(e) => {
-                const val = e.target.value as typeof newKind
-                setNewKind(val)
-                if (val === 'SDI' && !newTarget) setNewTarget('sdi:0')
-                if (val === 'RTMP' && !newTarget) setNewTarget('rtmp://127.0.0.1:1935/live/stream')
-                if (val === 'SRT' && !newTarget) setNewTarget('srt://127.0.0.1:9000?mode=caller')
-                if (val === 'FILE' && !newTarget) setNewTarget('gravações/canal-master.mp4')
-                if (val === 'NDI' && !newTarget) setNewTarget('ndi://RPLAYOUT_PGM_MASTER')
-                if (val === 'OMT' && !newTarget) setNewTarget('omt://239.255.0.1:5004')
-              }}
-              className="bg-surface-panel text-on-surface px-3 py-1.5 rounded border border-border-subtle font-body-sm text-[12px] outline-none focus:border-primary cursor-pointer"
-            >
-              <option value="RTMP">RTMP / CDN (YouTube, Facebook, Twitch)</option>
-              <option value="SRT">SRT Stream (Caller / Listener)</option>
-              <option value="SDI">DeckLink SDI / HDMI (Placa Física)</option>
-              <option value="NDI">NDI Broadcast IP (NewTek / TriCaster / vMix)</option>
-              <option value="OMT">OMT Stream (Open Media Transport SMPTE-2110)</option>
-              <option value="FILE">Arquivo Local / Gravação Contínua</option>
-            </select>
-          </div>
-
+        <div className="flex flex-col gap-3">
           {/* Nome Amigável */}
           <div className="flex flex-col gap-1">
             <label className="font-label-caps text-[9.5px] text-outline uppercase font-bold">Nome da Saída</label>
             <input
               type="text"
-              placeholder="Ex: YouTube Live ou DeckLink Porta 1"
+              placeholder="Ex: YouTube Live, SRT Main Link ou DeckLink Porta 1"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               className="bg-surface-panel text-on-surface px-3 py-1.5 rounded border border-border-subtle font-body-sm text-[12px] outline-none focus:border-primary"
             />
           </div>
 
-          {/* Destino / URL */}
-          <div className="flex flex-col gap-1 md:col-span-2">
-            <label className="font-label-caps text-[9.5px] text-outline uppercase font-bold">
-              {newKind === 'SDI'
-                ? 'Dispositivo SDI (ex: sdi:0, sdi:1)'
-                : newKind === 'FILE'
-                ? 'Caminho do Arquivo (ex: C:/Gravacoes/playout.mkv)'
-                : 'URL de Destino / Endpoint'}
-            </label>
-            <input
-              type="text"
-              placeholder={
-                newKind === 'SDI'
-                  ? 'sdi:0'
-                  : newKind === 'SRT'
-                  ? 'srt://ip-do-destino:9000?mode=caller'
-                  : newKind === 'FILE'
-                  ? 'C:/Gravacoes/master.mp4'
-                  : 'rtmp://a.rtmp.youtube.com/live2/sua-chave'
+          {/* Seletor Modular de Protocolo de Saída (RTMP, SRT, SDI, NDI, OMT, FILE) */}
+          <CanonicalProtocolSelector
+            mode="OUTPUT"
+            defaultKind="RTMP"
+            initialUri={newTarget}
+            onChange={(res) => {
+              setNewKind(res.kind)
+              setNewTarget(res.targetUri)
+              if (!newName || newName.startsWith('RTMP') || newName.startsWith('SRT') || newName.startsWith('DeckLink') || newName.startsWith('NDI')) {
+                if (res.nameRecommendation) setNewName(res.nameRecommendation)
               }
-              value={newTarget}
-              onChange={(e) => setNewTarget(e.target.value)}
-              className="bg-surface-panel text-on-surface px-3 py-1.5 rounded border border-border-subtle font-label-mono text-[11.5px] outline-none focus:border-primary"
-            />
-          </div>
+            }}
+          />
         </div>
 
         <div className="flex items-center justify-between pt-2 border-t border-border-subtle">

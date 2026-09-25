@@ -4,6 +4,7 @@ import { clock, dur } from '../format.js'
 import type { RundownView, ItemView, LibraryAsset, LibraryFolder, Categoria } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
+import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
 import { api } from '../api.js'
 
 interface Props {
@@ -333,7 +334,7 @@ export function PlaylistScheduleView({
     })
   }
 
-  const handleOpenAutoFill = (options?: {
+  const handleOpenAutoFill = async (options?: {
     initialHours?: number
     initialMinutes?: number
     initialStart?: string
@@ -341,7 +342,28 @@ export function PlaylistScheduleView({
     autoPreview?: boolean
   }) => {
     if (!onOpenAutoFill) return
-    const targetRundownId = activeView?.rundown.id
+    let targetRundownId = activeView?.rundown?.id
+
+    if (!targetRundownId && selectedDate !== todayDateIso) {
+      setIsLoadingDate(true)
+      try {
+        const created = await api.createChannelRundown(channel.id, {
+          date: selectedDate,
+        })
+        setDateRundownView(created.view)
+        targetRundownId = created.view?.rundown?.id
+        await refreshAvailableRundowns()
+      } catch (err) {
+        console.error('Falha ao instanciar grade da data para autofill', err)
+      } finally {
+        setIsLoadingDate(false)
+      }
+    }
+
+    if (!targetRundownId) {
+      targetRundownId = view.rundown.id
+    }
+
     onOpenAutoFill(
       targetRundownId,
       (snapshot) => {
@@ -648,11 +670,20 @@ export function PlaylistScheduleView({
   // Playhead só faz sentido em tempo real no dia de hoje
   const isViewingToday = selectedDate === todayDateIso
   const secondsSinceMidnight = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds()
-  const playheadPercent = isViewingToday ? Math.min(100, Math.max(0, (secondsSinceMidnight / 86400) * 100)) : 0
 
-  // Cálculo dinâmico da régua contínua de 24h e detecção de GAPs para a data selecionada
+  const zoomHoursMap: Record<'24h' | '12h' | '6h' | '1h', number> = {
+    '24h': 24,
+    '12h': 12,
+    '6h': 6,
+    '1h': 1,
+  }
+  const visibleHours = zoomHoursMap[zoomMode] || 24
+  const playheadPercent = isViewingToday ? Math.min(100, Math.max(0, (secondsSinceMidnight / (visibleHours * 3600)) * 100)) : 0
+
+  // Cálculo dinâmico da régua contínua e detecção de GAPs conforme o zoomMode
   const timelineData = useMemo(() => {
     const fps = rate.num / rate.den || 50
+    const visibleFrames = visibleHours * 3600 * fps
     const totalDayFrames = 24 * 3600 * fps
 
     let runningFrame = 0
@@ -673,8 +704,8 @@ export function PlaylistScheduleView({
         (item.item.type as string) === 'BREAK' ||
         Boolean(item.asset?.categoryId?.toLowerCase().includes('com'))
 
-      const leftPct = Math.min(100, Math.max(0, (start / totalDayFrames) * 100))
-      const widthPct = Math.min(100 - leftPct, Math.max(0.18, (duration / totalDayFrames) * 100))
+      const leftPct = Math.min(100, Math.max(0, (start / visibleFrames) * 100))
+      const widthPct = Math.min(100 - leftPct, Math.max(0.18, (duration / visibleFrames) * 100))
 
       return {
         item,
@@ -700,20 +731,20 @@ export function PlaylistScheduleView({
     if (blocks.length === 0) {
       detectedGaps.push({
         start: 0,
-        end: totalDayFrames,
-        duration: totalDayFrames,
+        end: visibleFrames,
+        duration: visibleFrames,
         leftPct: 0,
         widthPct: 100,
-        label: '00:00:00:00 - 23:59:59:00 (Grade Vazia)',
+        label: `00:00:00 - ${String(visibleHours).padStart(2, '0')}:00:00 (Grade Vazia)`,
       })
     } else {
       for (let i = 0; i < blocks.length - 1; i++) {
         const cur = blocks[i]!
         const next = blocks[i + 1]!
-        if (next.start > cur.end + fps) {
-          const gapDur = next.start - cur.end
-          const leftPct = Math.min(100, Math.max(0, (cur.end / totalDayFrames) * 100))
-          const widthPct = Math.min(100 - leftPct, Math.max(0.2, (gapDur / totalDayFrames) * 100))
+        if (next.start > cur.end + fps && cur.end < visibleFrames) {
+          const gapDur = Math.min(next.start, visibleFrames) - cur.end
+          const leftPct = Math.min(100, Math.max(0, (cur.end / visibleFrames) * 100))
+          const widthPct = Math.min(100 - leftPct, Math.max(0.2, (gapDur / visibleFrames) * 100))
           detectedGaps.push({
             start: cur.end,
             end: next.start,
@@ -726,8 +757,8 @@ export function PlaylistScheduleView({
       }
     }
 
-    return { blocks, gaps: detectedGaps, totalFrames: totalDayFrames }
-  }, [displayItems, scheduleMap, rate])
+    return { blocks, gaps: detectedGaps, totalFrames: totalDayFrames, visibleFrames }
+  }, [displayItems, scheduleMap, rate, visibleHours])
 
   // Total de tempo previsto e gap total
   const totalDurationFrames = displayItems.reduce((acc, it) => {
@@ -980,18 +1011,6 @@ export function PlaylistScheduleView({
                             </div>
 
                             <div className="flex items-center gap-1">
-                              {onPreviewAsset && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    onPreviewAsset(asset)
-                                  }}
-                                  className="p-1 rounded hover:bg-surface-container text-outline hover:text-armed-amber transition-colors cursor-pointer"
-                                  title="Carregar no Preview (PVW)"
-                                >
-                                  <span className="material-symbols-outlined text-[13px]">visibility</span>
-                                </button>
-                              )}
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -1308,17 +1327,54 @@ export function PlaylistScheduleView({
                 </div>
               </div>
 
-              {/* Régua de Horas Superior 00:00 às 24:00 */}
+              {/* Régua de Horas Dinâmica conforme o zoomMode */}
               <div className="relative h-4 w-full flex text-[8px] font-label-mono text-outline select-none px-1 border-b border-border-subtle/30">
-                <span className="absolute left-0">00:00</span>
-                <span className="absolute left-[12.5%]">03:00</span>
-                <span className="absolute left-[25%]">06:00</span>
-                <span className="absolute left-[37.5%]">09:00</span>
-                <span className="absolute left-[50%] font-bold text-accent-ice">12:00</span>
-                <span className="absolute left-[62.5%]">15:00</span>
-                <span className="absolute left-[75%]">18:00</span>
-                <span className="absolute left-[87.5%]">21:00</span>
-                <span className="absolute right-0">24:00</span>
+                {zoomMode === '24h' && (
+                  <>
+                    <span className="absolute left-0">00:00</span>
+                    <span className="absolute left-[12.5%]">03:00</span>
+                    <span className="absolute left-[25%]">06:00</span>
+                    <span className="absolute left-[37.5%]">09:00</span>
+                    <span className="absolute left-[50%] font-bold text-accent-ice">12:00</span>
+                    <span className="absolute left-[62.5%]">15:00</span>
+                    <span className="absolute left-[75%]">18:00</span>
+                    <span className="absolute left-[87.5%]">21:00</span>
+                    <span className="absolute right-0">24:00</span>
+                  </>
+                )}
+                {zoomMode === '12h' && (
+                  <>
+                    <span className="absolute left-0">00:00</span>
+                    <span className="absolute left-[16.6%]">02:00</span>
+                    <span className="absolute left-[33.3%]">04:00</span>
+                    <span className="absolute left-[50%] font-bold text-accent-ice">06:00</span>
+                    <span className="absolute left-[66.6%]">08:00</span>
+                    <span className="absolute left-[83.3%]">10:00</span>
+                    <span className="absolute right-0">12:00</span>
+                  </>
+                )}
+                {zoomMode === '6h' && (
+                  <>
+                    <span className="absolute left-0">00:00</span>
+                    <span className="absolute left-[16.6%]">01:00</span>
+                    <span className="absolute left-[33.3%]">02:00</span>
+                    <span className="absolute left-[50%] font-bold text-accent-ice">03:00</span>
+                    <span className="absolute left-[66.6%]">04:00</span>
+                    <span className="absolute left-[83.3%]">05:00</span>
+                    <span className="absolute right-0">06:00</span>
+                  </>
+                )}
+                {zoomMode === '1h' && (
+                  <>
+                    <span className="absolute left-0">00:00</span>
+                    <span className="absolute left-[16.6%]">00:10</span>
+                    <span className="absolute left-[33.3%]">00:20</span>
+                    <span className="absolute left-[50%] font-bold text-accent-ice">00:30</span>
+                    <span className="absolute left-[66.6%]">00:40</span>
+                    <span className="absolute left-[83.3%]">00:50</span>
+                    <span className="absolute right-0">01:00</span>
+                  </>
+                )}
               </div>
 
               {/* Trilho de Blocos 24h & Playhead Dinâmico */}
@@ -1674,10 +1730,28 @@ export function PlaylistScheduleView({
                           />
                           <span className="text-outline">{idx + 1}</span>
                         </div>
-                        <div className="col-span-2">
+                        <div className="col-span-2 flex items-center gap-1.5 flex-wrap">
                           <span className="px-1.5 py-0.5 rounded font-label-caps text-[8.5px] bg-surface-container font-semibold text-primary">
                             {item.asset?.kind ?? item.item.type ?? 'VT'}
                           </span>
+                          {item.asset?.categoryId && (() => {
+                            const catName = item.asset.categoryId
+                            const catInfo = availableCategoriesList.find((c) => c.id === catName)
+                            const catColor = catInfo?.color || '#389BFF'
+                            return (
+                              <span
+                                className="px-1.5 py-0.2 rounded font-label-caps text-[8px] font-bold border"
+                                style={{
+                                  color: catColor,
+                                  borderColor: `${catColor}66`,
+                                  backgroundColor: `${catColor}18`,
+                                }}
+                                title={`Categoria: ${catName}`}
+                              >
+                                {catName}
+                              </span>
+                            )
+                          })()}
                         </div>
                         <div className="col-span-2 font-label-mono text-[11px] tabular-nums text-on-surface">
                           {scheduleMap.get(item.item.id)?.start != null
@@ -1756,6 +1830,35 @@ export function PlaylistScheduleView({
                     </div>
 
                     <div className="flex items-center gap-2">
+                      {selectedItem.asset && (
+                        <div className="flex items-center gap-1 bg-surface-panel px-2 py-1 rounded border border-border-subtle">
+                          <span className="material-symbols-outlined text-[14px] text-primary">label</span>
+                          <span className="text-[9.5px] text-outline font-label-caps font-semibold">Categoria:</span>
+                          <select
+                            value={selectedItem.asset.categoryId || ''}
+                            onChange={async (e) => {
+                              const newCat = e.target.value || null
+                              try {
+                                await api.patchAsset(selectedItem.asset!.id, { categoryId: newCat })
+                                await loadDateRundown(selectedDate)
+                                setFeedbackMessage(`✓ Categoria atualizada para "${newCat || 'Sem Categoria'}"`)
+                                setTimeout(() => setFeedbackMessage(null), 3000)
+                              } catch (err: any) {
+                                alert(`Erro ao alterar categoria: ${err.message}`)
+                              }
+                            }}
+                            className="bg-transparent text-on-surface text-[10px] font-label-mono font-bold outline-none cursor-pointer"
+                          >
+                            <option value="" className="bg-surface-card text-on-surface">Sem Categoria</option>
+                            {availableCategoriesList.map((c) => (
+                              <option key={c.id} value={c.id} className="bg-surface-card text-on-surface">
+                                {c.id}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
                       <button
                         onClick={() => openEditScheduleTime(selectedItem)}
                         className="px-2.5 py-1 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-primary hover:text-white font-label-caps text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
@@ -1933,7 +2036,7 @@ export function PlaylistScheduleView({
       {/* MODAL: NOVO PROGRAMA AO VIVO COM ENTRADA MARCADA */}
       {showLiveProgramModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-surface-card border border-border-subtle rounded-lg shadow-2xl max-w-md w-full overflow-hidden flex flex-col">
+          <div className="bg-surface-card border border-border-subtle rounded-lg shadow-2xl max-w-lg w-full overflow-hidden flex flex-col">
             <div className="px-4 py-3 bg-surface-container-high border-b border-border-subtle flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-error text-[20px]">live_tv</span>
@@ -1949,7 +2052,7 @@ export function PlaylistScheduleView({
               </button>
             </div>
 
-            <div className="p-4 flex flex-col gap-3.5 text-body-sm">
+            <div className="p-4 flex flex-col gap-3.5 text-body-sm max-h-[80vh] overflow-y-auto broadcast-scroll">
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
                   Título do Programa / Evento
@@ -1993,57 +2096,18 @@ export function PlaylistScheduleView({
                 </div>
               </div>
 
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
-                  Fonte de Entrada (Hardware / NDI / SRT)
-                </label>
-                <select
-                  value={liveSourceOption}
-                  onChange={(e) => {
-                    const val = e.target.value
-                    setLiveSourceOption(val)
-                    if (val !== 'custom') {
-                      setLiveProgramSourceRef(val)
-                    } else if (
-                      liveProgramSourceRef === 'decklink://0' ||
-                      liveProgramSourceRef === 'decklink://1' ||
-                      liveProgramSourceRef === 'ndi://ESTUDIO-MASTER/PGM' ||
-                      liveProgramSourceRef === 'ndi://REDAÇÃO/JORNALISMO' ||
-                      liveProgramSourceRef === 'srt://127.0.0.1:9000?mode=listener'
-                    ) {
-                      setLiveProgramSourceRef('')
-                    }
-                  }}
-                  className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary cursor-pointer"
-                >
-                  <option value="decklink://0">decklink://0 (SDI 1 - DeckLink Studio 4K)</option>
-                  <option value="decklink://1">decklink://1 (SDI 2 - DeckLink Quad)</option>
-                  <option value="ndi://ESTUDIO-MASTER/PGM">ndi://ESTUDIO-MASTER/PGM (NDI Master Estúdio 1)</option>
-                  <option value="ndi://REDAÇÃO/JORNALISMO">ndi://REDAÇÃO/JORNALISMO (NDI Switcher Redação)</option>
-                  <option value="srt://127.0.0.1:9000?mode=listener">srt://127.0.0.1:9000?mode=listener (SRT Listener Central)</option>
-                  <option value="custom">custom (Outra URL / URI personalizada)</option>
-                </select>
-
-                {liveSourceOption === 'custom' ? (
-                  <div className="flex flex-col gap-1 mt-1">
-                    <input
-                      type="text"
-                      value={liveProgramSourceRef}
-                      onChange={(e) => setLiveProgramSourceRef(e.target.value)}
-                      placeholder="Ex: srt://192.168.1.100:9000?mode=caller ou rtmp://servidor/live"
-                      className="w-full bg-surface-base border border-primary/60 rounded px-2.5 py-1.5 font-mono text-xs text-on-surface focus:outline-none focus:border-primary"
-                      autoFocus
-                    />
-                    <span className="text-[9.5px] text-outline">
-                      Informe o URI broadcast completo (ex: decklink://N, ndi://FONTE, srt://IP:PORTA, rtmp://URL).
-                    </span>
-                  </div>
-                ) : (
-                  <span className="text-[9.5px] text-outline">
-                    Entrada broadcast canônica com roteamento direto para engine CasparCG/DeckLink.
-                  </span>
-                )}
-              </div>
+              {/* Seletor Modular de Protocolos Canônicos (NDI, SDI, SRT, RTMP) */}
+              <CanonicalProtocolSelector
+                mode="INPUT"
+                defaultKind="SDI"
+                initialUri={liveProgramSourceRef}
+                onChange={(res) => {
+                  setLiveProgramSourceRef(res.targetUri)
+                  if (!liveProgramTitle || liveProgramTitle === 'Transmissão Externa - Ao Vivo') {
+                    if (res.nameRecommendation) setLiveProgramTitle(res.nameRecommendation)
+                  }
+                }}
+              />
             </div>
 
             <div className="px-4 py-3 bg-surface-container-high border-t border-border-subtle flex items-center justify-end gap-2">
@@ -2056,7 +2120,7 @@ export function PlaylistScheduleView({
               </button>
               <button
                 type="button"
-                disabled={isCreatingLive || !liveProgramTitle.trim() || (liveSourceOption === 'custom' && !liveProgramSourceRef.trim())}
+                disabled={isCreatingLive || !liveProgramTitle.trim() || !liveProgramSourceRef.trim()}
                 onClick={handleCreateLiveProgram}
                 className="px-3 py-1.5 rounded bg-error hover:bg-error/90 text-white font-label-caps text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50"
               >

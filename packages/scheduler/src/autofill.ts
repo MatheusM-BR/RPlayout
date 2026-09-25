@@ -93,6 +93,11 @@ export function autoFill(request: FillRequest): FillResult {
     let best: Candidate | null = null
     let bestScore = Number.NEGATIVE_INFINITY
 
+    // Quando avoidWithinMs === 0, permite reciclagem e repetição de material no preenchimento
+    if (request.avoidWithinMs === 0 && used.size >= request.candidates.filter(allowed).length) {
+      used.clear()
+    }
+
     for (const candidate of request.candidates) {
       if (used.has(candidate.id) || !allowed(candidate)) continue
       const value = score(candidate, remaining, request.nowMs, request.avoidWithinMs)

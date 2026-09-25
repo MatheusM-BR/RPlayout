@@ -166,7 +166,7 @@ export function toEngineProfile(
   // A saída por placa não tem perfil: ela sai crua, no formato do canal, e o
   // que existe para escolher é qual conector. Vai pelo atalho `sdi:N`, que o
   // engine entende sem passar por JSON.
-  if (row.kind === 'SDI') return `sdi:${target}`
+  if (row.kind === 'SDI') return `sdi:${target.replace(/^sdi:/, '')}`
 
   return {
     // O monitor sai por SRT independente do que o perfil diga: o `kind` dele é

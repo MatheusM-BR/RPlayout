@@ -21,6 +21,7 @@ interface Props {
   onSeek?: (frames: number) => void
   hideControls?: boolean
   onErrorFallback?: (reason: string) => void
+  muted?: boolean
 }
 
 type Status = 'off' | 'connecting' | 'live' | 'failed'
@@ -56,6 +57,7 @@ export function Whep({
   onSeek,
   hideControls = false,
   onErrorFallback,
+  muted,
 }: Props) {
   const video = useRef<HTMLVideoElement>(null)
   const [status, setStatus] = useState<Status>('off')
@@ -77,6 +79,13 @@ export function Whep({
 
   /** Sobe a cada falha e é o que faz o monitor tentar de novo. */
   const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    if (muted !== undefined && video.current) {
+      video.current.muted = muted
+      setMudo(muted)
+    }
+  }, [muted])
 
   /**
    * Bate o ponto enquanto a janela existe.
@@ -235,17 +244,18 @@ export function Whep({
         className="feed"
         autoPlay
         playsInline
-        muted={mudo}
-        onClick={() => {
-          // O navegador só permite som depois de um gesto. Qualquer clique no
-          // próprio monitor é um gesto claro do operador: habilita o áudio e
-          // evita depender de um botão minúsculo fora da imagem.
-          if (!temSom || !video.current) return
-          setMudo(false)
-          video.current.muted = false
-          video.current.volume = volumeRef.current
-          void video.current.play().catch(() => setReason('Clique em Ouvir para iniciar o monitor.'))
-        }}
+        muted={muted !== undefined ? muted : mudo}
+        onClick={
+          hideControls || muted !== undefined
+            ? undefined
+            : () => {
+                if (!temSom || !video.current) return
+                setMudo(false)
+                video.current.muted = false
+                video.current.volume = volumeRef.current
+                void video.current.play().catch(() => setReason('Clique em Ouvir para iniciar o monitor.'))
+              }
+        }
         onLoadedData={() => { setStatus('live'); setReason(null) }}
         hidden={status !== 'live'}
       />

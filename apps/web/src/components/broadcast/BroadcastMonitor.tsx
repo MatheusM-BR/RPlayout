@@ -197,24 +197,29 @@ export function BroadcastMonitor({
 
   return (
     <div className={`bg-surface-card border border-border-subtle p-space-sm rounded-xl flex flex-col justify-between shadow-sm ${className}`}>
-      {/* Header do Monitor */}
-      <div className="flex items-center justify-between pb-1">
-        <div className="flex items-center gap-1.5">
+      {/* Header do Monitor (Layout 2 Linhas conforme Padrão MCR) */}
+      <div className="flex items-center justify-between pb-1.5 gap-2">
+        <div className="flex items-center gap-2">
           <span
-            className={`w-2 h-2 rounded-full ${
-              isPgm ? 'bg-on-air-crimson animate-pulse' : 'bg-armed-amber'
+            className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+              isPgm ? 'bg-on-air-crimson animate-pulse shadow-[0_0_6px_rgba(255,59,48,0.7)]' : 'bg-armed-amber'
             }`}
-          ></span>
-          <span className="font-label-caps text-[9px] uppercase text-on-surface font-bold">
-            {title}
-          </span>
+          />
+          <div className="flex flex-col leading-tight">
+            <span className="font-headline-md text-[10px] uppercase text-on-surface font-bold tracking-wider">
+              {isPgm ? 'PGM • MONITOR' : 'PVW • PRÓXIMO'}
+            </span>
+            <span className="font-label-caps text-[8.5px] uppercase text-outline font-semibold tracking-wider">
+              {isPgm ? 'PRINCIPAL' : 'EVENTO'}
+            </span>
+          </div>
         </div>
 
-        <div className="flex items-center gap-1.5">
-          {/* Botão de Monitoramento de Áudio Exclusivo (PGM ou PVW) */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {/* Botão de Monitoramento de Áudio Exclusivo (PGM ou PVW) em 2 linhas */}
           <button
             onClick={handleToggleAudio}
-            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[8.5px] font-label-mono font-bold transition-all cursor-pointer border ${
+            className={`flex items-center gap-1.5 px-2 py-1 rounded text-center transition-all cursor-pointer border ${
               !effectiveMuted
                 ? isPgm
                   ? 'bg-on-air-crimson text-white border-on-air-crimson shadow-[0_0_8px_rgba(255,59,48,0.5)]'
@@ -227,24 +232,29 @@ export function BroadcastMonitor({
                 : `Monitorar áudio ${bus.toUpperCase()} (Exclusivo: desativa o outro canal)`
             }
           >
-            <span className="material-symbols-outlined text-[13px]">
+            <span className="material-symbols-outlined text-[15px]">
               {!effectiveMuted ? 'volume_up' : 'volume_off'}
             </span>
-            <span>{!effectiveMuted ? `ÁUDIO ${bus.toUpperCase()}` : `OUVIR ${bus.toUpperCase()}`}</span>
+            <div className="flex flex-col text-left font-label-mono leading-none">
+              <span className="text-[8px] font-bold uppercase">{!effectiveMuted ? 'ÁUDIO' : 'OUVIR'}</span>
+              <span className="text-[8px] font-bold uppercase mt-0.5">{bus.toUpperCase()}</span>
+            </div>
           </button>
 
           {/* Sonda de Qualidade de PGM (Fase C: Black/Silence/Freeze/Emergency Slate) */}
           {isPgm && <PgmProbeBanner compact={true} />}
 
-          <span
-            className={`font-label-mono text-[9px] border px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+          {/* Badge de Status no Ar em 2 linhas */}
+          <div
+            className={`flex flex-col items-center justify-center border px-2 py-1 rounded font-bold uppercase tracking-wider leading-none text-center select-none ${
               isPgm
-                ? 'bg-on-air-crimson/20 border-on-air-crimson/40 text-on-air-crimson'
-                : 'bg-armed-amber/20 border-armed-amber/40 text-armed-amber'
+                ? 'bg-on-air-crimson/20 border-on-air-crimson/50 text-on-air-crimson font-label-mono'
+                : 'bg-armed-amber/20 border-armed-amber/50 text-armed-amber font-label-mono'
             }`}
           >
-            {badgeText ?? (isPgm ? 'NO AR' : 'CUED')}
-          </span>
+            <span className="text-[8.5px] leading-none">{isPgm ? 'NO' : 'ARMADO'}</span>
+            <span className="text-[8.5px] leading-none mt-0.5">{isPgm ? 'AR' : 'CUED'}</span>
+          </div>
         </div>
       </div>
 
@@ -260,6 +270,7 @@ export function BroadcastMonitor({
             durationFrames={durationFrames}
             onSeek={onSeek}
             hideControls={true}
+            muted={effectiveMuted}
             onErrorFallback={() => setWebrtcFailed(true)}
             onWatching={
               onWatching
@@ -298,7 +309,7 @@ export function BroadcastMonitor({
                 src={`/api/assets/${asset.id}/media`}
                 poster={`/api/assets/${asset.id}/thumbnail.svg`}
                 preload="auto"
-                muted={isMuted}
+                muted={effectiveMuted}
                 playsInline
                 className="w-full h-full object-contain cursor-pointer"
                 onClick={isPvw ? togglePlayPause : undefined}
@@ -311,7 +322,7 @@ export function BroadcastMonitor({
                   if (videoRef.current) {
                     setVideoDurationSec(videoRef.current.duration || (durationFrames / fps))
                     videoRef.current.volume = volume
-                    videoRef.current.muted = isMuted
+                    videoRef.current.muted = effectiveMuted
                   }
                 }}
                 onEnded={() => {
@@ -460,7 +471,7 @@ export function BroadcastMonitor({
 
             {/* L3: Tarja / Lower-Third de Apresentador ou Matéria */}
             {cgState.lowerThirdActive && (
-              <div className={`absolute ${cgState.layer2Ticker ? 'bottom-9' : 'bottom-6'} left-2.5 z-20 pointer-events-none select-none max-w-[85%] transition-all`}>
+              <div className={`absolute ${cgState.layer2Ticker ? 'bottom-11' : 'bottom-6'} left-2.5 z-20 pointer-events-none select-none max-w-[85%] transition-all animate-in fade-in slide-in-from-left duration-300`}>
                 <div className="bg-gradient-to-r from-surface-card/95 via-surface-panel/90 to-surface-card/80 border-l-2 border-on-air-crimson px-2.5 py-1 rounded-r shadow-2xl backdrop-blur-md">
                   <div className="font-headline-md text-[11px] font-bold text-white tracking-wide uppercase leading-tight">
                     {cgState.lowerThirdTitle}
@@ -474,22 +485,36 @@ export function BroadcastMonitor({
               </div>
             )}
 
-            {/* L2: Ticker / Crawl de Notícias Contínuo */}
+            {/* L2: Ticker / Crawl de Notícias Contínuo com Scroll Fluído */}
             {cgState.layer2Ticker && (
-              <div className="absolute bottom-4 inset-x-0 z-20 pointer-events-none select-none h-5 bg-surface-base/90 border-t border-border-subtle flex items-center overflow-hidden">
+              <div className="absolute bottom-5 inset-x-0 z-20 pointer-events-none select-none h-5 bg-surface-base/95 border-t border-border-subtle flex items-center overflow-hidden">
                 {cgState.breakingNewsActive ? (
-                  <span className="px-1.5 h-full bg-on-air-crimson text-white font-label-caps text-[8px] font-bold flex items-center shrink-0 animate-pulse">
+                  <span className="px-2 h-full bg-on-air-crimson text-white font-label-caps text-[8px] font-bold flex items-center shrink-0 z-10 animate-pulse shadow-sm">
                     URGENTE
                   </span>
                 ) : (
-                  <span className="px-1.5 h-full bg-primary/40 text-primary font-label-caps text-[8px] font-bold flex items-center shrink-0">
+                  <span className="px-2 h-full bg-primary/40 text-primary font-label-caps text-[8px] font-bold flex items-center shrink-0 z-10">
                     NOTÍCIAS
                   </span>
                 )}
-                <div className="flex-1 whitespace-nowrap overflow-hidden">
-                  <div className="inline-block font-body-sm text-[10px] text-on-surface font-medium pl-3">
-                    {cgState.tickerText}
+                <div className="flex-1 whitespace-nowrap overflow-hidden relative h-full flex items-center">
+                  <div
+                    className="inline-block font-body-sm text-[10px] text-on-surface font-medium pl-4"
+                    style={{
+                      animation: 'broadcastTickerScroll 20s linear infinite',
+                      whiteSpace: 'nowrap',
+                      display: 'inline-block',
+                      willChange: 'transform',
+                    }}
+                  >
+                    {cgState.tickerText} ••• {cgState.tickerText}
                   </div>
+                  <style>{`
+                    @keyframes broadcastTickerScroll {
+                      0% { transform: translateX(50%); }
+                      100% { transform: translateX(-100%); }
+                    }
+                  `}</style>
                 </div>
               </div>
             )}

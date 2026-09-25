@@ -2860,7 +2860,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     await runtime.refresh()
     onChange()
-    return { plan: { ...plan, items: chosen }, ...snapshot(app, runtime) }
+    const targetItems = await listItems(app.db, id)
+    const targetAssets = await assetMap(app.db)
+    const targetRundown = await getRundown(app.db, id)
+    const targetView = targetRundown ? buildView(targetRundown, runtime.channel, targetItems, targetAssets, null, null) : runtime.view
+    return { plan: { ...plan, items: chosen }, ...snapshot(app, runtime), view: targetView }
   })
 
   // ---- as-run ------------------------------------------------------------

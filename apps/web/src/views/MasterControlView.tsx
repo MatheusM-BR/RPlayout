@@ -22,6 +22,7 @@ import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
 import { DynamicCgSecondaryBar, type DynamicCgState } from '../components/broadcast/DynamicCgSecondaryBar.js'
 import { MultiTrackTimeline } from '../components/broadcast/MultiTrackTimeline.js'
 import { ConflictDrawer } from '../components/broadcast/ConflictDrawer.js'
+import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
 
 interface Props {
   channel: Channel
@@ -140,7 +141,23 @@ export function MasterControlView({
   const [isConflictDrawerOpen, setIsConflictDrawerOpen] = useState(false)
 
   // Fase D: Estado ao vivo do CG Dinâmico e Marcadores SCTE-35 no PGM
-  const [activeCgState, setActiveCgState] = useState<DynamicCgState | undefined>(undefined)
+  const DEFAULT_CG_STATE: DynamicCgState = {
+    layer0Logo: true,
+    layer1Clock: true,
+    layer2Ticker: false,
+    layer3LowerThird: false,
+    tickerText: 'URGENTE: Congresso aprova novo marco regulatório das telecomunicações em Brasília',
+    breakingNewsActive: false,
+    lowerThirdTitle: 'RODRIGO SILVEIRA',
+    lowerThirdSubtitle: 'Correspondente Internacional • Genebra',
+    lowerThirdActive: false,
+    lowerThirdTimeRemaining: 0,
+    scte35Active: false,
+    scte35Phase: 'IDLE',
+    scte35TimeRemaining: 0,
+    scte35EventId: 55102,
+  }
+  const [activeCgState, setActiveCgState] = useState<DynamicCgState>(DEFAULT_CG_STATE)
 
   // Multiseleção na playlist (Ctrl / Shift)
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
@@ -1016,18 +1033,8 @@ export function MasterControlView({
                           </div>
                         </div>
 
-                        {/* Ações Rápidas do Clip (CUE e Inserir na Grade) */}
+                        {/* Ações Rápidas do Clip (Inserir na Grade) */}
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleMamPreview(asset)
-                            }}
-                            className="p-1 rounded bg-surface-card hover:bg-surface-panel border border-border-subtle text-armed-amber cursor-pointer"
-                            title="Preview no PVW"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">visibility</span>
-                          </button>
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
@@ -1631,57 +1638,33 @@ export function MasterControlView({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-label-caps text-label-caps text-outline block mb-1">
-                    TIPO DE SINAL
-                  </label>
-                  <select
-                    value={newLiveFamily}
-                    onChange={(e) => {
-                      const fam = e.target.value as any
-                      setNewLiveFamily(fam)
-                      if (fam === 'SDI') setNewLiveRef('sdi:0')
-                      else if (fam === 'NDI') setNewLiveRef('ndi:ESTUDIO-A-MASTER')
-                      else if (fam === 'SRT') setNewLiveRef('srt://127.0.0.1:9000?mode=listener')
-                      else setNewLiveRef('http://localhost:8889/live_cam')
-                    }}
-                    className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-body-sm focus:border-primary focus:outline-none cursor-pointer"
-                  >
-                    <option value="SDI">DeckLink SDI / HDMI</option>
-                    <option value="NDI">NDI 5.6 (Rede IP)</option>
-                    <option value="SRT">SRT / RTMP Stream</option>
-                    <option value="WEBRTC">WebRTC Ingest</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="font-label-caps text-label-caps text-outline block mb-1">
-                    DURAÇÃO ESTIMADA (MIN)
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={720}
-                    value={newLiveDurationMin}
-                    onChange={(e) => setNewLiveDurationMin(Math.max(1, Number(e.target.value) || 1))}
-                    className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-body-sm focus:border-primary focus:outline-none"
-                  />
-                </div>
-              </div>
-
               <div>
                 <label className="font-label-caps text-label-caps text-outline block mb-1">
-                  REFERÊNCIA / ENDEREÇO DA FONTE
+                  DURAÇÃO ESTIMADA (MINUTOS)
                 </label>
                 <input
-                  type="text"
-                  value={newLiveRef}
-                  onChange={(e) => setNewLiveRef(e.target.value)}
-                  className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-mono text-[13px] focus:border-primary focus:outline-none"
-                  placeholder="sdi:0, ndi:Nome, srt://..."
+                  type="number"
+                  min={1}
+                  max={720}
+                  value={newLiveDurationMin}
+                  onChange={(e) => setNewLiveDurationMin(Math.max(1, Number(e.target.value) || 1))}
+                  className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-body-sm focus:border-primary focus:outline-none"
                 />
               </div>
+
+              {/* Seletor Modular de Protocolos Canônicos (NDI, SDI, SRT, RTMP) */}
+              <CanonicalProtocolSelector
+                mode="INPUT"
+                defaultKind="SDI"
+                initialUri={newLiveRef}
+                onChange={(res) => {
+                  setNewLiveRef(res.targetUri)
+                  setNewLiveFamily(res.kind as any)
+                  if (!newLiveTitle || newLiveTitle.startsWith('DeckLink') || newLiveTitle.startsWith('NDI') || newLiveTitle.startsWith('SRT')) {
+                    if (res.nameRecommendation) setNewLiveTitle(res.nameRecommendation)
+                  }
+                }}
+              />
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-subtle">
