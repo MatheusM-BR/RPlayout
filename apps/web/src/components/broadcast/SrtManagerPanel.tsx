@@ -10,7 +10,8 @@ export interface SrtLinkItem {
   passphrase?: string
   pbkeylen?: 16 | 24 | 32
   streamId?: string
-  telemetry: SrtTelemetry
+  /** Ausente até o socket real entregar a primeira sonda. */
+  telemetry?: SrtTelemetry
   role: 'PRIMARY' | 'BACKUP' | 'CONTINGENCY'
   lastActivity: string
 }
@@ -22,103 +23,9 @@ interface SrtManagerPanelProps {
   onMessage?: (msg: string) => void
 }
 
-const DEFAULT_LINKS: SrtLinkItem[] = [
-  {
-    id: 'srt-link-01',
-    name: 'LINK JORNALISMO EXTERNO 01 (MOCHILA)',
-    endpoint: 'srt://187.32.40.11:9000',
-    mode: 'caller',
-    latencyMs: 800,
-    passphrase: 'RPlayout#SecureKey2026!',
-    pbkeylen: 32,
-    streamId: '#!::r=live/rep01,m=publish',
-    role: 'PRIMARY',
-    lastActivity: 'Há 2 segundos',
-    telemetry: {
-      rttMs: 42.4,
-      packetLossPercent: 0.12,
-      bitrateKbps: 5420,
-      packetsDropped: 0,
-      packetsRetransmitted: 14,
-      linkBandwidthKbps: 18500,
-      bufferMs: 792,
-      reconnectCount: 0,
-      linkState: 'OPTIMAL',
-    },
-  },
-  {
-    id: 'srt-link-02',
-    name: 'RECEPÇÃO SATÉLITE DVB-S2 (REDE NACIONAL)',
-    endpoint: 'srt://0.0.0.0:9100',
-    mode: 'listener',
-    latencyMs: 1200,
-    passphrase: 'RedeNacional@Sat2026AES',
-    pbkeylen: 32,
-    streamId: '#!::r=feed/sat-main',
-    role: 'PRIMARY',
-    lastActivity: 'Há 1 segundo',
-    telemetry: {
-      rttMs: 18.2,
-      packetLossPercent: 0.0,
-      bitrateKbps: 8450,
-      packetsDropped: 0,
-      packetsRetransmitted: 2,
-      linkBandwidthKbps: 45000,
-      bufferMs: 1198,
-      reconnectCount: 0,
-      linkState: 'OPTIMAL',
-    },
-  },
-  {
-    id: 'srt-link-03',
-    name: 'ENLACE ESTÚDIO REMOTO BRASÍLIA',
-    endpoint: 'srt://201.88.12.94:9200',
-    mode: 'rendezvous',
-    latencyMs: 350,
-    passphrase: 'Bsb#EstudioDirect5G',
-    pbkeylen: 32,
-    streamId: '#!::r=bsb/pgm',
-    role: 'PRIMARY',
-    lastActivity: 'Há 4 segundos',
-    telemetry: {
-      rttMs: 68.7,
-      packetLossPercent: 2.4,
-      bitrateKbps: 6200,
-      packetsDropped: 4,
-      packetsRetransmitted: 42,
-      linkBandwidthKbps: 12400,
-      bufferMs: 340,
-      reconnectCount: 1,
-      linkState: 'DEGRADED',
-    },
-  },
-  {
-    id: 'srt-link-04',
-    name: 'DISTRIBUIÇÃO CDN / CLOUD TRANSMITTER',
-    endpoint: 'srt://origin.playout-cdn.net:10080',
-    mode: 'caller',
-    latencyMs: 2000,
-    passphrase: 'CdnDistributionSecret99',
-    pbkeylen: 32,
-    streamId: '#!::r=cdn/feed_out',
-    role: 'BACKUP',
-    lastActivity: 'Há 15 segundos',
-    telemetry: {
-      rttMs: 245.0,
-      packetLossPercent: 9.8,
-      bitrateKbps: 2800,
-      packetsDropped: 62,
-      packetsRetransmitted: 198,
-      linkBandwidthKbps: 4200,
-      bufferMs: 1820,
-      reconnectCount: 3,
-      linkState: 'CRITICAL',
-    },
-  },
-]
-
 export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
-  links = DEFAULT_LINKS,
+  // Não mostrar enlaces de demonstração como se fossem desta instalação.
+  links = [],
   onReconnectLink,
   onUpdateLatency,
   onMessage,
@@ -173,7 +80,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
           <div className="px-2 py-1 rounded bg-status-ok/10 border border-status-ok/30 flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span>
             <span className="text-status-ok font-bold">
-              {links.filter((l) => l.telemetry.linkState === 'OPTIMAL').length} ÓTIMOS
+              {links.filter((l) => l.telemetry?.linkState === 'OPTIMAL').length} ÓTIMOS
             </span>
           </div>
         </div>
@@ -182,9 +89,16 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
       {/* 2. GRID DE CARDS DE ENLACE SRT */}
       <div className="p-3.5 flex-1 min-h-0 overflow-y-auto broadcast-scroll">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+          {links.length === 0 && (
+            <div className="md:col-span-2 rounded-lg border border-dashed border-border-strong bg-surface-base p-8 text-center">
+              <span className="material-symbols-outlined text-[32px] text-outline">satellite_alt</span>
+              <p className="mt-2 font-headline-md text-[14px] font-bold text-on-surface">Nenhum link SRT configurado</p>
+              <p className="mt-1 font-label-mono text-[10px] text-outline">Cadastre uma fonte SRT em Configurações para acompanhar a telemetria real do socket.</p>
+            </div>
+          )}
           {links.map((link) => {
             const isRevealed = Boolean(revealedKeys[link.id])
-            const statusConfig = getSrtStateConfig(link.telemetry.linkState)
+            const statusConfig = getSrtStateConfig(link.telemetry?.linkState ?? 'DISCONNECTED')
 
             return (
               <div
@@ -263,7 +177,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                   <div className="flex flex-col p-1">
                     <span className="text-outline text-[9px] uppercase font-label-caps">RTT (Latency)</span>
                     <span className="text-on-surface font-bold text-[13px]">
-                      {link.telemetry.rttMs.toFixed(1)} <span className="text-[9.5px] text-outline font-normal">ms</span>
+                      {link.telemetry ? link.telemetry.rttMs.toFixed(1) : '—'} <span className="text-[9.5px] text-outline font-normal">ms</span>
                     </span>
                   </div>
 
@@ -272,14 +186,14 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                     <span className="text-outline text-[9px] uppercase font-label-caps">Packet Loss</span>
                     <span
                       className={`font-bold text-[13px] ${
-                        link.telemetry.packetLossPercent > 5
+                        (link.telemetry?.packetLossPercent ?? 0) > 5
                           ? 'text-red-400'
-                          : link.telemetry.packetLossPercent > 1
+                          : (link.telemetry?.packetLossPercent ?? 0) > 1
                           ? 'text-amber-400'
                           : 'text-status-ok-bright'
                       }`}
                     >
-                      {link.telemetry.packetLossPercent.toFixed(2)} <span className="text-[9.5px] font-normal">%</span>
+                      {link.telemetry ? link.telemetry.packetLossPercent.toFixed(2) : '—'} <span className="text-[9.5px] font-normal">%</span>
                     </span>
                   </div>
 
@@ -287,7 +201,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                   <div className="flex flex-col p-1">
                     <span className="text-outline text-[9px] uppercase font-label-caps">Bitrate Efetivo</span>
                     <span className="text-accent-ice-bright font-bold text-[13px]">
-                      {(link.telemetry.bitrateKbps / 1000).toFixed(2)} <span className="text-[9.5px] font-normal">Mbps</span>
+                      {link.telemetry ? (link.telemetry.bitrateKbps / 1000).toFixed(2) : '—'} <span className="text-[9.5px] font-normal">Mbps</span>
                     </span>
                   </div>
 
@@ -295,10 +209,10 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                   <div className="flex flex-col p-1">
                     <span className="text-outline text-[9px] uppercase font-label-caps">Reconexões</span>
                     <span className="text-on-surface font-bold text-[13px] flex items-center gap-1">
-                      {link.telemetry.reconnectCount}
-                      {link.telemetry.packetsDropped > 0 && (
+                      {link.telemetry?.reconnectCount ?? '—'}
+                      {(link.telemetry?.packetsDropped ?? 0) > 0 && (
                         <span className="text-[9px] text-red-400 font-normal">
-                          ({link.telemetry.packetsDropped} drop)
+                          ({link.telemetry?.packetsDropped} drop)
                         </span>
                       )}
                     </span>

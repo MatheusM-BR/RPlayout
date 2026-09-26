@@ -326,6 +326,12 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
       }
     }
     const reasonKey = entry.endedBy ?? 'EOF'
+    if (reasonKey === 'RESTART') {
+      return {
+        label: 'ENCERRADO NO REINÍCIO',
+        style: 'bg-slate-500/20 text-slate-300 border-slate-500/40',
+      }
+    }
     if (reasonKey === 'STOP' || reasonKey === 'FAIL' || reasonKey === 'ABORT') {
       return {
         label: 'FALHA',
@@ -339,8 +345,16 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
       }
     }
     if (reasonKey === 'NEXT') {
+      const planned = entry.plannedFrames ?? 0
+      const aired = entry.airedFrames ?? planned
+      if (planned > 0 && aired >= planned * 0.95) {
+        return {
+          label: 'EXIBIDO POR INTEIRO',
+          style: 'bg-status-ok/20 text-status-ok-bright border-status-ok/40',
+        }
+      }
       return {
-        label: 'TRUNCADO',
+        label: 'INTERROMPIDO',
         style: 'bg-armed-amber/20 text-armed-amber border-armed-amber/40',
       }
     }

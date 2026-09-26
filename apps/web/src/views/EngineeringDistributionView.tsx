@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react'
-import type { Channel } from '@rplayout/protocol'
+import type { Channel, ManagedLiveSource, RedundantStreamPair, SrtTelemetry } from '@rplayout/protocol'
+import type { Live, Monitors } from '../types.js'
+import { api } from '../api.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { OperationalMultiview } from '../components/broadcast/OperationalMultiview.js'
-import { SrtManagerPanel } from '../components/broadcast/SrtManagerPanel.js'
+import type { MultiviewSourceItem } from '../components/broadcast/OperationalMultiview.js'
+import { SrtManagerPanel, type SrtLinkItem } from '../components/broadcast/SrtManagerPanel.js'
 import { RedundancyFailoverPanel } from '../components/broadcast/RedundancyFailoverPanel.js'
 import { ContinuityCacheBadge } from '../components/broadcast/ContinuityCacheBadge.js'
 import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
@@ -18,9 +21,28 @@ interface Props {
   sessionRole?: string
   authRequired?: boolean
   onOpenSettings?: () => void
+  live?: Live | null
+  monitors?: Monitors | null
 }
 
 type EngineeringSection = 'DASHBOARD' | 'MULTIVIEW' | 'SRT' | 'REDUNDANCY' | 'OUTPUTS' | 'AUTOMATION' | 'LOGS'
+type HostMetrics = Awaited<ReturnType<typeof api.hostMetrics>>
+type ProcessSnapshot = Awaited<ReturnType<typeof api.processes>>['processes']
+type OutputSnapshot = Awaited<ReturnType<typeof api.outputs>>['outputs']
+
+const percent = (value: number | null) => value === null ? 'N/D' : `${value.toFixed(value % 1 ? 1 : 0)}%`
+const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`
+
+/** A referência do preview é a URI canônica que o engine recebeu da fonte. */
+function isSharedPreviewSource(live: Live | null, source: ManagedLiveSource): boolean {
+  const preview = live?.transport.preview
+  if (preview?.kind !== 'SOURCE') return false
+  // NDI/SDI/OMT podem variar apenas em caixa ou espaços entre a descoberta,
+  // o cadastro e o engine. Comparar o texto cru fazia o multiview perder a
+  // imagem apesar de o mesmo PVW estar rodando.
+  const canonical = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase()
+  return canonical(preview.source) === canonical(source.targetUrl)
+}
 
 export function EngineeringDistributionView({
   channel,
@@ -31,52 +53,163 @@ export function EngineeringDistributionView({
   sessionRole = 'Operador Master',
   authRequired = false,
   onOpenSettings,
+  live = null,
+  monitors = null,
 }: Props) {
   // Seção ativa da visualização de engenharia
   const [activeSection, setActiveSection] = useState<EngineeringSection>('DASHBOARD')
+  const [liveSources, setLiveSources] = useState<ManagedLiveSource[]>([])
+  const [srtTelemetry, setSrtTelemetry] = useState<Record<string, SrtTelemetry>>({})
+  const [monitorLoadError, setMonitorLoadError] = useState<string | null>(null)
+  const [hostMetrics, setHostMetrics] = useState<HostMetrics | null>(null)
+  const [processes, setProcesses] = useState<ProcessSnapshot>([])
+  const [outputs, setOutputs] = useState<OutputSnapshot>([])
+  // Mantido somente durante a remoção gradual do painel legado, que não é renderizado.
+  const [legacySinks, setLegacySinks] = useState({ sdi: false, ndi: false, srt: false, whep: false })
+  const [engineeringAction, setEngineeringAction] = useState<'restart' | 'cache' | null>(null)
 
-  // Sinks state
-  const [sinks, setSinks] = useState({
-    sdi: true,
-    ndi: true,
-    srt: true,
-    whep: true,
+  useEffect(() => {
+    let active = true
+    const refresh = async () => {
+      try {
+        const [sources, telemetry, metrics, processSnapshot, outputSnapshot] = await Promise.all([api.liveSources(channel.id), api.srtTelemetry(), api.hostMetrics(), api.processes(), api.outputs(channel.id)])
+        if (!active) return
+        setLiveSources(sources)
+        setSrtTelemetry(telemetry)
+        setHostMetrics(metrics)
+        setProcesses(processSnapshot.processes)
+        setOutputs(outputSnapshot.outputs)
+        setMonitorLoadError(null)
+      } catch (error) {
+        if (active) setMonitorLoadError(error instanceof Error ? error.message : 'Não foi possível ler as fontes de entrada.')
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 3000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [channel.id])
+
+  const gpu = hostMetrics?.gpu ?? null
+  const engineProcess = processes.find((process) => process.kind === 'ENGINE' && process.channelId === channel.id)
+  const engineAlert = Boolean(live?.alerts.some((alert) => alert.kind === 'ENGINE')) || engineProcess?.state === 'error'
+
+  const multiviewSources: MultiviewSourceItem[] = liveSources.map((source) => {
+    const telemetry = source.kind === 'SRT' ? srtTelemetry[source.id] : undefined
+    const signalLocked = telemetry?.linkState === 'OPTIMAL'
+    return {
+      id: source.id,
+      name: source.name,
+      role: source.role === 'BACKUP' ? 'BACKUP' : 'PRIMARY',
+      kind: source.kind,
+      targetUrl: source.targetUrl,
+      format: 'Aguardando probe',
+      fps: 0,
+      tally: source.enabled ? 'CUED' : 'OFFLINE',
+      // Sem sonda de SDI/NDI/RTMP a UI não deduz lock apenas por a fonte estar
+      // cadastrada. SRT só fica LOCKED quando o manager entrega telemetria.
+      syncState: !source.enabled || !telemetry ? 'LOST' : signalLocked ? 'LOCKED' : 'DRIFT',
+      audioLevels: { leftDb: -60, rightDb: -60, peakLeftDb: -60, peakRightDb: -60 },
+      srtTelemetry: telemetry,
+      // PVW é a única renderização de entrada sob demanda. Se ela já abriu
+      // esta fonte, o Monitor lê o mesmo WHEP em vez de criar outro decoder.
+      whepPath: isSharedPreviewSource(live, source) ? monitors?.preview ?? null : null,
+      whepPort: monitors?.port,
+    }
   })
+  const srtLinks: SrtLinkItem[] = liveSources
+    .filter((source) => source.kind === 'SRT')
+    .map((source) => {
+      const telemetry = srtTelemetry[source.id]
+      return {
+        id: source.id,
+        name: source.name,
+        endpoint: source.targetUrl,
+        mode: source.srt?.mode ?? 'listener',
+        latencyMs: source.srt?.latencyMs ?? 0,
+        streamId: source.srt?.streamId,
+        pbkeylen: source.srt?.pbkeylen,
+        role: source.role === 'BACKUP' ? 'BACKUP' : 'PRIMARY',
+        lastActivity: telemetry?.timestamp ? new Date(telemetry.timestamp).toLocaleTimeString('pt-BR') : 'Sem telemetria recebida',
+        telemetry,
+      }
+    })
+  const redundancyPair: RedundantStreamPair | undefined = (() => {
+    const primary = liveSources.find((source) => source.kind === 'SRT' && source.role === 'PRIMARY' && source.pairedSourceId)
+    const backup = primary?.pairedSourceId ? liveSources.find((source) => source.id === primary.pairedSourceId && source.kind === 'SRT') : undefined
+    if (!primary || !backup) return undefined
+    const threshold = primary.failoverThresholds
+    return {
+      id: `${primary.id}:${backup.id}`,
+      name: `${primary.name} / ${backup.name}`,
+      role: 'INGEST',
+      primary: { id: primary.id, label: primary.name, kind: 'SRT', uri: primary.targetUrl, priority: 1, enabled: primary.enabled },
+      backup: { id: backup.id, label: backup.name, kind: 'SRT', uri: backup.targetUrl, priority: 2, enabled: backup.enabled },
+      policy: {
+        signalLossTimeoutMs: threshold.signalLossTimeoutMs,
+        packetLossThresholdPercent: threshold.maxPacketLossPercent,
+        rttMultiplierThreshold: threshold.maxRttMultiplier,
+        qualificationTimeMs: 1000,
+        autoRevertToPrimary: primary.autoFailoverEnabled,
+        primaryHysteresisStabilizationMs: 30_000,
+        transitionStrategy: 'FREEZE_FRAME_HOLD',
+      },
+      runtimeState: {
+        activeStream: 'PRIMARY',
+        primaryHealth: srtTelemetry[primary.id] ?? null,
+        backupHealth: srtTelemetry[backup.id] ?? null,
+        lastSwitchTimestamp: null,
+        lastSwitchReason: null,
+        switchCount: 0,
+      },
+    }
+  })()
 
   // Logs terminal state
   const [logFilter, setLogFilter] = useState<'ALL' | 'WARN' | 'ENGINE'>('ALL')
   const [isLogPaused, setIsLogPaused] = useState(false)
-  const [logs, setLogs] = useState<Array<{ id: number; time: string; level: 'INFO' | 'WARN' | 'OK'; msg: string }>>([
-    { id: 1, time: '20:51:24.050', level: 'OK', msg: 'SDI Port 1: Blackmagic 8K Pro Genlock locked to Blackburst' },
-    { id: 2, time: '20:51:23.980', level: 'INFO', msg: 'NDI Output: 1920x1080@59.94fps multicast announced on 10.0.4.1' },
-    { id: 3, time: '20:51:22.410', level: 'OK', msg: 'SRT Caller: Connected to CDN ingest (RTT 1.8ms, Bitrate 25.4 Mbps)' },
-    { id: 4, time: '20:51:20.100', level: 'WARN', msg: 'Audio True-Peak detected at -1.1 dBTP (EBU R128 limit -1.0 dBTP)' },
-    { id: 5, time: '20:51:15.020', level: 'OK', msg: 'Engine Playout Core: Cadence locked 59.94 FPS, dropped: 0' },
-  ])
+  const [logs, setLogs] = useState<Array<{ id: string; time: string; level: 'INFO' | 'WARN' | 'OK'; msg: string }>>([])
 
   useEffect(() => {
     if (isLogPaused) return
-    const interval = setInterval(() => {
-      const now = new Date()
-      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}.${String(now.getMilliseconds()).padStart(3, '0')}`
-      setLogs((prev) => [
-        {
-          id: Date.now(),
-          time: timeStr,
-          level: 'INFO',
-          msg: `Sync pulse: 59.94 FPS continuous • VRAM 3.1GB • Buffer Ring 100% OK`,
-        },
-        ...prev.slice(0, 40),
-      ])
-    }, 5000)
-    return () => clearInterval(interval)
-  }, [isLogPaused])
+    const now = new Date()
+    const time = now.toLocaleTimeString('pt-BR', { hour12: false })
+    setLogs(processes.map((process) => ({
+      id: `${process.id}:${process.state}:${process.pid ?? 'none'}`,
+      time,
+      level: process.state === 'error' || process.state === 'stopped' ? 'WARN' : process.state === 'running' ? 'OK' : 'INFO',
+      msg: `${process.kind} ${process.channelId ? `(${process.channelId}) ` : ''}${process.state.toUpperCase()}${process.pid ? ` • PID ${process.pid}` : ''}${process.memoryBytes === null ? '' : ` • RAM ${(process.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}`,
+    })))
+  }, [processes, isLogPaused])
 
   const filteredLogs = logs.filter((l) => {
     if (logFilter === 'WARN') return l.level === 'WARN'
     if (logFilter === 'ENGINE') return l.msg.includes('Engine') || l.msg.includes('Sync')
     return true
   })
+
+  const restartEngine = async () => {
+    setEngineeringAction('restart')
+    try {
+      await api.restartChannel(channel.id)
+      onMessage('Reinicialização do engine solicitada para este canal.')
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : 'Não foi possível reiniciar o engine.')
+    } finally {
+      setEngineeringAction(null)
+    }
+  }
+
+  const warmCache = async () => {
+    setEngineeringAction('cache')
+    try {
+      const result = await api.warmContinuityCache()
+      onMessage(`Cache de continuidade atualizado: ${result.cached48h} itens prontos para 48h; ${result.missing48h} pendentes.`)
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : 'Não foi possível atualizar o cache de continuidade.')
+    } finally {
+      setEngineeringAction(null)
+    }
+  }
 
   return (
     <div className="bg-surface-base text-on-surface select-none font-body-md antialiased h-screen overflow-hidden flex flex-col">
@@ -107,19 +240,21 @@ export function EngineeringDistributionView({
                     GPU NVENC LOAD
                   </span>
                   <span className="font-label-mono text-[10px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
-                    52°C
+                    {percent(hostMetrics?.gpu.utilizationPercent ?? null)}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mb-1">
                   <div className="font-timecode-display text-[20px] font-bold text-accent-ice-bright tracking-tight leading-none">
-                    34<span className="text-[13px] text-outline font-normal">%</span>
+                    {hostMetrics?.gpu.utilizationPercent === null || !hostMetrics ? '—' : percent(hostMetrics.gpu.utilizationPercent)}
                   </div>
                   <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">
-                    VRAM: 3.1 / 12 GB
+                    {gpu?.memoryUsedMiB !== null && gpu?.memoryUsedMiB !== undefined && gpu?.memoryTotalMiB !== null && gpu?.memoryTotalMiB !== undefined
+                      ? `VRAM ${gpu.memoryUsedMiB}/${gpu.memoryTotalMiB} MiB${gpu.temperatureC === null ? '' : ` • ${gpu.temperatureC}°C`}`
+                      : gpu?.error ?? 'Aguardando coleta'}
                   </span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
-                  <div className="bg-accent-ice h-full rounded-full transition-all duration-500" style={{ width: '34%' }}></div>
+                  <div className="bg-accent-ice h-full rounded-full" style={{ width: `${hostMetrics?.gpu.utilizationPercent ?? 0}%` }}></div>
                 </div>
               </div>
 
@@ -131,17 +266,17 @@ export function EngineeringDistributionView({
                     HOST CPU
                   </span>
                   <span className="font-label-mono text-[10px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
-                    46°C
+                    {percent(hostMetrics?.cpu.percent ?? null)}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mb-1">
                   <div className="font-timecode-display text-[20px] font-bold text-status-ok-bright tracking-tight leading-none">
-                    18<span className="text-[13px] text-outline font-normal">%</span>
+                    {hostMetrics?.cpu.percent === null || !hostMetrics ? '—' : percent(hostMetrics.cpu.percent)}
                   </div>
-                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">Load: 1.12, 1.08</span>
+                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{hostMetrics ? `${hostMetrics.cpu.cores} núcleos • amostra a cada 3 s` : 'Aguardando coleta'}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
-                  <div className="bg-status-ok h-full rounded-full transition-all duration-500" style={{ width: '18%' }}></div>
+                  <div className="bg-status-ok h-full rounded-full" style={{ width: `${hostMetrics?.cpu.percent ?? 0}%` }}></div>
                 </div>
               </div>
 
@@ -153,39 +288,39 @@ export function EngineeringDistributionView({
                     MEMÓRIA RAM ECC
                   </span>
                   <span className="font-label-mono text-[10px] text-accent-ice font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
-                    DDR4
+                    {percent(hostMetrics?.memory.percent ?? null)}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mb-1">
                   <div className="font-timecode-display text-[20px] font-bold text-on-surface tracking-tight leading-none">
-                    4.2<span className="text-[13px] text-outline font-normal"> / 16 GB</span>
+                    {hostMetrics ? gib(hostMetrics.memory.usedBytes) : '—'}
                   </div>
-                  <span className="font-label-mono text-[10px] text-status-ok font-medium">1.2 GB Buffer Livre</span>
+                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{hostMetrics ? `${gib(hostMetrics.memory.freeBytes)} livre / ${gib(hostMetrics.memory.totalBytes)}` : 'Aguardando coleta'}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
-                  <div className="bg-armed-amber h-full rounded-full transition-all duration-500" style={{ width: '26%' }}></div>
+                  <div className="bg-armed-amber h-full rounded-full" style={{ width: `${hostMetrics?.memory.percent ?? 0}%` }}></div>
                 </div>
               </div>
 
-              {/* Card 4: ENGINE & JITTER */}
+              {/* Card 4: processo do engine. Jitter pertence à telemetria do link, não ao PID. */}
               <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-label-caps text-[10px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-status-ok-bright text-[15px]">speed</span>
-                    ENGINE &amp; JITTER
+                    ENGINE &amp; PROCESSO
                   </span>
-                  <span className="font-label-caps text-[9px] text-status-ok font-bold bg-status-ok/10 border border-status-ok/30 px-1.5 py-0.5 rounded flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span> LOCKED
+                  <span className={`font-label-caps text-[9px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok animate-pulse'}`}></span>{engineAlert ? 'ALERTA' : engineProcess?.state === 'running' ? 'ATIVO' : 'SEM ALERTA'}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mb-1">
                   <div className="font-timecode-display text-[20px] font-bold text-status-ok tracking-tight leading-none">
-                    59.94<span className="text-[13px] font-normal text-outline"> FPS</span>
+                    {engineProcess?.pid ? `PID ${engineProcess.pid}` : '—'}
                   </div>
-                  <span className="font-label-mono text-[10px] text-status-ok-bright font-medium">Jitter: 0.02ms</span>
+                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : 'Engine não iniciado'}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
-                  <div className="bg-status-ok h-full rounded-full" style={{ width: '100%' }}></div>
+                  <div className={`${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok'} h-full rounded-full`} style={{ width: engineProcess?.state === 'running' ? '100%' : engineProcess ? '45%' : '0%' }}></div>
                 </div>
               </div>
             </div>
@@ -193,32 +328,34 @@ export function EngineeringDistributionView({
             {/* Ações Rápidas de Engenharia */}
             <div className="flex items-center justify-end gap-2 shrink-0 border-t lg:border-t-0 lg:border-l border-border-subtle pt-2 lg:pt-0 lg:pl-3">
               <button
-                onClick={() => onMessage('Pipeline de renderização reiniciado sem perda de sinal')}
+                disabled={engineeringAction !== null}
+                onClick={() => void restartEngine()}
                 className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel hover:bg-surface-container text-on-surface text-[10.5px] font-label-caps font-bold rounded-lg border border-border-subtle hover:border-border-strong transition-all shadow-sm cursor-pointer"
               >
                 <span className="material-symbols-outlined text-armed-amber text-[15px]">refresh</span>
-                <span>REINICIAR</span>
+                <span>{engineeringAction === 'restart' ? 'REINICIANDO…' : 'REINICIAR'}</span>
               </button>
               <button
-                onClick={() => onMessage('Cache local de thumbnails e buffers limpo com sucesso')}
+                disabled={engineeringAction !== null}
+                onClick={() => void warmCache()}
                 className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel hover:bg-surface-container text-on-surface text-[10.5px] font-label-caps font-bold rounded-lg border border-border-subtle hover:border-border-strong transition-all shadow-sm cursor-pointer"
               >
                 <span className="material-symbols-outlined text-accent-ice text-[15px]">cleaning_services</span>
-                <span>LIMPAR CACHE</span>
+                <span>{engineeringAction === 'cache' ? 'ATUALIZANDO…' : 'AQUECER CACHE'}</span>
               </button>
               <button
-                onClick={() => onMessage('Pacote de diagnóstico e telemetria gerado (RPlayout-Diag.zip)')}
+                onClick={() => window.open(`/api/health-events.csv?channelId=${encodeURIComponent(channel.id)}`, '_blank', 'noopener,noreferrer')}
                 className="flex items-center gap-1 px-2.5 py-1.5 bg-primary-container/20 hover:bg-primary-container text-primary hover:text-white text-[10.5px] font-label-caps font-bold rounded-lg border border-primary-container/40 transition-all shadow-sm cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[15px]">archive</span>
-                <span>DIAGNÓSTICO</span>
+                <span>EXPORTAR SAÚDE</span>
               </button>
             </div>
           </div>
         </div>
 
         {/* 3. BARRA DE NAVEGAÇÃO DE SUB-MÓDULOS DE ENGENHARIA (FASE B) */}
-        <div className="w-full bg-surface-panel/80 border-b border-border-subtle px-4 py-1.5 flex items-center justify-between gap-3 shrink-0 overflow-x-auto broadcast-scroll">
+        <div className="w-full bg-surface-panel/80 border-b border-border-subtle px-4 py-1.5 flex items-center justify-between gap-3 shrink-0 overflow-hidden">
           <div className="flex items-center gap-1.5">
             {[
               { id: 'DASHBOARD' as const, label: 'VISÃO INTEGRADA MCR', icon: 'dashboard' },
@@ -244,7 +381,7 @@ export function EngineeringDistributionView({
             ))}
           </div>
 
-          <div className="font-label-mono text-[10px] text-outline flex items-center gap-2">
+          <div className="font-label-mono text-[10px] text-outline hidden 2xl:flex items-center gap-2">
             <span>CANAL: <strong className="text-on-surface">{channel.name}</strong></span>
             <span>•</span>
             <span className="text-status-ok-bright font-bold flex items-center gap-1">
@@ -261,6 +398,7 @@ export function EngineeringDistributionView({
         <div className="flex-1 min-h-0 p-3.5 overflow-hidden flex flex-col gap-2.5">
           {/* WATCHDOG DE SONDA PGM & SLATE DE EMERGÊNCIA (FASE C) */}
           <PgmProbeBanner
+            channelId={channel.id}
             onSlateTriggered={(active) =>
               onMessage(`Watchdog PGM: Slate de Emergência ${active ? 'INJETADO no PGM' : 'DESARMADO'}`)
             }
@@ -268,38 +406,18 @@ export function EngineeringDistributionView({
 
           {/* SEÇÃO 1: VISÃO INTEGRADA MCR (DASHBOARD) */}
           {activeSection === 'DASHBOARD' && (
-            <div className="flex-1 min-h-0 flex flex-col gap-3.5 overflow-y-auto broadcast-scroll">
-              {/* PARTE SUPERIOR: MULTIVIEW OPERACIONAL */}
-              <div className="h-[460px] shrink-0">
+            <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
+              {monitorLoadError && <div role="alert" className="shrink-0 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 font-label-mono text-[10px] text-on-air-crimson">Monitor sem dados: {monitorLoadError}</div>}
+              {/* A visão integrada cabe integralmente no viewport operacional.
+                  Detalhes extensos seguem nas abas SRT e Redundância. */}
+              <div className="flex-1 min-h-0">
                 <OperationalMultiview
-                  onSelectPreview={(srcId) => onMessage(`Fonte ${srcId} enviada para o canal de PREVIEW.`)}
-                  onTakeDirect={(srcId) => onMessage(`Comando TAKE direto executado para a fonte ${srcId}.`)}
-                  onConfigureSource={(srcId) => onMessage(`Abrindo configurações avançadas da fonte ${srcId}.`)}
+                  sources={multiviewSources}
+                  initialLayout="COMPACT_LIST"
+                  onWatchingPreview={() => { void api.watching(channel.id, 'pvw').catch(() => undefined) }}
                 />
               </div>
 
-              {/* PARTE INFERIOR: SRT MANAGER & REDUNDÂNCIA EM 2 COLUNAS */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 min-h-[420px]">
-                {/* Coluna Esquerda: SRT Manager */}
-                <div className="lg:col-span-7 flex flex-col min-h-0">
-                  <SrtManagerPanel
-                    onReconnectLink={(id) => onMessage(`Reconectando socket SRT ${id}…`)}
-                    onMessage={onMessage}
-                  />
-                </div>
-
-                {/* Coluna Direita: Redundância Primário/Backup */}
-                <div className="lg:col-span-5 flex flex-col min-h-0">
-                  <RedundancyFailoverPanel
-                    onSwitchStream={(target) => onMessage(`Transmissão alternada para ${target}.`)}
-                    onToggleAutoFailover={(enabled) => onMessage(`Guarda de Failover ${enabled ? 'ativada' : 'desativada'}.`)}
-                    onMessage={onMessage}
-                  />
-                </div>
-              </div>
-
-              {/* PARTE INFERIOR 2: AUTOMAÇÃO DE ESTÚDIO & CONTROLE EXTERNO (FASE D) */}
-              <StudioAutomationPanel onMessage={onMessage} />
             </div>
           )}
 
@@ -307,9 +425,8 @@ export function EngineeringDistributionView({
           {activeSection === 'MULTIVIEW' && (
             <div className="flex-1 min-h-0">
               <OperationalMultiview
-                onSelectPreview={(srcId) => onMessage(`Fonte ${srcId} enviada para PREVIEW.`)}
-                onTakeDirect={(srcId) => onMessage(`Comando TAKE direto executado para ${srcId}.`)}
-                onConfigureSource={(srcId) => onMessage(`Configurando ${srcId}…`)}
+                sources={multiviewSources}
+                onWatchingPreview={() => { void api.watching(channel.id, 'pvw').catch(() => undefined) }}
               />
             </div>
           )}
@@ -318,6 +435,7 @@ export function EngineeringDistributionView({
           {activeSection === 'SRT' && (
             <div className="flex-1 min-h-0">
               <SrtManagerPanel
+                links={srtLinks}
                 onReconnectLink={(id) => onMessage(`Socket SRT ${id} reinicializado.`)}
                 onMessage={onMessage}
               />
@@ -328,8 +446,14 @@ export function EngineeringDistributionView({
           {activeSection === 'REDUNDANCY' && (
             <div className="flex-1 min-h-0">
               <RedundancyFailoverPanel
-                onSwitchStream={(target) => onMessage(`Chaveamento manual para ${target} concluído.`)}
-                onToggleAutoFailover={(enabled) => onMessage(`Guarda automática: ${enabled ? 'ARMADA' : 'DESARMADA'}.`)}
+                pair={redundancyPair}
+                onSwitchStream={(target) => {
+                  if (!redundancyPair) return
+                  void api.triggerFailover(redundancyPair.primary.id, target, 'Comutação manual pelo painel de redundância')
+                    .then((result) => onMessage(`Failover registrado: ${result.event.fromRole} → ${result.event.toRole}.`))
+                    .catch((error) => onMessage(error instanceof Error ? error.message : 'Falha ao acionar failover.'))
+                }}
+                onToggleAutoFailover={() => onMessage('A alteração da política deve ser salva na configuração da fonte primária.')}
                 onMessage={onMessage}
               />
             </div>
@@ -346,14 +470,28 @@ export function EngineeringDistributionView({
                   </h2>
                 </div>
                 <span className="font-label-mono text-[10px] text-status-ok bg-status-ok/10 border border-status-ok/30 px-2 py-0.5 rounded font-bold">
-                  {Object.values(sinks).filter(Boolean).length} SAÍDAS ATIVAS NO AR
+                  {outputs.filter((output) => output.enabled).length} SAÍDAS CONFIGURADAS
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {outputs.length === 0 ? (
+                <p className="font-label-mono text-[11px] text-outline">Nenhuma saída cadastrada para este canal. Configure em Configurações → Saídas.</p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {outputs.map((output) => {
+                    const process = processes.find((row) => row.kind === 'OUTPUT' && row.channelId === channel.id && String(row.details?.url ?? '') === output.target)
+                    return <article key={output.id} className="bg-surface-card rounded-lg border border-border-subtle p-3.5 shadow-sm">
+                      <div className="flex items-start justify-between gap-2"><div><strong className="font-headline-md text-[14px] text-on-surface">{output.name}</strong><p className="font-label-mono text-[10px] text-outline mt-1 break-all">{output.target || 'Destino gerenciado localmente'}</p></div><span className={`font-label-caps text-[9px] px-1.5 py-0.5 rounded border font-bold ${output.enabled ? 'text-status-ok border-status-ok/40 bg-status-ok/10' : 'text-outline border-border-subtle bg-surface-panel'}`}>{output.enabled ? 'HABILITADA' : 'DESLIGADA'}</span></div>
+                      <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[10px] mt-3"><span className="bg-surface-panel rounded px-2 py-1">{output.kind} · {output.role}</span><span className="bg-surface-panel rounded px-2 py-1">{process ? process.state.toUpperCase() : 'SEM TELEMETRIA'}</span></div>
+                    </article>
+                  })}
+                </div>
+              )}
+
+              {false && <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {/* SINK 1: Blackmagic SDI */}
                 <div className="bg-surface-card rounded-lg border border-border-subtle p-3.5 shadow-sm relative overflow-hidden group hover:border-border-strong transition-colors flex flex-col justify-between gap-3">
-                  <div className={`absolute left-0 top-0 bottom-0 w-1 ${sinks.sdi ? 'bg-status-ok' : 'bg-outline'}`}></div>
+                  <div className={`absolute left-0 top-0 bottom-0 w-1 ${legacySinks.sdi ? 'bg-status-ok' : 'bg-outline'}`}></div>
                   <div className="flex items-start justify-between gap-2 pl-1">
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
@@ -370,9 +508,9 @@ export function EngineeringDistributionView({
                     </div>
                     <input
                       type="checkbox"
-                      checked={sinks.sdi}
+                      checked={legacySinks.sdi}
                       onChange={(e) => {
-                        setSinks({ ...sinks, sdi: e.target.checked })
+                        setLegacySinks({ ...legacySinks, sdi: e.target.checked })
                         onMessage(`Saída SDI DeckLink ${e.target.checked ? 'habilitada' : 'desabilitada'}`)
                       }}
                       className="w-5 h-5 accent-status-ok cursor-pointer"
@@ -394,7 +532,7 @@ export function EngineeringDistributionView({
 
                 {/* SINK 2: NDI Output */}
                 <div className="bg-surface-card rounded-lg border border-border-subtle p-3.5 shadow-sm relative overflow-hidden group hover:border-border-strong transition-colors flex flex-col justify-between gap-3">
-                  <div className={`absolute left-0 top-0 bottom-0 w-1 ${sinks.ndi ? 'bg-accent-ice-bright' : 'bg-outline'}`}></div>
+                  <div className={`absolute left-0 top-0 bottom-0 w-1 ${legacySinks.ndi ? 'bg-accent-ice-bright' : 'bg-outline'}`}></div>
                   <div className="flex items-start justify-between gap-2 pl-1">
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
@@ -411,9 +549,9 @@ export function EngineeringDistributionView({
                     </div>
                     <input
                       type="checkbox"
-                      checked={sinks.ndi}
+                      checked={legacySinks.ndi}
                       onChange={(e) => {
-                        setSinks({ ...sinks, ndi: e.target.checked })
+                        setLegacySinks({ ...legacySinks, ndi: e.target.checked })
                         onMessage(`Saída NDI ${e.target.checked ? 'habilitada' : 'desabilitada'}`)
                       }}
                       className="w-5 h-5 accent-accent-ice cursor-pointer"
@@ -433,7 +571,7 @@ export function EngineeringDistributionView({
 
                 {/* SINK 3: SRT Ingest / Feed */}
                 <div className="bg-surface-card rounded-lg border border-border-subtle p-3.5 shadow-sm relative overflow-hidden group hover:border-border-strong transition-colors flex flex-col justify-between gap-3">
-                  <div className={`absolute left-0 top-0 bottom-0 w-1 ${sinks.srt ? 'bg-primary' : 'bg-outline'}`}></div>
+                  <div className={`absolute left-0 top-0 bottom-0 w-1 ${legacySinks.srt ? 'bg-primary' : 'bg-outline'}`}></div>
                   <div className="flex items-start justify-between gap-2 pl-1">
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
@@ -450,9 +588,9 @@ export function EngineeringDistributionView({
                     </div>
                     <input
                       type="checkbox"
-                      checked={sinks.srt}
+                      checked={legacySinks.srt}
                       onChange={(e) => {
-                        setSinks({ ...sinks, srt: e.target.checked })
+                        setLegacySinks({ ...legacySinks, srt: e.target.checked })
                         onMessage(`Saída SRT ${e.target.checked ? 'habilitada' : 'desabilitada'}`)
                       }}
                       className="w-5 h-5 accent-primary cursor-pointer"
@@ -469,7 +607,7 @@ export function EngineeringDistributionView({
                     </div>
                   </div>
                 </div>
-              </div>
+              </div>}
             </div>
           )}
 

@@ -6,8 +6,6 @@ import type {
   PublisherStatus,
   RelayStatus,
 } from '../types.js'
-import { SrtManagerPanel } from './broadcast/SrtManagerPanel.js'
-import { RedundancyFailoverPanel } from './broadcast/RedundancyFailoverPanel.js'
 
 interface Props {
   channelId: string
@@ -64,7 +62,7 @@ function profileSummary(output: OutputProfile): string {
   return `${parts.join(' · ')} · resto como o canal`
 }
 
-type TabKey = 'resumo' | 'saidas' | 'destinos' | 'srt_manager' | 'processos' | 'saude' | 'convidados'
+type TabKey = 'resumo' | 'saidas' | 'destinos' | 'processos' | 'saude' | 'convidados'
 
 export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [activeTab, setActiveTab] = useState<TabKey>('resumo')
@@ -307,21 +305,6 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
             Destinos &amp; Relays
             <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[9px] font-label-mono text-outline">
               {data?.destinations.length ?? 0}
-            </span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('srt_manager')}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-label-caps transition-all cursor-pointer border-b-2 whitespace-nowrap ${
-              activeTab === 'srt_manager'
-                ? 'border-primary text-primary font-bold bg-surface-panel/80'
-                : 'border-transparent text-outline hover:text-on-surface hover:bg-surface-panel/40'
-            }`}
-          >
-            <span className="material-symbols-outlined text-[16px]">satellite_alt</span>
-            SRT &amp; Redundância
-            <span className="ml-1 px-1.5 py-0.2 rounded bg-accent-ice/20 text-accent-ice-bright text-[9px] font-label-mono font-bold">
-              FASE B
             </span>
           </button>
 
@@ -981,26 +964,6 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                     ADICIONAR DESTINO
                   </button>
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB: SRT MANAGER & REDUNDÂNCIA (FASE B) */}
-          {activeTab === 'srt_manager' && (
-            <div className="flex flex-col gap-6">
-              <div className="h-[460px]">
-                <SrtManagerPanel
-                  onReconnectLink={(id) => onMessage(`Reconectando socket SRT ${id}…`)}
-                  onMessage={onMessage}
-                />
-              </div>
-
-              <div className="h-[440px]">
-                <RedundancyFailoverPanel
-                  onSwitchStream={(target) => onMessage(`Transmissão comutada para o enlace ${target}.`)}
-                  onToggleAutoFailover={(enabled) => onMessage(`Guarda de Failover ${enabled ? 'ativada' : 'desativada'}.`)}
-                  onMessage={onMessage}
-                />
               </div>
             </div>
           )}

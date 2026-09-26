@@ -3,8 +3,6 @@ import type { MediaAsset, Rate } from '@rplayout/protocol'
 import { dur, formatStandardRate } from '../../format.js'
 import type { LibraryAsset } from '../../types.js'
 import { Whep } from '../Whep.js'
-import { PgmProbeBanner } from './PgmProbeBanner.js'
-import type { DynamicCgState } from './DynamicCgSecondaryBar.js'
 
 export interface BroadcastMonitorProps {
   bus: 'pgm' | 'pvw'
@@ -25,7 +23,6 @@ export interface BroadcastMonitorProps {
   onSeek?: (frames: number) => void
   onWatching?: ((bus: 'pgm' | 'pvw', watching: boolean) => void) | (() => void)
   className?: string
-  cgState?: DynamicCgState
 }
 
 export function BroadcastMonitor({
@@ -47,7 +44,6 @@ export function BroadcastMonitor({
   onSeek,
   onWatching,
   className = '',
-  cgState,
 }: BroadcastMonitorProps) {
   const fps = rate.num / rate.den
   const isPgm = bus === 'pgm'
@@ -63,21 +59,6 @@ export function BroadcastMonitor({
   const [hasMediaError, setHasMediaError] = useState(false)
   const [isScrubbing, setIsScrubbing] = useState(false)
   const [webrtcFailed, setWebrtcFailed] = useState(false)
-  const [liveNtpClock, setLiveNtpClock] = useState(() => {
-    const d = new Date()
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
-  })
-
-  useEffect(() => {
-    if (!cgState?.layer1Clock) return
-    const timer = setInterval(() => {
-      const d = new Date()
-      setLiveNtpClock(
-        `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`,
-      )
-    }, 1000)
-    return () => clearInterval(timer)
-  }, [cgState?.layer1Clock])
 
   // O áudio é desmutado se isAudioMonitored for explicitamente verdadeiro
   const effectiveMuted = isAudioMonitored !== undefined ? !isAudioMonitored : isMuted
@@ -241,20 +222,6 @@ export function BroadcastMonitor({
             </div>
           </button>
 
-          {/* Sonda de Qualidade de PGM (Fase C: Black/Silence/Freeze/Emergency Slate) */}
-          {isPgm && <PgmProbeBanner compact={true} />}
-
-          {/* Badge de Status no Ar em 2 linhas */}
-          <div
-            className={`flex flex-col items-center justify-center border px-2 py-1 rounded font-bold uppercase tracking-wider leading-none text-center select-none ${
-              isPgm
-                ? 'bg-on-air-crimson/20 border-on-air-crimson/50 text-on-air-crimson font-label-mono'
-                : 'bg-armed-amber/20 border-armed-amber/50 text-armed-amber font-label-mono'
-            }`}
-          >
-            <span className="text-[8.5px] leading-none">{isPgm ? 'NO' : 'ARMADO'}</span>
-            <span className="text-[8.5px] leading-none mt-0.5">{isPgm ? 'AR' : 'CUED'}</span>
-          </div>
         </div>
       </div>
 
@@ -271,7 +238,6 @@ export function BroadcastMonitor({
             onSeek={onSeek}
             hideControls={true}
             muted={effectiveMuted}
-            onErrorFallback={() => setWebrtcFailed(true)}
             onWatching={
               onWatching
                 ? () => {
@@ -439,87 +405,9 @@ export function BroadcastMonitor({
           </div>
         )}
 
-        {/* OVERLAYS DE GRAFISMO BROADCAST (CG DINÂMICO & SCTE-35) */}
-        {isPgm && cgState && (
-          <>
-            {/* L0: Logotipo da Emissora (Canto Superior Direito - 90% Action Safe) */}
-            {cgState.layer0Logo && (
-              <div className="absolute top-2.5 right-2.5 z-20 pointer-events-none select-none flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/60 backdrop-blur-xs border border-white/10 shadow-md">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent-ice animate-pulse" />
-                <span className="font-headline-md text-[10px] font-bold text-white tracking-widest uppercase">
-                  RPLAYOUT
-                </span>
-              </div>
-            )}
-
-            {/* L1: Relógio no Ar NTP (Canto Superior Esquerdo) */}
-            {cgState.layer1Clock && (
-              <div className="absolute top-2.5 left-2.5 z-20 pointer-events-none select-none px-2 py-0.5 rounded bg-black/70 backdrop-blur-xs border border-white/15 shadow-md">
-                <span className="font-label-mono text-[10px] font-bold text-accent-ice tracking-wider tabular-nums">
-                  {liveNtpClock}
-                </span>
-              </div>
-            )}
-
-            {/* Marcador Visual SCTE-35 CUE OUT */}
-            {cgState.scte35Active && (
-              <div className="absolute top-8 right-2.5 z-20 pointer-events-none select-none flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/90 text-surface-base font-label-caps text-[8.5px] font-bold shadow-md animate-pulse">
-                <span className="material-symbols-outlined text-[11px]">sensors</span>
-                <span>{cgState.scte35Phase === 'PREROLL' ? `SCTE ${cgState.scte35TimeRemaining.toFixed(1)}s` : `CUE OUT ${cgState.scte35TimeRemaining.toFixed(1)}s`}</span>
-              </div>
-            )}
-
-            {/* L3: Tarja / Lower-Third de Apresentador ou Matéria */}
-            {cgState.lowerThirdActive && (
-              <div className={`absolute ${cgState.layer2Ticker ? 'bottom-11' : 'bottom-6'} left-2.5 z-20 pointer-events-none select-none max-w-[85%] transition-all animate-in fade-in slide-in-from-left duration-300`}>
-                <div className="bg-gradient-to-r from-surface-card/95 via-surface-panel/90 to-surface-card/80 border-l-2 border-on-air-crimson px-2.5 py-1 rounded-r shadow-2xl backdrop-blur-md">
-                  <div className="font-headline-md text-[11px] font-bold text-white tracking-wide uppercase leading-tight">
-                    {cgState.lowerThirdTitle}
-                  </div>
-                  {cgState.lowerThirdSubtitle && (
-                    <div className="font-body-sm text-[9px] text-accent-ice leading-tight mt-0.5 opacity-90">
-                      {cgState.lowerThirdSubtitle}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* L2: Ticker / Crawl de Notícias Contínuo com Scroll Fluído */}
-            {cgState.layer2Ticker && (
-              <div className="absolute bottom-5 inset-x-0 z-20 pointer-events-none select-none h-5 bg-surface-base/95 border-t border-border-subtle flex items-center overflow-hidden">
-                {cgState.breakingNewsActive ? (
-                  <span className="px-2 h-full bg-on-air-crimson text-white font-label-caps text-[8px] font-bold flex items-center shrink-0 z-10 animate-pulse shadow-sm">
-                    URGENTE
-                  </span>
-                ) : (
-                  <span className="px-2 h-full bg-primary/40 text-primary font-label-caps text-[8px] font-bold flex items-center shrink-0 z-10">
-                    NOTÍCIAS
-                  </span>
-                )}
-                <div className="flex-1 whitespace-nowrap overflow-hidden relative h-full flex items-center">
-                  <div
-                    className="inline-block font-body-sm text-[10px] text-on-surface font-medium pl-4"
-                    style={{
-                      animation: 'broadcastTickerScroll 20s linear infinite',
-                      whiteSpace: 'nowrap',
-                      display: 'inline-block',
-                      willChange: 'transform',
-                    }}
-                  >
-                    {cgState.tickerText} ••• {cgState.tickerText}
-                  </div>
-                  <style>{`
-                    @keyframes broadcastTickerScroll {
-                      0% { transform: translateX(50%); }
-                      100% { transform: translateX(-100%); }
-                    }
-                  `}</style>
-                </div>
-              </div>
-            )}
-          </>
-        )}
+        {/* O frame do WHEP já vem do compositor do engine. Não há CG HTML
+            adicional aqui: assim PGM, WebRTC e todas as saídas exibem a mesma
+            composição SVG/RGBA autoritativa. */}
 
         {/* Tarja Inferior Permanente (Design Stitch) */}
         <div className="absolute bottom-0 inset-x-0 bg-surface-base/80 backdrop-blur-sm px-2 py-0.5 flex items-center justify-between font-label-mono text-[9px] text-on-surface z-10 pointer-events-none">

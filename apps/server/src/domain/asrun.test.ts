@@ -68,7 +68,7 @@ describe('as-run compliance e exportadores (Fase C)', () => {
     expect(ext1.ancineQuotaEligible).toBe(true)
 
     const ext3 = toAsRunRecordExtended(dummyEntries[2]!)
-    expect(ext3.status).toBe('TRUNCATED')
+    expect(ext3.status).toBe('INTERRUPTED')
     expect(ext3.ancineQuotaEligible).toBe(false)
     expect(ext3.commercialContractId).toBeDefined()
   })
@@ -99,7 +99,7 @@ describe('as-run compliance e exportadores (Fase C)', () => {
     expect(csv).toContain('Jornal da Manha Bloco 1')
     expect(csv).toContain('Comercial Banco 30s')
     expect(csv).toContain('PLAYED_FULL')
-    expect(csv).toContain('TRUNCATED')
+    expect(csv).toContain('INTERRUPTED')
   })
 
   it('exporta log As-Run em formato SMPTE-2021 BXF XML', () => {
@@ -114,6 +114,6 @@ describe('as-run compliance e exportadores (Fase C)', () => {
     expect(bxf).toContain('<ScheduleItem itemId="it-1">')
     expect(bxf).toContain('<BroadcastEvent eventType="VT">')
     expect(bxf).toContain('<ExecutionResult status="PLAYED_FULL"')
-    expect(bxf).toContain('<ExecutionResult status="TRUNCATED"')
+    expect(bxf).toContain('<ExecutionResult status="INTERRUPTED"')
   })
 })

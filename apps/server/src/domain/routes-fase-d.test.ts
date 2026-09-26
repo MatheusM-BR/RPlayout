@@ -153,7 +153,7 @@ describe('Fase D — Eventos Secundários, SCTE e Automação de Estúdio', () =
   })
 
   describe('Cenário 2: Gateway de Automação Externa (ATEM, Videohub, GPIO)', () => {
-    it('executa comutação de switcher ATEM com latência inferior a 25ms', async () => {
+    it('recusa comutação ATEM quando não existe equipamento físico cadastrado', async () => {
       const gateway = new StudioAutomationGateway()
       const result = await gateway.execute({
         targetDevice: 'ATEM_SWITCHER',
@@ -161,18 +161,18 @@ describe('Fase D — Eventos Secundários, SCTE e Automação de Estúdio', () =
         params: { input: 3, transition: 'CUT' },
       })
 
-      expect(result.success).toBe(true)
-      expect(result.status).toBe('SUCCESS')
+      expect(result.success).toBe(false)
+      expect(result.status).toBe('FAILED')
       expect(result.latencyMs).toBeLessThanOrEqual(50)
-      expect(result.details?.input).toBe(3)
+      expect(result.error).toMatch(/não configurado/i)
 
       const audits = gateway.getAuditEntries()
       expect(audits.length).toBeGreaterThan(0)
       expect(audits[0]?.targetDevice).toBe('ATEM_SWITCHER')
-      expect(audits[0]?.executionStatus).toBe('SUCCESS')
+      expect(audits[0]?.executionStatus).toBe('FAILED')
     })
 
-    it('executa roteamento em matriz Videohub via TCP', async () => {
+    it('recusa roteamento Videohub sem equipamento físico cadastrado', async () => {
       const gateway = new StudioAutomationGateway()
       const result = await gateway.execute({
         targetDevice: 'VIDEOHUB_ROUTER',
@@ -180,9 +180,8 @@ describe('Fase D — Eventos Secundários, SCTE e Automação de Estúdio', () =
         params: { destination: 4, source: 2 },
       })
 
-      expect(result.success).toBe(true)
-      expect(result.details?.destination).toBe(4)
-      expect(result.details?.source).toBe(2)
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/não configurado/i)
     })
 
     it('controla relé GPIO em modos PULSE e LATCH', async () => {
@@ -259,7 +258,7 @@ describe('Fase D — Eventos Secundários, SCTE e Automação de Estúdio', () =
       expect(data.vancLine).toBe(13)
     })
 
-    it('POST /api/v1/external/control comanda hardware externo protegido', async () => {
+    it('POST /api/v1/external/control não confirma hardware não cadastrado', async () => {
       const res = await server.inject({
         method: 'POST',
         url: '/api/v1/external/control',
@@ -273,7 +272,7 @@ describe('Fase D — Eventos Secundários, SCTE e Automação de Estúdio', () =
 
       expect(res.statusCode).toBe(200)
       const data = res.json()
-      expect(data.success).toBe(true)
+      expect(data.success).toBe(false)
       expect(data.targetDevice).toBe('ATEM_SWITCHER')
       expect(data.action).toBe('TAKE')
     })

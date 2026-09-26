@@ -57,8 +57,9 @@ type EngineEvent =
       correlation: number
       gainReduction: number
     }
+  | { event: 'videoProbe'; luma: number; black: boolean; freeze: boolean }
   | { event: 'output'; frames: number }
-  | ({ event: 'publisher' } & PublisherState)
+  | ({ event: 'publisher'; outputId?: string } & PublisherState)
   | { event: 'error'; message: string }
   | { event: 'warning'; message: string }
 
@@ -143,6 +144,20 @@ export function restartDelayMs(consecutiveFailures: number): number {
   return Math.min(RESTART_BACKOFF_MAX_MS, RESTART_DELAY_MS * 2 ** Math.min(streak, 9))
 }
 
+/** Perfil que pode ser substituído sem recriar o processo do engine. */
+export interface HotOutputProfile {
+  readonly id: string
+  readonly kind: 'rtmp' | 'srt' | 'file'
+  readonly target: string
+  readonly width?: number
+  readonly height?: number
+  readonly rateNum?: number
+  readonly rateDen?: number
+  readonly scan?: 'progressive' | 'interlaced'
+  readonly bitrateKbps?: number
+  readonly role?: 'mon'
+}
+
 /** O que o watchdog sabe do motor entre um tique e o outro. */
 export interface Vigilia {
   /** Milissegundos desde o tique anterior. */
@@ -201,6 +216,7 @@ export class EngineTransport implements Transport {
   private previewPosition: { frames: Frames; duration: Frames } | null = null
   private meter: MeterReading | null = null
   private previewReading: MeterReading | null = null
+  private pgmVideoProbe: { luma: number; black: boolean; freeze: boolean } | null = null
   /** Uma entrada por saída de rede, chaveada pela URL de destino. */
   private readonly publisherStates = new Map<string, PublisherState>()
   private dirty = false
@@ -401,7 +417,9 @@ export class EngineTransport implements Transport {
         if (event.itemId === this.onAirItemId) this.elapsed = event.frames
         break
       case 'previewPosition':
-        if (this.preview && event.itemId === this.preview.id) {
+        // Fonte direta não possui id de item/asset; vídeo ao vivo não envia
+        // posição pesquisável de qualquer forma.
+        if (this.preview?.kind !== 'SOURCE' && this.preview && event.itemId === this.preview.id) {
           this.previewPosition = { frames: event.frames, duration: event.duration }
           this.dirty = true
         }
@@ -423,8 +441,11 @@ export class EngineTransport implements Transport {
         if (event.bus === 'pgm') this.meter = toMeter(event)
         else this.previewReading = toMeter(event)
         break
+      case 'videoProbe':
+        this.pgmVideoProbe = { luma: event.luma, black: event.black, freeze: event.freeze }
+        break
       case 'publisher':
-        this.publisherStates.set(event.url, {
+        this.publisherStates.set(event.outputId ?? event.url, {
           url: event.url,
           health: event.health,
           attempts: event.attempts,
@@ -598,6 +619,16 @@ export class EngineTransport implements Transport {
     else if (this.preview) void this.cue(this.preview).catch((error: Error) => this.fail(error.message))
   }
 
+  /**
+   * Troca o destino de um slot RTMP/SRT/FILE já existente sem recriar o PGM.
+   * O engine conserva os canais interligados e substitui só o publisher.
+   * Criar/remover slots ou mexer em SDI/NDI/OMT continua exigindo reinício
+   * controlado, pois essas operações alteram a topologia/relógio do canal.
+   */
+  reconfigureOutput(output: HotOutputProfile): Promise<void> {
+    return this.enqueue(() => this.request({ cmd: 'replaceOutput', outputId: output.id, output }))
+  }
+
   private rejectPending(message: string): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer)
@@ -695,6 +726,14 @@ export class EngineTransport implements Transport {
    */
   private specForPreview(target: PreviewTarget): EngineItem | null {
     if (target.kind === 'ITEM') return this.specFor(target.id)
+
+    // Uma fonte ao vivo aberta no MAM/QC não é um asset. Abrir a mesma URI
+    // aqui reaproveita o pipeline de ingestão do engine e evita uma segunda
+    // chamada HTTP/RTSP/SRT só para desenhar o PVW.
+    if (target.kind === 'SOURCE') {
+      const source = resolveSource(target.source)
+      return source ? { itemId: `source:${source}`, path: '', source, trimIn: 0, trimOut: 0, gainDb: 0 } : null
+    }
 
     const asset = this.asset(target.id)
     if (!asset || asset.probeError || asset.kind !== 'VIDEO') return null
@@ -937,6 +976,10 @@ export class EngineTransport implements Transport {
     return this.previewReading
   }
 
+  videoProbe(): { luma: number; black: boolean; freeze: boolean } | null {
+    return this.pgmVideoProbe
+  }
+
   /**
    * Situação das saídas de rede do canal.
    *
@@ -1039,7 +1082,10 @@ function resolveSource(ref: string): string | null {
   const kind = ref.slice(0, separator)
   const rest = ref.slice(separator + 1)
 
-  if (kind === 'sdi' || kind === 'ndi') return ref
+  // OMT chega do discovery como `omt:<serviço>`. O receiver do engine faz a
+  // validação de SDP/RTP e devolve um diagnóstico específico se o anúncio
+  // NMOS ainda não for reproduzível; rejeitar aqui escondia a causa real.
+  if (kind === 'sdi' || kind === 'ndi' || kind === 'omt') return ref
   if (kind === 'guest') return MediaMtx.internalRead(`guest/${rest}`)
   if (kind === 'path') return MediaMtx.internalRead(rest)
   return null

@@ -8,6 +8,8 @@ import type {
   ScheduleEventType,
   TimingFlags,
   LiveSourceConfig,
+  ManagedLiveSource,
+  SrtTelemetry,
 } from '@rplayout/protocol'
 import type { Channel, MediaAsset, Rundown } from '@rplayout/protocol'
 import type {
@@ -18,6 +20,7 @@ import type {
   LibraryFolder,
   MediaRoot,
   OutputProfile,
+  TransmissionPreset,
   Categoria,
   PlaylistEntryView,
   PlaylistFile,
@@ -65,6 +68,18 @@ const post = <T>(path: string, body: unknown): Promise<T> =>
   send<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
 export const api = {
+  pgmProbeStatus: (channelId: string) =>
+    send<{
+      alerts: Array<{ id: string; type: 'BLACK_FRAME' | 'SILENCE' | 'FREEZE_FRAME'; durationMs: number; thresholdMs: number; active: boolean; timestamp: string }>
+      activeAlerts: Array<{ id: string; type: 'BLACK_FRAME' | 'SILENCE' | 'FREEZE_FRAME'; durationMs: number; thresholdMs: number; active: boolean; timestamp: string }>
+      emergencySlateActive: boolean
+      lastIncidentAt?: string
+      lastSampleAt?: string
+      metrics: { blackDurationMs: number; freezeDurationMs: number; silenceDurationMs: number; audioDbfs: number | null }
+      thresholds: { blackThresholdMs: number; silenceThresholdMs: number; freezeThresholdMs: number; silenceDbfs: number }
+    }>(`/api/v1/engineering/pgm-probe/status?channelId=${encodeURIComponent(channelId)}`),
+  setPgmEmergencySlate: (channelId: string, action: 'TRIGGER' | 'RESET') =>
+    post<{ ok: boolean; emergencySlateActive: boolean }>('/api/v1/engineering/pgm-probe/emergency-slate', { channelId, action }),
   session: () => send<{ role: string; label: string; authenticated: boolean; required: boolean }>('/api/session'),
   logout: () => post<{ ok: true }>('/api/auth/logout', {}),
   users: () => send<{ users: Array<{ id: string; username: string; role: string; enabled: boolean; createdAt: string }> }>('/api/users'),
@@ -129,8 +144,15 @@ export const api = {
     post<{ removed: number; removedItems: number }>('/api/assets/prune', {}),
   /** Levanta o canal de novo, para os perfis de saída de agora valerem. */
   restartChannel: (id: string) => post<{ ok: true }>(`/api/channels/${id}/restart`, {}),
+  warmContinuityCache: () => post<{ ok: boolean; cached48h: number; missing48h: number }>('/api/v1/continuity/cache/warm', {}),
   removeChannel: (id: string) =>
     send<{ ok: true }>(`/api/channels/${id}`, { method: 'DELETE' }),
+  channelProjects: (channelId: string) =>
+    send<{ projects: Array<{ id: string; label: string; createdAt: string }> }>(`/api/channels/${encodeURIComponent(channelId)}/projects`),
+  saveChannelProject: (channelId: string, label: string) =>
+    post<{ project: { id: string; label: string; createdAt: string }; projects: Array<{ id: string; label: string; createdAt: string }> }>(`/api/channels/${encodeURIComponent(channelId)}/projects`, { label }),
+  restoreChannelProject: (channelId: string, projectId: string) =>
+    post<{ ok: true; restored: { label: string; createdAt: string; rundowns: number } }>(`/api/channels/${encodeURIComponent(channelId)}/projects/${encodeURIComponent(projectId)}/restore`, {}),
   scanStatus: () => send<ScanStatus>('/api/library/scan'),
   mediaRoots: () => send<{ roots: MediaRoot[] }>('/api/library/roots'),
   /**
@@ -159,6 +181,14 @@ export const api = {
       body: JSON.stringify(body),
     }),
   removeOutput: (id: string) => send<{ ok: boolean }>(`/api/outputs/${id}`, { method: 'DELETE' }),
+  transmissionPresets: (channelId: string) =>
+    send<{ presets: TransmissionPreset[] }>(`/api/channels/${channelId}/transmission-presets`),
+  addTransmissionPreset: (channelId: string, body: { name: string; kind: 'SRT' | 'RTMP'; target: string }) =>
+    post<{ preset: TransmissionPreset }>(`/api/channels/${channelId}/transmission-presets`, body),
+  applyTransmissionPreset: (channelId: string, presetId: string) =>
+    post<{ restartRequired: boolean }>(`/api/channels/${channelId}/transmission-presets/${presetId}/apply`, {}),
+  removeTransmissionPreset: (channelId: string, presetId: string) =>
+    send<{ ok: true }>(`/api/channels/${channelId}/transmission-presets/${presetId}`, { method: 'DELETE' }),
   /** `measure` desligado lê muito mais rápido e deixa a loudness para depois. */
   scan: (measure = true) =>
     send<ScanStatus>('/api/library/scan', {
@@ -167,6 +197,33 @@ export const api = {
     }),
   /** `refresh` força uma varredura nova em vez de usar o resultado guardado. */
   sources: (refresh = false) => send<SourceList>(`/api/sources${refresh ? '?refresh=1' : ''}`),
+  /** Fontes configuradas para o multiview; não inventa feeds de demonstração. */
+  liveSources: (channelId: string) =>
+    send<ManagedLiveSource[]>(`/api/sources/live?channelId=${encodeURIComponent(channelId)}`),
+  createLiveSource: (body: {
+    channelId: string
+    name: string
+    kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'
+    targetUrl: string
+    srtConfig?: unknown
+    failoverConfig?: unknown
+  }) => post<ManagedLiveSource>('/api/sources/live', body),
+  updateLiveSource: (id: string, body: Partial<{
+    name: string
+    kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'
+    targetUrl: string
+    enabled: boolean
+  }>) =>
+    send<ManagedLiveSource>(`/api/sources/live/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteLiveSource: (id: string) =>
+    send<{ success: boolean }>(`/api/sources/live/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** Telemetria recebida pelo manager SRT, indexada pelo id da fonte. */
+  srtTelemetry: () => send<Record<string, SrtTelemetry>>('/api/srt/telemetry'),
+  triggerFailover: (sourceId: string, targetRole: 'PRIMARY' | 'BACKUP', reason?: string) =>
+    post<{ ok: boolean; event: { sourceId: string; fromRole: string; toRole: string; reason: string; timestamp: string } }>('/api/engineering/failover/trigger', { sourceId, targetRole, reason }),
   rundown: (id: string) => send<Snapshot>(`/api/rundowns/${id}`),
 
   addItem: (
@@ -193,6 +250,9 @@ export const api = {
 
   removeItem: (id: string) => send<Snapshot>(`/api/items/${id}`, { method: 'DELETE' }),
 
+  bulkDeleteItems: (rundownId: string, ids: string[]) =>
+    post<Snapshot>(`/api/rundowns/${encodeURIComponent(rundownId)}/items/bulk-delete`, { ids }),
+
   moveItem: (id: string, toIndex: number) =>
     post<Snapshot>(`/api/items/${id}/move`, { toIndex }),
 
@@ -217,6 +277,27 @@ export const api = {
         details?: Record<string, unknown>
       }>
     }>('/api/processes'),
+  hostMetrics: () => send<{
+    generatedAt: string
+    cpu: { percent: number | null; cores: number }
+    memory: { totalBytes: number; usedBytes: number; freeBytes: number; percent: number | null }
+    gpu: { utilizationPercent: number | null; memoryUsedMiB: number | null; memoryTotalMiB: number | null; temperatureC: number | null; name: string | null; error: string | null }
+  }>('/api/host-metrics'),
+  externalAutomationAudit: () => send<{
+    entries: Array<{
+      id: string
+      timestamp: string
+      pgmTimecode: string
+      targetDevice: string
+      action: string
+      latencyMs: number
+      executionStatus: 'SUCCESS' | 'FAILED' | 'ERROR_TIMEOUT'
+      details?: Record<string, unknown>
+      error?: string
+    }>
+  }>('/api/external/audit'),
+  externalDevices: () => send<{ devices: Array<{ id: string; name: string; kind: 'ATEM_SWITCHER' | 'VIDEOHUB_ROUTER' | 'GPIO_RELAY'; host: string; port: number; enabled: boolean; createdAt: string }> }>('/api/external/devices'),
+  addExternalDevice: (body: { name: string; kind: 'ATEM_SWITCHER' | 'VIDEOHUB_ROUTER' | 'GPIO_RELAY'; host: string; port: number; enabled: boolean }) => post<{ device: { id: string } }>('/api/external/devices', body),
   healthEvents: (channelId?: string) => send<{ events: Array<{ id: string; channelId: string | null; component: string; state: string; severity: 'INFO' | 'WARN' | 'CRITICAL'; message: string | null; occurredAt: string; acknowledgedAt: string | null }> }>(`/api/health-events?limit=200${channelId ? `&channelId=${encodeURIComponent(channelId)}` : ''}`),
   acknowledgeHealth: (id: string) => post<{ ok: true }>(`/api/health-events/${id}/ack`, {}),
   schedulerStatus: () => send<{ checkedAt: string; channels: Array<{ channelId: string; rundownId: string | null; activeRule: { name: string; startMinute: number; endMinute: number } | null; endsAtFrames: number; minutesRemaining: number; coverageMinutes: number; coverageHours: number; targetHours: number; coverageReady: boolean }> }>('/api/scheduler/status'),

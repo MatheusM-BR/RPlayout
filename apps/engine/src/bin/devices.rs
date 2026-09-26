@@ -42,6 +42,10 @@ struct Family {
 struct Devices {
     decklink: Family,
     ndi: Family,
+    /// Serviços SMPTE-2110/NMOS anunciados na rede. OMT não tem um único
+    /// protocolo de descoberta proprietário como o NDI; por isso procuramos
+    /// os serviços NMOS padronizados publicados via mDNS.
+    omt: Family,
     /// O que o canal precisa e não está nesta instalação do GStreamer.
     plugins: Plugins,
 }
@@ -166,7 +170,7 @@ fn enumerate(provider: &str, prefix: &str, missing: &str) -> Family {
     }
     std::thread::sleep(std::time::Duration::from_millis(SETTLE_MS));
 
-    let sources = device_provider
+    let sources: Vec<Source> = device_provider
         .devices()
         .into_iter()
         .filter(|device| device.device_class().contains("Source"))
@@ -185,10 +189,129 @@ fn enumerate(provider: &str, prefix: &str, missing: &str) -> Family {
         .collect();
 
     device_provider.stop();
+
+    let mut sources = sources;
+    if prefix == "ndi" && sources.is_empty() {
+        sources = discover_mdns_services(&["_ndi._tcp.local"], "ndi");
+    }
+
     Family {
         available: true,
-        reason: None,
+        reason: if sources.is_empty() && prefix == "ndi" {
+            Some("nenhuma fonte foi anunciada pelo NDI Runtime ou mDNS; confirme o NDI Runtime/Discovery Server, a mesma sub-rede e que multicast UDP 5353 não esteja bloqueado".to_string())
+        } else {
+            None
+        },
         sources,
+    }
+}
+
+/// Faz consultas mDNS com a flag QU (unicast-response). A versão anterior
+/// enviava uma pergunta multicast de uma porta efêmera sem pedir resposta
+/// unicast: no Windows ela normalmente não recebia a resposta em 5353 e a UI
+/// concluía erroneamente que a rede NDI estava vazia.
+fn discover_mdns_services(services: &[&str], prefix: &str) -> Vec<Source> {
+    use std::net::UdpSocket;
+    use std::time::{Duration, Instant};
+
+    let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else {
+        return Vec::new();
+    };
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(300)));
+
+    for (index, service) in services.iter().enumerate() {
+        let mut query = vec![0, index as u8 + 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in service.split('.') {
+            query.push(label.len() as u8);
+            query.extend_from_slice(label.as_bytes());
+        }
+        query.push(0);
+        query.extend_from_slice(&[0, 12, 0x80, 1]); // PTR, IN + QU
+        let _ = sock.send_to(&query, "224.0.0.251:5353");
+    }
+
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    let mut buf = [0u8; 4096];
+    let mut names = Vec::new();
+
+    while Instant::now() < deadline {
+        let Ok((n, _)) = sock.recv_from(&mut buf) else {
+            continue;
+        };
+        let data = &buf[..n];
+
+        for name in mdns_ptr_instances(data, services) {
+            if !names.iter().any(|existing: &String| existing == &name) {
+                names.push(name);
+            }
+        }
+    }
+
+    names
+        .into_iter()
+        .map(|name| Source {
+            reference: format!("{prefix}:{name}"),
+            label: name,
+        })
+        .collect()
+}
+
+/// Lê somente os registros PTR de uma resposta DNS/mDNS, inclusive nomes
+/// compactados. Não tenta inferir fonte a partir de bytes aleatórios do pacote.
+fn mdns_ptr_instances(data: &[u8], services: &[&str]) -> Vec<String> {
+    if data.len() < 12 { return Vec::new(); }
+    let questions = u16::from_be_bytes([data[4], data[5]]) as usize;
+    let answers = u16::from_be_bytes([data[6], data[7]]) as usize;
+    let additional = u16::from_be_bytes([data[10], data[11]]) as usize;
+    let mut pos = 12;
+    for _ in 0..questions {
+        if decode_dns_name(data, &mut pos).is_none() || pos + 4 > data.len() { return Vec::new(); }
+        pos += 4;
+    }
+    let mut found = Vec::new();
+    for _ in 0..answers + additional {
+        let Some(owner) = decode_dns_name(data, &mut pos) else { break; };
+        if pos + 10 > data.len() { break; }
+        let typ = u16::from_be_bytes([data[pos], data[pos + 1]]);
+        let rdlen = u16::from_be_bytes([data[pos + 8], data[pos + 9]]) as usize;
+        pos += 10;
+        let rdata = pos;
+        pos = pos.saturating_add(rdlen);
+        if pos > data.len() || typ != 12 || !services.iter().any(|service| owner.eq_ignore_ascii_case(service)) { continue; }
+        let mut target = rdata;
+        let Some(instance) = decode_dns_name(data, &mut target) else { continue; };
+        if let Some(service) = services.iter().find(|service| instance.to_ascii_lowercase().ends_with(&service.to_ascii_lowercase())) {
+            let name = instance[..instance.len() - service.len()].trim_end_matches('.').trim();
+            if !name.is_empty() { found.push(name.to_string()); }
+        }
+    }
+    found
+}
+
+fn decode_dns_name(data: &[u8], pos: &mut usize) -> Option<String> {
+    let mut cursor = *pos;
+    let mut jumped = false;
+    let mut labels = Vec::new();
+    let mut guard = 0;
+    loop {
+        guard += 1;
+        if guard > data.len() || cursor >= data.len() { return None; }
+        let len = data[cursor];
+        if len & 0xc0 == 0xc0 {
+            if cursor + 1 >= data.len() { return None; }
+            let offset = (((len & 0x3f) as usize) << 8) | data[cursor + 1] as usize;
+            if !jumped { *pos = cursor + 2; jumped = true; }
+            cursor = offset;
+            continue;
+        }
+        if len == 0 {
+            if !jumped { *pos = cursor + 1; }
+            return Some(labels.join("."));
+        }
+        let end = cursor + 1 + len as usize;
+        if end > data.len() { return None; }
+        labels.push(std::str::from_utf8(&data[cursor + 1..end]).ok()?.to_string());
+        cursor = end;
     }
 }
 
@@ -206,6 +329,22 @@ fn main() -> Result<()> {
             "ndi",
             "o plugin NDI (`ndisrc`) não está nesta instalação do GStreamer",
         ),
+        omt: {
+            let sources = discover_mdns_services(
+                &["_nmos-query._tcp.local", "_nmos-registration._tcp.local", "_smpte2110._udp.local"],
+                // É um anúncio de controle NMOS, não uma URI RTP pronta para
+                // o playout. O prefixo impede que a interface o tome por uma
+                // fonte reproduzível sem SDP/endereço configurado.
+                "omt-discovery",
+            );
+            Family {
+                available: true,
+                reason: if sources.is_empty() {
+                    Some("nenhum serviço NMOS/OMT foi anunciado por mDNS; confirme o registro NMOS, a VLAN multicast e UDP 5353".to_string())
+                } else { None },
+                sources,
+            }
+        },
         plugins: Plugins {
             missing: {
                 let mut faltando = survey(REQUIRED);

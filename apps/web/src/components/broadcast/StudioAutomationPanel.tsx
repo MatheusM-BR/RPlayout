@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
+import { api } from '../../api.js'
 
 export interface AutomationDeviceStatus {
   id: string
   name: string
-  protocol: 'BLACKMAGIC_ATEM' | 'VIDEOHUB_ROUTER' | 'LEITCH_ROUTER' | 'GPIO_RELAY'
+  protocol: 'ATEM_SWITCHER' | 'VIDEOHUB_ROUTER' | 'GPIO_RELAY'
   target: string // IP:Port ou Serial COM
   port: number | string
   state: 'CONNECTED' | 'DISCONNECTED' | 'RECONNECTING'
@@ -28,7 +29,12 @@ interface Props {
 }
 
 export function StudioAutomationPanel({ className = '', onMessage }: Props) {
-  // Estado dos 3 Dispositivos Canônicos (Fase D)
+  // Só são listados equipamentos realmente configurados. O projeto não tem
+  // cadastro de drivers físicos ainda, portanto não inventamos ATEM/Videohub.
+  const [devices, setDevices] = useState<AutomationDeviceStatus[]>([])
+  const [newDevice, setNewDevice] = useState<{ name: string; kind: 'ATEM_SWITCHER' | 'VIDEOHUB_ROUTER' | 'GPIO_RELAY'; host: string; port: string }>({ name: '', kind: 'ATEM_SWITCHER', host: '', port: '9910' })
+  /* Dados antigos de demonstração, mantidos aqui temporariamente só para
+     referência de layout; não participam do estado operacional.
   const [devices, setDevices] = useState<AutomationDeviceStatus[]>([
     {
       id: 'atem-main',
@@ -63,10 +69,12 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
       activeCrosspointOrInput: 'Ch 1: Tally On-Air (LATCH ATIVO)',
       lastAckTime: '13:19:15.002',
     },
-  ])
+  ]) */
 
   // Log Rápido de Auditoria com Latência de Resposta em ms
-  const [auditLogs, setAuditLogs] = useState<AutomationAuditEntry[]>([
+  const [auditLogs, setAuditLogs] = useState<AutomationAuditEntry[]>([])
+  /* Dados antigos de demonstração, não exibidos nem usados.
+  const demoAuditLogs: AutomationAuditEntry[] = [
     {
       id: 'log-1',
       time: '13:19:42.120',
@@ -112,27 +120,33 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
       latencyMs: 5.6,
       status: 'SUCCESS',
     },
-  ])
+  ] */
 
   // Teste manual de ping / pulso
-  const handleTestDevice = (dev: AutomationDeviceStatus) => {
-    const lat = Number((Math.random() * 5 + 2).toFixed(1))
-    const now = new Date().toTimeString().split(' ')[0] + '.' + String(new Date().getMilliseconds()).padStart(3, '0')
-    setDevices((prev) =>
-      prev.map((d) => (d.id === dev.id ? { ...d, lastLatencyMs: lat, lastAckTime: now } : d))
-    )
-    const newLog: AutomationAuditEntry = {
-      id: `log-${Date.now()}`,
-      time: now,
-      targetDevice: dev.name.split(' ')[0] + ' ' + dev.name.split(' ')[1],
-      action: dev.protocol === 'GPIO_RELAY' ? 'PULSE TEST (150ms)' : 'PING_POLL',
-      parameters: `Socket OK • Handshake ${dev.port}`,
-      latencyMs: lat,
-      status: 'SUCCESS',
-    }
-    setAuditLogs((prev) => [newLog, ...prev.slice(0, 15)])
-    onMessage?.(`Automação: ${dev.name} respondeu em ${lat}ms (ACK recebido)`)
-  }
+  useEffect(() => {
+    let alive = true
+    const refresh = () => void Promise.all([api.externalAutomationAudit(), api.externalDevices()])
+      .then(([{ entries }, deviceReport]) => {
+        if (!alive) return
+        setDevices(deviceReport.devices.map((device) => ({
+          id: device.id, name: device.name, protocol: device.kind, target: device.host, port: device.port,
+          state: device.enabled ? 'RECONNECTING' : 'DISCONNECTED', lastLatencyMs: 0, lastAckTime: 'Sem confirmação',
+        })))
+        setAuditLogs(entries.map((entry) => ({
+          id: entry.id,
+          time: new Date(entry.timestamp).toLocaleTimeString('pt-BR'),
+          targetDevice: entry.targetDevice,
+          action: entry.action,
+          parameters: entry.error ?? JSON.stringify(entry.details ?? {}),
+          latencyMs: entry.latencyMs,
+          status: entry.executionStatus === 'SUCCESS' ? 'SUCCESS' : entry.executionStatus === 'ERROR_TIMEOUT' ? 'TIMEOUT' : 'ERROR',
+        })))
+      })
+      .catch(() => { if (alive) { setAuditLogs([]); setDevices([]) } })
+    refresh()
+    const timer = window.setInterval(refresh, 3000)
+    return () => { alive = false; window.clearInterval(timer) }
+  }, [])
 
   return (
     <div
@@ -151,27 +165,32 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
                 AUTOMAÇÃO DE ESTÚDIO & CONTROLE EXTERNO
               </h3>
               <span className="font-label-mono text-[9px] bg-status-ok/15 text-status-ok font-bold px-1.5 py-0.2 rounded border border-status-ok/30">
-                FASE D ATIVA
+                AUDITORIA REAL
               </span>
             </div>
             <p className="font-label-mono text-[10px] text-outline">
-              Drivers Nativos: Blackmagic ATEM (UDP 9910), Videohub (TCP 9990) & Relés GPIO Tally
+              Comandos e confirmações recebidos pelo gateway de controle externo.
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 font-label-mono text-[10px] text-outline">
-          <span className="inline-flex items-center gap-1 text-status-ok-bright font-bold">
-            <span className="w-2 h-2 rounded-full bg-status-ok animate-pulse"></span>
-            3/3 DISPOSITIVOS ONLINE
+          <span className="inline-flex items-center gap-1 text-outline font-bold">
+            <span className="w-2 h-2 rounded-full bg-outline"></span>
+            {devices.length} DISPOSITIVOS CONFIGURADOS
           </span>
           <span>•</span>
-          <span>LATÊNCIA MÉDIA: <strong>4.8ms</strong></span>
+          <span>{auditLogs.length} COMANDOS AUDITADOS</span>
         </div>
       </div>
 
       {/* GRADE DE STATUS DOS DISPOSITIVOS */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+        {devices.length === 0 && (
+          <div className="md:col-span-3 rounded-lg border border-dashed border-border-strong bg-surface-base p-6 text-center font-label-mono text-[10px] text-outline">
+            Nenhum driver físico configurado. Os comandos recebidos continuam disponíveis no log de auditoria abaixo.
+          </div>
+        )}
         {devices.map((dev) => (
           <div
             key={dev.id}
@@ -186,9 +205,9 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
                   {dev.target}:{dev.port}
                 </span>
               </div>
-              <span className="font-label-caps text-[9px] px-1.5 py-0.5 rounded font-bold bg-status-ok/15 text-status-ok border border-status-ok/30 flex items-center gap-1 shrink-0">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span>
-                ONLINE
+              <span className="font-label-caps text-[9px] px-1.5 py-0.5 rounded font-bold bg-armed-amber/15 text-armed-amber border border-armed-amber/30 flex items-center gap-1 shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-armed-amber"></span>
+                CONFIGURADO
               </span>
             </div>
 
@@ -203,9 +222,9 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
             </div>
 
             <div className="flex items-center justify-between font-label-mono text-[9.5px] text-outline pt-1 border-t border-border-subtle/40">
-              <span>Latência ACK: <strong className="text-status-ok-bright">{dev.lastLatencyMs}ms</strong></span>
+              <span>Handshake: <strong className="text-armed-amber">a confirmar por comando real</strong></span>
               <button
-                onClick={() => handleTestDevice(dev)}
+                onClick={() => onMessage?.(`O teste de ${dev.name} precisa ser enviado pelo endpoint de controle externo configurado.`)}
                 className="px-2 py-0.5 rounded bg-surface-container hover:bg-surface-card border border-border-subtle text-accent-ice hover:text-white font-bold cursor-pointer transition-colors"
                 title="Enviar comando ping/pulso de teste"
               >
@@ -216,6 +235,29 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
         ))}
       </div>
 
+      <form
+        className="grid grid-cols-1 gap-2 rounded-lg border border-border-subtle bg-surface-panel p-2.5 md:grid-cols-[1.3fr_1fr_1fr_90px_auto]"
+        onSubmit={(event) => {
+          event.preventDefault()
+          const port = Number(newDevice.port)
+          if (!newDevice.name.trim() || !newDevice.host.trim() || !Number.isInteger(port) || port < 1 || port > 65535) {
+            onMessage?.('Informe nome, endereço e porta válida para o dispositivo externo.')
+            return
+          }
+          void api.addExternalDevice({ name: newDevice.name.trim(), kind: newDevice.kind, host: newDevice.host.trim(), port, enabled: true })
+            .then(() => { setNewDevice({ name: '', kind: 'ATEM_SWITCHER', host: '', port: '9910' }); onMessage?.('Dispositivo salvo. O próximo comando usará este endereço real.') })
+            .catch((error) => onMessage?.(error instanceof Error ? error.message : 'Não foi possível salvar o dispositivo.'))
+        }}
+      >
+        <input value={newDevice.name} onChange={(event) => setNewDevice({ ...newDevice, name: event.target.value })} placeholder="Nome do dispositivo" className="rounded border border-border-subtle bg-surface-base px-2 py-1 text-[11px]" />
+        <select value={newDevice.kind} onChange={(event) => setNewDevice({ ...newDevice, kind: event.target.value as typeof newDevice.kind })} className="rounded border border-border-subtle bg-surface-base px-2 py-1 text-[11px]">
+          <option value="ATEM_SWITCHER">ATEM</option><option value="VIDEOHUB_ROUTER">Videohub</option><option value="GPIO_RELAY">GPIO</option>
+        </select>
+        <input value={newDevice.host} onChange={(event) => setNewDevice({ ...newDevice, host: event.target.value })} placeholder="IP ou host" className="rounded border border-border-subtle bg-surface-base px-2 py-1 text-[11px]" />
+        <input value={newDevice.port} onChange={(event) => setNewDevice({ ...newDevice, port: event.target.value })} placeholder="Porta" className="rounded border border-border-subtle bg-surface-base px-2 py-1 text-[11px]" />
+        <button className="rounded bg-primary px-3 py-1 font-label-caps text-[10px] font-bold text-on-primary" type="submit">ADICIONAR</button>
+      </form>
+
       {/* LOG RÁPIDO DE AUDITORIA COM LATÊNCIA EM MILISSEGUNDOS */}
       <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col gap-1.5">
         <div className="flex items-center justify-between">
@@ -224,11 +266,12 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
             Log Rápido de Auditoria de Hardware & Disparos (/api/external/control)
           </span>
           <span className="font-label-mono text-[9px] text-outline">
-            Precisão SMPTE &amp; Timecode Sync
+            Últimos comandos efetivamente recebidos
           </span>
         </div>
 
         <div className="max-h-[140px] overflow-y-auto broadcast-scroll flex flex-col gap-1 font-label-mono text-[10px]">
+          {auditLogs.length === 0 && <p className="p-3 text-center text-outline">Nenhum comando externo registrado nesta sessão.</p>}
           {auditLogs.map((log) => (
             <div
               key={log.id}

@@ -130,4 +130,56 @@ describe('transporte real confirmado pelo engine', () => {
     event({ event: 'previewPosition', itemId: '0', frames: 50, duration: 250 })
     expect(transport.state().previewPosition).toEqual({ frames: 50, duration: 250 })
   })
+
+  it('arma uma fonte ao vivo no preview e leva exatamente essa fonte ao PGM no TAKE', async () => {
+    const live = {
+      ...view(['']),
+      items: [{
+        item: { id: 'live-1', sourceRef: 'srt://127.0.0.1:9000?mode=listener', type: 'LIVE', autoNext: false },
+        asset: null,
+        trim: { in: 0, out: 0 },
+        gainDb: 0,
+      }],
+      schedule: { items: [{ id: 'live-1', state: 'SCHEDULED', duration: 1500 }] },
+    } as unknown as RundownView
+    start(live)
+
+    await transport.cue({ kind: 'ITEM', id: 'live-1' })
+    expect(commands.at(-1)).toMatchObject({ cmd: 'preview', item: { itemId: 'live-1', source: 'srt://127.0.0.1:9000?mode=listener' } })
+    expect(transport.state().preview).toEqual({ kind: 'ITEM', id: 'live-1' })
+
+    await transport.take('grade', 'live-1')
+    expect(commands.filter((command) => command.cmd === 'take')).toHaveLength(1)
+    expect(transport.state().onAir?.itemId).toBe('live-1')
+  })
+
+  it('abre uma fonte direta no PVW sem tratá-la como asset do MAM', async () => {
+    start(view([]))
+    await transport.cue({ kind: 'SOURCE', source: 'ndi:ESTUDIO (vMix - Output 1)', title: 'Estúdio' })
+    expect(commands.at(-1)).toMatchObject({
+      cmd: 'preview', item: { itemId: 'source:ndi:ESTUDIO (vMix - Output 1)', source: 'ndi:ESTUDIO (vMix - Output 1)' },
+    })
+    expect(transport.state().preview).toEqual({ kind: 'SOURCE', source: 'ndi:ESTUDIO (vMix - Output 1)', title: 'Estúdio' })
+  })
+
+  it('encaminha a fonte OMT descoberta ao engine para diagnóstico ou recepção', async () => {
+    start(view([]))
+    await transport.cue({ kind: 'SOURCE', source: 'omt:nmos-camera-a', title: 'Câmera OMT' })
+    expect(commands.at(-1)).toMatchObject({
+      cmd: 'preview', item: { itemId: 'source:omt:nmos-camera-a', source: 'omt:nmos-camera-a' },
+    })
+    expect(transport.state().preview).toEqual({ kind: 'SOURCE', source: 'omt:nmos-camera-a', title: 'Câmera OMT' })
+  })
+
+  it('troca somente o publisher de uma saída de rede sem comandar stop ou load', async () => {
+    start(view([]))
+    await transport.reconfigureOutput({
+      id: 'destino-rtmp', kind: 'rtmp', target: 'rtmp://cdn.example/live', bitrateKbps: 4000,
+    })
+    expect(commands).toHaveLength(1)
+    expect(commands[0]).toMatchObject({
+      cmd: 'replaceOutput', outputId: 'destino-rtmp',
+      output: { id: 'destino-rtmp', kind: 'rtmp', target: 'rtmp://cdn.example/live' },
+    })
+  })
 })

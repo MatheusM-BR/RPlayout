@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 interface Props {
   /** Caminho no servidor de mídia, ex. `canal-1/pgm`. Nulo apaga a tela. */
@@ -22,6 +22,14 @@ interface Props {
   hideControls?: boolean
   onErrorFallback?: (reason: string) => void
   muted?: boolean
+  /** Elemento que recebe o MediaStream, para scopes locais de QC. */
+  onVideoElement?: (element: HTMLVideoElement | null) => void
+  /**
+   * Notifica o consumidor quando o próprio elemento WHEP decodificou um
+   * quadro.  O QC usa isto para amostrar o mesmo frame que está na tela,
+   * em vez de depender de um relógio independente.
+   */
+  onVideoFrame?: () => void
 }
 
 type Status = 'off' | 'connecting' | 'live' | 'failed'
@@ -58,8 +66,10 @@ export function Whep({
   hideControls = false,
   onErrorFallback,
   muted,
+  onVideoElement,
+  onVideoFrame,
 }: Props) {
-  const video = useRef<HTMLVideoElement>(null)
+  const video = useRef<HTMLVideoElement | null>(null)
   const [status, setStatus] = useState<Status>('off')
   const [reason, setReason] = useState<string | null>(null)
   /**
@@ -76,6 +86,44 @@ export function Whep({
   const [volume, setVolume] = useState(0.7)
   const [scrub, setScrub] = useState<number | null>(null)
   const volumeRef = useRef(0.7)
+  const onVideoFrameRef = useRef(onVideoFrame)
+
+  // Não use uma callback ref inline no <video>. Uma ref inline é removida e
+  // recolocada a cada renderização do monitor; no QC isso alternava o vídeo
+  // compartilhado entre `null` e o elemento real sempre que os scopes
+  // publicavam uma métrica. A imagem continuava no DOM, mas o amostrador
+  // perdia a referência e ficava em "aguardando frame".
+  const bindVideoElement = useCallback((element: HTMLVideoElement | null) => {
+    video.current = element
+    onVideoElement?.(element)
+  }, [onVideoElement])
+
+  useEffect(() => {
+    onVideoFrameRef.current = onVideoFrame
+  }, [onVideoFrame])
+
+  // `requestVideoFrameCallback` é disparado pelo decoder, não pelo relógio
+  // da interface. Isso elimina a corrida onde o QC tentava ler o canvas antes
+  // de o primeiro frame remoto ficar disponível.
+  useEffect(() => {
+    const element = video.current
+    if (!element || typeof element.requestVideoFrameCallback !== 'function') return undefined
+    let active = true
+    let callbackId = 0
+    const next = () => {
+      if (!active) return
+      callbackId = element.requestVideoFrameCallback(() => {
+        if (!active) return
+        onVideoFrameRef.current?.()
+        next()
+      })
+    }
+    next()
+    return () => {
+      active = false
+      if (callbackId) element.cancelVideoFrameCallback(callbackId)
+    }
+  }, [path])
 
   /** Sobe a cada falha e é o que faz o monitor tentar de novo. */
   const [attempt, setAttempt] = useState(0)
@@ -240,8 +288,8 @@ export function Whep({
   return (
     <>
       <video
-        ref={video}
-        className="feed"
+        ref={bindVideoElement}
+        className="feed w-full h-full object-contain"
         autoPlay
         playsInline
         muted={muted !== undefined ? muted : mudo}
@@ -257,6 +305,9 @@ export function Whep({
               }
         }
         onLoadedData={() => { setStatus('live'); setReason(null) }}
+        onLoadedMetadata={() => onVideoFrame?.()}
+        onPlaying={() => onVideoFrame?.()}
+        onTimeUpdate={() => onVideoFrame?.()}
         hidden={status !== 'live'}
       />
       {!hideControls && status === 'live' && (

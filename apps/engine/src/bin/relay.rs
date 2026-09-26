@@ -1,8 +1,9 @@
 //! Relay de um destino externo.
 //!
-//! Puxa o programa do servidor local por RTSP e empurra para fora por RTMP,
-//! **sem recodificar**: só troca de embalagem, do RTP para o FLV. O H.264 e o
-//! AAC que saem daqui são exatamente os que o canal codificou.
+//! Puxa o programa do servidor local por RTSP e empurra para fora por RTMP ou
+//! SRT, **sem recodificar**. Só troca a embalagem: FLV para RTMP e MPEG-TS
+//! alinhado para SRT. O H.264 e o AAC que saem daqui são exatamente os que o
+//! canal codificou.
 //!
 //! A leitura é por RTSP porque o `rtmp2src` do GStreamer não consegue ler do
 //! MediaMTX -- ele é fechado no `createStream`. Como a leitura é interna, o
@@ -29,6 +30,33 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 const STABLE_AFTER: Duration = Duration::from_secs(20);
 /// Quanto o muxer pode esperar por uma das trilhas antes de fechar o pacote.
 const MUX_LATENCY: u64 = 500_000_000;
+
+#[derive(Clone, Copy)]
+enum DestinationKind {
+    Rtmp,
+    Srt,
+}
+
+impl DestinationKind {
+    fn parse(url: &str) -> Result<Self> {
+        let lower = url.to_ascii_lowercase();
+        if lower.starts_with("rtmp://") || lower.starts_with("rtmps://") {
+            Ok(Self::Rtmp)
+        } else if lower.starts_with("srt://") {
+            Ok(Self::Srt)
+        } else {
+            Err(anyhow!("destino deve iniciar com rtmp://, rtmps:// ou srt://"))
+        }
+    }
+
+    fn video_format(self) -> &'static str {
+        match self { Self::Rtmp => "avc", Self::Srt => "byte-stream" }
+    }
+
+    fn audio_format(self) -> &'static str {
+        match self { Self::Rtmp => "raw", Self::Srt => "adts" }
+    }
+}
 
 #[derive(serde::Serialize)]
 #[serde(tag = "event", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -102,6 +130,7 @@ struct Counters {
 fn attempt(from: &str, to: &str) -> Result<(Duration, String)> {
     let pipeline = gst::Pipeline::with_name("relay");
     let counters = Arc::new(Counters::default());
+    let destination = DestinationKind::parse(to)?;
 
     let src = gst::ElementFactory::make("rtspsrc")
         .property("location", from)
@@ -118,17 +147,31 @@ fn attempt(from: &str, to: &str) -> Result<(Duration, String)> {
     // número gigante, o destino cai em "received type 3 chunk without previous
     // chunk" e derruba a conexão. Meio segundo de espera é o que separa um
     // relay que entrega de um que reconecta para sempre.
-    let mux = gst::ElementFactory::make("flvmux")
-        .property("streamable", true)
-        .property("latency", MUX_LATENCY)
-        .build()?;
+    let mux = match destination {
+        DestinationKind::Rtmp => gst::ElementFactory::make("flvmux")
+            .property("streamable", true)
+            .property("latency", MUX_LATENCY)
+            .build()?,
+        DestinationKind::Srt => gst::ElementFactory::make("mpegtsmux")
+            // Sete pacotes TS (1316 bytes) por datagrama: evita quadros
+            // quebrados em receivers SRT que exigem fronteira MPEG-TS.
+            .property("alignment", 7i32)
+            .property("latency", MUX_LATENCY)
+            .build()?,
+    };
     let queue = gst::ElementFactory::make("queue")
         .property("max-size-time", 3_000_000_000u64)
         .build()?;
-    let sink = gst::ElementFactory::make("rtmp2sink")
-        .property("location", to)
-        .build()
-        .context("rtmp2sink não existe nesta instalação do GStreamer")?;
+    let sink = match destination {
+        DestinationKind::Rtmp => gst::ElementFactory::make("rtmp2sink")
+            .property("location", to)
+            .build()
+            .context("rtmp2sink não existe nesta instalação do GStreamer")?,
+        DestinationKind::Srt => gst::ElementFactory::make("srtsink")
+            .property("uri", to)
+            .build()
+            .context("srtsink não existe nesta instalação do GStreamer")?,
+    };
 
     pipeline.add_many([&src, &mux, &queue, &sink])?;
     gst::Element::link_many([&mux, &queue, &sink])?;
@@ -140,12 +183,17 @@ fn attempt(from: &str, to: &str) -> Result<(Duration, String)> {
     // depois deixa o ramo empurrando sem destino, e o pad que leva `not-linked`
     // para de vez. Como o programa de um canal sempre tem vídeo e áudio, dá
     // para reservar os dois lugares e esperar cada um ser ocupado.
+    let pad_template = match destination {
+        DestinationKind::Rtmp => ["video", "audio"],
+        DestinationKind::Srt => ["sink_%d", "sink_%d"],
+    };
     let slots: HashMap<String, gst::Pad> = ["video", "audio"]
         .into_iter()
-        .map(|slot| {
-            mux.request_pad_simple(slot)
+        .zip(pad_template)
+        .map(|(slot, template)| {
+            mux.request_pad_simple(template)
                 .map(|pad| (slot.to_string(), pad))
-                .ok_or_else(|| anyhow!("flvmux recusou o lugar de {slot}"))
+                .ok_or_else(|| anyhow!("muxer recusou o lugar de {slot}"))
         })
         .collect::<Result<_>>()?;
 
@@ -162,7 +210,7 @@ fn attempt(from: &str, to: &str) -> Result<(Duration, String)> {
     let counted = Arc::clone(&counters);
     let listed = Arc::clone(&seen);
     src.connect_pad_added(move |_, pad| {
-        let outcome = match branch(&stage, pad, &counted, &slots) {
+        let outcome = match branch(&stage, pad, &counted, &slots, destination) {
             Ok(slot) => slot,
             Err(error) => {
                 eprintln!("[relay] fluxo ignorado: {error}");
@@ -229,6 +277,7 @@ fn branch(
     pad: &gst::Pad,
     counters: &Arc<Counters>,
     slots: &HashMap<String, gst::Pad>,
+    destination: DestinationKind,
 ) -> Result<String> {
     let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
     let structure = caps
@@ -254,20 +303,20 @@ fn branch(
     }
     let queue = gst::ElementFactory::make("queue").build()?;
 
-    // O flvmux só aceita H.264 em `avc` e AAC em `raw`. Deixar a negociação
-    // adivinhar é o caminho para um pipeline que liga tudo e não passa nada.
+    // RTMP/FLV pede AVC/raw; SRT/MPEG-TS pede byte-stream/ADTS. Fixar isso
+    // evita uma ligação que sobe mas entrega quadros quebrados no receptor.
     let caps = gst::ElementFactory::make("capsfilter").build()?;
     caps.set_property(
         "caps",
         if slot == "video" {
             gst::Caps::builder("video/x-h264")
-                .field("stream-format", "avc")
+                .field("stream-format", destination.video_format())
                 .field("alignment", "au")
                 .build()
         } else {
             gst::Caps::builder("audio/mpeg")
                 .field("mpegversion", 4i32)
-                .field("stream-format", "raw")
+                .field("stream-format", destination.audio_format())
                 .build()
         },
     );
@@ -351,5 +400,26 @@ fn main() -> Result<()> {
 
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(BACKOFF_MAX);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DestinationKind;
+
+    #[test]
+    fn escolhe_flv_para_rtmp_e_ts_para_srt() {
+        let rtmp = DestinationKind::parse("rtmps://cdn.example/live/key").unwrap();
+        assert_eq!(rtmp.video_format(), "avc");
+        assert_eq!(rtmp.audio_format(), "raw");
+
+        let srt = DestinationKind::parse("srt://uplink.example:9000?mode=caller").unwrap();
+        assert_eq!(srt.video_format(), "byte-stream");
+        assert_eq!(srt.audio_format(), "adts");
+    }
+
+    #[test]
+    fn rejeita_destino_sem_transporte_suportado() {
+        assert!(DestinationKind::parse("https://example.test/live").is_err());
     }
 }

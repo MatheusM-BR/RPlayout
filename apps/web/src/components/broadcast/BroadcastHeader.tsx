@@ -136,27 +136,27 @@ export function BroadcastHeader({
             className={`hidden xl:grid grid-cols-2 gap-1 bg-surface-panel p-1 rounded-lg border border-border-subtle ${
               onOpenLiveInput ? 'cursor-pointer hover:border-border-strong transition-colors' : ''
             }`}
-            title="Clique para configurar matriz de entradas externas (SDI, NDI, NVENC, SRT)"
+            title="Abrir configuração de entradas e saídas. Status físico detalhado fica no Monitor."
           >
             <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span>
+              <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
               <span className="font-label-caps text-[9px] text-on-surface-variant">SDI:</span>
-              <span className="font-label-caps text-[9px] text-status-ok-bright font-bold">OK</span>
+              <span className="font-label-caps text-[9px] text-outline font-bold">CONFIG.</span>
             </div>
             <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-accent-ice-bright"></span>
+              <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
               <span className="font-label-caps text-[9px] text-on-surface-variant">NDI:</span>
-              <span className="font-label-caps text-[9px] text-accent-ice-bright font-bold">ON</span>
+              <span className="font-label-caps text-[9px] text-outline font-bold">CONFIG.</span>
             </div>
             <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span>
+              <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
               <span className="font-label-caps text-[9px] text-on-surface-variant">NVENC:</span>
-              <span className="font-label-caps text-[9px] text-status-ok-bright font-bold">60FPS</span>
+              <span className="font-label-caps text-[9px] text-outline font-bold">MONITOR</span>
             </div>
             <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary-container"></span>
+              <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
               <span className="font-label-caps text-[9px] text-on-surface-variant">SRT:</span>
-              <span className="font-label-caps text-[9px] text-primary font-bold">LIVE</span>
+              <span className="font-label-caps text-[9px] text-outline font-bold">CONFIG.</span>
             </div>
           </div>
 

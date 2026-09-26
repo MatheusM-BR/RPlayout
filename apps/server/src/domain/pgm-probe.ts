@@ -24,6 +24,13 @@ export interface PgmProbeStatusResult {
   activeAlerts: PgmProbeAlert[]
   emergencySlateActive: boolean
   lastIncidentAt?: string
+  lastSampleAt?: string
+  metrics: {
+    blackDurationMs: number
+    freezeDurationMs: number
+    silenceDurationMs: number
+    audioDbfs: number | null
+  }
   thresholds: PgmProbeThresholds
 }
 
@@ -42,6 +49,8 @@ export class PgmProbe {
   private freezeDurationMs = 0
   private silenceDurationMs = 0
   private lastSampleTimeMs: number | null = null
+  private lastSampleAt: string | undefined
+  private lastAudioDbfs: number | null = null
 
   private activeBlackAlert: PgmProbeAlert | null = null
   private activeFreezeAlert: PgmProbeAlert | null = null
@@ -83,6 +92,8 @@ export class PgmProbe {
     const now = input.timestampMs ?? Date.now()
     const delta = input.deltaMs ?? (this.lastSampleTimeMs ? Math.max(0, now - this.lastSampleTimeMs) : 100)
     this.lastSampleTimeMs = now
+    this.lastSampleAt = new Date(now).toISOString()
+    if (input.audioDbfs !== undefined) this.lastAudioDbfs = input.audioDbfs
 
     const triggeredAlerts: PgmProbeAlert[] = []
 
@@ -225,6 +236,13 @@ export class PgmProbe {
       activeAlerts,
       emergencySlateActive: this.emergencySlateActive,
       lastIncidentAt: lastAlert?.timestamp,
+      lastSampleAt: this.lastSampleAt,
+      metrics: {
+        blackDurationMs: this.blackDurationMs,
+        freezeDurationMs: this.freezeDurationMs,
+        silenceDurationMs: this.silenceDurationMs,
+        audioDbfs: this.lastAudioDbfs,
+      },
       thresholds: { ...this.thresholds },
     }
   }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, desc, eq, gt, isNotNull } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, isNotNull } from 'drizzle-orm'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
 import {
@@ -23,7 +23,7 @@ import {
   type MediaAsset,
   type PreviewTarget,
 } from '@rplayout/protocol'
-import { networkInterfaces } from 'node:os'
+import { cpus, freemem, networkInterfaces, totalmem } from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
@@ -50,9 +50,11 @@ import {
   exportAsRunCsv,
   getAncineComplianceSummary,
 } from './domain/asrun.js'
+import { exportXmltv } from './domain/epg.js'
+import { buildCommercialComplianceReport, renderCommercialCompliancePdf } from './domain/reports.js'
 import { buildCandidates, planFill } from './domain/autofill.js'
 import { backupDatabase, listBackups } from './domain/backup.js'
-import { syncDistribution } from './app.js'
+import { pgmProbeFor, syncDistribution } from './app.js'
 import { MediaMtx, PORTS } from './domain/mediamtx.js'
 import { can, parseRole, roleLabel, type Action } from './domain/permissions.js'
 import { hashPassword, verifyPassword } from './domain/auth.js'
@@ -82,9 +84,12 @@ import {
   sessions,
   healthEvents,
   integrations,
+  externalDevices,
   liveSources,
   multiviewConfigs,
+  transmissionPresets,
 } from './db/schema.js'
+import { listChannelProjects, restoreChannelProject, saveChannelProject } from './domain/channel-projects.js'
 import {
   globalSrtManager,
   listLiveSources,
@@ -107,7 +112,9 @@ import { extname, resolve as resolvePath } from 'node:path'
 import {
   createOutput,
   deleteOutput,
+  toEngineProfile,
   listOutputs,
+  outputCapability,
   targetOf,
   updateOutput,
 } from './domain/outputs.js'
@@ -270,11 +277,11 @@ async function dentroDoAcervo(app: App, candidato: string): Promise<boolean> {
 function monitors(app: App, channelId: string) {
   const path = app.paths.find((entry) => entry.channelId === channelId)
   if (!app.mediamtx?.running || !path) return null
-  // O fluxo `pgm` é a fonte de verdade do programa e já carrega a trilha de
-  // áudio. O antigo `mon` era uma cópia reduzida que podia chegar sem áudio
-  // quando o encoder Opus não estava disponível; isso deixava o painel mudo
-  // apesar de /pgm funcionar no navegador. O MediaMTX entrega o mesmo fluxo
-  // por WHEP, sem uma segunda codificação no engine.
+  // PGM web aponta para o mesmo master que alimenta os relays externos. O
+  // caminho `mon` era uma segunda publicação sob demanda; como o card PGM não
+  // fazia o heartbeat dela, a tela podia dizer "sem sinal" enquanto o PGM
+  // externo estava perfeito. WHEP negocia vídeo H.264 deste mesmo caminho e
+  // mantém uma única composição/renderização do programa.
   return { port: PORTS.webrtc, program: path.program, preview: path.preview }
 }
 
@@ -1915,14 +1922,70 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
+    const onAir = runtime.transport.state().onAir?.itemId
+    if (id === onAir) {
+      return reply.code(400).send({ error: 'O item no ar não pode ser removido da grade. Pare primeiro.' })
+    }
+
+    runtime.markManualEdit()
+
+    const prepared = runtime.transport.state().preparedItemId
+    const preview = runtime.transport.state().preview
+    if (prepared === id || (preview?.kind === 'ITEM' && preview.id === id)) {
+      await runtime.transport.cue(null)
+    }
+
     await app.history.capture(app.db, runtime.view.rundown.id, 'remover item', {
       wholeRundown: true,
     })
     const removed = runtime.view.items.find((entry) => entry.item.id === id)
     await app.db.delete(rundownItems).where(eq(rundownItems.id, id))
+    await app.db.update(rundowns).set({ updatedAt: new Date().toISOString() }).where(eq(rundowns.id, runtime.view.rundown.id))
     await logDecision(app, runtime.view.rundown.id, id, 'ITEM_REMOVED', {
       mediaId: removed?.item.mediaId ?? null,
     })
+    await runtime.refresh()
+    onChange()
+    return snapshot(app, runtime)
+  })
+
+  server.post('/api/rundowns/:id/items/bulk-delete', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover itens.' })
+    const body = z.object({ ids: z.array(z.string()).min(1) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+    const runtime = await runtimeForRundown(app, id)
+    if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
+
+    runtime.markManualEdit()
+
+    const onAir = runtime.transport.state().onAir?.itemId
+    const idsToRemove = body.data.ids.filter((itemId) => itemId !== onAir)
+    if (idsToRemove.length === 0) {
+      return reply.code(400).send({ error: 'O item no ar não pode ser removido da grade.' })
+    }
+
+    const prepared = runtime.transport.state().preparedItemId
+    const preview = runtime.transport.state().preview
+    if ((prepared && idsToRemove.includes(prepared)) || (preview?.kind === 'ITEM' && idsToRemove.includes(preview.id))) {
+      await runtime.transport.cue(null)
+    }
+
+    await app.history.capture(app.db, id, 'remover itens em lote', { wholeRundown: true })
+
+    await app.db.delete(rundownItems).where(
+      and(
+        eq(rundownItems.rundownId, id),
+        inArray(rundownItems.id, idsToRemove),
+      ),
+    )
+    await app.db.update(rundowns).set({ updatedAt: new Date().toISOString() }).where(eq(rundowns.id, id))
+
+    for (const itemId of idsToRemove) {
+      await logDecision(app, id, itemId, 'ITEM_REMOVED', { mediaId: null })
+    }
+
     await runtime.refresh()
     onChange()
     return snapshot(app, runtime)
@@ -2029,6 +2092,54 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   // ---- distribuição ----------------------------------------------------
+
+  // A utilização de CPU só pode ser calculada pela diferença entre duas
+  // leituras. O estado fica no processo do servidor e nunca vem de valores
+  // decorativos da interface.
+  let previousHostCpu: { idle: number; total: number } | null = null
+
+  /** Métricas do computador que efetivamente hospeda esta instância. */
+  server.get('/api/host-metrics', async () => {
+    const cpu = cpus().reduce((sum, core) => ({
+      idle: sum.idle + core.times.idle,
+      total: sum.total + core.times.user + core.times.nice + core.times.sys + core.times.idle + core.times.irq,
+    }), { idle: 0, total: 0 })
+    const cpuPercent = previousHostCpu && cpu.total > previousHostCpu.total
+      ? Math.max(0, Math.min(100, Math.round((1 - (cpu.idle - previousHostCpu.idle) / (cpu.total - previousHostCpu.total)) * 1000) / 10))
+      : null
+    previousHostCpu = cpu
+
+    const memoryTotalBytes = totalmem()
+    const memoryFreeBytes = freemem()
+    const memoryUsedBytes = Math.max(0, memoryTotalBytes - memoryFreeBytes)
+    let gpu: { utilizationPercent: number | null; memoryUsedMiB: number | null; memoryTotalMiB: number | null; temperatureC: number | null; name: string | null; error: string | null } = {
+      utilizationPercent: null, memoryUsedMiB: null, memoryTotalMiB: null, temperatureC: null, name: null, error: null,
+    }
+    try {
+      const { stdout } = await execFileAsync('nvidia-smi', ['--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits'], { timeout: 1500 })
+      const fields = stdout.trim().split(/\r?\n/)[0]?.split(',').map((field) => field.trim()) ?? []
+      const numberAt = (index: number) => {
+        const value = Number(fields[index])
+        return Number.isFinite(value) ? value : null
+      }
+      gpu = {
+        name: fields[0] || null,
+        utilizationPercent: numberAt(1),
+        memoryUsedMiB: numberAt(2),
+        memoryTotalMiB: numberAt(3),
+        temperatureC: numberAt(4),
+        error: null,
+      }
+    } catch {
+      gpu.error = 'nvidia-smi indisponível (GPU NVIDIA/NVENC não detectada)'
+    }
+    return {
+      generatedAt: new Date().toISOString(),
+      cpu: { percent: cpuPercent, cores: cpus().length },
+      memory: { totalBytes: memoryTotalBytes, usedBytes: memoryUsedBytes, freeBytes: memoryFreeBytes, percent: memoryTotalBytes > 0 ? Math.round(memoryUsedBytes / memoryTotalBytes * 1000) / 10 : null },
+      gpu,
+    }
+  })
 
   /**
    * Visão operacional dos processos que pertencem ao playout. O endpoint não
@@ -2340,7 +2451,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   const liveSourceSchema = z.object({
     channelId: z.string().min(1, 'channelId é obrigatório'),
     name: z.string().min(1, 'name é obrigatório'),
-    kind: z.enum(['SRT', 'RTMP', 'SDI', 'NDI']),
+    kind: z.enum(['SRT', 'RTMP', 'SDI', 'NDI', 'OMT']),
     targetUrl: z.string().optional(),
     srtConfig: z
       .object({
@@ -2609,8 +2720,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       []
 
     for (const rule of rules) {
+      // A pauta com 0h explicitamente autoriza repetir mídias. Não remova os
+      // candidatos usados entre faixas nesse caso, ou o primeiro bloco consome
+      // o acervo e os seguintes ficam vazios apesar de a repetição estar livre.
+      const availableCandidates = rule.avoidHours === 0
+        ? candidates
+        : candidates.filter((candidate) => !used.has(candidate.id))
       const plan = planFill(
-        candidates.filter((candidate) => !used.has(candidate.id)),
+        availableCandidates,
         runtime.channel,
         secondsToFrames((rule.endMinute - rule.startMinute) * 60, runtime.channel.rate),
         rule.categories,
@@ -2889,6 +3006,59 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { since: start, until: until ?? null, entries }
   })
 
+  /** Feed XMLTV da grade planejada para operadoras e distribuidores OTT. */
+  const getXmltvHandler = async (
+    request: { headers: Record<string, string | string[] | undefined>; query: { channelId?: string; date?: string }; params?: { id?: string } },
+    reply: any,
+  ) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar EPG.' })
+    const channelId = request.params?.id ?? request.query.channelId
+    if (!channelId) return reply.code(400).send({ error: 'Informe channelId.' })
+    const channel = await getChannel(app.db, channelId)
+    if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    const allRundowns = await listRundowns(app.db, channelId)
+    const selected = request.query.date ? allRundowns.filter((rundown) => rundown.date === request.query.date) : allRundowns
+    const assets = await assetMap(app.db)
+    const payload = exportXmltv({
+      channel,
+      assets,
+      rundowns: await Promise.all(selected.map(async (rundown) => ({ rundown, items: await listItems(app.db, rundown.id) }))),
+    })
+    return reply
+      .header('content-type', 'application/xml; charset=utf-8')
+      .header('content-disposition', `attachment; filename="epg-${channel.name.replace(/\W+/g, '-')}.xml"`)
+      .send(payload)
+  }
+  server.get('/api/channels/:id/epg.xml', getXmltvHandler as any)
+  server.get('/api/v1/epg/xmltv', getXmltvHandler as any)
+
+  /**
+   * Comprovante imprimível de veiculação comercial. O PDF só inclui dados do
+   * as-run, jamais a previsão da grade, para não certificar inserções que não
+   * chegaram ao ar.
+   */
+  const getCommercialReportHandler = async (
+    request: { headers: Record<string, string | string[] | undefined>; query: { channelId?: string; since?: string; until?: string; limit?: string }; params?: { id?: string } },
+    reply: any,
+  ) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar relatórios.' })
+    const channelId = request.params?.id ?? request.query.channelId
+    if (!channelId) return reply.code(400).send({ error: 'Informe channelId.' })
+    const channel = await getChannel(app.db, channelId)
+    if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    const since = request.query.since ?? new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+    const limit = Math.min(10_000, Math.max(1, Number(request.query.limit ?? 5000) || 5000))
+    const entries = await listAsRun(app.db, channelId, since, limit, request.query.until)
+    const report = buildCommercialComplianceReport(entries, channel.rate, { since, until: request.query.until ?? null })
+    const pdf = renderCommercialCompliancePdf(channel.name, report)
+    return reply
+      .header('content-type', 'application/pdf')
+      .header('content-disposition', `attachment; filename="comprovante-veiculacao-${channel.name.replace(/\W+/g, '-')}-${since.slice(0, 10)}.pdf"`)
+      .send(pdf)
+  }
+  server.get('/api/channels/:id/reports/commercial.pdf', getCommercialReportHandler as any)
+  server.get('/api/v1/reports/commercial.pdf', getCommercialReportHandler as any)
+
   // ---- grafismo ----------------------------------------------------------
 
   server.get('/api/graphics', async (request) => {
@@ -3113,10 +3283,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         return {
           ...row,
           // Destino efetivo: derivado nos gerenciados, guardado nos demais.
-          resolvedTarget: targetOf(row, path),
-          displayUrl: primaryUrl,
           streamUrls,
-          target: row.target || primaryUrl || '',
+          // Saídas externas podem conter a passphrase SRT ou a stream key
+          // RTMP. A configuração real só sai do SQLite para o engine.
+          target: redactUrl(row.target || primaryUrl || ''),
+          resolvedTarget: redactUrl(targetOf(row, path) ?? ''),
+          displayUrl: primaryUrl ? redactUrl(primaryUrl) : null,
           // Quanto esta saída usaria se ninguém escrevesse um número. Mostrar
           // isso é o que deixa a escolha ser uma escolha: "automático" sozinho
           // não diz se são 4 Mbps ou 12.
@@ -3134,6 +3306,66 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
+  // ---- presets de transmissão ------------------------------------------
+
+  const presetBody = z.object({
+    name: z.string().trim().min(1).max(120),
+    kind: z.enum(['SRT', 'RTMP']),
+    target: z.string().trim().min(1).max(2048),
+  })
+
+  const presentPreset = (row: { id: string; channelId: string; name: string; kind: 'SRT' | 'RTMP'; target: string; createdAt: string }) => ({
+    ...row,
+    target: redactUrl(row.target),
+  })
+
+  server.get('/api/channels/:id/transmission-presets', async (request) => {
+    const { id } = request.params as { id: string }
+    const rows = await app.db.select().from(transmissionPresets)
+      .where(eq(transmissionPresets.channelId, id)).orderBy(asc(transmissionPresets.createdAt))
+    return { presets: rows.map(presentPreset) }
+  })
+
+  server.post('/api/channels/:id/transmission-presets', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = presetBody.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe nome, protocolo SRT/RTMP e destino do preset.' })
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode salvar presets de transmissão.' })
+    const [channel] = await app.db.select({ id: channels.id }).from(channels).where(eq(channels.id, id))
+    if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    const row = { id: randomUUID(), channelId: id, ...body.data, createdAt: new Date().toISOString() }
+    await app.db.insert(transmissionPresets).values(row)
+    return reply.code(201).send({ preset: presentPreset(row) })
+  })
+
+  server.post('/api/channels/:id/transmission-presets/:presetId/apply', async (request, reply) => {
+    const { id, presetId } = request.params as { id: string; presetId: string }
+    const body = z.object({ name: z.string().trim().min(1).max(120).optional() }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Nome de saída inválido.' })
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode aplicar presets de transmissão.' })
+    const [preset] = await app.db.select().from(transmissionPresets).where(and(eq(transmissionPresets.id, presetId), eq(transmissionPresets.channelId, id)))
+    if (!preset) return reply.code(404).send({ error: 'Preset não encontrado neste canal.' })
+    const output = await createOutput(app.db, id, { name: body.data.name ?? preset.name, kind: preset.kind, target: preset.target })
+    const runtime = app.runtimes.get(id)
+    if (runtime) {
+      const rundownId = runtime.view?.rundown.id ?? null
+      runtime.transport.close()
+      app.runtimes.delete(id)
+      const renewed = await runtimeFor(app, id)
+      if (renewed && rundownId) await renewed.load(rundownId)
+    }
+    await syncDistribution(app)
+    return reply.code(201).send({ output: { ...output, target: redactUrl(output.target) }, restartRequired: true })
+  })
+
+  server.delete('/api/channels/:id/transmission-presets/:presetId', async (request, reply) => {
+    const { id, presetId } = request.params as { id: string; presetId: string }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode remover presets de transmissão.' })
+    const deleted = await app.db.delete(transmissionPresets).where(and(eq(transmissionPresets.id, presetId), eq(transmissionPresets.channelId, id))).returning({ id: transmissionPresets.id })
+    if (deleted.length === 0) return reply.code(404).send({ error: 'Preset não encontrado neste canal.' })
+    return { ok: true }
+  })
+
   server.post('/api/channels/:id/outputs', async (request, reply) => {
     const { id } = request.params as { id: string }
     const body = z
@@ -3147,6 +3379,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
       return reply.code(403).send({ error: 'Seu papel não pode criar saídas.' })
     }
+    const capability = outputCapability(body.data.kind)
+    if (!capability.available) return reply.code(422).send({ error: capability.reason })
     // Na placa o destino é o número do conector, e só isso.
     if (body.data.kind === 'SDI' && !/^\d+$/.test(body.data.target.trim())) {
       return reply.code(400).send({ error: 'Na SDI o destino é o número do conector: 0, 1, 2…' })
@@ -3162,7 +3396,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if (novo && rundownId) await novo.load(rundownId)
     }
     await syncDistribution(app)
-    return { output: row, restartRequired: false }
+    return { output: { ...row, target: redactUrl(row.target) }, restartRequired: true }
   })
 
   server.patch('/api/outputs/:id', async (request, reply) => {
@@ -3185,23 +3419,43 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
       return reply.code(403).send({ error: 'Seu papel não pode alterar saídas.' })
     }
+    if (body.data.kind) {
+      const capability = outputCapability(body.data.kind)
+      if (!capability.available) return reply.code(422).send({ error: capability.reason })
+    }
 
-    const [profile] = await app.db.select({ channelId: outputProfiles.channelId }).from(outputProfiles).where(eq(outputProfiles.id, id))
+    const [profile] = await app.db.select().from(outputProfiles).where(eq(outputProfiles.id, id))
     await updateOutput(app.db, id, body.data)
-    // Trocar liga/desliga é uma ação operacional: reconstrói somente o engine
-    // deste canal e mantém o servidor HTTP, banco e os demais canais vivos.
+    const [updated] = await app.db.select().from(outputProfiles).where(eq(outputProfiles.id, id))
+    const hotKinds = new Set(['RTMP', 'SRT', 'FILE'])
+    const runtime = profile ? app.runtimes.get(profile.channelId) : undefined
+    const canHotReplace = Boolean(
+      runtime && updated && updated.role === 'EXTRA' && updated.enabled &&
+      hotKinds.has(updated.kind) && body.data.enabled !== false,
+    )
+    if (canHotReplace && runtime && updated) {
+      const target = toEngineProfile(updated as any, app.paths.find((entry) => entry.channelId === updated.channelId))
+      const transport = runtime.transport as unknown as { reconfigureOutput?: (output: Record<string, unknown>) => Promise<void> }
+      if (typeof target !== 'string' && target && transport.reconfigureOutput) {
+        await transport.reconfigureOutput(target as unknown as Record<string, unknown>)
+        await syncDistribution(app)
+        return { ok: true, restartRequired: false, applied: 'hot' as const }
+      }
+    }
+    // SDI e operações que removem/adicionam ramificações ainda exigem rebuild:
+    // são explicitamente reportadas como janela operacional controlada.
     if (profile) {
-      const anterior = app.runtimes.get(profile.channelId)
+      const anterior = runtime
       const rundownId = anterior?.view?.rundown.id ?? null
       if (anterior) {
         anterior.transport.close()
         app.runtimes.delete(profile.channelId)
       }
-      const runtime = await runtimeFor(app, profile.channelId)
-      if (runtime && rundownId) await runtime.load(rundownId)
+      const renewedRuntime = await runtimeFor(app, profile.channelId)
+      if (renewedRuntime && rundownId) await renewedRuntime.load(rundownId)
     }
     await syncDistribution(app)
-    return { ok: true, restartRequired: false }
+    return { ok: true, restartRequired: true, applied: 'restart' as const }
   })
 
   server.delete('/api/outputs/:id', async (request, reply) => {
@@ -3224,7 +3478,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if (runtime && rundownId) await runtime.load(rundownId)
     }
     await syncDistribution(app)
-    return { ok: true, restartRequired: false }
+    return { ok: true, restartRequired: true }
   })
 
   server.post('/api/channels/:id/guests', async (request, reply) => {
@@ -3440,6 +3694,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         itemId: z.string().nullable().optional(),
         /** Arquivo aberto direto do explorador, sem entrar na grade. */
         assetId: z.string().nullable().optional(),
+        /** Entrada de rede aberta diretamente no PVW, sem virar arquivo MAM. */
+        sourceRef: z.string().min(1).nullable().optional(),
+        sourceTitle: z.string().max(200).nullable().optional(),
         bus: z.enum(['pgm', 'pvw']).optional(),
         frames: z.number().int().min(0).optional(),
       })
@@ -3453,14 +3710,36 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     switch (body.data.action) {
       case 'take': {
-        const armed = runtime.transport.state().preview
-        const itemId = body.data.itemId ?? (armed?.kind === 'ITEM' ? armed.id : null)
-        if (!itemId) return reply.code(400).send({ error: 'Nada armado para entrar no ar.' })
-        await runtime.transport.take(runtime.view.rundown.id, itemId)
+        const state = runtime.transport.state()
+        let resolvedItemId = body.data.itemId ?? (state.preview?.kind === 'ITEM' ? state.preview.id : null) ?? state.preparedItemId
+        // Uma fonte aberta diretamente na biblioteca não tem itemId no alvo de
+        // preview. Quando ela já existe na grade, TAKE precisa achar aquele
+        // item — nunca cair silenciosamente no próximo VT da lista.
+        if (!resolvedItemId && state.preview?.kind === 'SOURCE') {
+          // Guarda a referência antes do callback: o TypeScript não conserva
+          // o estreitamento discriminado de `state.preview` dentro do find.
+          const previewSource = state.preview.source
+          resolvedItemId = runtime.view.items.find((entry) => entry.item.sourceRef === previewSource)?.item.id ?? null
+          if (!resolvedItemId) {
+            return reply.code(400).send({ error: 'A fonte está aberta no PVW, mas ainda não foi adicionada à grade. Adicione-a antes de usar TAKE.' })
+          }
+        }
+        if (!resolvedItemId && runtime.view.items.length > 0) {
+          const currentOnAirId = state.onAir?.itemId
+          const onAirIdx = currentOnAirId ? runtime.view.items.findIndex((i) => i.item.id === currentOnAirId) : -1
+          const nextItem = onAirIdx >= 0 && onAirIdx + 1 < runtime.view.items.length
+            ? runtime.view.items[onAirIdx + 1]?.item.id
+            : runtime.view.items[0]?.item.id
+          resolvedItemId = nextItem ?? null
+        }
+        if (!resolvedItemId) return reply.code(400).send({ error: 'Nada armado para entrar no ar.' })
+        await runtime.transport.take(runtime.view.rundown.id, resolvedItemId)
         break
       }
       case 'cue': {
-        const target: PreviewTarget | null = body.data.assetId
+        const target: PreviewTarget | null = body.data.sourceRef
+          ? { kind: 'SOURCE', source: body.data.sourceRef, ...(body.data.sourceTitle ? { title: body.data.sourceTitle } : {}) }
+          : body.data.assetId
           ? { kind: 'ASSET', id: body.data.assetId }
           : body.data.itemId
             ? { kind: 'ITEM', id: body.data.itemId }
@@ -3537,13 +3816,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   // 3. Telemetria da Sonda de Qualidade de PGM
   const getPgmProbeStatusHandler = async (
-    request: { headers: Record<string, string | string[] | undefined> },
+    request: { headers: Record<string, string | string[] | undefined>; query?: unknown },
     reply: { code: (code: number) => { send: (body: unknown) => unknown } },
   ) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) {
       return reply.code(403).send({ error: 'Sem permissão para acessar telemetria de engenharia.' })
     }
-    return app.pgmProbe.getStatus()
+    const channelId = (request.query as { channelId?: string } | undefined)?.channelId
+    if (!channelId) return reply.code(400).send({ error: 'Informe o canal da sonda PGM.' })
+    return pgmProbeFor(app, channelId).getStatus()
   }
   server.get('/api/v1/engineering/pgm-probe/status', getPgmProbeStatusHandler)
   server.get('/api/v1/probe/pgm/status', getPgmProbeStatusHandler)
@@ -3553,20 +3834,21 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
       return reply.code(403).send({ error: 'Sem permissão para acionar intervenções de emergência.' })
     }
-    const body = (request.body as { action?: string; reason?: string } | undefined) ?? {}
+    const body = (request.body as { channelId?: string; action?: string; reason?: string } | undefined) ?? {}
+    if (!body.channelId) return reply.code(400).send({ error: 'Informe o canal da sonda PGM.' })
+    const probe = pgmProbeFor(app, body.channelId)
     if (body.action === 'RESET') {
-      app.pgmProbe.resetEmergencySlate()
-      return { ok: true, emergencySlateActive: false, status: app.pgmProbe.getStatus() }
+      probe.resetEmergencySlate()
+      return { ok: true, emergencySlateActive: false, status: probe.getStatus() }
     }
-    const alert = app.pgmProbe.triggerEmergencySlate(body.reason ?? 'MANUAL_EMERGENCY_DISPATCH')
-    for (const runtime of app.runtimes.values()) {
-      void emitIntegrationEvent(app.db, 'pgm_probe.emergency_slate', { alert }, runtime.channel.id)
-    }
+    const alert = probe.triggerEmergencySlate(body.reason ?? 'MANUAL_EMERGENCY_DISPATCH')
+    const runtime = app.runtimes.get(body.channelId)
+    if (runtime) void emitIntegrationEvent(app.db, 'pgm_probe.emergency_slate', { alert }, runtime.channel.id)
     return {
       ok: true,
       emergencySlateActive: true,
       alert,
-      status: app.pgmProbe.getStatus(),
+      status: probe.getStatus(),
     }
   })
 
@@ -3672,7 +3954,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
     const params = request.params as { layer: string }
     const validLayers: GraphicsLayer[] = ['STATION_LOGO', 'ONAIR_CLOCK', 'CRAWL_TICKER', 'LOWER_THIRD']
-    const layer = params.layer.toUpperCase() as GraphicsLayer
+    const numMap: Record<string, GraphicsLayer> = {
+      '0': 'STATION_LOGO',
+      '1': 'ONAIR_CLOCK',
+      '2': 'CRAWL_TICKER',
+      '3': 'LOWER_THIRD',
+    }
+    const rawLayer = (params.layer || '').toUpperCase()
+    const layer = numMap[rawLayer] ?? (rawLayer as GraphicsLayer)
     if (!validLayers.includes(layer)) {
       return reply.code(400).send({ error: `Camada gráfica inválida: ${params.layer}. Válidas: ${validLayers.join(', ')}` })
     }
@@ -3770,6 +4059,72 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   // 4. Acionamento de hardware externo (ATEM, Videohub, GPIO) protegido por token
+  const externalDeviceSchema = z.object({
+    name: z.string().min(1).max(120),
+    kind: z.enum(['ATEM_SWITCHER', 'VIDEOHUB_ROUTER', 'GPIO_RELAY']),
+    host: z.string().min(1).max(255),
+    port: z.number().int().min(1).max(65535),
+    enabled: z.boolean().default(true),
+  })
+
+  // ---- projetos versionados por canal -------------------------------------
+
+  server.get('/api/channels/:id/projects', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Seu papel não pode consultar projetos.' })
+    const channelId = (request.params as { id: string }).id
+    return { projects: await listChannelProjects(app.db, channelId) }
+  })
+
+  server.post('/api/channels/:id/projects', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode salvar projetos.' })
+    const channelId = (request.params as { id: string }).id
+    const body = z.object({ label: z.string().trim().min(1).max(120) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Nome do ponto de restauração inválido.' })
+    const project = await saveChannelProject(app.db, channelId, body.data.label)
+    return { project, projects: await listChannelProjects(app.db, channelId) }
+  })
+
+  server.post('/api/channels/:id/projects/:projectId/restore', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode restaurar projetos.' })
+    const { id: channelId, projectId } = request.params as { id: string; projectId: string }
+    try {
+      const restored = await restoreChannelProject(app.db, channelId, projectId)
+      const runtime = await runtimeFor(app, channelId)
+      if (runtime) {
+        const first = (await listRundowns(app.db)).find((row) => row.channelId === channelId)
+        if (first) await runtime.load(first.id)
+        await runtime.refresh()
+      }
+      onChange()
+      return { ok: true, restored }
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : 'Não foi possível restaurar o projeto.' })
+    }
+  })
+  server.get('/api/external/devices', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para consultar automação externa.' })
+    return { devices: await app.db.select().from(externalDevices) }
+  })
+  server.post('/api/external/devices', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para configurar automação externa.' })
+    const body = externalDeviceSchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    const device = { id: randomUUID(), ...body.data, createdAt: new Date().toISOString() }
+    await app.db.insert(externalDevices).values(device)
+    return reply.code(201).send({ device })
+  })
+  server.patch('/api/external/devices/:id', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para configurar automação externa.' })
+    const body = externalDeviceSchema.partial().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    await app.db.update(externalDevices).set(body.data).where(eq(externalDevices.id, (request.params as { id: string }).id))
+    return { ok: true }
+  })
+  server.get('/api/external/audit', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para consultar automação externa.' })
+    return { entries: globalStudioAutomationGateway.getAuditEntries(100) }
+  })
+
   server.post('/api/v1/external/control', async (request, reply) => {
     const rawHeaderToken = request.headers['x-rplayout-control-token']
     const headerToken = Array.isArray(rawHeaderToken) ? rawHeaderToken[0] : rawHeaderToken
@@ -3812,6 +4167,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const nowFrames = framesSinceMidnight(new Date(), rate)
     const pgmTimecode = formatTimecode(nowFrames, rate)
 
+    globalStudioAutomationGateway.configureDevices(await app.db.select().from(externalDevices))
     const execution = await globalStudioAutomationGateway.execute(command, token, pgmTimecode)
     if (!execution.success && execution.status === 'FAILED' && execution.error?.includes('inválida')) {
       return reply.code(401).send(execution)

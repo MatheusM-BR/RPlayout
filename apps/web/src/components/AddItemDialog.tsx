@@ -40,6 +40,7 @@ interface Props {
 const FAMILY_LABEL: Record<LiveSource['family'], string> = {
   SDI: 'PLACA (SDI/HDMI)',
   NDI: 'NDI NA REDE',
+  OMT: 'OMT / SMPTE-2110',
   GUEST: 'CONVIDADOS NO SERVIDOR',
 }
 
@@ -79,7 +80,7 @@ export function AddItemDialog({
         if (alive) setSources(list)
       })
       .catch(() => {
-        if (alive) setSources({ sdi: FAILED, ndi: FAILED, guests: FAILED })
+        if (alive) setSources({ sdi: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED })
       })
       .finally(() => {
         if (alive) setScanning(false)
@@ -94,12 +95,15 @@ export function AddItemDialog({
     api
       .sources(true)
       .then(setSources)
-      .catch(() => setSources({ sdi: FAILED, ndi: FAILED, guests: FAILED }))
+      .catch(() => setSources({ sdi: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED }))
       .finally(() => setScanning(false))
   }
 
-  const families: SourceFamily[] = sources ? [sources.sdi, sources.ndi, sources.guests] : []
-  const live = families.flatMap((family) => family.sources)
+  const families: SourceFamily[] = sources ? [sources.sdi, sources.ndi, sources.omt, sources.guests] : []
+  // Serviço NMOS descoberto é inventário/control-plane; sem SDP ou URI RTP
+  // ele não é uma entrada que o engine possa abrir. As fontes OMT cadastradas
+  // com URI continuam disponíveis normalmente.
+  const live = families.flatMap((family) => family.sources).filter((source) => !source.reference.startsWith('omt-discovery:'))
   const chosen = live.find((source) => source.reference === sourceRef)
   const sourceValue = manualSource.trim() || chosen?.reference || ''
 
@@ -327,6 +331,7 @@ function reasonsOf(list: SourceList): string[] {
   }
   add(list.sdi, 'placa', 'driver presente, nenhuma placa encontrada')
   add(list.ndi, 'NDI', 'nenhuma fonte anunciada na rede')
+  add(list.omt, 'OMT/NMOS', 'nenhum serviço OMT/NMOS anunciado na rede')
   add(list.guests, 'convidados', 'nenhuma chave de convidado ativa')
   return lines
 }

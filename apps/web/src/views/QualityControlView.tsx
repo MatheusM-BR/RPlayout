@@ -1,9 +1,12 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
-import { durationIn, type Channel } from '@rplayout/protocol'
+import { durationIn, type Channel, type ManagedLiveSource, type SrtTelemetry } from '@rplayout/protocol'
 import type { LibraryFolder, LibraryAsset, ScanStatus } from '../types.js'
+import type { Monitors as MonitorFeeds } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { dur } from '../format.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
+import { Whep } from '../components/Whep.js'
+import { api } from '../api.js'
 
 interface Props {
   folders: LibraryFolder[]
@@ -18,6 +21,9 @@ interface Props {
   channels?: Channel[]
   onSelectChannel?: (channelId: string) => void
   onOpenSettings?: () => void
+  /** O PVW é o único render de uma entrada ao vivo; o QC apenas o assiste. */
+  monitors?: MonitorFeeds | null
+  onPreviewLiveSource?: (sourceRef: string, title: string) => void
 }
 
 type ScopeViewMode = 'QUAD' | 'VECTORSCOPE' | 'WAVEFORM' | 'PARADE'
@@ -35,26 +41,57 @@ export function QualityControlView({
   channels = [channel],
   onSelectChannel = () => {},
   onOpenSettings,
+  monitors = null,
+  onPreviewLiveSource,
 }: Props) {
   const channelRate = channel.rate
   const fps = channelRate.num / channelRate.den || 59.94
 
   const assets: LibraryAsset[] = useMemo(() => folders.flatMap((f) => f.assets), [folders])
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(() => assets[0]?.id ?? null)
+  const [selectedLiveSourceId, setSelectedLiveSourceId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (assets.length > 0 && (!selectedAssetId || !assets.some((a) => a.id === selectedAssetId))) {
+    if (!selectedLiveSourceId && assets.length > 0 && (!selectedAssetId || !assets.some((a) => a.id === selectedAssetId))) {
       setSelectedAssetId(assets[0]?.id ?? null)
     }
-  }, [assets, selectedAssetId])
+  }, [assets, selectedAssetId, selectedLiveSourceId])
 
-  const selectedAsset = assets.find((a) => a.id === selectedAssetId) ?? assets[0] ?? null
+  const selectedAsset = selectedAssetId ? assets.find((a) => a.id === selectedAssetId) ?? null : null
 
   const [safeAreaActive, setSafeAreaActive] = useState(true)
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'OK' | 'ALERT' | 'IGNORED'>('ALL')
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'VIDEO' | 'AUDIO'>('ALL')
   const [scopeMode, setScopeMode] = useState<ScopeViewMode>('QUAD')
+  const [liveInputs, setLiveInputs] = useState<ManagedLiveSource[]>([])
+  const [liveTelemetry, setLiveTelemetry] = useState<Record<string, SrtTelemetry>>({})
+  const selectedLiveSource = liveInputs.find((source) => source.id === selectedLiveSourceId) ?? null
+
+  const selectLiveSource = useCallback((source: ManagedLiveSource) => {
+    setSelectedAssetId(null)
+    setSelectedLiveSourceId(source.id)
+    setQcStatusFeedback(`PVW compartilhado solicitado para ${source.name}`)
+    onPreviewLiveSource?.(source.targetUrl, source.name)
+  }, [onPreviewLiveSource])
+
+  // O QC de acervo não tenta decodificar NDI/SRT/RTMP no browser. Ele mostra a
+  // mesma lista de ingest do servidor e as métricas que o processo realmente
+  // publicou, para que uma fonte não desapareça simplesmente por ser ao vivo.
+  useEffect(() => {
+    let mounted = true
+    const refresh = async () => {
+      try {
+        const [sources, telemetry] = await Promise.all([api.liveSources(channel.id), api.srtTelemetry()])
+        if (mounted) { setLiveInputs(sources); setLiveTelemetry(telemetry) }
+      } catch {
+        if (mounted) { setLiveInputs([]); setLiveTelemetry({}) }
+      }
+    }
+    void refresh()
+    const interval = window.setInterval(() => void refresh(), 3000)
+    return () => { mounted = false; window.clearInterval(interval) }
+  }, [channel.id])
 
   // Modos de reprodução e fallback
   const [inspectMode, setInspectMode] = useState<'video' | 'frames'>('video')
@@ -62,7 +99,12 @@ export function QualityControlView({
   const [framePos, setFramePos] = useState(0)
 
   // Player controls
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  // O vídeo WHEP precisa ser estado além de ref: a chegada do MediaStream é
+  // assíncrona e o primeiro quadro pode ocorrer depois do render que montou o
+  // QC. Guardá-lo reativamente impede que os scopes continuem lendo uma ref
+  // antiga/nula enquanto a imagem já está visível no player.
+  const [sharedPreviewVideo, setSharedPreviewVideo] = useState<HTMLVideoElement | null>(null)
   const frameImgRef = useRef<HTMLImageElement>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTimeSec, setCurrentTimeSec] = useState(0)
@@ -72,15 +114,27 @@ export function QualityControlView({
   const [qcStatusFeedback, setQcStatusFeedback] = useState<string | null>(null)
 
   // Telemetria dinâmica dos escopos
-  const [waveformStats, setWaveformStats] = useState({ minIre: 0, maxIre: 100, avgIre: 45, clipping: false })
-  const [vectorscopeStats, setVectorscopeStats] = useState({ maxSat: 72, legalGamut: true })
-  const [audioMeter, setAudioMeter] = useState({ peakL: -24, peakR: -24, phase: 0.92, active: false })
+  const [waveformStats, setWaveformStats] = useState<{ minIre: number; maxIre: number; avgIre: number; clipping: boolean } | null>(null)
+  const [vectorscopeStats, setVectorscopeStats] = useState<{ maxSat: number; legalGamut: boolean } | null>(null)
+  const [audioMeter, setAudioMeter] = useState({ peakL: -60, peakR: -60, phase: 0, active: false })
 
   // Canvas refs para os escopos técnicos
   const vectorscopeCanvasRef = useRef<HTMLCanvasElement>(null)
   const waveformCanvasRef = useRef<HTMLCanvasElement>(null)
   const paradeCanvasRef = useRef<HTMLCanvasElement>(null)
   const audioSpectrumCanvasRef = useRef<HTMLCanvasElement>(null)
+  const scopeSampleReadyRef = useRef(false)
+  // WHEP pode expor um intervalo curto sem frame enquanto mantém o último
+  // quadro no player. Os scopes devem espelhar esse comportamento e jamais
+  // piscar para preto por uma leitura transitória que falhou.
+  const lastScopePixelsRef = useRef<Uint8ClampedArray | null>(null)
+  // Desenhar quatro scopes é relativamente caro. A entrada pode entregar 60
+  // callbacks/s, mas atualizar os canvases nessa taxa disputa a thread da UI
+  // com o WHEP e produz justamente o sintoma de imagem presente com scope
+  // intermitente. Limitamos a análise a 10 Hz, suficiente para inspeção QC e
+  // sem perder o último quadro real.
+  const lastScopeRenderAtRef = useRef(0)
+  const [scopeSampleReady, setScopeSampleReady] = useState(false)
 
   // Offscreen sampling canvas
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -125,7 +179,12 @@ export function QualityControlView({
       videoRef.current.currentTime = 0
       videoRef.current.pause()
     }
-  }, [selectedAsset?.id])
+    lastScopePixelsRef.current = null
+    scopeSampleReadyRef.current = false
+    setScopeSampleReady(false)
+    setWaveformStats(null)
+    setVectorscopeStats(null)
+  }, [selectedAsset?.id, selectedLiveSource?.id])
 
   // Inicializa Web Audio com Medição EBU Pré-Fader (puro da mídia de entrada)
   const initAudio = useCallback(() => {
@@ -171,7 +230,13 @@ export function QualityControlView({
     } catch {
       // Audio context já conectado ou sem permissão de áudio
     }
-  }, [isMuted, volume])
+  }, [])
+
+  const attachSharedPreviewVideo = useCallback((element: HTMLVideoElement | null) => {
+    videoRef.current = element
+    setSharedPreviewVideo((current) => current === element ? current : element)
+    if (element) initAudio()
+  }, [initAudio])
 
   // Sincroniza o volume do monitor pós-fader sem afetar a medição técnica pré-fader
   useEffect(() => {
@@ -188,23 +253,47 @@ export function QualityControlView({
   }, [isMuted, volume])
 
   // Função central de renderização dos escopos (Waveform, Vectorscope, Parade, Áudio)
-  const renderScopes = useCallback(() => {
+  const renderScopes = useCallback((force = false) => {
+    const now = performance.now()
+    if (!force && now - lastScopeRenderAtRef.current < 100) return
+    lastScopeRenderAtRef.current = now
     let pixels: Uint8ClampedArray | null = null
     const sCanvas = sampleCanvasRef.current
     if (sCanvas) {
       const sCtx = sCanvas.getContext('2d', { willReadFrequently: true })
       if (sCtx) {
-        const sourceEl = !videoError && videoRef.current ? videoRef.current : frameImgRef.current
+        const sourceEl = !videoError ? (sharedPreviewVideo ?? videoRef.current) : frameImgRef.current
         if (sourceEl) {
           try {
+            // Não aceite um canvas transparente/sem decoder como amostra. Em
+            // WHEP `loadedmetadata` pode anteceder o primeiro frame real.
+            if (sourceEl instanceof HTMLVideoElement && (sourceEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || sourceEl.videoWidth < 1 || sourceEl.videoHeight < 1)) {
+              throw new Error('WHEP ainda não entregou um frame decodificado')
+            }
+            // Não limpe antes de desenhar: durante uma reconfiguração WHEP o
+            // drawImage pode falhar entre callbacks; manter o bitmap anterior
+            // evita uma amostra preta transitória no waveform/parade.
             sCtx.drawImage(sourceEl, 0, 0, 160, 90)
             const imgData = sCtx.getImageData(0, 0, 160, 90)
             pixels = imgData.data
+            // Copia o buffer: ImageData/canvas pode ser reutilizado pelo
+            // navegador no próximo ciclo de composição.
+            lastScopePixelsRef.current = new Uint8ClampedArray(pixels)
           } catch {
-            // Media element not ready for sampling yet
+            // Não apaga a última amostra durante uma lacuna do decoder.
           }
         }
       }
+    }
+
+    // Sem frame novo, reutiliza o último RGBA real. Isto mantém waveform,
+    // vectorscope e parade estáveis durante jitter/reconfiguração do WHEP;
+    // ao trocar a fonte o efeito acima limpa explicitamente a amostra.
+    const samplePixels = pixels ?? lastScopePixelsRef.current
+    const hasPixels = samplePixels !== null
+    if (scopeSampleReadyRef.current !== hasPixels) {
+      scopeSampleReadyRef.current = hasPixels
+      setScopeSampleReady(hasPixels)
     }
 
     // 1. Renderiza Vectorscope de Alta Definição Digital (ITU-R BT.709)
@@ -310,13 +399,13 @@ export function QualityControlView({
         }
 
         // Renderização digital de alta definição dos pontos cromáticos reais amostrados
-        if (pixels) {
+        if (samplePixels) {
           let maxDist = 0
           const dotSize = w > 240 ? 1.5 : 1.2
-          for (let i = 0; i < pixels.length; i += 8) {
-            const r = pixels[i] ?? 0
-            const g = pixels[i + 1] ?? 0
-            const b = pixels[i + 2] ?? 0
+          for (let i = 0; i < samplePixels.length; i += 8) {
+            const r = samplePixels[i] ?? 0
+            const g = samplePixels[i + 1] ?? 0
+            const b = samplePixels[i + 2] ?? 0
             const cb = -0.1146 * r - 0.3854 * g + 0.5 * b
             const cr = 0.5 * r - 0.4542 * g - 0.0458 * b
             const dist = Math.hypot(cb, cr)
@@ -331,6 +420,8 @@ export function QualityControlView({
 
           const satPercent = Math.min(100, Math.round((maxDist / 128) * 100))
           setVectorscopeStats({ maxSat: satPercent, legalGamut: satPercent <= 100 })
+        } else {
+          setVectorscopeStats(null)
         }
       }
     }
@@ -407,7 +498,7 @@ export function QualityControlView({
         wCtx.fillStyle = 'rgba(0, 230, 118, 0.9)'
         wCtx.fillText('0', 4, y0 - 2)
 
-        if (pixels) {
+        if (samplePixels) {
           let minI = 100
           let maxI = 0
           let sumI = 0
@@ -419,9 +510,9 @@ export function QualityControlView({
           for (let sy = 0; sy < 90; sy += 2) {
             for (let sx = 0; sx < 160; sx += 2) {
               const idx = (sy * 160 + sx) * 4
-              const r = pixels[idx] ?? 0
-              const g = pixels[idx + 1] ?? 0
-              const b = pixels[idx + 2] ?? 0
+              const r = samplePixels[idx] ?? 0
+              const g = samplePixels[idx + 1] ?? 0
+              const b = samplePixels[idx + 2] ?? 0
               const yVal = 0.2126 * r + 0.7152 * g + 0.0722 * b
               const ire = (yVal / 255) * 100
               if (ire < minI) minI = ire
@@ -435,13 +526,15 @@ export function QualityControlView({
             }
           }
 
-          const avgI = cnt > 0 ? sumI / cnt : 45
+          const avgI = cnt > 0 ? sumI / cnt : 0
           setWaveformStats({
             minIre: Math.round(minI * 10) / 10,
             maxIre: Math.round(maxI * 10) / 10,
             avgIre: Math.round(avgI * 10) / 10,
             clipping: maxI > 100 || minI < 0,
           })
+        } else {
+          setWaveformStats(null)
         }
       }
     }
@@ -496,14 +589,14 @@ export function QualityControlView({
         pCtx.fillStyle = '#389BFF'
         pCtx.fillText('B • BLUE', colW * 2 + 6, labelSize + 3)
 
-        if (pixels) {
+        if (samplePixels) {
           const dotSize = w > 400 ? 1.8 : 1.2
           for (let sy = 0; sy < 90; sy += 2) {
             for (let sx = 0; sx < 160; sx += 2) {
               const idx = (sy * 160 + sx) * 4
-              const r = pixels[idx] ?? 0
-              const g = pixels[idx + 1] ?? 0
-              const b = pixels[idx + 2] ?? 0
+              const r = samplePixels[idx] ?? 0
+              const g = samplePixels[idx + 1] ?? 0
+              const b = samplePixels[idx + 2] ?? 0
               const colFrac = sx / 160
 
               pCtx.fillStyle = 'rgba(255, 51, 75, 0.45)'
@@ -543,11 +636,8 @@ export function QualityControlView({
         let maxR = -60
 
         for (let b = 0; b < bars; b++) {
-          const val = freqData
-            ? freqData[b * 2] || 0
-            : isPlaying
-              ? Math.floor(Math.sin(Date.now() / 200 + b) * 30 + 50)
-              : 8
+          // Sem amostra real do analisador, não desenha um espectro falso.
+          const val = freqData ? freqData[b * 2] || 0 : 0
           const barH = Math.max(2, (val / 255) * (h - 8))
           const bx = b * (barW + 1.5)
           const by = h - barH - 2
@@ -569,7 +659,7 @@ export function QualityControlView({
           else maxR = Math.max(maxR, (val / 255) * 60 - 60)
         }
 
-        if (isPlaying) {
+        if (freqData) {
           setAudioMeter({
             peakL: Math.round(maxL * 10) / 10,
             peakR: Math.round(maxR * 10) / 10,
@@ -579,27 +669,17 @@ export function QualityControlView({
         }
       }
     }
-  }, [videoError, isPlaying])
+  }, [videoError, isPlaying, sharedPreviewVideo])
 
-  // Atualiza escopos técnicos continuamente durante playback ou ao pausar/seek
+  // O WHEP chama renderScopes em cada frame decodificado. Este pequeno
+  // fallback cobre navegadores sem requestVideoFrameCallback e mídia local,
+  // mas não mantém um loop a 60fps que possa atrasar o próprio decoder.
   useEffect(() => {
-    let animId: number
-    const frame = requestAnimationFrame(() => {
-      if (isPlaying) {
-        const loop = () => {
-          renderScopes()
-          animId = requestAnimationFrame(loop)
-        }
-        animId = requestAnimationFrame(loop)
-      } else {
-        renderScopes()
-      }
-    })
-    return () => {
-      cancelAnimationFrame(frame)
-      if (animId) cancelAnimationFrame(animId)
-    }
-  }, [isPlaying, renderScopes, currentTimeSec, selectedAsset?.id, scopeMode])
+    renderScopes(true)
+    if (!isPlaying && !selectedLiveSource) return undefined
+    const interval = window.setInterval(() => renderScopes(), 250)
+    return () => window.clearInterval(interval)
+  }, [isPlaying, renderScopes, currentTimeSec, selectedAsset?.id, selectedLiveSource?.id, scopeMode])
 
   // Atalho de teclado para Barra de Espaço (Play/Pause)
   useEffect(() => {
@@ -873,7 +953,10 @@ export function QualityControlView({
                   {(['ALL', 'OK', 'ALERT', 'IGNORED'] as const).map((filter) => (
                     <button
                       key={filter}
-                      onClick={() => setStatusFilter(filter)}
+                      onClick={() => {
+                        setSelectedLiveSourceId(null)
+                        setStatusFilter(filter)
+                      }}
                       className={`px-2 py-0.5 rounded cursor-pointer transition-colors border ${
                         statusFilter === filter
                           ? 'bg-primary text-on-primary font-bold border-primary'
@@ -883,13 +966,31 @@ export function QualityControlView({
                       {filter === 'ALL' ? 'TODOS' : filter === 'ALERT' ? 'ALERTAS' : filter}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAssetId(null)
+                      setSelectedLiveSourceId(liveInputs[0]?.id ?? null)
+                    }}
+                    className={`px-2 py-0.5 rounded cursor-pointer transition-colors border ${
+                      selectedLiveSourceId
+                        ? 'bg-accent-ice text-surface-base font-bold border-accent-ice'
+                        : 'bg-surface-base text-outline border-border-subtle hover:text-on-surface'
+                    }`}
+                    title="Listar e inspecionar entradas ao vivo no mesmo player QC"
+                  >
+                    AO VIVO ({liveInputs.length})
+                  </button>
                 </div>
 
                 <div className="flex items-center gap-1 font-label-caps text-[9px]">
                   {(['ALL', 'VIDEO', 'AUDIO'] as const).map((cat) => (
                     <button
                       key={cat}
-                      onClick={() => setCategoryFilter(cat)}
+                      onClick={() => {
+                        setSelectedLiveSourceId(null)
+                        setCategoryFilter(cat)
+                      }}
                       className={`px-2 py-0.5 rounded cursor-pointer transition-colors border ${
                         categoryFilter === cat
                           ? 'bg-accent-ice text-surface-base font-bold border-accent-ice'
@@ -905,6 +1006,24 @@ export function QualityControlView({
 
             {/* Listagem com Scroll de Clipes */}
             <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 broadcast-scrollbar">
+              {selectedLiveSourceId ? (
+                liveInputs.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center p-8 text-outline gap-2 my-auto">
+                    <span className="material-symbols-outlined text-[36px] opacity-40">sensors_off</span>
+                    <span className="font-body-sm text-[12px]">Nenhuma entrada ao vivo cadastrada neste canal</span>
+                  </div>
+                ) : (
+                  liveInputs.map((source) => (
+                    <LiveSourceRow
+                      key={source.id}
+                      source={source}
+                      telemetry={liveTelemetry[source.id]}
+                      selected={source.id === selectedLiveSourceId}
+                      onSelect={() => selectLiveSource(source)}
+                    />
+                  ))
+                )
+              ) : <>
               {statusFilter === 'IGNORED' && (
                 <div className="p-2.5 bg-on-air-crimson/15 border border-on-air-crimson/40 rounded-lg text-[10.5px] text-on-surface leading-snug flex items-start gap-2 shrink-0">
                   <span className="material-symbols-outlined text-on-air-crimson text-[18px] shrink-0">block</span>
@@ -937,7 +1056,10 @@ export function QualityControlView({
                   return (
                     <div
                       key={asset.id}
-                      onClick={() => setSelectedAssetId(asset.id)}
+                      onClick={() => {
+                        setSelectedLiveSourceId(null)
+                        setSelectedAssetId(asset.id)
+                      }}
                       className={`p-2 rounded-lg border flex items-center justify-between gap-2.5 transition-all cursor-pointer ${
                         isSelected
                           ? 'bg-primary-container/20 border-primary shadow-sm ring-1 ring-primary/40'
@@ -1026,13 +1148,13 @@ export function QualityControlView({
                     </div>
                   )
                 })
-              )}
+              )}</>}
             </div>
 
             {/* Rodapé da Coluna com Resumo */}
             <div className="p-2 border-t border-border-subtle bg-surface-panel/30 font-label-mono text-[10px] text-outline flex items-center justify-between shrink-0">
-              <span>{filteredAssets.length} clipes na fila</span>
-              <span>Clique no clipe para inspecionar</span>
+              <span>{selectedLiveSourceId ? `${liveInputs.length} entradas ao vivo` : `${filteredAssets.length} clipes na fila`}</span>
+              <span>{selectedLiveSourceId ? 'Clique na fonte para abrir o PVW compartilhado' : 'Clique no clipe para inspecionar'}</span>
             </div>
           </div>
 
@@ -1045,26 +1167,30 @@ export function QualityControlView({
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="material-symbols-outlined text-primary text-[16px]">play_circle</span>
                   <span className="font-headline-md text-[13px] text-on-surface font-bold truncate">
-                    {selectedAsset?.title ?? 'Nenhum ativo selecionado'}
+                    {selectedLiveSource?.name ?? selectedAsset?.title ?? 'Nenhum ativo selecionado'}
                   </span>
                   <span className="font-label-caps text-[8.5px] px-1.5 py-0.5 rounded bg-surface-panel text-outline border border-border-subtle uppercase">
-                    {selectedAsset?.path ? selectedAsset.path.split('.').pop() : 'VIDEO'}
+                    {selectedLiveSource?.kind ?? (selectedAsset?.path ? selectedAsset.path.split('.').pop() : 'VIDEO')}
                   </span>
                 </div>
 
                 {/* Timecode Header Display */}
                 <div className="flex items-center gap-2 font-label-mono text-[10.5px]">
-                  <span className="text-outline">TC:</span>
-                  <span className="text-primary font-bold">
-                    {dur(Math.floor(currentTimeSec * fps), channelRate)}
-                  </span>
-                  <span className="text-outline">/</span>
-                  <span className="text-on-surface-variant font-medium">
-                    {dur(totalDurationFrames, channelRate)}
-                  </span>
-                  <span className="px-1.5 py-0.5 rounded bg-surface-panel text-[9px] text-outline border border-border-subtle">
-                    Q: {Math.floor(currentTimeSec * fps)}/{totalDurationFrames}
-                  </span>
+                  {selectedLiveSource ? (
+                    <span className="px-1.5 py-0.5 rounded bg-on-air-crimson/15 text-on-air-crimson border border-on-air-crimson/35 font-label-caps text-[9px]">AO VIVO · PVW</span>
+                  ) : <>
+                    <span className="text-outline">TC:</span>
+                    <span className="text-primary font-bold">
+                      {dur(Math.floor(currentTimeSec * fps), channelRate)}
+                    </span>
+                    <span className="text-outline">/</span>
+                    <span className="text-on-surface-variant font-medium">
+                      {dur(totalDurationFrames, channelRate)}
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded bg-surface-panel text-[9px] text-outline border border-border-subtle">
+                      Q: {Math.floor(currentTimeSec * fps)}/{totalDurationFrames}
+                    </span>
+                  </>}
                 </div>
               </div>
 
@@ -1073,7 +1199,23 @@ export function QualityControlView({
                 onClick={togglePlay}
                 className="relative w-full h-56 bg-black flex items-center justify-center overflow-hidden cursor-pointer group"
               >
-                {selectedAsset ? (
+                {selectedLiveSource ? (
+                  monitors?.preview ? (
+                    <Whep
+                      path={monitors.preview}
+                      port={monitors.port}
+                      frameRate={fps}
+                      onWatching={() => { void api.watching(channel.id, 'pvw').catch(() => {}) }}
+                      muted
+                      onVideoElement={attachSharedPreviewVideo}
+                      onVideoFrame={renderScopes}
+                    />
+                  ) : (
+                    <div className="text-center text-outline font-body-sm text-[11px] px-6">
+                      O render compartilhado ainda não está disponível. Aguarde o PVW conectar à fonte.
+                    </div>
+                  )
+                ) : selectedAsset ? (
                   !videoError ? (
                     <video
                       ref={videoRef}
@@ -1108,7 +1250,7 @@ export function QualityControlView({
                     <img
                       ref={frameImgRef}
                       src={`/api/assets/${selectedAsset.id}/frame/${framePos}.jpg?total=24`}
-                      onLoad={renderScopes}
+                      onLoad={() => renderScopes(true)}
                       onError={(e) => {
                         ;(e.target as HTMLImageElement).src = `/api/assets/${selectedAsset.id}/thumbnail.svg`
                       }}
@@ -1130,7 +1272,7 @@ export function QualityControlView({
                 )}
 
                 {/* Safe Areas Overlay */}
-                {safeAreaActive && selectedAsset && (
+                {safeAreaActive && (selectedAsset || selectedLiveSource) && (
                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
                     <div className="w-[90%] h-[90%] border border-status-ok/30 relative">
                       <span className="absolute top-0.5 left-1 text-[7.5px] font-label-mono text-status-ok/70">
@@ -1152,7 +1294,7 @@ export function QualityControlView({
               {/* Controles de Transporte e Scrubber */}
               <div className="p-2 bg-surface-panel flex flex-col gap-1.5 border-t border-border-subtle">
                 <div className="flex items-center gap-2">
-                  <button
+                  {!selectedLiveSource && <button
                     onClick={togglePlay}
                     className="p-1 rounded bg-primary-container text-on-primary-container hover:bg-accent-ice transition-colors cursor-pointer flex items-center justify-center"
                     title={isPlaying ? 'Pausar (Espaço)' : 'Reproduzir (Espaço)'}
@@ -1160,10 +1302,10 @@ export function QualityControlView({
                     <span className="material-symbols-outlined text-[17px]">
                       {isPlaying ? 'pause' : 'play_arrow'}
                     </span>
-                  </button>
+                  </button>}
 
                   {/* Scrubber Slider Dinâmico */}
-                  <input
+                  {!selectedLiveSource && <input
                     type="range"
                     min={0}
                     max={totalDurationSec || 1}
@@ -1174,10 +1316,10 @@ export function QualityControlView({
                     style={{
                       background: `linear-gradient(to right, #3B82F6 0%, #3B82F6 ${(currentTimeSec / (totalDurationSec || 1)) * 100}%, #1E293B ${(currentTimeSec / (totalDurationSec || 1)) * 100}%, #1E293B 100%)`,
                     }}
-                  />
+                  />}
 
                   {/* Controles de Áudio / Volume */}
-                  <div className="flex items-center gap-1 pl-1 border-l border-border-subtle">
+                  {!selectedLiveSource && <div className="flex items-center gap-1 pl-1 border-l border-border-subtle">
                     <button
                       onClick={toggleMute}
                       className="text-outline hover:text-on-surface cursor-pointer p-0.5"
@@ -1197,7 +1339,12 @@ export function QualityControlView({
                       className="w-14 h-1.5 accent-primary cursor-pointer"
                       title={`Volume: ${Math.round((isMuted ? 0 : volume) * 100)}%`}
                     />
-                  </div>
+                  </div>}
+                  {selectedLiveSource && (
+                    <span className="flex-1 font-label-mono text-[10px] text-accent-ice">
+                      PVW compartilhado · sem segunda decodificação no navegador
+                    </span>
+                  )}
 
                   {/* Botões Grandes de Homologação */}
                   <button
@@ -1294,8 +1441,8 @@ export function QualityControlView({
                     <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
                       <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[8.5px]">
                         <span className="text-accent-ice font-bold">1. VECTORSCOPE</span>
-                        <span className={`font-mono text-[8px] font-bold ${vectorscopeStats.legalGamut ? 'text-status-ok' : 'text-on-air-crimson'}`}>
-                          {vectorscopeStats.legalGamut ? '75% LEGAL' : 'GAMUT OVER'}
+                        <span className={`font-mono text-[8px] font-bold ${!vectorscopeStats ? 'text-outline' : vectorscopeStats.legalGamut ? 'text-status-ok' : 'text-on-air-crimson'}`}>
+                          {!vectorscopeStats ? 'AGUARDANDO FRAME' : vectorscopeStats.legalGamut ? '75% LEGAL' : 'GAMUT OVER'}
                         </span>
                       </div>
                       <div className="relative w-full flex-1 bg-[#05070E] rounded border border-border-subtle/60 flex items-center justify-center overflow-hidden my-1">
@@ -1303,7 +1450,7 @@ export function QualityControlView({
                       </div>
                       <div className="flex items-center justify-between font-label-mono text-[8px] text-outline">
                         <span>I-LINE PELE</span>
-                        <span className="text-accent-ice font-bold">SAT: {vectorscopeStats.maxSat}%</span>
+                        <span className="text-accent-ice font-bold">SAT: {vectorscopeStats ? `${vectorscopeStats.maxSat}%` : '—'}</span>
                       </div>
                     </div>
 
@@ -1311,16 +1458,16 @@ export function QualityControlView({
                     <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
                       <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[8.5px]">
                         <span className="text-status-ok-bright font-bold">2. LUMA WAVEFORM</span>
-                        <span className={`font-mono text-[8px] font-bold ${waveformStats.clipping ? 'text-on-air-crimson' : 'text-status-ok'}`}>
-                          {waveformStats.clipping ? 'CLIPPING' : '0-100 IRE OK'}
+                        <span className={`font-mono text-[8px] font-bold ${!waveformStats ? 'text-outline' : waveformStats.clipping ? 'text-on-air-crimson' : 'text-status-ok'}`}>
+                          {!waveformStats ? 'AGUARDANDO FRAME' : waveformStats.clipping ? 'CLIPPING' : '0-100 IRE OK'}
                         </span>
                       </div>
                       <div className="relative w-full flex-1 bg-[#05070E] rounded border border-border-subtle/60 overflow-hidden my-1">
                         <canvas ref={waveformCanvasRef} width={260} height={140} className="w-full h-full" />
                       </div>
                       <div className="flex items-center justify-between font-label-mono text-[8px] text-outline">
-                        <span>MIN: {waveformStats.minIre}</span>
-                        <span className="text-status-ok-bright font-bold">MAX: {waveformStats.maxIre} IRE</span>
+                        <span>MIN: {waveformStats?.minIre ?? '—'}</span>
+                        <span className="text-status-ok-bright font-bold">MAX: {waveformStats ? `${waveformStats.maxIre} IRE` : '—'}</span>
                       </div>
                     </div>
 
@@ -1328,7 +1475,7 @@ export function QualityControlView({
                     <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
                       <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[8.5px]">
                         <span className="text-primary font-bold">3. RGB PARADE</span>
-                        <span className="text-status-ok font-mono text-[8px]">REC.709</span>
+                        <span className={`font-mono text-[8px] ${scopeSampleReady ? 'text-status-ok' : 'text-outline'}`}>{scopeSampleReady ? 'REC.709' : 'AGUARDANDO FRAME'}</span>
                       </div>
                       <div className="relative w-full flex-1 bg-[#05070E] rounded border border-border-subtle/60 overflow-hidden my-1">
                         <canvas ref={paradeCanvasRef} width={260} height={140} className="w-full h-full" />
@@ -1361,7 +1508,7 @@ export function QualityControlView({
                           <span className="text-status-ok font-bold">
                             {typeof selectedAsset?.loudnessFile?.integratedLufs === 'number'
                               ? `${selectedAsset.loudnessFile.integratedLufs.toFixed(1)} LUFS`
-                              : '-23.0 LUFS'}
+                              : '—'}
                           </span>
                         </div>
                         <div className="flex justify-between">
@@ -1369,13 +1516,13 @@ export function QualityControlView({
                           <span className="text-status-ok font-bold">
                             {typeof selectedAsset?.loudnessFile?.truePeakDbtp === 'number'
                               ? `${selectedAsset.loudnessFile.truePeakDbtp.toFixed(1)} dBTP`
-                              : '-1.0 dBTP'}
+                              : '—'}
                           </span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-outline">LRA / Pico:</span>
                           <span className="text-accent-ice font-bold">
-                            {typeof selectedAsset?.loudnessFile?.lra === 'number' ? `${selectedAsset.loudnessFile.lra.toFixed(1)} LU` : '4.5 LU'} • {audioMeter.peakL.toFixed(0)} dB
+                            {typeof selectedAsset?.loudnessFile?.lra === 'number' ? `${selectedAsset.loudnessFile.lra.toFixed(1)} LU` : '—'} • {audioMeter.active ? `${audioMeter.peakL.toFixed(0)} dB` : '—'}
                           </span>
                         </div>
                       </div>
@@ -1389,7 +1536,7 @@ export function QualityControlView({
                     <canvas ref={vectorscopeCanvasRef} width={380} height={380} className="h-full aspect-square" />
                     <div className="absolute top-3 right-3 bg-surface-panel/90 border border-border-subtle p-2 rounded font-label-mono text-[10px] flex flex-col gap-1">
                       <span className="text-accent-ice font-bold">ITU-R BT.709 VECTORSCOPE</span>
-                      <span className="text-outline">Saturação Máx: <strong className="text-on-surface">{vectorscopeStats.maxSat}%</strong></span>
+                      <span className="text-outline">Saturação Máx: <strong className="text-on-surface">{vectorscopeStats ? `${vectorscopeStats.maxSat}%` : '—'}</strong></span>
                       <span className="text-outline">Gamut: <strong className="text-status-ok">LEGAL BROADCAST</strong></span>
                       <span className="text-outline">Eixo I: <strong className="text-armed-amber">123° TRAVADO</strong></span>
                     </div>
@@ -1401,9 +1548,9 @@ export function QualityControlView({
                   <div className="w-full h-full bg-[#05070E] rounded-lg border border-border-subtle flex flex-col p-2 relative">
                     <canvas ref={waveformCanvasRef} width={800} height={280} className="w-full h-full" />
                     <div className="absolute top-3 right-3 bg-surface-panel/90 border border-border-subtle p-2 rounded font-label-mono text-[10px] flex gap-4">
-                      <span>Mínimo: <strong className="text-status-ok">{waveformStats.minIre} IRE</strong></span>
-                      <span>Médio: <strong className="text-accent-ice">{waveformStats.avgIre} IRE</strong></span>
-                      <span>Máximo: <strong className={waveformStats.clipping ? 'text-on-air-crimson' : 'text-status-ok'}>{waveformStats.maxIre} IRE</strong></span>
+                      <span>Mínimo: <strong className="text-status-ok">{waveformStats ? `${waveformStats.minIre} IRE` : '—'}</strong></span>
+                      <span>Médio: <strong className="text-accent-ice">{waveformStats ? `${waveformStats.avgIre} IRE` : '—'}</strong></span>
+                      <span>Máximo: <strong className={waveformStats?.clipping ? 'text-on-air-crimson' : 'text-status-ok'}>{waveformStats ? `${waveformStats.maxIre} IRE` : '—'}</strong></span>
                       <span>Status: <strong className="text-status-ok-bright">0-100 IRE LEGAL</strong></span>
                     </div>
                   </div>
@@ -1427,5 +1574,39 @@ export function QualityControlView({
         </div>
       </main>
     </div>
+  )
+}
+
+function LiveSourceRow({ source, telemetry, selected, onSelect }: {
+  source: ManagedLiveSource
+  telemetry?: SrtTelemetry
+  selected: boolean
+  onSelect: () => void
+}) {
+  // A fonte selecionada está comprovadamente ativa quando o QC a assiste pelo
+  // PVW compartilhado. Não rotule isso como "aguardando sinal" só porque NDI
+  // ainda não tem a telemetria de transporte equivalente ao SRT.
+  const state = !source.enabled ? 'DESATIVADA' : selected ? 'PVW ATIVO' : telemetry ? telemetry.linkState : 'AGUARDANDO SINAL'
+  const statusClass = !source.enabled || telemetry?.linkState === 'DISCONNECTED'
+    ? 'text-on-air-crimson border-on-air-crimson/35 bg-on-air-crimson/10'
+    : selected
+      ? 'text-status-ok border-status-ok/35 bg-status-ok/10'
+    : telemetry?.linkState === 'OPTIMAL'
+      ? 'text-status-ok border-status-ok/35 bg-status-ok/10'
+      : 'text-armed-amber border-armed-amber/35 bg-armed-amber/10'
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`w-full p-2 rounded-lg border flex items-center gap-2.5 text-left transition-all cursor-pointer ${selected ? 'bg-primary-container/20 border-primary shadow-sm ring-1 ring-primary/40' : 'bg-surface-panel hover:bg-surface-panel/80 border-border-subtle hover:border-border-strong'}`}
+      title="Abrir esta fonte no PVW compartilhado e assistir no player QC"
+    >
+      <span className="material-symbols-outlined text-accent-ice text-[20px]">sensors</span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5"><strong className="truncate font-headline-md text-[12px] text-on-surface">{source.name}</strong><span className="rounded bg-surface-base px-1 font-label-mono text-[8px] text-accent-ice">{source.kind}</span></span>
+        <span className="mt-0.5 block truncate font-label-mono text-[9px] text-outline" title={source.targetUrl}>{telemetry ? `${telemetry.bitrateKbps} kbps · RTT ${telemetry.rttMs.toFixed(0)} ms · perda ${telemetry.packetLossPercent.toFixed(2)}%` : source.targetUrl}</span>
+      </span>
+      <span className={`rounded border px-1.5 py-0.5 font-label-mono text-[8px] font-bold ${statusClass}`}>{state}</span>
+    </button>
   )
 }

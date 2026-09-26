@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
-import type { Channel, ScheduleEventType, TimingFlags } from '@rplayout/protocol'
+import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags } from '@rplayout/protocol'
 import { clock, dur, formatStandardRate } from '../format.js'
 import type {
   Categoria,
@@ -14,12 +14,13 @@ import type {
 } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { api } from '../api.js'
+import { canonicalLiveSourceRef } from '../liveSource.js'
 import { Whep } from '../components/Whep.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { BroadcastMonitor } from '../components/broadcast/BroadcastMonitor.js'
 import { ContinuityCacheBadge } from '../components/broadcast/ContinuityCacheBadge.js'
 import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
-import { DynamicCgSecondaryBar, type DynamicCgState } from '../components/broadcast/DynamicCgSecondaryBar.js'
+import { DynamicCgSecondaryBar } from '../components/broadcast/DynamicCgSecondaryBar.js'
 import { MultiTrackTimeline } from '../components/broadcast/MultiTrackTimeline.js'
 import { ConflictDrawer } from '../components/broadcast/ConflictDrawer.js'
 import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
@@ -48,6 +49,7 @@ interface Props {
   onOpenGraphics: (item: ItemView) => void
   onOpenStill: (item: ItemView) => void
   onRemoveItem: (itemId: string) => void
+  onBulkRemoveItems?: (ids: string[]) => void
   onMoveItem: (itemId: string, toIndex: number) => void
   onOpenAlerts: () => void
   onOpenSettings: () => void
@@ -57,6 +59,8 @@ interface Props {
   onNavigate: (workspace: WorkspaceId) => void
   onSelectChannel: (channelId: string) => void
   onPreviewAsset: (asset: LibraryAsset) => void
+  /** Abre uma entrada de rede no PVW sem inventá-la como arquivo MAM. */
+  onPreviewLiveSource: (sourceRef: string, title: string) => void
   onInsertAsset: (
     assetId: string | null,
     atIndex?: number,
@@ -74,7 +78,7 @@ export interface CustomLiveSource {
   id: string
   title: string
   sourceRef: string
-  family: 'SDI' | 'NDI' | 'SRT' | 'WEBRTC'
+  family: 'SDI' | 'NDI' | 'SRT' | 'RTMP' | 'OMT' | 'WEBRTC'
   durationFrames: number
 }
 
@@ -108,6 +112,7 @@ export function MasterControlView({
   onOpenGraphics,
   onOpenStill,
   onRemoveItem,
+  onBulkRemoveItems,
   onMoveItem,
   onOpenAlerts,
   onOpenSettings,
@@ -117,6 +122,7 @@ export function MasterControlView({
   onNavigate,
   onSelectChannel,
   onPreviewAsset,
+  onPreviewLiveSource,
   onInsertAsset,
   onOpenConflicts,
   onOpenLiveInput,
@@ -139,25 +145,6 @@ export function MasterControlView({
 
   // Fase E: Gaveta lateral interativa de Conflitos e Gaps (Conflict Drawer)
   const [isConflictDrawerOpen, setIsConflictDrawerOpen] = useState(false)
-
-  // Fase D: Estado ao vivo do CG Dinâmico e Marcadores SCTE-35 no PGM
-  const DEFAULT_CG_STATE: DynamicCgState = {
-    layer0Logo: true,
-    layer1Clock: true,
-    layer2Ticker: false,
-    layer3LowerThird: false,
-    tickerText: 'URGENTE: Congresso aprova novo marco regulatório das telecomunicações em Brasília',
-    breakingNewsActive: false,
-    lowerThirdTitle: 'RODRIGO SILVEIRA',
-    lowerThirdSubtitle: 'Correspondente Internacional • Genebra',
-    lowerThirdActive: false,
-    lowerThirdTimeRemaining: 0,
-    scte35Active: false,
-    scte35Phase: 'IDLE',
-    scte35TimeRemaining: 0,
-    scte35EventId: 55102,
-  }
-  const [activeCgState, setActiveCgState] = useState<DynamicCgState>(DEFAULT_CG_STATE)
 
   // Multiseleção na playlist (Ctrl / Shift)
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
@@ -236,52 +223,30 @@ export function MasterControlView({
     }
   }
 
-  // Fontes externas persistidas na biblioteca MAM
-  const [customSources, setCustomSources] = useState<CustomLiveSource[]>(() => {
-    try {
-      const stored = localStorage.getItem('rplayout_custom_live_sources')
-      if (stored) return JSON.parse(stored)
-    } catch {}
-    return [
-      {
-        id: 'live-decklink-1',
-        title: 'DeckLink 8K Pro (Entrada SDI 1)',
-        sourceRef: 'sdi:0',
-        family: 'SDI',
-        durationFrames: 45000,
-      },
-      {
-        id: 'live-decklink-2',
-        title: 'DeckLink 8K Pro (Entrada SDI 2)',
-        sourceRef: 'sdi:1',
-        family: 'SDI',
-        durationFrames: 45000,
-      },
-      {
-        id: 'live-ndi-1',
-        title: 'NDI Studio (Master Câmera 1)',
-        sourceRef: 'ndi:ESTUDIO-A-MASTER',
-        family: 'NDI',
-        durationFrames: 45000,
-      },
-      {
-        id: 'live-srt-1',
-        title: 'SRT Ingest (Link Externo)',
-        sourceRef: 'srt://127.0.0.1:9000?mode=listener',
-        family: 'SRT',
-        durationFrames: 45000,
-      },
-    ]
-  })
+  // O MAM só mostra entradas efetivamente cadastradas para o canal. Não há
+  // fontes demonstrativas nem cache local que possa divergir das Configurações.
+  const [customSources, setCustomSources] = useState<CustomLiveSource[]>([])
+  const loadLiveSources = async () => {
+    const sources = await api.liveSources(channel.id)
+    const defaultDuration = Math.round(15 * 60 * (rate.num / rate.den))
+    setCustomSources(sources.filter((source) => source.enabled).map((source: ManagedLiveSource) => ({
+      id: source.id,
+      title: source.name,
+      sourceRef: canonicalLiveSourceRef(source),
+      family: source.kind,
+      durationFrames: defaultDuration,
+    })))
+  }
+  useEffect(() => { void loadLiveSources().catch(() => setCustomSources([])) }, [channel.id])
 
-  const saveCustomSource = (source: CustomLiveSource) => {
-    setCustomSources((prev) => {
-      const next = [...prev.filter((s) => s.id !== source.id), source]
-      try {
-        localStorage.setItem('rplayout_custom_live_sources', JSON.stringify(next))
-      } catch {}
-      return next
+  const saveCustomSource = async (source: Omit<CustomLiveSource, 'id'>) => {
+    const created = await api.createLiveSource({
+      channelId: channel.id,
+      name: source.title,
+      kind: source.family === 'WEBRTC' ? 'RTMP' : source.family,
+      targetUrl: source.sourceRef,
     })
+    setCustomSources((previous) => [...previous, { ...source, id: created.id }])
   }
 
   // Estados locais dos modais de Ingestão e Linha
@@ -429,6 +394,16 @@ export function MasterControlView({
   const [activeAudioBus, setActiveAudioBus] = useState<'pgm' | 'pvw' | null>(null)
 
   const activePreviewAsset = selectedPreviewAsset ?? armedItem?.asset ?? null
+  /**
+   * Uma fonte direta não tem asset MAM nem item preparado. O motor, porém,
+   * está efetivamente com ela no PVW. Nunca derive o nome do cartão somente
+   * da grade, pois isso fazia o Master dizer "Nenhum item armado" enquanto o
+   * monitor já mostrava a fonte ao vivo.
+   */
+  const transportPreview = live.transport.preview as PreviewTarget | null
+  const directPreview = transportPreview?.kind === 'SOURCE' ? transportPreview : null
+  const previewTitle = activePreviewAsset?.title ?? armedItem?.item.title ?? directPreview?.title ?? directPreview?.source ?? 'Nenhum item armado'
+  const previewKind = activePreviewAsset?.kind ?? (directPreview ? 'AO VIVO' : armedItem?.asset?.kind ?? 'COMERCIAL')
   const activePreviewDuration = selectedPreviewAsset
     ? selectedPreviewAsset.durationFrames
     : armedItem
@@ -460,14 +435,39 @@ export function MasterControlView({
 
   const handleBulkDelete = () => {
     if (selectedItemIds.size === 0) return
-    if (!window.confirm(`Deseja remover os ${selectedItemIds.size} itens selecionados da grade?`)) return
-    for (const id of selectedItemIds) {
-      onRemoveItem(id)
+    const ids = Array.from(selectedItemIds)
+    if (!window.confirm(`Deseja remover os ${ids.length} itens selecionados da grade?`)) return
+    if (onBulkRemoveItems) {
+      onBulkRemoveItems(ids)
+    } else {
+      for (const id of ids) {
+        onRemoveItem(id)
+      }
     }
     setSelectedItemIds(new Set())
   }
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const element = e.target as HTMLElement | null
+      const typing = element?.matches('input, select, textarea') || element?.isContentEditable
+      if (typing) return
+
+      if (e.key === 'Delete' && selectedItemIds.size > 0) {
+        e.preventDefault()
+        handleBulkDelete()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedItemIds, onBulkRemoveItems, onRemoveItem])
+
   const handleMamPreview = (asset: LibraryAsset) => {
+    if ('isLiveSource' in asset && asset.isLiveSource) {
+      setSelectedPreviewAsset(null)
+      onPreviewLiveSource((asset as LibraryAsset & { sourceRef?: string }).sourceRef ?? asset.path, asset.title)
+      return
+    }
     setSelectedPreviewAsset(asset)
     onPreviewAsset(asset)
   }
@@ -483,7 +483,15 @@ export function MasterControlView({
       }
       setSelectedPreviewAsset(null)
     } else {
-      onTake(armedItem?.item.id)
+      // A seleção de uma linha já manda o CUE assíncrono ao motor. Não use
+      // somente `armedItem` aqui: entre o clique na grade e o snapshot que
+      // confirma o CUE ele ainda aponta para o item anterior. Isso fazia TAKE
+      // parecer inoperante (ou levar o VT errado) quando o operador clicava
+      // em CUE e TAKE em sequência, especialmente para fontes ao vivo.
+      const selectedForTake = selectedItemIds.size === 1
+        ? view.items.find((item) => selectedItemIds.has(item.item.id)) ?? null
+        : null
+      onTake(selectedForTake?.item.id ?? armedItem?.item.id)
     }
   }
 
@@ -662,7 +670,7 @@ export function MasterControlView({
       <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto broadcast-scroll">
         {/* 1.1 WATCHDOG & SONDA DE PGM / SLATE DE EMERGÊNCIA (FASE C) */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0">
-          <PgmProbeBanner />
+          <PgmProbeBanner channelId={channel.id} />
         </div>
 
         {/* 2. TOP OPERATIONAL STRIP (Compact Switcher & Monitors for Variante 2 - 4 Colunas) */}
@@ -731,7 +739,6 @@ export function MasterControlView({
                 isAudioMonitored={activeAudioBus === 'pgm'}
                 onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pgm' ? null : 'pgm'))}
                 onSeek={(frames) => onSeek('pgm', frames)}
-                cgState={activeCgState}
               />
             </div>
 
@@ -854,15 +861,15 @@ export function MasterControlView({
                       PRÓXIMO [PVW]
                     </span>
                     <span className="font-label-mono text-label-mono text-armed-amber bg-surface-container px-1.5 py-0.5 rounded">
-                      {activePreviewAsset?.kind ?? 'COMERCIAL'}
+                      {previewKind}
                     </span>
                   </div>
                   <span className="font-label-mono text-label-mono text-status-ok-bright">AUTO-ARM</span>
                 </div>
 
                 <div className="my-space-xs">
-                  <h3 className="font-headline-md text-[17px] text-on-surface font-semibold truncate tracking-wide" title={activePreviewAsset?.title || armedItem?.item.id || 'Nenhum item armado'}>
-                    {activePreviewAsset?.title || armedItem?.item.id || 'Nenhum item armado'}
+                  <h3 className="font-headline-md text-[17px] text-on-surface font-semibold truncate tracking-wide" title={previewTitle}>
+                    {previewTitle}
                   </h3>
                   <div className="flex items-baseline justify-between mt-1">
                     <div className="flex items-baseline gap-2">
@@ -901,7 +908,6 @@ export function MasterControlView({
         <div className="w-full px-margin pt-2 pb-1 shrink-0">
           <DynamicCgSecondaryBar
             channelId={channel.id}
-            onCgStateChange={setActiveCgState}
           />
         </div>
  
@@ -986,7 +992,7 @@ export function MasterControlView({
                         draggable
                         onDragStart={(e) => handleDragStart(e, asset)}
                         onClick={() => handleMamPreview(asset)}
-                        className={`p-2.5 rounded-lg border cursor-grab active:cursor-grabbing flex items-center gap-3 transition-colors group relative ${
+                        className={`px-2 h-7 rounded border cursor-grab active:cursor-grabbing flex items-center justify-between gap-2 transition-colors group relative ${
                           selectedPreviewAsset?.id === asset.id
                             ? 'bg-armed-amber/15 border-armed-amber/50 shadow-sm'
                             : isLive
@@ -996,45 +1002,35 @@ export function MasterControlView({
                         title={
                           isLive
                             ? 'Fonte Externa Ao Vivo: Arraste para a grade ou clique + para adicionar'
-                            : 'Clique para carregar e rodar preview no PVW'
+                            : `${asset.title} • Clique para carregar e rodar preview no PVW`
                         }
                       >
-                        <div className="w-14 h-10 bg-surface-container-lowest rounded overflow-hidden relative flex-shrink-0 flex items-center justify-center">
+                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
                           <span
-                            className={`material-symbols-outlined text-[22px] ${
+                            className={`material-symbols-outlined text-[15px] shrink-0 ${
                               isLive ? 'text-accent-ice' : 'text-outline'
                             }`}
                           >
                             {isLive ? 'settings_input_antenna' : 'movie'}
                           </span>
-                          <span className="absolute bottom-0.5 right-0.5 font-label-mono text-[9px] bg-surface-base/80 px-1 rounded">
+                          <span
+                            className="font-body-sm text-[11px] font-medium text-on-surface truncate whitespace-nowrap"
+                            title={asset.title}
+                          >
+                            {asset.title}
+                          </span>
+                          {isLive && (
+                            <span className="text-accent-ice font-bold bg-accent-ice/15 px-1 py-0.2 rounded border border-accent-ice/30 text-[8px] shrink-0 whitespace-nowrap">
+                              AO VIVO
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0 font-label-mono text-[9px] text-outline">
+                          <span className="text-on-surface font-semibold tabular-nums">
                             {dur(asset.durationFrames, rate)}
                           </span>
-                        </div>
 
-                        <div className="min-w-0 flex-1">
-                          <div className="font-body-sm text-body-sm font-medium text-on-surface truncate" title={asset.title}>
-                            {asset.title}
-                          </div>
-                          <div className="flex items-center gap-2 mt-1 text-outline font-label-mono text-label-mono">
-                            {isLive ? (
-                              <span className="text-accent-ice font-bold bg-accent-ice/15 px-1 py-0.2 rounded border border-accent-ice/30 text-[9px]">
-                                AO VIVO • {((asset as any).family ?? 'LIVE')}
-                              </span>
-                            ) : (
-                              <>
-                                <span>{asset.kind}</span>
-                                <span>•</span>
-                                <span className={asset.probeError ? 'text-armed-amber font-semibold' : 'text-status-ok font-semibold'}>
-                                  {asset.probeError ? 'REVISAR' : 'QC OK'}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Ações Rápidas do Clip (Inserir na Grade) */}
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
@@ -1048,10 +1044,10 @@ export function MasterControlView({
                                 onInsertAsset(asset.id)
                               }
                             }}
-                            className="p-1 rounded bg-primary-container/20 hover:bg-primary-container text-primary hover:text-white border border-primary/30 cursor-pointer"
+                            className="p-0.5 rounded bg-primary-container/20 hover:bg-primary-container text-primary hover:text-white border border-primary/30 cursor-pointer"
                             title="Adicionar à grade"
                           >
-                            <span className="material-symbols-outlined text-[15px]">add</span>
+                            <span className="material-symbols-outlined text-[13px]">add</span>
                           </button>
                         </div>
                       </div>
@@ -1278,33 +1274,33 @@ export function MasterControlView({
                               className={`${rowClass} group cursor-pointer`}
                               title="Clique para armar (CUE) no PVW • Ctrl/Shift para multiseleção"
                             >
-                              <td className={`py-3 px-4 text-center font-label-mono text-label-mono ${
-                                isItemOnAir ? 'text-on-air-crimson font-bold text-[14px]' : isItemCued ? 'text-armed-amber font-bold text-[14px]' : 'text-outline'
+                              <td className={`py-1.5 px-3 text-center font-label-mono text-label-mono ${
+                                isItemOnAir ? 'text-on-air-crimson font-bold text-[13px]' : isItemCued ? 'text-armed-amber font-bold text-[13px]' : 'text-outline text-xs'
                               }`}>
                                 {index + 1}
                               </td>
 
-                              <td className="py-3 px-4">
+                              <td className="py-1.5 px-3">
                                 {isItemOnAir ? (
-                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-on-air-crimson text-surface-base font-label-caps text-label-caps font-bold">
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-on-air-crimson text-surface-base font-label-caps text-[10px] font-bold">
                                     <span className="w-1.5 h-1.5 rounded-full bg-surface-base animate-ping"></span> NO AR
                                   </span>
                                 ) : isItemCued ? (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-armed-amber text-surface-base font-label-caps text-label-caps font-bold">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-armed-amber text-surface-base font-label-caps text-[10px] font-bold">
                                     CUED
                                   </span>
                                 ) : isAired ? (
-                                  <span className="px-2.5 py-1 rounded font-label-caps text-label-caps text-outline bg-surface-container">
+                                  <span className="px-2 py-0.5 rounded font-label-caps text-[10px] text-outline bg-surface-container">
                                     EXIBIDO
                                   </span>
                                 ) : (
-                                  <span className="px-2.5 py-1 rounded font-label-caps text-label-caps text-status-ok-bright bg-surface-container font-semibold">
+                                  <span className="px-2 py-0.5 rounded font-label-caps text-[10px] text-status-ok-bright bg-surface-container font-semibold">
                                     PRONTO
                                   </span>
                                 )}
                               </td>
 
-                              <td className={`py-3 px-4 tabular-nums text-[14px] ${
+                              <td className={`py-1.5 px-3 tabular-nums text-[12.5px] ${
                                 isItemOnAir ? 'text-on-surface font-bold' : isItemCued ? 'text-armed-amber font-bold' : 'text-on-surface-variant'
                               }`}>
                                 {scheduleMap.get(item.item.id)?.start != null
@@ -1312,55 +1308,55 @@ export function MasterControlView({
                                   : '--:--:--:--'}
                               </td>
 
-                              <td className={`py-3 px-4 tabular-nums text-[14px] ${
+                              <td className={`py-1.5 px-3 tabular-nums text-[12.5px] ${
                                 isItemOnAir ? 'text-on-air-crimson font-bold' : isItemCued ? 'text-on-surface' : 'text-on-surface-variant'
                               }`}>
                                 {dur(durationFrames, rate)}
                               </td>
 
-                              <td className="py-2.5 px-4 font-body-sm text-body-sm">
-                                <div className="flex items-center gap-2 min-w-0">
+                              <td className="py-1 px-3 font-body-sm text-[12px]">
+                                <div className="flex items-center gap-1.5 min-w-0">
                                   {/* Badges de Tipo de Evento (Fase A) */}
                                   {eventType === 'HARD_TIME' && (
                                     <span
                                       title="Ponto de Sincronismo Obrigatório de Rede (Hard Sync frame-accurate no frame zero)"
-                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-950/80 border border-rose-600/70 text-rose-300 text-[10px] font-label-caps tracking-wider font-bold shrink-0 shadow-xs"
+                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-rose-950/80 border border-rose-600/70 text-rose-300 text-[9px] font-label-caps tracking-wider font-bold shrink-0 shadow-xs"
                                     >
-                                      <span className="material-symbols-outlined text-[13px] text-rose-400">schedule</span>
+                                      <span className="material-symbols-outlined text-[11px] text-rose-400">schedule</span>
                                       HARD SYNC
                                     </span>
                                   )}
                                   {eventType === 'FIXED' && (
                                     <span
                                       title="Horário Fixo Ancorado no Relógio da Emissora"
-                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-600/50 text-amber-300 text-[10px] font-label-caps tracking-wider font-bold shrink-0"
+                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-amber-950/60 border border-amber-600/50 text-amber-300 text-[9px] font-label-caps tracking-wider font-bold shrink-0"
                                     >
-                                      <span className="material-symbols-outlined text-[13px] text-amber-400">lock_clock</span>
+                                      <span className="material-symbols-outlined text-[11px] text-amber-400">lock_clock</span>
                                       FIXO
                                     </span>
                                   )}
                                   {eventType === 'LIVE' && (
                                     <span
                                       title="Entrada de Sinal Ao Vivo Externa / Estúdio"
-                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent-ice/20 border border-accent-ice/50 text-accent-ice-bright text-[10px] font-label-caps tracking-wider font-bold shrink-0"
+                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-accent-ice/20 border border-accent-ice/50 text-accent-ice-bright text-[9px] font-label-caps tracking-wider font-bold shrink-0"
                                     >
-                                      <span className="material-symbols-outlined text-[13px] text-accent-ice-bright animate-pulse">sensors</span>
+                                      <span className="material-symbols-outlined text-[11px] text-accent-ice-bright animate-pulse">sensors</span>
                                       AO VIVO
                                     </span>
                                   )}
                                   {eventType === 'FILLER' && (
                                     <span
                                       title="Item Elástico de Preenchimento (Gap Fill / Elastic)"
-                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-purple-950/60 border border-purple-500/50 text-purple-300 text-[10px] font-label-caps tracking-wider font-bold shrink-0"
+                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-purple-950/60 border border-purple-500/50 text-purple-300 text-[9px] font-label-caps tracking-wider font-bold shrink-0"
                                     >
-                                      <span className="material-symbols-outlined text-[13px] text-purple-400">auto_awesome</span>
+                                      <span className="material-symbols-outlined text-[11px] text-purple-400">auto_awesome</span>
                                       FILLER
                                     </span>
                                   )}
 
                                   {/* Título textual com truncamento */}
                                   <span
-                                    className={`truncate text-[13px] flex-1 min-w-0 ${
+                                    className={`truncate text-[12px] flex-1 min-w-0 ${
                                       isItemOnAir
                                         ? 'text-on-surface font-bold'
                                         : isItemCued
@@ -1378,16 +1374,16 @@ export function MasterControlView({
                                       {isProtected && (
                                         <span
                                           title="Material Comercial ou Editorial Protegido: Bloqueado contra corte e descarte automático"
-                                          className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 font-label-mono text-[9px] font-bold"
+                                          className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 font-label-mono text-[8.5px] font-bold"
                                         >
-                                          <span className="material-symbols-outlined text-[11px] text-emerald-400">shield</span>
+                                          <span className="material-symbols-outlined text-[10px] text-emerald-400">shield</span>
                                           PROT
                                         </span>
                                       )}
                                       {trimmable && (
                                         <span
                                           title="Trimmable: Pode ter cauda reduzida para absorver atrasos e salvar a grade"
-                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[9px] font-medium tracking-tight"
+                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[8.5px] font-medium tracking-tight"
                                         >
                                           [TRIM]
                                         </span>
@@ -1395,7 +1391,7 @@ export function MasterControlView({
                                       {optional && (
                                         <span
                                           title="Opcional: Pode ser descartado da grade em caso de emergência temporal"
-                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[9px] font-medium tracking-tight"
+                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[8.5px] font-medium tracking-tight"
                                         >
                                           [OPT]
                                         </span>
@@ -1405,7 +1401,7 @@ export function MasterControlView({
                                 </div>
                               </td>
 
-                              <td className="py-2.5 px-4 text-right">
+                              <td className="py-1 px-3 text-right">
                                 <div className="flex flex-col items-end justify-center leading-tight">
                                   <span className={`font-label-caps text-label-caps font-bold ${
                                     item.item.sourceRef
@@ -1679,15 +1675,15 @@ export function MasterControlView({
                   if (!newLiveTitle.trim() || !newLiveRef.trim()) return
                   const fpsVal = rate.num / rate.den
                   const durFrames = Math.round(newLiveDurationMin * 60 * fpsVal)
-                  const newSource: CustomLiveSource = {
-                    id: `live-${Date.now()}`,
+                  const newSource: Omit<CustomLiveSource, 'id'> = {
                     title: newLiveTitle.trim(),
                     sourceRef: newLiveRef.trim(),
                     family: newLiveFamily,
                     durationFrames: durFrames,
                   }
-                  saveCustomSource(newSource)
-                  setLiveInputModalOpen(false)
+                  void saveCustomSource(newSource)
+                    .then(() => setLiveInputModalOpen(false))
+                    .catch(() => window.alert('Não foi possível cadastrar a fonte ao vivo.'))
                 }}
                 className="px-4 py-2 rounded-lg bg-primary hover:bg-accent-ice text-surface-base font-body-sm font-bold shadow transition-all cursor-pointer"
               >
@@ -1868,56 +1864,32 @@ export function MasterControlView({
                       />
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="font-label-caps text-label-caps text-outline block mb-1">
-                          TIPO DE SINAL
-                        </label>
-                        <select
-                          value={newLiveFamily}
-                          onChange={(e) => {
-                            const fam = e.target.value as any
-                            setNewLiveFamily(fam)
-                            if (fam === 'SDI') setNewLiveRef('sdi:0')
-                            else if (fam === 'NDI') setNewLiveRef('ndi:ESTUDIO-A-MASTER')
-                            else if (fam === 'SRT') setNewLiveRef('srt://127.0.0.1:9000?mode=listener')
-                            else setNewLiveRef('http://localhost:8889/live_cam')
-                          }}
-                          className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-body-sm focus:border-primary focus:outline-none cursor-pointer"
-                        >
-                          <option value="SDI">DeckLink SDI / HDMI</option>
-                          <option value="NDI">NDI 5.6 (Rede IP)</option>
-                          <option value="SRT">SRT / RTMP Stream</option>
-                          <option value="WEBRTC">WebRTC Ingest</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="font-label-caps text-label-caps text-outline block mb-1">
-                          DURAÇÃO ESTIMADA (MIN)
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={720}
-                          value={newLiveDurationMin}
-                          onChange={(e) => setNewLiveDurationMin(Math.max(1, Number(e.target.value) || 1))}
-                          className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-body-sm focus:border-primary focus:outline-none"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
+                    <div className="flex flex-col gap-1">
                       <label className="font-label-caps text-label-caps text-outline block mb-1">
-                        REFERÊNCIA / ENDEREÇO DA FONTE
+                        DURAÇÃO ESTIMADA (MIN)
                       </label>
                       <input
-                        type="text"
-                        value={newLiveRef}
-                        onChange={(e) => setNewLiveRef(e.target.value)}
-                        className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-mono text-[13px] focus:border-primary focus:outline-none"
+                        type="number"
+                        min={1}
+                        max={720}
+                        value={newLiveDurationMin}
+                        onChange={(e) => setNewLiveDurationMin(Math.max(1, Number(e.target.value) || 1))}
+                        className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-body-sm focus:border-primary focus:outline-none"
                       />
                     </div>
+
+                    <CanonicalProtocolSelector
+                      mode="INPUT"
+                      defaultKind="SDI"
+                      initialUri={newLiveRef}
+                      onChange={(res) => {
+                        setNewLiveRef(res.targetUri)
+                        setNewLiveFamily(res.kind === 'SDI' ? 'SDI' : res.kind === 'NDI' ? 'NDI' : 'SRT')
+                        if (!newLiveTitle || newLiveTitle === 'Entrada Externa / Ao Vivo') {
+                          if (res.nameRecommendation) setNewLiveTitle(res.nameRecommendation)
+                        }
+                      }}
+                    />
 
                     <label className="flex items-center gap-2 cursor-pointer pt-1">
                       <input
@@ -2121,13 +2093,12 @@ export function MasterControlView({
                       const fpsVal = rate.num / rate.den
                       const durFrames = Math.round(newLiveDurationMin * 60 * fpsVal)
                       if (addLineSaveToLibrary) {
-                        saveCustomSource({
-                          id: `live-${Date.now()}`,
+                        void saveCustomSource({
                           title: newLiveTitle.trim(),
                           sourceRef: newLiveRef.trim(),
                           family: newLiveFamily,
                           durationFrames: durFrames,
-                        })
+                        }).catch(() => window.alert('A entrada foi incluída na grade, mas não pôde ser salva nas Configurações.'))
                       }
                       onInsertAsset(
                         null,

@@ -84,6 +84,16 @@ export interface OutputProfile {
   enabled: boolean
 }
 
+export interface TransmissionPreset {
+  id: string
+  channelId: string
+  name: string
+  kind: 'SRT' | 'RTMP'
+  /** Sempre sanitizado pela API: jamais contém passphrase ou stream key. */
+  target: string
+  createdAt: string
+}
+
 /** Situação da varredura do acervo. */
 /** Uma pasta onde o acervo procura arquivo. */
 export interface MediaRoot {
@@ -233,7 +243,7 @@ export interface Distribution {
 export interface LiveSource {
   reference: string
   label: string
-  family: 'SDI' | 'NDI' | 'GUEST'
+  family: 'SDI' | 'NDI' | 'OMT' | 'GUEST'
 }
 
 export interface SourceFamily {
@@ -246,6 +256,7 @@ export interface SourceFamily {
 export interface SourceList {
   sdi: SourceFamily
   ndi: SourceFamily
+  omt: SourceFamily
   guests: SourceFamily
 }
 

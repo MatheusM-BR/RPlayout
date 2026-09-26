@@ -95,6 +95,12 @@ pub enum Command {
     /// monitor não encosta no programa. É o que permite não codificar para uma
     /// janela que ninguém abriu.
     Monitor { bus: String, on: bool },
+    /// Troca um destino já ligado ao barramento do programa.
+    /// Só suporta RTMP, SRT e arquivo; SDI/NDI/OMT não fazem hot-switch.
+    ReplaceOutput {
+        output_id: String,
+        output: crate::channel::OutputSpec,
+    },
     Status,
     Shutdown,
 }
@@ -171,6 +177,12 @@ pub enum Event {
         correlation: f64,
         /// Redução do limiter em dB. Zero é o estado saudável.
         gain_reduction: f64,
+    },
+    /// Análise reduzida do vídeo que sai do compositor PGM.
+    VideoProbe {
+        luma: f64,
+        black: bool,
+        freeze: bool,
     },
     /// Quantos frames o compositor entregou. É a prova de que o PGM não parou.
     Output {

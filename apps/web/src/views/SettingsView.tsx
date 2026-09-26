@@ -9,6 +9,7 @@ import { CategoriasPanel } from '../components/CategoriasPanel.js'
 import { UsersPanel } from '../components/UsersPanel.js'
 import { IntegrationsPanel } from '../components/IntegrationsPanel.js'
 import { SaidasTransmissaoPanel } from '../components/SaidasTransmissaoPanel.js'
+import { EntradasAoVivoPanel } from '../components/EntradasAoVivoPanel.js'
 
 interface Props {
   channel: Channel
@@ -31,6 +32,7 @@ type SettingsTab =
   | 'entradas'
   | 'pastas'
   | 'categorias'
+  | 'projetos'
   | 'usuarios'
   | 'integracoes'
 
@@ -63,6 +65,17 @@ export function SettingsView({
 
   const [newChannelName, setNewChannelName] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [projectLabel, setProjectLabel] = useState('')
+  const [projects, setProjects] = useState<Array<{ id: string; label: string; createdAt: string }>>([])
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const result = await api.channelProjects(currentEditingChannel.id)
+      setProjects(result.projects)
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : 'Não foi possível consultar os projetos do canal.')
+    }
+  }, [currentEditingChannel.id, onMessage])
 
   // Atualiza os campos do formulário quando o canal em edição muda
   useEffect(() => {
@@ -76,6 +89,40 @@ export function SettingsView({
     setTargetLufs(currentEditingChannel.targetLufs)
     setCeilingDbtp(currentEditingChannel.ceilingDbtp)
   }, [editingChannelId, currentEditingChannel])
+
+  useEffect(() => {
+    if (activeTab === 'projetos') void loadProjects()
+  }, [activeTab, loadProjects])
+
+  const handleSaveProject = async () => {
+    const label = projectLabel.trim() || `Ponto manual ${new Date().toLocaleString('pt-BR')}`
+    setIsSaving(true)
+    try {
+      const result = await api.saveChannelProject(currentEditingChannel.id, label)
+      setProjects(result.projects)
+      setProjectLabel('')
+      onMessage(`Projeto do canal salvo: ${result.project.label}.`)
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : 'Não foi possível salvar o projeto.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleRestoreProject = async (project: { id: string; label: string }) => {
+    if (!window.confirm(`Restaurar “${project.label}” somente neste canal? A configuração e a grade atuais deste canal serão substituídas.`)) return
+    setIsSaving(true)
+    try {
+      const result = await api.restoreChannelProject(currentEditingChannel.id, project.id)
+      await loadProjects()
+      onChanged()
+      onMessage(`Projeto restaurado: ${result.restored.label}.`)
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : 'Não foi possível restaurar o projeto.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
 
   // Salva alterações no canal
   const handleSaveChannel = async () => {
@@ -290,6 +337,21 @@ export function SettingsView({
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Entradas & Ao Vivo</span>
                   <span className="font-label-mono text-[9px] opacity-75">SDI Ingest, NDI Discovery, SRT</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('projetos')}
+                className={`flex items-center gap-3 p-2.5 rounded-lg text-left transition-all cursor-pointer ${
+                  activeTab === 'projetos'
+                    ? 'bg-primary-container text-on-primary-container font-bold border border-border-strong shadow-sm'
+                    : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-panel'
+                }`}
+              >
+                <span className="material-symbols-outlined text-[18px]">inventory_2</span>
+                <div className="flex flex-col">
+                  <span className="font-body-sm text-[12.5px] leading-tight">Projetos & Restauração</span>
+                  <span className="font-label-mono text-[9px] opacity-75">Pontos seguros por canal</span>
                 </div>
               </button>
 
@@ -670,152 +732,38 @@ export function SettingsView({
 
             {/* TAB 3: ENTRADAS E AO VIVO */}
             {activeTab === 'entradas' && (
-              <div className="flex flex-col gap-gutter">
-                <div className="bg-surface-card rounded-xl border border-border-subtle p-5 shadow-sm flex flex-col gap-4">
-                  <div className="border-b border-border-subtle pb-3">
-                    <h3 className="font-headline-md text-[16px] text-on-surface font-bold flex items-center gap-2">
-                      <span className="material-symbols-outlined text-primary text-[20px]">input</span>
-                      Fontes de Entrada Externa & Ingest Ao Vivo
-                    </h3>
-                    <p className="font-body-sm text-[11.5px] text-outline">
-                      Conectores físicos e protocolos de rede prontos para inserção imediata na grade linear.
-                    </p>
-                  </div>
+              <EntradasAoVivoPanel
+                channel={currentEditingChannel}
+                onMessage={onMessage}
+                onChanged={onChanged}
+              />
+            )}
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Card SDI DeckLink Ingest */}
-                    <div className="bg-surface-panel p-4 rounded-xl border border-border-subtle flex flex-col justify-between gap-3">
-                      <div>
-                        <div className="flex items-center justify-between">
-                          <span className="font-headline-md text-[14px] text-on-surface font-bold flex items-center gap-1.5">
-                            <span className="material-symbols-outlined text-accent-ice text-[18px]">
-                              cable
-                            </span>
-                            DeckLink SDI Ingest
-                          </span>
-                          <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold">
-                            HARDWARE PRONTO
-                          </span>
-                        </div>
-                        <p className="font-body-sm text-[11.5px] text-outline mt-1 leading-snug">
-                          Entradas de captura Blackmagic DeckLink SDI/HDMI com autodetecção de formato.
-                        </p>
-                        <div className="bg-surface-base p-2.5 rounded border border-border-subtle mt-2 font-label-mono text-[11px] flex flex-col gap-1">
-                          <div className="flex justify-between">
-                            <span className="text-outline">Porta 1 (sdi:0):</span>
-                            <span className="text-status-ok-bright">Sinal 1080i59.94 detectado</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-outline">Porta 2 (sdi:1):</span>
-                            <span className="text-outline">Sem sinal (Standby)</span>
-                          </div>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => onMessage('Portas DeckLink sincronizadas com genlock.')}
-                        className="w-full py-1.5 rounded bg-surface-card hover:bg-surface-container font-label-caps text-[10px] text-on-surface border border-border-subtle cursor-pointer"
-                      >
-                        Recarregar Placas de Captura
-                      </button>
-                    </div>
-
-                    {/* Card NDI Network Discovery */}
-                    <div className="bg-surface-panel p-4 rounded-xl border border-border-subtle flex flex-col justify-between gap-3">
-                      <div>
-                        <div className="flex items-center justify-between">
-                          <span className="font-headline-md text-[14px] text-on-surface font-bold flex items-center gap-1.5">
-                            <span className="material-symbols-outlined text-accent-ice text-[18px]">
-                              lan
-                            </span>
-                            NDI Network Discovery
-                          </span>
-                          <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-accent-ice/20 text-accent-ice-bright border border-accent-ice/40 font-bold">
-                            NDI 5.5 ATIVO
-                          </span>
-                        </div>
-                        <p className="font-body-sm text-[11.5px] text-outline mt-1 leading-snug">
-                          Fontes NDI anunciadas automaticamente na rede local para inclusão na grade de exibição.
-                        </p>
-                        <div className="bg-surface-base p-2.5 rounded border border-border-subtle mt-2 font-label-mono text-[11px] flex flex-col gap-1">
-                          <div className="flex justify-between">
-                            <span className="text-outline">Estúdio Principal:</span>
-                            <span className="text-status-ok-bright">ndi:ESTUDIO-A (1080i59.94)</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-outline">Switching vMix:</span>
-                            <span className="text-status-ok-bright">ndi:VMIX-OUTPUT (1080i59)</span>
-                          </div>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => onMessage('Varredura NDI atualizada na sub-rede.')}
-                        className="w-full py-1.5 rounded bg-surface-card hover:bg-surface-container font-label-caps text-[10px] text-on-surface border border-border-subtle cursor-pointer"
-                      >
-                        Escanear Rede Local NDI
-                      </button>
-                    </div>
-
-                    {/* Card SRT Ingest Remoto */}
-                    <div className="bg-surface-panel p-4 rounded-xl border border-border-subtle flex flex-col justify-between gap-3">
-                      <div>
-                        <div className="flex items-center justify-between">
-                          <span className="font-headline-md text-[14px] text-on-surface font-bold flex items-center gap-1.5">
-                            <span className="material-symbols-outlined text-accent-ice text-[18px]">
-                              satellite_alt
-                            </span>
-                            SRT Ingest Remoto
-                          </span>
-                          <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/40 font-bold">
-                            UDP LISTENER
-                          </span>
-                        </div>
-                        <p className="font-body-sm text-[11.5px] text-outline mt-1 leading-snug">
-                          Recepção de feeds externos via SRT (Caller ou Listener) com buffer ARQ resiliente.
-                        </p>
-                        <div className="bg-surface-base p-2.5 rounded border border-border-subtle mt-2 font-label-mono text-[10.5px] flex flex-col gap-1">
-                          <div className="text-outline">Porta de Entrada: 8890 / SRT</div>
-                          <div className="text-accent-ice-bright truncate">srt://0.0.0.0:8890?streamid=live/reporter</div>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => onMessage('Receptor SRT pronto para conexão.')}
-                        className="w-full py-1.5 rounded bg-surface-card hover:bg-surface-container font-label-caps text-[10px] text-on-surface border border-border-subtle cursor-pointer"
-                      >
-                        Configurar Chave SRT
-                      </button>
-                    </div>
-
-                    {/* Card Convidados WebRTC */}
-                    <div className="bg-surface-panel p-4 rounded-xl border border-border-subtle flex flex-col justify-between gap-3">
-                      <div>
-                        <div className="flex items-center justify-between">
-                          <span className="font-headline-md text-[14px] text-on-surface font-bold flex items-center gap-1.5">
-                            <span className="material-symbols-outlined text-accent-ice text-[18px]">
-                              person_add
-                            </span>
-                            Convidados WebRTC (Guest)
-                          </span>
-                          <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold">
-                            WHEP / WHIP
-                          </span>
-                        </div>
-                        <p className="font-body-sm text-[11.5px] text-outline mt-1 leading-snug">
-                          Gere links diretos de navegação para que repórteres ou entrevistados entrem no ar pelo browser.
-                        </p>
-                        <div className="bg-surface-base p-2.5 rounded border border-border-subtle mt-2 font-label-mono text-[10.5px] flex flex-col gap-1">
-                          <div className="text-outline">Latência Estimada: &lt; 120ms</div>
-                          <div className="text-accent-ice-bright truncate">https://playout.emissora/guest?token=live_guest_01</div>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => onMessage('Novo link de convidado gerado.')}
-                        className="w-full py-1.5 rounded bg-surface-card hover:bg-surface-container font-label-caps text-[10px] text-on-surface border border-border-subtle cursor-pointer"
-                      >
-                        Gerar Novo Link de Convidado
-                      </button>
-                    </div>
-                  </div>
+            {activeTab === 'projetos' && (
+              <div className="bg-surface-card rounded-xl border border-border-subtle p-5 shadow-sm max-w-4xl">
+                <div className="border-b border-border-subtle pb-3 mb-4">
+                  <h3 className="font-headline-md text-[16px] text-on-surface font-bold flex items-center gap-2">
+                    <span className="material-symbols-outlined text-primary text-[20px]">inventory_2</span>
+                    Projetos do Canal: {currentEditingChannel.name}
+                  </h3>
+                  <p className="font-body-sm text-[11.5px] text-outline mt-1">Salva grade, fontes ao vivo, saídas, regras, multiview e gráficos deste canal. Restaurar não altera os demais canais nem o acervo MAM.</p>
                 </div>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <input value={projectLabel} onChange={(event) => setProjectLabel(event.target.value)} placeholder="Nome do ponto de restauração" className="min-w-64 flex-1 bg-surface-base border border-border-subtle rounded px-3 py-2 text-sm text-on-surface" />
+                  <button disabled={isSaving} onClick={() => void handleSaveProject()} className="px-3 py-2 rounded bg-primary text-surface-base font-bold text-sm disabled:opacity-50">SALVAR PONTO</button>
+                </div>
+                {projects.length === 0 ? (
+                  <p className="font-label-mono text-[11px] text-outline py-5 text-center">Nenhum ponto salvo para este canal.</p>
+                ) : (
+                  <div className="divide-y divide-border-subtle border border-border-subtle rounded">
+                    {projects.map((project) => (
+                      <div key={project.id} className="flex items-center justify-between gap-3 p-3">
+                        <div><div className="font-body-sm font-bold text-on-surface">{project.label}</div><div className="font-label-mono text-[10px] text-outline">{new Date(project.createdAt).toLocaleString('pt-BR')}</div></div>
+                        <button disabled={isSaving} onClick={() => void handleRestoreProject(project)} className="px-2.5 py-1.5 rounded border border-armed-amber text-armed-amber text-[10px] font-bold disabled:opacity-50">RESTAURAR NESTE CANAL</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 

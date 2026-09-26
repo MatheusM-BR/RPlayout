@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { Channel } from '@rplayout/protocol'
 import { api } from '../api.js'
-import type { Distribution, OutputProfile } from '../types.js'
+import type { Distribution, OutputProfile, TransmissionPreset } from '../types.js'
 import { CanonicalProtocolSelector } from './broadcast/CanonicalProtocolSelector.js'
 
 interface Props {
@@ -12,6 +12,7 @@ interface Props {
 
 export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props) {
   const [outputs, setOutputs] = useState<OutputProfile[]>([])
+  const [presets, setPresets] = useState<TransmissionPreset[]>([])
   const [distribution, setDistribution] = useState<Distribution | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -21,17 +22,19 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
   const [newName, setNewName] = useState('')
   const [newTarget, setNewTarget] = useState('')
   const [newBitrate, setNewBitrate] = useState(6000)
-  const [revealedPassphrases, setRevealedPassphrases] = useState<Record<string, boolean>>({})
+  const [presetName, setPresetName] = useState('')
 
   const loadData = useCallback(async () => {
     setIsLoading(true)
     try {
-      const [outs, dist] = await Promise.all([
+      const [outs, dist, savedPresets] = await Promise.all([
         api.outputs(channel.id).catch(() => ({ outputs: [] as OutputProfile[] })),
         api.distribution().catch(() => null),
+        api.transmissionPresets(channel.id).catch(() => ({ presets: [] as TransmissionPreset[] })),
       ])
       setOutputs(outs.outputs || [])
       setDistribution(dist)
+      setPresets(savedPresets.presets || [])
     } catch (err) {
       console.error('Falha ao carregar saídas:', err)
     } finally {
@@ -93,7 +96,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
       })
       onMessage(
         res.restartRequired
-          ? `Saída "${nome}" adicionada. Reinicie o canal para iniciar o envio.`
+          ? `Saída "${nome}" adicionada. O engine refez o pipeline; houve uma interrupção breve e controlada no PGM.`
           : `Saída "${nome}" criada com sucesso.`,
       )
       setNewName('')
@@ -102,6 +105,53 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
       onChanged()
     } catch (err) {
       onMessage(err instanceof Error ? err.message : 'Falha ao criar saída.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleSavePreset = async () => {
+    const name = presetName.trim() || newName.trim()
+    if (!name || (newKind !== 'SRT' && newKind !== 'RTMP') || !newTarget.trim()) {
+      onMessage('Para salvar um preset, informe nome, destino e escolha SRT ou RTMP.')
+      return
+    }
+    setIsSaving(true)
+    try {
+      await api.addTransmissionPreset(channel.id, { name, kind: newKind, target: newTarget.trim() })
+      setPresetName('')
+      onMessage(`Preset "${name}" salvo. Credenciais permanecem protegidas.`)
+      await loadData()
+    } catch (err) {
+      onMessage(err instanceof Error ? err.message : 'Falha ao salvar preset.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleApplyPreset = async (preset: TransmissionPreset) => {
+    setIsSaving(true)
+    try {
+      await api.applyTransmissionPreset(channel.id, preset.id)
+      onMessage(`Preset "${preset.name}" aplicado como nova saída.`)
+      await loadData()
+      onChanged()
+    } catch (err) {
+      onMessage(err instanceof Error ? err.message : 'Falha ao aplicar preset.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleDeletePreset = async (preset: TransmissionPreset) => {
+    if (!window.confirm(`Remover o preset "${preset.name}"? As saídas já criadas não serão alteradas.`)) return
+    setIsSaving(true)
+    try {
+      await api.removeTransmissionPreset(channel.id, preset.id)
+      onMessage(`Preset "${preset.name}" removido.`)
+      await loadData()
+    } catch (err) {
+      onMessage(err instanceof Error ? err.message : 'Falha ao remover preset.')
     } finally {
       setIsSaving(false)
     }
@@ -180,6 +230,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
               <div
                 key={proto}
                 onClick={() => handleCopy(url)}
+                onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); handleCopy(url) }}
                 className="bg-surface-panel hover:bg-surface-container p-2.5 rounded-lg border border-border-subtle flex items-center justify-between gap-2 cursor-pointer transition-colors group"
                 title="Clique para copiar o endereço"
               >
@@ -292,6 +343,11 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
                         <span
                           className="font-label-mono text-[11px] text-on-surface break-all truncate"
                           title={out.displayUrl || out.target || out.resolvedTarget || ''}
+                          onContextMenu={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            handleCopy(out.displayUrl || out.target || out.resolvedTarget || '')
+                          }}
                         >
                           {out.displayUrl || out.target || out.resolvedTarget || '(aguardando servidor de mídia)'}
                         </span>
@@ -353,18 +409,9 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
                         <div className="flex items-center justify-between text-outline border-t border-border-subtle/40 pt-1">
                           <span className="flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px] text-accent-ice">key</span>
-                            AES-256: {revealedPassphrases[out.id] ? 'Secr3t#Broadcast2026' : '••••••••••••'}
+                            AES-256: ••••••••••••
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => setRevealedPassphrases((p) => ({ ...p, [out.id]: !p[out.id] }))}
-                            className="text-outline hover:text-on-surface p-0.5 cursor-pointer"
-                            title={revealedPassphrases[out.id] ? 'Ocultar senha' : 'Exibir passphrase'}
-                          >
-                            <span className="material-symbols-outlined text-[14px]">
-                              {revealedPassphrases[out.id] ? 'visibility_off' : 'visibility'}
-                            </span>
-                          </button>
+                          <span className="text-outline">SEGREDO PROTEGIDO</span>
                         </div>
                       </div>
                     )}
@@ -411,6 +458,31 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
           <p className="font-body-sm text-[11px] text-outline mt-0.5">
             Defina o protocolo de envio, o destino remoto ou conector físico e o identificador do stream.
           </p>
+        </div>
+
+        <div className="rounded-lg border border-border-subtle bg-surface-base p-3 flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Presets SRT / RTMP ({presets.length})</span>
+            <span className="font-label-mono text-[9px] text-outline">credenciais mascaradas</span>
+          </div>
+          {presets.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {presets.map((preset) => (
+                <div key={preset.id} className="flex items-center gap-1 rounded border border-border-subtle bg-surface-panel px-2 py-1">
+                  <button type="button" onClick={() => void handleApplyPreset(preset)} disabled={isSaving} className="font-label-caps text-[9px] text-primary hover:text-accent-ice cursor-pointer disabled:opacity-50" title={preset.target}>
+                    {preset.kind} · {preset.name}
+                  </button>
+                  <button type="button" onClick={() => void handleDeletePreset(preset)} disabled={isSaving} className="material-symbols-outlined text-[13px] text-outline hover:text-on-air-crimson cursor-pointer disabled:opacity-50" title="Remover preset">close</button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="font-body-sm text-[11px] text-outline">Salve um destino abaixo para reutilizá-lo sem expor a chave.</span>
+          )}
+          <div className="flex gap-2">
+            <input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder="Nome do novo preset" className="min-w-0 flex-1 bg-surface-panel text-on-surface px-2 py-1 rounded border border-border-subtle font-body-sm text-[11px] outline-none focus:border-primary" />
+            <button type="button" onClick={() => void handleSavePreset()} disabled={isSaving || (newKind !== 'SRT' && newKind !== 'RTMP') || !newTarget.trim()} className="px-2.5 py-1 rounded border border-primary/50 text-primary hover:bg-primary/10 font-label-caps text-[9px] cursor-pointer disabled:opacity-40">SALVAR PRESET</button>
+          </div>
         </div>
 
         <div className="flex flex-col gap-3">

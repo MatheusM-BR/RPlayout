@@ -16,7 +16,7 @@ export class AtemSwitcherDriver {
   constructor(
     private readonly host: string = '127.0.0.1',
     private readonly port: number = 9910,
-    private readonly simulated: boolean = true,
+    private readonly simulated: boolean = false,
   ) {}
 
   async execute(action: string, params: Record<string, unknown>): Promise<{ success: boolean; details?: Record<string, unknown> }> {
@@ -42,12 +42,16 @@ export class AtemSwitcherDriver {
 
     return new Promise((resolve) => {
       const socket = dgram.createSocket('udp4')
+      let finished = false
+      const finish = (value: { success: boolean; details?: Record<string, unknown> }) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timeout)
+        try { socket.close() } catch {}
+        resolve(value)
+      }
       const timeout = setTimeout(() => {
-        try {
-          socket.close()
-        } catch {}
-        // Fallback gracioso com registro de status
-        resolve({ success: false, details: { error: 'TIMEOUT_WAITING_ATEM_ACK', host: this.host, port: this.port } })
+        finish({ success: false, details: { error: 'TIMEOUT_WAITING_ATEM_ACK', host: this.host, port: this.port } })
       }, 500)
 
       // Montagem preliminar do pacote binário ATEM
@@ -57,15 +61,11 @@ export class AtemSwitcherDriver {
 
       socket.send(msg, this.port, this.host, (err) => {
         if (err) {
-          clearTimeout(timeout)
-          try { socket.close() } catch {}
-          resolve({ success: false, details: { error: err.message } })
+          finish({ success: false, details: { error: err.message } })
           return
         }
-        clearTimeout(timeout)
-        try { socket.close() } catch {}
-        resolve({ success: true, details: { host: this.host, port: this.port, input, meIndex } })
       })
+      socket.once('message', () => finish({ success: true, details: { host: this.host, port: this.port, input, meIndex, acknowledged: true } }))
     })
   }
 }
@@ -78,7 +78,7 @@ export class VideohubRouterDriver {
   constructor(
     private readonly host: string = '127.0.0.1',
     private readonly port: number = 9990,
-    private readonly simulated: boolean = true,
+    private readonly simulated: boolean = false,
   ) {}
 
   async execute(action: string, params: Record<string, unknown>): Promise<{ success: boolean; details?: Record<string, unknown> }> {
@@ -101,24 +101,30 @@ export class VideohubRouterDriver {
 
     return new Promise((resolve) => {
       const socket = new net.Socket()
-      const timeout = setTimeout(() => {
+      let finished = false
+      const finish = (value: { success: boolean; details?: Record<string, unknown> }) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timeout)
         socket.destroy()
-        resolve({ success: false, details: { error: 'TIMEOUT_VIDEOHUB_TCP', host: this.host, port: this.port } })
+        resolve(value)
+      }
+      const timeout = setTimeout(() => {
+        finish({ success: false, details: { error: 'TIMEOUT_VIDEOHUB_TCP', host: this.host, port: this.port } })
       }, 500)
 
       socket.connect(this.port, this.host, () => {
         const cmd = `VIDEO OUTPUT ROUTING:\n${destination} ${source}\n\n`
         socket.write(cmd, () => {
-          clearTimeout(timeout)
-          socket.end()
-          resolve({ success: true, details: { destination, source, routed: true } })
+          // A escrita no TCP só confirma o buffer local. O sucesso operacional
+          // exige retorno do Videohub, recebido no handler abaixo.
         })
       })
 
+      socket.once('data', () => finish({ success: true, details: { destination, source, routed: true, acknowledged: true } }))
+
       socket.on('error', (err) => {
-        clearTimeout(timeout)
-        socket.destroy()
-        resolve({ success: false, details: { error: err.message } })
+        finish({ success: false, details: { error: err.message } })
       })
     })
   }
@@ -182,10 +188,13 @@ export class GpioRelayDriver {
  * Gerencia validação de token, despacho e auditoria com registro de latência.
  */
 export class StudioAutomationGateway {
-  private readonly atemDriver = new AtemSwitcherDriver()
-  private readonly videohubDriver = new VideohubRouterDriver()
   private readonly gpioDriver = new GpioRelayDriver()
   private readonly auditLog: ExternalControlAuditEntry[] = []
+  private devices = new Map<string, { host: string; port: number; enabled: boolean }>()
+
+  configureDevices(rows: Array<{ kind: string; host: string; port: number; enabled: boolean }>): void {
+    this.devices = new Map(rows.map((row) => [row.kind, { host: row.host, port: row.port, enabled: row.enabled }]))
+  }
 
   validateToken(token?: string): boolean {
     if (!EXTERNAL_CONTROL_TOKEN || EXTERNAL_CONTROL_TOKEN.trim() === '') {
@@ -233,11 +242,20 @@ export class StudioAutomationGateway {
 
     try {
       if (target === 'ATEM_SWITCHER' || target === 'BLACKMAGIC_ATEM') {
-        result = await this.atemDriver.execute(cmd.action, cmd.params)
+        const device = this.devices.get('ATEM_SWITCHER')
+        result = !device || !device.enabled
+          ? { success: false, details: { error: 'ATEM não configurado ou desabilitado.' } }
+          : await new AtemSwitcherDriver(device.host, device.port, false).execute(cmd.action, cmd.params)
       } else if (target === 'VIDEOHUB_ROUTER' || target === 'LEITCH_ROUTER') {
-        result = await this.videohubDriver.execute(cmd.action, cmd.params)
+        const device = this.devices.get('VIDEOHUB_ROUTER')
+        result = !device || !device.enabled
+          ? { success: false, details: { error: 'Videohub não configurado ou desabilitado.' } }
+          : await new VideohubRouterDriver(device.host, device.port, false).execute(cmd.action, cmd.params)
       } else if (target === 'GPIO_RELAY') {
-        result = await this.gpioDriver.execute(cmd.action, cmd.params)
+        const device = this.devices.get('GPIO_RELAY')
+        result = !device || !device.enabled
+          ? { success: false, details: { error: 'GPIO não configurado ou desabilitado.' } }
+          : await this.gpioDriver.execute(cmd.action, cmd.params)
       } else {
         result = { success: false, details: { error: `Dispositivo não suportado: ${cmd.targetDevice}` } }
       }

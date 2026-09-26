@@ -53,6 +53,8 @@ export interface Transport {
   programMeter(): MeterReading | null
   /** Medição real do preview, quando o transporte tem uma. */
   previewMeter(): MeterReading | null
+  /** Análise do quadro PGM emitida pelo compositor real; nula no simulador. */
+  videoProbe(): { luma: number; black: boolean; freeze: boolean } | null
   /** Saídas de rede do canal. Vazio no simulado, que não sai para lugar nenhum. */
   publishers(): readonly PublisherState[]
   /** PID do processo de renderização, quando há engine real. */
@@ -298,6 +300,10 @@ export class SimulatedTransport implements Transport {
   }
 
   previewMeter(): MeterReading | null {
+    return null
+  }
+
+  videoProbe(): { luma: number; black: boolean; freeze: boolean } | null {
     return null
   }
 

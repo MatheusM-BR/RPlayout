@@ -38,6 +38,8 @@ export interface PlanItem {
 export type PreviewTarget =
   | { readonly kind: 'ITEM'; readonly id: string }
   | { readonly kind: 'ASSET'; readonly id: string }
+  /** Fonte de rede aberta diretamente no PVW, sem criar uma cópia no MAM. */
+  | { readonly kind: 'SOURCE'; readonly source: string; readonly title?: string }
 
 /** Estado do item que está no ar agora, vindo do engine. */
 export interface OnAirState {

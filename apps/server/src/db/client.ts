@@ -40,7 +40,26 @@ CREATE TABLE IF NOT EXISTS output_profiles (
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS channel_project_snapshots (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS channel_project_snapshots_channel ON channel_project_snapshots (channel_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS output_profiles_channel ON output_profiles (channel_id);
+
+CREATE TABLE IF NOT EXISTS transmission_presets (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  target TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS transmission_presets_channel ON transmission_presets (channel_id, created_at);
 
 CREATE TABLE IF NOT EXISTS media_assets (
   id TEXT PRIMARY KEY,
@@ -150,6 +169,16 @@ CREATE TABLE IF NOT EXISTS integrations (
   url TEXT NOT NULL,
   events TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS external_devices (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
 

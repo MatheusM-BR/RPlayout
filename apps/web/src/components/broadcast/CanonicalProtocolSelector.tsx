@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
+﻿import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { api } from '../../api.js'
 import type { SourceList, LiveSource } from '../../types.js'
 
@@ -72,7 +72,8 @@ export function CanonicalProtocolSelector({
   // FILE (Apenas Output)
   const [filePath, setFilePath] = useState('gravações/canal-master.mp4')
 
-  // OMT (Apenas Output)
+  // OMT/SMPTE-2110: anúncios NMOS identificam o serviço, mas o fluxo precisa
+  // de URI RTP/SDP explícita para ser aberto.
   const [omtAddress, setOmtAddress] = useState('omt://239.255.0.1:5004')
 
   // Busca fontes físicas e de rede
@@ -106,7 +107,7 @@ export function CanonicalProtocolSelector({
   // Lista de protocolos disponíveis
   const availableProtocols: ProtocolKind[] = useMemo(() => {
     if (mode === 'INPUT') {
-      return ['SDI', 'NDI', 'SRT', 'RTMP']
+      return ['SDI', 'NDI', 'SRT', 'RTMP', 'OMT']
     }
     return ['RTMP', 'SRT', 'SDI', 'NDI', 'OMT', 'FILE']
   }, [mode])
@@ -133,17 +134,18 @@ export function CanonicalProtocolSelector({
         if (mode === 'INPUT') {
           const hasSources = (sources?.ndi.sources.length ?? 0) > 0
           if (!hasSources || useManualNdi) {
-            const cleanName = manualNdiSource.trim().replace(/^ndi:\/\//, '')
-            uri = cleanName ? `ndi://${cleanName}` : ''
+            const cleanName = manualNdiSource.trim().replace(/^ndi:(\/\/)?/, '')
+            uri = cleanName ? `ndi:${cleanName}` : ''
             nameRec = `NDI ${cleanName || 'Fonte Externa'}`
           } else {
             const raw = selectedNdiSource || sources?.ndi.sources[0]?.reference || ''
-            uri = raw.startsWith('ndi:') ? raw : `ndi://${raw}`
-            nameRec = `NDI ${raw.replace(/^ndi:\/\//, '')}`
+            const cleanRaw = raw.replace(/^ndi:(\/\/)?/, '')
+            uri = cleanRaw ? `ndi:${cleanRaw}` : ''
+            nameRec = `NDI ${cleanRaw}`
           }
         } else {
-          const cleanName = manualNdiSource.trim().replace(/^ndi:\/\//, '')
-          uri = cleanName ? `ndi://${cleanName}` : 'ndi://RPLAYOUT_PGM_MASTER'
+          const cleanName = manualNdiSource.trim().replace(/^ndi:(\/\/)?/, '')
+          uri = cleanName ? `ndi:${cleanName}` : 'ndi:RPLAYOUT_PGM_MASTER'
           nameRec = `NDI Saída ${cleanName || 'PGM'}`
         }
         break
@@ -184,7 +186,7 @@ export function CanonicalProtocolSelector({
 
       case 'OMT': {
         uri = omtAddress.trim()
-        nameRec = `OMT Multicast SMPTE-2110`
+        nameRec = `OMT / SMPTE-2110`
         break
       }
     }
@@ -498,7 +500,7 @@ export function CanonicalProtocolSelector({
                 type="number"
                 min={20}
                 max={8000}
-                step={50}
+                step={1}
                 value={srtLatency}
                 onChange={(e) => setSrtLatency(Number(e.target.value) || 800)}
                 className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
@@ -604,7 +606,7 @@ export function CanonicalProtocolSelector({
                 type="number"
                 min={100}
                 max={10000}
-                step={250}
+                step={1}
                 value={rtmpLatency}
                 onChange={(e) => setRtmpLatency(Number(e.target.value) || 2000)}
                 className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
@@ -636,7 +638,7 @@ export function CanonicalProtocolSelector({
         </div>
       )}
 
-      {/* 6. PROTOCOLO OMT (OUTPUT) */}
+      {/* 6. PROTOCOLO OMT / SMPTE-2110 */}
       {kind === 'OMT' && (
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
           <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
@@ -654,6 +656,13 @@ export function CanonicalProtocolSelector({
               placeholder="omt://239.255.0.1:5004"
               className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
             />
+            {mode === 'INPUT' && (
+              <div className="rounded border border-border-subtle bg-surface-base p-2 text-[10px] text-outline leading-snug">
+                {sources?.omt.sources.length
+                  ? `Serviços NMOS/OMT encontrados: ${sources.omt.sources.map((source) => source.label).join(', ')}. Informe a URI RTP/SDP publicada pelo controlador para abrir o fluxo.`
+                  : `A descoberta OMT procura anúncios NMOS/mDNS; ela não inventa uma URI RTP. ${sources?.omt.reason ?? 'Informe a URI/SDP do fluxo ou registre-o no controlador NMOS.'}`}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -661,7 +670,15 @@ export function CanonicalProtocolSelector({
       {/* URI Broadcast Canônico Calculado */}
       <div className="p-2 rounded bg-surface-base border border-border-subtle/80 flex items-center justify-between text-[10px] font-label-mono">
         <span className="text-outline">URI Canônico:</span>
-        <span className="text-on-surface font-semibold truncate max-w-xs sm:max-w-md select-all text-right">
+        <span
+          className="text-on-surface font-semibold truncate max-w-xs sm:max-w-md select-all text-right cursor-copy"
+          title="Botão direito para copiar a URI canônica"
+          onContextMenu={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            if (computedResult.targetUri) void navigator.clipboard.writeText(computedResult.targetUri)
+          }}
+        >
           {computedResult.targetUri || '<incompleto>'}
         </span>
       </div>

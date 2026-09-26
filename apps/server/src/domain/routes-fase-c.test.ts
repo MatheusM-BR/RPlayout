@@ -124,7 +124,7 @@ describe('Rotas e Endpoints da Fase C (Continuidade, Compliance e Sonda PGM)', (
   it('GET /api/v1/engineering/pgm-probe/status retorna telemetria e alertas ativos', async () => {
     const res = await server.inject({
       method: 'GET',
-      url: '/api/v1/engineering/pgm-probe/status',
+      url: '/api/v1/engineering/pgm-probe/status?channelId=ch-fase-c',
     })
 
     expect(res.statusCode).toBe(200)
@@ -144,6 +144,7 @@ describe('Rotas e Endpoints da Fase C (Continuidade, Compliance e Sonda PGM)', (
       method: 'POST',
       url: '/api/v1/engineering/pgm-probe/emergency-slate',
       payload: {
+        channelId: 'ch-fase-c',
         reason: 'Queda de encoder remoto',
       },
     })
@@ -159,6 +160,7 @@ describe('Rotas e Endpoints da Fase C (Continuidade, Compliance e Sonda PGM)', (
       method: 'POST',
       url: '/api/v1/engineering/pgm-probe/emergency-slate',
       payload: {
+        channelId: 'ch-fase-c',
         action: 'RESET',
       },
     })

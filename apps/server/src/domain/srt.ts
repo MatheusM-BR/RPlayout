@@ -34,7 +34,7 @@ export interface LiveSourceRecord {
   id: string
   channelId: string
   name: string
-  kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI'
+  kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'
   targetUrl: string
   srtConfig: SrtConfig | null
   role: RedundancyRole
@@ -48,7 +48,7 @@ export interface LiveSourceRecord {
 export interface CreateLiveSourceInput {
   channelId: string
   name: string
-  kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI'
+  kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'
   targetUrl?: string
   srtConfig?: SrtConfig
   role?: RedundancyRole
@@ -60,7 +60,7 @@ export interface CreateLiveSourceInput {
 
 export interface UpdateLiveSourceInput {
   name?: string
-  kind?: 'SRT' | 'RTMP' | 'SDI' | 'NDI'
+  kind?: 'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'
   targetUrl?: string
   srtConfig?: SrtConfig
   role?: RedundancyRole

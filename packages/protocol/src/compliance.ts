@@ -43,7 +43,7 @@ export interface PgmProbeAlert {
 
 export type AsRunExtendedStatus =
   | 'PLAYED_FULL'
-  | 'TRUNCATED'
+  | 'INTERRUPTED'
   | 'DROPPED'
   | 'FAILED'
 

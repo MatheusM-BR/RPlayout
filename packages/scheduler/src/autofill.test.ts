@@ -42,6 +42,17 @@ describe('montagem automática', () => {
     expect(result.reason).toBe('OUT_OF_MATERIAL')
   })
 
+  it('repete o acervo ciclicamente quando evitar repetição está desligado', () => {
+    const result = autoFill({
+      ...base,
+      avoidWithinMs: 0,
+      window: 1000,
+      candidates: [candidate({ id: 'vinheta', durationFrames: 300 })],
+    })
+    expect(result.items.map((item) => item.id)).toEqual(['vinheta', 'vinheta', 'vinheta'])
+    expect(result.reason).toBe('OUT_OF_MATERIAL')
+  })
+
   it('recusa o que foi ao ar há pouco', () => {
     const recent = candidate({
       id: 'quente',

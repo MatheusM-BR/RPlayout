@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, desc, eq, gte, lte } from 'drizzle-orm'
+import { and, desc, eq, gte, isNull, lte } from 'drizzle-orm'
 import {
   formatTimecode,
   framesSinceMidnight,
@@ -29,6 +29,12 @@ export type AsRunEntry = typeof asRun.$inferSelect
  */
 export class AsRun {
   private open: { id: string; itemId: string; startedMs: number } | null = null
+  /**
+   * O as-run em memória é recriado junto com o servidor. Sem esta
+   * reconciliação, uma queda/reinício deixa a linha anterior com `endedAt`
+   * nulo e a tela Aired passa a mostrar dois (ou mais) itens como NO AR.
+   */
+  private reconciledAfterStartup = false
 
   constructor(
     private readonly db: Db,
@@ -41,6 +47,7 @@ export class AsRun {
    * Idempotente para o mesmo item: só escreve se a chave mudar.
    */
   async follow(itemId: string | null, view: RundownView | null = null): Promise<void> {
+    await this.reconcileAfterStartup()
     if (this.open && this.open.itemId === itemId) return
 
     if (this.open) {
@@ -77,6 +84,17 @@ export class AsRun {
     })
     void emitIntegrationEvent(this.db, 'asrun.started', { itemId, title: entry?.item.title ?? 'item desconhecido', startedAt: new Date().toISOString() }, this.channel.id)
     this.open = { id, itemId, startedMs: Date.now() }
+  }
+
+  /** Fecha apenas linhas órfãs de processos anteriores, uma única vez. */
+  private async reconcileAfterStartup(): Promise<void> {
+    if (this.reconciledAfterStartup) return
+    this.reconciledAfterStartup = true
+    const endedAt = new Date().toISOString()
+    await this.db
+      .update(asRun)
+      .set({ endedAt, endedBy: 'RESTART' })
+      .where(and(eq(asRun.channelId, this.channel.id), isNull(asRun.endedAt)))
   }
 
   /** Fecha a linha aberta, se houver. Chamado ao encerrar o canal. */
@@ -142,7 +160,9 @@ export function toAsRunRecordExtended(
   } else if (airedFrames === 0) {
     status = 'DROPPED'
   } else if (plannedFrames > 0 && airedFrames < plannedFrames * 0.95) {
-    status = 'TRUNCATED'
+    // O arquivo não é "truncado": a veiculação foi interrompida antes do
+    // término previsto. O operador precisa saber a diferença para auditar.
+    status = 'INTERRUPTED'
   } else {
     status = 'PLAYED_FULL'
   }

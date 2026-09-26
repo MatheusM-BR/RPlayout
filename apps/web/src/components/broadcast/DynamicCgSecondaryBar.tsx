@@ -26,11 +26,13 @@ interface Props {
   onCgStateChange?: (state: DynamicCgState) => void
 }
 
-/** Dispara trigger de CG no backend (fire-and-forget, não bloqueia a UI) */
+/** Dispara trigger de CG no backend */
 async function triggerCgLayer(
   channelId: string | undefined,
-  layer: 0 | 1 | 2 | 3,
+  layer: 0 | 1 | 2 | 3 | GraphicLayerType,
   action: 'SHOW' | 'HIDE',
+  payload?: Record<string, unknown>,
+  durationFrames?: number,
 ): Promise<void> {
   if (!channelId) return
   const layerNames: Record<number, GraphicLayerType> = {
@@ -39,14 +41,18 @@ async function triggerCgLayer(
     2: 'CRAWL_TICKER',
     3: 'LOWER_THIRD',
   }
+  const layerName: GraphicLayerType = (typeof layer === 'number' ? layerNames[layer] : layer) ?? 'STATION_LOGO'
   try {
-    await fetch(`/api/v1/graphics/layers/${layer}/trigger`, {
+    const res = await fetch(`/api/v1/graphics/layers/${layerName}/trigger`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channelId, action, layer: layerNames[layer] }),
+      body: JSON.stringify({ channelId, action, payload, durationFrames }),
     })
-  } catch {
-    // fire-and-forget: UI não bloqueia por falha de rede
+    if (!res.ok) {
+      console.warn(`[CG] Erro ao disparar camada ${layerName}: HTTP ${res.status}`)
+    }
+  } catch (err) {
+    console.warn(`[CG] Falha de conexão ao disparar camada ${layerName}:`, err)
   }
 }
 
@@ -163,21 +169,25 @@ export function DynamicCgSecondaryBar({
   const toggleLayer0Logo = () => {
     const next = !cgState.layer0Logo
     setCgState((prev) => ({ ...prev, layer0Logo: next }))
-    void triggerCgLayer(channelId, 0, next ? 'SHOW' : 'HIDE')
+    void triggerCgLayer(channelId, 'STATION_LOGO', next ? 'SHOW' : 'HIDE', { title: 'RPLAYOUT HD' })
     onMessage?.(`CG: Layer 0 (STATION_LOGO) ${next ? 'FADE IN no ar [90% Action Safe]' : 'FADE OUT [Oculto]'}`)
   }
 
   const toggleLayer1Clock = () => {
     const next = !cgState.layer1Clock
     setCgState((prev) => ({ ...prev, layer1Clock: next }))
-    void triggerCgLayer(channelId, 1, next ? 'SHOW' : 'HIDE')
+    void triggerCgLayer(channelId, 'ONAIR_CLOCK', next ? 'SHOW' : 'HIDE')
     onMessage?.(`CG: Layer 1 (ONAIR_CLOCK) ${next ? 'ATIVADO no ar [NTP Stratum-1]' : 'OCULTADO'}`)
   }
 
   const toggleLayer2Ticker = () => {
     const next = !cgState.layer2Ticker
     setCgState((prev) => ({ ...prev, layer2Ticker: next }))
-    void triggerCgLayer(channelId, 2, next ? 'SHOW' : 'HIDE')
+    void triggerCgLayer(channelId, 'CRAWL_TICKER', next ? 'SHOW' : 'HIDE', {
+      text: cgState.tickerText,
+      badge: cgState.breakingNewsActive ? 'URGENTE' : 'AO VIVO',
+      isBreaking: cgState.breakingNewsActive,
+    })
     onMessage?.(`CG: Layer 2 (CRAWL_TICKER) ${next ? 'INICIADO (3.5 px/f smooth GPU)' : 'PARADO'}`)
   }
 
@@ -187,7 +197,11 @@ export function DynamicCgSecondaryBar({
       layer2Ticker: true,
       breakingNewsActive: true,
     }))
-    void triggerCgLayer(channelId, 2, 'SHOW')
+    void triggerCgLayer(channelId, 'CRAWL_TICKER', 'SHOW', {
+      text: cgState.tickerText,
+      badge: 'URGENTE',
+      isBreaking: true,
+    })
     onMessage?.(`CG: Tarja de BREAKING NEWS injetada com prioridade na Layer 2: "${cgState.tickerText.slice(0, 40)}..."`)
   }
 
@@ -195,7 +209,7 @@ export function DynamicCgSecondaryBar({
     if (cgState.lowerThirdActive) {
       // Forçar saída (Dismiss antecipado)
       setCgState((prev) => ({ ...prev, lowerThirdActive: false, lowerThirdTimeRemaining: 0 }))
-      void triggerCgLayer(channelId, 3, 'HIDE')
+      void triggerCgLayer(channelId, 'LOWER_THIRD', 'HIDE')
       onMessage?.('CG: Layer 3 (LOWER_THIRD) recolhida manualmente pelo operador')
     } else {
       // Disparar com 8 segundos de retenção
@@ -204,7 +218,10 @@ export function DynamicCgSecondaryBar({
         lowerThirdActive: true,
         lowerThirdTimeRemaining: 8,
       }))
-      void triggerCgLayer(channelId, 3, 'SHOW')
+      void triggerCgLayer(channelId, 'LOWER_THIRD', 'SHOW', {
+        title: cgState.lowerThirdTitle,
+        subtitle: cgState.lowerThirdSubtitle,
+      }, 240)
       onMessage?.(`CG: Layer 3 (LOWER_THIRD) no ar: "${cgState.lowerThirdTitle}" (Duração: 8s / 240 frames)`)
     }
   }

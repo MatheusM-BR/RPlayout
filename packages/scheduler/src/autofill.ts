@@ -93,7 +93,9 @@ export function autoFill(request: FillRequest): FillResult {
     let best: Candidate | null = null
     let bestScore = Number.NEGATIVE_INFINITY
 
-    // Quando avoidWithinMs === 0, permite reciclagem e repetição de material no preenchimento
+    // Com a janela de repetição desligada, o acervo é cíclico: ao esgotar a
+    // primeira passagem, recomeça. Isto é importante para grades longas com
+    // poucos fillers; "0h" não pode significar "usar cada arquivo uma vez".
     if (request.avoidWithinMs === 0 && used.size >= request.candidates.filter(allowed).length) {
       used.clear()
     }

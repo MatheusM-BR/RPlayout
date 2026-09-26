@@ -15,6 +15,15 @@ export type OutputRole = 'PROGRAM' | 'PREVIEW' | 'MONITOR' | 'EXTRA'
  */
 export type OutputKind = 'RTMP' | 'SRT' | 'FILE' | 'SDI' | 'NDI' | 'OMT'
 
+/** Capacidades de publicação realmente implementadas pelo engine local. */
+export function outputCapability(kind: OutputKind): { available: boolean; reason?: string } {
+  if (kind === 'OMT') return {
+    available: false,
+    reason: 'Publicação OMT/SMPTE-2110 ainda não está implementada neste engine: use SRT/RTMP ou um gateway RTP/NMOS externo.',
+  }
+  return { available: true }
+}
+
 export interface OutputProfileRow {
   id: string
   channelId: string
@@ -40,6 +49,8 @@ export interface OutputProfileRow {
  * herdado acompanhar quando o canal muda de formato.
  */
 interface EngineProfile {
+  /** Identidade estável: permite trocar somente esta ramificação no engine. */
+  id?: string
   kind: 'rtmp' | 'srt' | 'file' | 'ndi' | 'omt'
   target: string
   width?: number
@@ -141,10 +152,11 @@ const ehMonitor = (row: OutputProfileRow): boolean =>
 
 /** Destino real de um perfil: derivado para os gerenciados, guardado nos demais. */
 export function targetOf(row: OutputProfileRow, path: ChannelPaths | undefined): string | null {
-  // O programa gerenciado sai por MPEG-TS/SRT para que o mesmo caminho que o
-  // navegador abre em WHEP carregue Opus. RTMP/FLV aceita AAC, mas o WebRTC do
-  // MediaMTX não converte AAC para Opus e o resultado é vídeo sem áudio.
-  if (row.role === 'PROGRAM') return path ? MediaMtx.loopbackSrt(path.program) : null
+  // O programa é o master usado pelos relays externos. Ele fica em RTMP/AAC:
+  // o relay remuxa esse par H.264/AAC para RTMP ou SRT sem recodificar. Fazer
+  // o master sair em SRT/Opus deixava o relay RTMP sem trilha de áudio aceita
+  // e, na prática, derrubava ou fragmentava a distribuição inteira.
+  if (row.role === 'PROGRAM') return path ? MediaMtx.loopback(path.program) : null
   // Preview e monitor são olhados no navegador, e por isso vão por SRT: é o
   // único caminho daqui até o servidor de mídia que carrega Opus. Veja
   // `MediaMtx.loopbackSrt`.
@@ -169,9 +181,11 @@ export function toEngineProfile(
   if (row.kind === 'SDI') return `sdi:${target.replace(/^sdi:/, '')}`
 
   return {
-    // O monitor sai por SRT independente do que o perfil diga: o `kind` dele é
-    // do tempo em que todo mundo saía por RTMP, e o destino agora é fixo.
-    kind: row.role === 'PROGRAM' || ehMonitor(row) ? 'srt' : (row.kind.toLowerCase() as EngineProfile['kind']),
+    id: row.id,
+    // Preview e monitor usam SRT/MPEG-TS com Opus para WHEP. O PGM é RTMP/AAC,
+    // pois é a fonte de distribuição que os relays podem remuxar para RTMP e
+    // SRT sem transcodificação.
+    kind: ehMonitor(row) ? 'srt' : row.role === 'PROGRAM' ? 'rtmp' : (row.kind.toLowerCase() as EngineProfile['kind']),
     target,
     ...(row.width !== null ? { width: row.width } : {}),
     ...(row.height !== null ? { height: row.height } : {}),

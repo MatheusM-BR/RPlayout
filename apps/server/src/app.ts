@@ -87,6 +87,11 @@ export class ChannelRuntime {
 
   private fired = new Set<string>()
   private phase = 0
+  public lastManualEditAt = 0
+
+  markManualEdit(): void {
+    this.lastManualEditAt = Date.now()
+  }
 
   constructor(
     /**
@@ -226,7 +231,9 @@ export class ChannelRuntime {
 
   private meterForPreview(target: PreviewTarget | null): MeterReading {
     if (!target) return SILENCE
-    return target.kind === 'ITEM' ? this.meterForItem(target.id) : this.meterForAsset(target.id)
+    if (target.kind === 'ITEM') return this.meterForItem(target.id)
+    if (target.kind === 'ASSET') return this.meterForAsset(target.id)
+    return SILENCE
   }
 
   /** As deixas de grafismo de um item, para a interface listar. */
@@ -538,7 +545,8 @@ export interface App {
   readonly sqlite: Database.Database
   readonly backupDir: string
   readonly continuityCache: ContinuityCache
-  readonly pgmProbe: PgmProbe
+  /** Cada canal possui uma sonda independente. */
+  readonly pgmProbes: Map<string, PgmProbe>
   /** Fecha o que precisa de escrita antes de o processo sair. */
   flush(): Promise<void>
   close(): void
@@ -570,7 +578,7 @@ export async function createApp(file: string): Promise<App> {
     sqlite,
     backupDir: BACKUP_DIR,
     continuityCache: new ContinuityCache(process.env.RPLAYOUT_CACHE ?? resolvePath(process.cwd(), '.continuity-cache'), CONTINUITY_CACHE_MAX_BYTES),
-    pgmProbe: new PgmProbe(),
+    pgmProbes: new Map(),
     /**
      * Fecha as linhas de as-run abertas antes de o processo sair.
      *
@@ -677,7 +685,17 @@ async function createRuntime(app: App, channelId: string): Promise<ChannelRuntim
   // por uma descoberta a cada tique: perguntam ao que já foi descoberto.
   runtime.aacDisponivel = () => app.sources.temDecodificadorAac()
   app.runtimes.set(channelId, runtime)
+  app.pgmProbes.set(channelId, new PgmProbe())
   return runtime
+}
+
+/** Sonda isolada por canal, criada cedo para a UI poder informar sem amostra. */
+export function pgmProbeFor(app: App, channelId: string): PgmProbe {
+  const existing = app.pgmProbes.get(channelId)
+  if (existing) return existing
+  const probe = new PgmProbe()
+  app.pgmProbes.set(channelId, probe)
+  return probe
 }
 
 /** Runtime do canal dono deste rundown, com a grade já carregada. */

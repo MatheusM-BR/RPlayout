@@ -67,6 +67,25 @@ export const outputProfiles = sqliteTable('output_profiles', {
   createdAt: text('created_at').notNull(),
 })
 
+/** Destinos SRT/RTMP reutilizáveis. O destino completo fica apenas no SQLite. */
+export const transmissionPresets = sqliteTable('transmission_presets', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id').notNull(),
+  name: text('name').notNull(),
+  kind: text('kind').$type<'SRT' | 'RTMP'>().notNull(),
+  target: text('target').notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
+/** Ponto de restauração de um único canal, sem copiar ou afetar os demais. */
+export const channelProjectSnapshots = sqliteTable('channel_project_snapshots', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id').notNull(),
+  label: text('label').notNull(),
+  payload: text('payload', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
 export const mediaAssets = sqliteTable('media_assets', {
   id: text('id').primaryKey(),
   /** SHA-256 do conteúdo: acha o mesmo arquivo renomeado ou movido de pasta. */
@@ -160,6 +179,17 @@ export const integrations = sqliteTable('integrations', {
   url: text('url').notNull(),
   events: text('events', { mode: 'json' }).$type<string[]>().notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+  createdAt: text('created_at').notNull(),
+})
+
+/** Equipamentos externos que podem receber comandos de automação. */
+export const externalDevices = sqliteTable('external_devices', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  kind: text('kind').$type<'ATEM_SWITCHER' | 'VIDEOHUB_ROUTER' | 'GPIO_RELAY'>().notNull(),
+  host: text('host').notNull(),
+  port: integer('port').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at').notNull(),
 })
 
@@ -360,7 +390,7 @@ export const liveSources = sqliteTable('live_sources', {
   id: text('id').primaryKey(),
   channelId: text('channel_id').notNull(),
   name: text('name').notNull(),
-  kind: text('kind').$type<'SRT' | 'RTMP' | 'SDI' | 'NDI'>().notNull(),
+  kind: text('kind').$type<'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'>().notNull(),
   targetUrl: text('target_url').notNull(),
   srtConfig: text('srt_config', { mode: 'json' }).$type<SrtConfig | null>(),
   role: text('role').$type<RedundancyRole>().notNull().default('PRIMARY'),

@@ -21,3 +21,11 @@ apps/server/backups/
 release/
 *.exe
 scratch/
+
+# Artefatos locais de execução e credenciais geradas automaticamente.
+*.key
+*.crt
+*.rvf
+*.rvf.lock
+*.log
+Processing.NDI.Lib.x64.dll

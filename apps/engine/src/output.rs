@@ -35,6 +35,17 @@ const RETRY_CAP: Duration = Duration::from_secs(15);
 /// simplesmente descarta o que chegar atrasado.
 const MUX_LATENCY: u64 = 500_000_000;
 
+/// Janela em que um `intervideosrc` conserva o último quadro válido antes de
+/// fabricar preto. O valor anterior (200 ms) era menor que um GOP e uma
+/// reconexão normal do decoder/encoder, causando flashes pretos no PGM.
+pub const HOLD_LAST_FRAME_NS: u64 = 5_000_000_000;
+
+/// Protege a continuidade entre o compositor e cada publisher. Antes do
+/// timeout, `intervideosrc` repete o último quadro em vez de criar preto.
+pub fn retain_last_video_frame(source: &gst::Element) {
+    source.set_property("timeout", HOLD_LAST_FRAME_NS);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Health {
@@ -54,6 +65,9 @@ pub enum Health {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
+    /// Identidade estável do perfil, para a interface não confundir uma URL
+    /// antiga com a saída que acabou de ser trocada.
+    pub output_id: String,
     pub url: String,
     pub health: Health,
     /// Tentativas desde a última entrega. Zera quando volta a entregar, para
@@ -72,6 +86,9 @@ pub struct Report {
 pub enum Kind {
     Rtmp,
     Srt,
+    /// Publicação NDI pelo plugin gst-plugin-ndi. Não passa por H.264: NDI
+    /// recebe os quadros e áudio crus do programa, preservando a cadência.
+    Ndi,
     /// Gravação as-run. Vive aqui pelo mesmo motivo das outras: um erro de
     /// multiplexação dela derrubava o canal inteiro -- foi o que aconteceu na
     /// primeira vez que a gravação foi exercitada de verdade.
@@ -97,11 +114,16 @@ impl Kind {
         match self {
             Kind::Rtmp | Kind::File => "avc",
             Kind::Srt => "byte-stream",
+            // NDI não usa cadeia de encoder/mux; veja `build_ndi`.
+            Kind::Ndi => unreachable!("NDI não possui stream-format H.264"),
         }
     }
 }
 
+#[derive(Clone)]
 pub struct PublisherSpec {
+    /// Id persistente do perfil. Diferente da URL, não muda ao reconfigurar.
+    pub output_id: String,
     pub kind: Kind,
     /// URL de rede ou caminho de arquivo, conforme o `kind`.
     pub url: String,
@@ -174,6 +196,53 @@ impl Publisher {
         &self.spec.role
     }
 
+    pub fn output_id(&self) -> &str {
+        &self.spec.output_id
+    }
+
+    /// Substitui o pipeline consumidor sem tocar nos canais `inter` do PGM.
+    /// A saída antiga fecha antes da nova abrir para não duplicar publicação
+    /// no mesmo destino. A abertura continua assíncrona em `service`.
+    pub fn replace(
+        &mut self,
+        spec: crate::channel::OutputSpec,
+        channel: &crate::channel::Config,
+    ) -> Result<()> {
+        let old = self.spec.clone();
+        let monitor = old.role == "mon";
+        self.shutdown();
+        self.spec = PublisherSpec {
+            output_id: old.output_id,
+            kind: spec.kind,
+            url: spec.target,
+            video_channel: old.video_channel,
+            audio_channel: old.audio_channel,
+            width: spec.width.unwrap_or(channel.width),
+            height: spec.height.unwrap_or(channel.height),
+            fps_n: spec.rate_num.unwrap_or(channel.fps_n),
+            fps_d: spec.rate_den.unwrap_or(channel.fps_d),
+            bitrate_kbps: spec.bitrate_kbps.unwrap_or(channel.bitrate_kbps),
+            interlaced: match spec.scan.as_deref() {
+                Some("interlaced") => spec.kind == Kind::File,
+                Some(_) => false,
+                None => spec.kind == Kind::File
+                    && channel.scan == crate::channel::Scan::Interlaced,
+            },
+            top_field_first: channel.top_field_first,
+            prefer_software: old.prefer_software,
+            role: old.role,
+            on_demand: old.on_demand,
+            // Opus é exclusivo do monitor WHEP. Um SRT externo usa AAC para
+            // manter compatibilidade com receptores broadcast e relays.
+            opus: spec.kind == Kind::Srt && monitor,
+        };
+        self.health = Health::Retrying;
+        self.attempts = 0;
+        self.error = None;
+        self.retry_at = Some(Instant::now());
+        Ok(())
+    }
+
     /// Liga ou desliga uma saída sob demanda, sem tocar no resto do canal.
     ///
     /// Os pipelines de saída são independentes do pipeline do canal -- eles
@@ -201,6 +270,7 @@ impl Publisher {
 
     pub fn report(&self) -> Report {
         Report {
+            output_id: self.spec.output_id.clone(),
             url: self.spec.url.clone(),
             health: self.health,
             attempts: self.attempts,
@@ -336,6 +406,9 @@ impl Publisher {
     }
 
     fn build(&self) -> Result<gst::Pipeline> {
+        if self.spec.kind == Kind::Ndi {
+            return self.build_ndi();
+        }
         let spec = &self.spec;
         let pipeline = gst::Pipeline::new();
 
@@ -368,15 +441,20 @@ impl Publisher {
             .field("channels", 2i32)
             .build();
 
-        // O `inter` entrega preto no formato dele enquanto ninguém publicou
-        // ainda; converter e reamostrar aqui é o que impede o encoder de fixar
+        // O `inter` conserva o último quadro válido durante uma oscilação
+        // curta; antes de qualquer produtor, ele parte de preto no formato
+        // dele. Converter e reamostrar aqui impede o encoder de fixar
         // 320x240 no primeiro frame e recusar o programa depois.
         let vsrc = make("intervideosrc")?;
         vsrc.set_property("channel", &spec.video_channel);
-        vsrc.set_property("timeout", 200_000_000u64);
+        retain_last_video_frame(&vsrc);
         let vconv = make("videoconvert")?;
         let vscale = make("videoscale")?;
         let vrate = make("videorate")?;
+        // Nunca abre buraco na cadência de RTMP/SRT: quando o input oscila,
+        // o último frame é repetido até a próxima imagem válida.
+        vrate.set_property("drop-only", false);
+        vrate.set_property("skip-to-first", false);
         let vcapsf = make("capsfilter")?;
         vcapsf.set_property("caps", &video_caps);
         let vqueue = make("queue")?;
@@ -426,6 +504,7 @@ impl Publisher {
                 sink.set_property("location", &spec.url);
                 (mux, sink)
             }
+            Kind::Ndi => unreachable!("NDI é montado antes da cadeia codificada"),
         };
         sink.set_property("async", false);
 
@@ -483,6 +562,88 @@ impl Publisher {
                 },
             );
 
+        Ok(pipeline)
+    }
+
+    /// Publica vídeo e áudio no mesmo stream NDI. `ndisink` recebe a saída
+    /// do `ndisinkcombiner`, que tem o pad de vídeo fixo e um pad de áudio sob
+    /// demanda. Usar dois `ndisink` criaria duas fontes NDI independentes e
+    /// sem áudio/vídeo juntos -- exatamente o tipo de anúncio enganoso que a
+    /// interface não pode fazer.
+    fn build_ndi(&self) -> Result<gst::Pipeline> {
+        let spec = &self.spec;
+        let pipeline = gst::Pipeline::new();
+        let vsrc = make("intervideosrc")?;
+        vsrc.set_property("channel", &spec.video_channel);
+        retain_last_video_frame(&vsrc);
+        let vconv = make("videoconvert")?;
+        let vscale = make("videoscale")?;
+        let vrate = make("videorate")?;
+        vrate.set_property("drop-only", false);
+        vrate.set_property("skip-to-first", false);
+        let vcaps = make("capsfilter")?;
+        vcaps.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("format", "UYVY")
+                .field("width", spec.width)
+                .field("height", spec.height)
+                .field("framerate", gst::Fraction::new(spec.fps_n, spec.fps_d))
+                .build(),
+        );
+        let vqueue = make("queue")?;
+        vqueue.set_property("max-size-time", 2_000_000_000u64);
+
+        let asrc = make("interaudiosrc")?;
+        asrc.set_property("channel", &spec.audio_channel);
+        crate::channel::aplicar_latencia_de_audio(&asrc);
+        let aconv = make("audioconvert")?;
+        let ares = make("audioresample")?;
+        let acaps = make("capsfilter")?;
+        acaps.set_property(
+            "caps",
+            gst::Caps::builder("audio/x-raw")
+                .field("format", "F32LE")
+                .field("layout", "interleaved")
+                .field("rate", 48_000i32)
+                .field("channels", 2i32)
+                .build(),
+        );
+        let aqueue = make("queue")?;
+        aqueue.set_property("max-size-time", 2_000_000_000u64);
+
+        let combiner = make("ndisinkcombiner").context(
+            "a saída NDI precisa do plugin `ndisinkcombiner` do gst-plugin-ndi",
+        )?;
+        let sink = make("ndisink").context(
+            "a saída NDI precisa do plugin `ndisink` e do NDI Runtime",
+        )?;
+        let name = spec.url.trim().trim_start_matches("ndi:").trim_start_matches("//");
+        if name.is_empty() {
+            return Err(anyhow!("a saída NDI precisa de um nome de stream"));
+        }
+        sink.set_property("ndi-name", name);
+        sink.set_property("async", false);
+
+        pipeline.add_many([
+            &vsrc, &vconv, &vscale, &vrate, &vcaps, &vqueue,
+            &asrc, &aconv, &ares, &acaps, &aqueue, &combiner, &sink,
+        ])?;
+        gst::Element::link_many([&vsrc, &vconv, &vscale, &vrate, &vcaps, &vqueue, &combiner])?;
+        gst::Element::link_many([&asrc, &aconv, &ares, &acaps, &aqueue])?;
+        let audio_pad = combiner.request_pad_simple("audio")
+            .context("ndisinkcombiner não forneceu pad de áudio")?;
+        aqueue.static_pad("src").context("fila de áudio NDI sem pad src")?
+            .link(&audio_pad)
+            .context("não consegui ligar áudio à saída NDI")?;
+        combiner.link(&sink)?;
+
+        let counter = Arc::clone(&self.delivered);
+        sink.static_pad("sink").context("ndisink sem pad sink")?
+            .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                gst::PadProbeReturn::Ok
+            });
         Ok(pipeline)
     }
 }
@@ -806,7 +967,10 @@ pub fn encode_chain(
 
 #[cfg(test)]
 mod testes_codec {
-    use super::codec_do_monitor;
+    use super::{codec_do_monitor, retain_last_video_frame, HOLD_LAST_FRAME_NS};
+    use crate::channel::make;
+    use gstreamer as gst;
+    use gstreamer::prelude::*;
 
     #[test]
     fn monitor_com_opusenc_sai_em_opus() {
@@ -826,6 +990,15 @@ mod testes_codec {
         // O programa vai para o mundo em AAC de propósito: destino de RTMP
         // espera AAC, e os relays repassam sem recodificar.
         assert_eq!(codec_do_monitor(false, true), "aac");
+    }
+
+    #[test]
+    fn fronteira_inter_conserva_ultimo_quadro_durante_oscilacao_curta() {
+        let _ = gst::init();
+        let source = make("intervideosrc").expect("plugin inter disponível");
+        retain_last_video_frame(&source);
+        assert_eq!(source.property::<u64>("timeout"), HOLD_LAST_FRAME_NS);
+        assert!(HOLD_LAST_FRAME_NS >= 5_000_000_000);
     }
 }
 
@@ -949,6 +1122,7 @@ mod testes_monitor {
 
     fn spec(on_demand: bool) -> PublisherSpec {
         PublisherSpec {
+            output_id: "test-output".to_string(),
             kind: Kind::File,
             url: "/dev/null".to_string(),
             video_channel: "v".to_string(),

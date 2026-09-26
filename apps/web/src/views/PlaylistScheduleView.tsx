@@ -1,11 +1,12 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import type { Channel, Rundown } from '@rplayout/protocol'
+import type { Channel, ManagedLiveSource, Rundown } from '@rplayout/protocol'
 import { clock, dur } from '../format.js'
-import type { RundownView, ItemView, LibraryAsset, LibraryFolder, Categoria } from '../types.js'
+import type { RundownView, ItemView, LibraryAsset, LibraryFolder, Categoria, Snapshot } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
 import { api } from '../api.js'
+import { canonicalLiveSourceRef } from '../liveSource.js'
 
 interface Props {
   channel: Channel
@@ -19,9 +20,18 @@ interface Props {
     liveConfig?: { sourceRef: string; title: string; durationOverride?: number },
   ) => void
   onPreviewAsset?: (asset: LibraryAsset) => void
+  /** Abre uma fonte externa no PVW sem fingir que ela é um arquivo MAM. */
+  onPreviewLiveSource?: (sourceRef: string, title: string) => void
+  /** Arma um item da grade no Preview do canal ativo. */
+  onCueItem?: (itemId: string) => void
   onNavigate: (workspace: WorkspaceId) => void
   onSelectChannel?: (channelId: string) => void
-  onPublishToMaster: () => void
+  /**
+   * Aplica no Master o snapshot que acabou de ser persistido. Receber o
+   * retorno da mutação evita a janela em que um refresh/WS antigo recoloca
+   * a grade anterior após uma mudança de horário.
+   */
+  onPublishToMaster: (snapshot?: Snapshot) => void
   onOpenAutoFill: (
     rundownId?: string,
     onApplied?: (snapshot: any) => void,
@@ -40,6 +50,7 @@ interface Props {
   onOpenTrim?: (item: ItemView) => void
   onOpenAudio?: (item: ItemView) => void
   onRemoveItem?: (itemId: string, rundownId?: string, onRemoved?: () => void) => void
+  onBulkRemoveItems?: (ids: string[], rundownId?: string, onRemoved?: () => void) => void
   onOpenSettings?: () => void
 }
 
@@ -51,6 +62,8 @@ export function PlaylistScheduleView({
   categorias = [],
   onInsertAsset,
   onPreviewAsset,
+  onPreviewLiveSource,
+  onCueItem,
   onNavigate,
   onSelectChannel = () => {},
   onPublishToMaster,
@@ -62,6 +75,7 @@ export function PlaylistScheduleView({
   onOpenTrim,
   onOpenAudio,
   onRemoveItem,
+  onBulkRemoveItems,
   onOpenSettings,
 }: Props) {
   const now = new Date()
@@ -106,6 +120,8 @@ export function PlaylistScheduleView({
     label: string
   } | null>(null)
   const [zoomMode, setZoomMode] = useState<'24h' | '12h' | '6h' | '1h'>('24h')
+  /** Janela deslizável da timeline quando o zoom mostra menos de 24 horas. */
+  const [timelineStartHour, setTimelineStartHour] = useState(0)
   const [diffCount, setDiffCount] = useState(1)
   const [publishedSuccess, setPublishedSuccess] = useState(false)
 
@@ -115,6 +131,39 @@ export function PlaylistScheduleView({
   const [sidebarTab, setSidebarTab] = useState<'mam' | 'calendar'>('mam')
   const [mamSearch, setMamSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL')
+  const [categoryOverrides, setCategoryOverrides] = useState<Map<string, string | null>>(new Map())
+  const [ignoredOverrides, setIgnoredOverrides] = useState<Map<string, boolean>>(new Map())
+  const [mamContextMenu, setMamContextMenu] = useState<{ asset: LibraryAsset; x: number; y: number } | null>(null)
+  const [liveSources, setLiveSources] = useState<ManagedLiveSource[]>([])
+
+  useEffect(() => {
+    let active = true
+    void api.liveSources(channel.id)
+      .then((sources) => { if (active) setLiveSources(sources.filter((source) => source.enabled)) })
+      .catch(() => { if (active) setLiveSources([]) })
+    return () => { active = false }
+  }, [channel.id])
+
+  // Fecha o menu de contexto do MAM ao clicar fora ou pressionar Escape
+  useEffect(() => {
+    if (!mamContextMenu) return
+    const handlePointerDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null
+      if (target?.closest('[role="menu"]')) return
+      setMamContextMenu(null)
+    }
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMamContextMenu(null)
+      }
+    }
+    window.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [mamContextMenu])
 
   // Estado para Edição do Horário de Entrada (Anchor) e Duração Ao Vivo
   const [editingTimeItem, setEditingTimeItem] = useState<ItemView | null>(null)
@@ -134,8 +183,39 @@ export function PlaylistScheduleView({
 
   const allMamAssets = useMemo<LibraryAsset[]>(() => {
     if (!folders || folders.length === 0) return []
-    return folders.flatMap((f) => f.assets)
-  }, [folders])
+    return folders.flatMap((f) => f.assets).map((asset) => ({
+      ...asset,
+      categoryId: categoryOverrides.has(asset.id) ? categoryOverrides.get(asset.id)! : asset.categoryId,
+      ignored: ignoredOverrides.has(asset.id) ? ignoredOverrides.get(asset.id)! : Boolean(asset.ignored),
+    }))
+  }, [folders, categoryOverrides, ignoredOverrides])
+
+  // Fontes configuradas aparecem na mesma biblioteca, mas preservam a sua
+  // natureza: ao clicar, vão ao PVW por sourceRef em vez de virar asset MAM.
+  const allLibraryAssets = useMemo<Array<LibraryAsset & { isLiveSource?: boolean; sourceRef?: string }>>(() => [
+    ...allMamAssets,
+    ...liveSources.map((source) => ({
+      id: source.id,
+      title: source.name,
+      kind: 'VIDEO' as const,
+      path: canonicalLiveSourceRef(source),
+      contentHash: source.id,
+      fileName: source.name,
+      durationFrames: Math.round(60 * 60 * (rate.num / rate.den)),
+      durationNs: null,
+      probe: null,
+      probeError: null,
+      categoryId: 'Ao Vivo',
+      defaultTrim: null,
+      defaultAudio: null,
+      loudnessFile: null,
+      suggestedTrim: null,
+      thumbnailUrl: '',
+      createdAt: new Date().toISOString(),
+      isLiveSource: true,
+      sourceRef: canonicalLiveSourceRef(source),
+    })),
+  ], [allMamAssets, liveSources, rate.den, rate.num])
 
   const availableCategoriesList = useMemo(() => {
     const defaultColors: Record<string, string> = {
@@ -159,26 +239,78 @@ export function PlaylistScheduleView({
     }
 
     const counts = new Map<string, number>()
+    let ignoredCount = 0
     for (const a of allMamAssets) {
-      const c = a.categoryId || 'Sem Categoria'
-      counts.set(c, (counts.get(c) || 0) + 1)
+      if (a.ignored) {
+        ignoredCount++
+      } else {
+        const c = a.categoryId || 'Sem Categoria'
+        counts.set(c, (counts.get(c) || 0) + 1)
+      }
     }
 
     const list: Array<{ id: string; name: string; color: string; count: number }> = []
-    for (const [cId, count] of counts.entries()) {
+    // Categorias configuradas aparecem mesmo antes do primeiro arquivo.
+    for (const cId of new Set([...catMap.keys(), ...counts.keys()])) {
+      const count = counts.get(cId) ?? 0
       const catObj = catMap.get(cId)
       const color = catObj?.color || defaultColors[cId] || '#389BFF'
       list.push({ id: cId, name: cId, color, count })
     }
 
+    if (ignoredCount > 0) {
+      list.push({ id: 'IGNORED', name: 'IGNORADOS (QC)', color: '#EF4444', count: ignoredCount })
+    }
+
     return list
   }, [categorias, allMamAssets])
 
+  const assignMamCategory = async (asset: LibraryAsset, categoryId: string | null) => {
+    try {
+      await api.patchAsset(asset.id, { categoryId })
+      setCategoryOverrides((previous) => new Map(previous).set(asset.id, categoryId))
+      setFeedbackMessage(`✓ Categoria de "${asset.title}" atualizada para ${categoryId ?? 'Sem Categoria'}`)
+    } catch {
+      setFeedbackMessage('Não foi possível atualizar a categoria do ativo.')
+    } finally {
+      setMamContextMenu(null)
+    }
+  }
+
+  const toggleMamIgnored = async (asset: LibraryAsset) => {
+    const nextIgnored = !asset.ignored
+    try {
+      await api.patchAsset(asset.id, { ignored: nextIgnored })
+      setIgnoredOverrides((previous) => new Map(previous).set(asset.id, nextIgnored))
+      setFeedbackMessage(
+        nextIgnored
+          ? `✓ Vídeo "${asset.title}" marcado como IGNORADO (oculto da grade ativa)`
+          : `✓ Vídeo "${asset.title}" reativado no catálogo MAM`
+      )
+    } catch {
+      setFeedbackMessage('Não foi possível alterar o status de ignorado do ativo.')
+    } finally {
+      setMamContextMenu(null)
+    }
+  }
+
+  const createAndAssignMamCategory = async (asset: LibraryAsset) => {
+    const name = window.prompt('Nome da nova categoria:')?.trim()
+    if (!name) return
+    await api.setCategoryColor(name, '#389BFF')
+    await assignMamCategory(asset, name)
+  }
+
   const filteredMamAssets = useMemo(() => {
-    return allMamAssets.filter((asset) => {
-      if (selectedCategory !== 'ALL') {
-        const cat = asset.categoryId || 'Sem Categoria'
-        if (cat !== selectedCategory) return false
+    return allLibraryAssets.filter((asset) => {
+      if (selectedCategory === 'IGNORED') {
+        if (!asset.ignored) return false
+      } else {
+        if (asset.ignored) return false
+        if (selectedCategory !== 'ALL') {
+          const cat = asset.categoryId || 'Sem Categoria'
+          if (cat !== selectedCategory) return false
+        }
       }
       if (mamSearch.trim()) {
         const q = mamSearch.toLowerCase()
@@ -188,7 +320,7 @@ export function PlaylistScheduleView({
       }
       return true
     })
-  }, [allMamAssets, selectedCategory, mamSearch])
+  }, [allLibraryAssets, selectedCategory, mamSearch])
 
   // Carrega a lista de todos os rundowns existentes no canal
   const refreshAvailableRundowns = useCallback(async () => {
@@ -446,8 +578,20 @@ export function PlaylistScheduleView({
     setIsBulkDeleting(true)
     try {
       const ids = Array.from(selectedItemIds)
-      for (const id of ids) {
-        await api.removeItem(id)
+      const targetRundownId = activeView?.rundown.id
+      if (onBulkRemoveItems && targetRundownId) {
+        onBulkRemoveItems(ids, targetRundownId, () => {
+          if (selectedDate !== todayDateIso) {
+            void loadDateRundown(selectedDate)
+            void refreshAvailableRundowns()
+          }
+        })
+      } else if (targetRundownId) {
+        await api.bulkDeleteItems(targetRundownId, ids)
+      } else {
+        for (const id of ids) {
+          await api.removeItem(id)
+        }
       }
       setSelectedItemIds(new Set())
       if (selectedDate !== todayDateIso) {
@@ -492,13 +636,41 @@ export function PlaylistScheduleView({
         return new Set([itemId])
       })
       lastClickedIndexRef.current = index
+      // A seleção simples na grade ativa é também a ação operacional de CUE.
+      // Antes a Playlist apenas coloria a linha; fontes ao vivo pareciam
+      // selecionadas, mas nunca chegavam ao Preview. Em grades históricas não
+      // se toca no transporte do canal atual.
+      if (selectedDate === todayDateIso) onCueItem?.(itemId)
     }
   }
 
   // Inserir item da Biblioteca MAM na Grade
-  const handleInsertFromMam = async (asset: LibraryAsset) => {
+  const handleInsertFromMam = async (asset: LibraryAsset & { isLiveSource?: boolean; sourceRef?: string }) => {
     const rId = activeView?.rundown.id ?? view.rundown.id
     try {
+      if (asset.isLiveSource) {
+        if (!asset.sourceRef) throw new Error('A fonte ao vivo não possui endereço configurado.')
+        if (selectedDate === todayDateIso && onInsertAsset) {
+          onInsertAsset(null, undefined, {
+            sourceRef: asset.sourceRef,
+            title: asset.title,
+            durationOverride: asset.durationFrames,
+          })
+        } else {
+          await api.addItem(rId, {
+            sourceRef: asset.sourceRef,
+            type: 'LIVE',
+            title: asset.title,
+            durationOverride: asset.durationFrames,
+            anchor: { kind: 'FLOW' },
+          })
+          await loadDateRundown(selectedDate)
+          void refreshAvailableRundowns()
+        }
+        setFeedbackMessage(`✓ Fonte ao vivo "${asset.title}" inserida na programação!`)
+        setTimeout(() => setFeedbackMessage(null), 3000)
+        return
+      }
       if (selectedDate === todayDateIso && onInsertAsset) {
         onInsertAsset(asset.id)
       } else {
@@ -617,15 +789,21 @@ export function PlaylistScheduleView({
         patchBody.durationOverride = Math.round(durationInputMinutes * 60 * fps)
       }
 
-      await api.patchItem(editingTimeItem.item.id, patchBody)
+      // PATCH já devolve a programação resolvida pelo scheduler. Aplicá-la
+      // diretamente é essencial: esperar somente o WebSocket deixava a
+      // timeline com o horário anterior até uma troca de página.
+      const snapshot = await api.patchItem(editingTimeItem.item.id, patchBody)
       setFeedbackMessage(`✓ Horário de "${editingTimeItem.asset?.title || editingTimeItem.item.title || 'Item'}" atualizado!`)
       setTimeout(() => setFeedbackMessage(null), 3500)
       setEditingTimeItem(null)
 
       if (selectedDate === todayDateIso) {
-        onPublishToMaster()
+        onPublishToMaster(snapshot)
       } else {
-        await loadDateRundown(selectedDate)
+        // Para uma data fora do ar, o snapshot retornado é a fonte de
+        // verdade desta grade; a releitura preserva a lista de dias somente
+        // como confirmação de disponibilidade.
+        setDateRundownView(snapshot.view)
         void refreshAvailableRundowns()
       }
     } catch (err: any) {
@@ -659,13 +837,20 @@ export function PlaylistScheduleView({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const element = e.target as HTMLElement | null
+      const typing = element?.matches('input, select, textarea') || element?.isContentEditable
+      if (typing) return
+
       if (e.key === 'Escape') {
         setSelectedItemIds(new Set())
+      } else if (e.key === 'Delete' && selectedItemIds.size > 0) {
+        e.preventDefault()
+        void handleBulkRemove()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, [selectedItemIds, activeView?.rundown.id, selectedDate, todayDateIso])
 
   // Playhead só faz sentido em tempo real no dia de hoje
   const isViewingToday = selectedDate === todayDateIso
@@ -678,12 +863,39 @@ export function PlaylistScheduleView({
     '1h': 1,
   }
   const visibleHours = zoomHoursMap[zoomMode] || 24
-  const playheadPercent = isViewingToday ? Math.min(100, Math.max(0, (secondsSinceMidnight / (visibleHours * 3600)) * 100)) : 0
+
+  // Ao alterar o zoom, foca no playhead se for hoje, ou centraliza a janela
+  useEffect(() => {
+    if (zoomMode === '24h') {
+      setTimelineStartHour(0)
+      return
+    }
+    const maxStart = 24 - visibleHours
+    if (isViewingToday) {
+      const currentHour = now.getHours()
+      // Centraliza a janela ao redor da hora atual
+      const targetStart = Math.max(0, Math.min(maxStart, Math.floor(currentHour - visibleHours / 2)))
+      setTimelineStartHour(targetStart)
+    } else {
+      setTimelineStartHour((prev) => Math.min(prev, maxStart))
+    }
+  }, [zoomMode, isViewingToday])
+
+  const viewportStartHour = Math.min(timelineStartHour, Math.max(0, 24 - visibleHours))
+  const playheadPercent = isViewingToday
+    ? Math.min(100, Math.max(0, ((secondsSinceMidnight / 3600 - viewportStartHour) / visibleHours) * 100))
+    : 0
+  const timelineLabel = (offset: number) => `${String(Math.min(24, viewportStartHour + offset)).padStart(2, '0')}:00`
+  const timelineMinuteLabel = (offsetMinutes: number) => {
+    const minute = Math.min(24 * 60, viewportStartHour * 60 + offsetMinutes)
+    return `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`
+  }
 
   // Cálculo dinâmico da régua contínua e detecção de GAPs conforme o zoomMode
   const timelineData = useMemo(() => {
     const fps = rate.num / rate.den || 50
     const visibleFrames = visibleHours * 3600 * fps
+    const viewportStartFrames = viewportStartHour * 3600 * fps
     const totalDayFrames = 24 * 3600 * fps
 
     let runningFrame = 0
@@ -704,8 +916,10 @@ export function PlaylistScheduleView({
         (item.item.type as string) === 'BREAK' ||
         Boolean(item.asset?.categoryId?.toLowerCase().includes('com'))
 
-      const leftPct = Math.min(100, Math.max(0, (start / visibleFrames) * 100))
-      const widthPct = Math.min(100 - leftPct, Math.max(0.18, (duration / visibleFrames) * 100))
+      const clippedStart = Math.max(start, viewportStartFrames)
+      const clippedEnd = Math.min(end, viewportStartFrames + visibleFrames)
+      const leftPct = Math.min(100, Math.max(0, ((clippedStart - viewportStartFrames) / visibleFrames) * 100))
+      const widthPct = clippedEnd <= clippedStart ? 0 : Math.min(100 - leftPct, Math.max(0.18, ((clippedEnd - clippedStart) / visibleFrames) * 100))
 
       return {
         item,
@@ -735,30 +949,32 @@ export function PlaylistScheduleView({
         duration: visibleFrames,
         leftPct: 0,
         widthPct: 100,
-        label: `00:00:00 - ${String(visibleHours).padStart(2, '0')}:00:00 (Grade Vazia)`,
+        label: `${timelineLabel(0)}:00 - ${timelineLabel(visibleHours)}:00 (Grade Vazia)`,
       })
     } else {
       for (let i = 0; i < blocks.length - 1; i++) {
         const cur = blocks[i]!
         const next = blocks[i + 1]!
-        if (next.start > cur.end + fps && cur.end < visibleFrames) {
-          const gapDur = Math.min(next.start, visibleFrames) - cur.end
-          const leftPct = Math.min(100, Math.max(0, (cur.end / visibleFrames) * 100))
+        if (next.start > cur.end + fps && cur.end < viewportStartFrames + visibleFrames && next.start > viewportStartFrames) {
+          const gapStart = Math.max(cur.end, viewportStartFrames)
+          const gapEnd = Math.min(next.start, viewportStartFrames + visibleFrames)
+          const gapDur = gapEnd - gapStart
+          const leftPct = Math.min(100, Math.max(0, ((gapStart - viewportStartFrames) / visibleFrames) * 100))
           const widthPct = Math.min(100 - leftPct, Math.max(0.2, (gapDur / visibleFrames) * 100))
           detectedGaps.push({
-            start: cur.end,
-            end: next.start,
+            start: gapStart,
+            end: gapEnd,
             duration: gapDur,
             leftPct,
             widthPct,
-            label: `${clock(cur.end, rate)} - ${clock(next.start, rate)}`,
+            label: `${clock(gapStart, rate)} - ${clock(gapEnd, rate)}`,
           })
         }
       }
     }
 
     return { blocks, gaps: detectedGaps, totalFrames: totalDayFrames, visibleFrames }
-  }, [displayItems, scheduleMap, rate, visibleHours])
+  }, [displayItems, scheduleMap, rate, visibleHours, viewportStartHour])
 
   // Total de tempo previsto e gap total
   const totalDurationFrames = displayItems.reduce((acc, it) => {
@@ -836,15 +1052,15 @@ export function PlaylistScheduleView({
           </div>
           <div className="flex items-center gap-space-md text-label-mono text-[10px]">
             <span className="text-outline">
-              SINCRONISMO MASTER: <strong className="text-status-ok-bright font-bold">LOCKED (0.8ms)</strong>
+              GRADE ATUAL: <strong className="text-on-surface font-bold">{displayItems.length} ITENS</strong>
             </span>
             <span className="text-outline">•</span>
             <span className="text-outline">
-              MATRIZ BXF: <strong className="text-accent-ice-bright font-bold">SYNC ATIVO</strong>
+              COBERTURA: <strong className="text-accent-ice-bright font-bold">{dur(totalDurationFrames, rate)}</strong>
             </span>
             <span className="text-outline">•</span>
             <span className="text-outline">
-              REDUNDÂNCIA: <strong className="text-status-ok-bright font-bold">HOT-STANDBY OK</strong>
+              LACUNAS: <strong className={timelineData.gaps.length > 0 ? 'text-armed-amber font-bold' : 'text-status-ok-bright font-bold'}>{timelineData.gaps.length}</strong>
             </span>
           </div>
         </div>
@@ -981,16 +1197,30 @@ export function PlaylistScheduleView({
                       return (
                         <div
                           key={asset.id}
+                          onClick={() => {
+                            if (asset.isLiveSource && asset.sourceRef) onPreviewLiveSource?.(asset.sourceRef, asset.title)
+                          }}
                           onDoubleClick={() => handleInsertFromMam(asset)}
-                          className="bg-surface-panel/60 hover:bg-surface-panel p-2 rounded border border-border-subtle/60 hover:border-primary/40 flex flex-col gap-1 transition-all cursor-pointer group"
-                          title="Duplo clique para inserir na programação ativa"
+                          onContextMenu={(event) => {
+                            event.preventDefault()
+                            setMamContextMenu({ asset, x: event.clientX, y: event.clientY })
+                          }}
+                          className={`bg-surface-panel/60 hover:bg-surface-panel px-2 h-7 rounded border transition-all cursor-pointer group flex items-center justify-between gap-1.5 ${
+                            asset.ignored
+                              ? 'border-error/40 opacity-60 bg-error/5'
+                              : 'border-border-subtle/60 hover:border-primary/40'
+                          }`}
+                          title={asset.isLiveSource ? `${asset.title} • Clique para abrir no PVW; duplo clique para inserir na programação ativa` : `${asset.title} • Duplo clique para inserir na programação ativa`}
                         >
-                          <div className="flex items-start justify-between gap-1.5">
-                            <span className="font-headline-sm text-[11.5px] font-semibold text-on-surface truncate group-hover:text-primary">
+                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                            <span className="font-headline-sm text-[11px] font-medium text-on-surface truncate whitespace-nowrap group-hover:text-primary">
                               {asset.title}
                             </span>
+                            {asset.isLiveSource && (
+                              <span className="font-label-caps text-[7.5px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap text-accent-ice border-accent-ice/40 bg-accent-ice/10">AO VIVO</span>
+                            )}
                             <span
-                              className="font-label-caps text-[8px] font-bold px-1.5 py-0.2 rounded border shrink-0"
+                              className="font-label-caps text-[7.5px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap"
                               style={{
                                 color: catColor,
                                 borderColor: `${catColor}66`,
@@ -999,36 +1229,56 @@ export function PlaylistScheduleView({
                             >
                               {catName}
                             </span>
+                            {asset.ignored && (
+                              <span className="font-label-caps text-[7.5px] font-bold px-1 py-0.2 rounded bg-error/20 text-error border border-error/40 shrink-0">
+                                IGNORADO
+                              </span>
+                            )}
                           </div>
 
-                          <div className="flex items-center justify-between text-[9.5px] font-label-mono text-outline">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-on-surface font-semibold">
-                                {dur(asset.durationFrames, rate)}
-                              </span>
-                              <span>•</span>
-                              <span>{asset.kind || 'VT'}</span>
-                            </div>
-
-                            <div className="flex items-center gap-1">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleInsertFromMam(asset)
-                                }}
-                                className="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[9px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm"
-                                title="Inserir na grade do dia selecionado"
-                              >
-                                <span className="material-symbols-outlined text-[12px]">add</span>
-                                <span>Inserir</span>
-                              </button>
-                            </div>
+                          <div className="flex items-center gap-2 shrink-0 font-label-mono text-[9px] text-outline">
+                            <span className="text-on-surface font-semibold tabular-nums">
+                              {dur(asset.durationFrames, rate)}
+                            </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleInsertFromMam(asset)
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[8.5px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm"
+                              title="Inserir na grade do dia selecionado"
+                            >
+                              <span className="material-symbols-outlined text-[11px]">add</span>
+                              <span>Inserir</span>
+                            </button>
                           </div>
                         </div>
                       )
                     })
                   )}
                 </div>
+                {mamContextMenu && (
+                  <div className="fixed z-50 min-w-52 rounded border border-border-strong bg-surface-card p-1 shadow-xl text-body-sm" style={{ left: mamContextMenu.x, top: mamContextMenu.y }} role="menu">
+                    <div className="px-2 py-1 text-[9px] font-label-caps text-outline">DEFINIR CATEGORIA</div>
+                    <button className="block w-full rounded px-2 py-1 text-left text-[11px] hover:bg-surface-panel cursor-pointer" onClick={() => void assignMamCategory(mamContextMenu.asset, null)}>Sem categoria</button>
+                    {categorias.map((category) => (
+                      <button key={category.id} className="block w-full rounded px-2 py-1 text-left text-[11px] hover:bg-surface-panel cursor-pointer" onClick={() => void assignMamCategory(mamContextMenu.asset, category.id)}>{category.id}</button>
+                    ))}
+                    <button className="block w-full rounded px-2 py-1 text-left text-[11px] text-primary hover:bg-surface-panel cursor-pointer border-b border-border-subtle/50 pb-1.5 mb-1" onClick={() => void createAndAssignMamCategory(mamContextMenu.asset)}>Nova categoria…</button>
+
+                    <div className="px-2 py-1 text-[9px] font-label-caps text-outline">AÇÕES DE QC</div>
+                    <button
+                      className={`block w-full rounded px-2 py-1 text-left text-[11px] cursor-pointer font-medium ${
+                        mamContextMenu.asset.ignored
+                          ? 'text-status-ok hover:bg-status-ok/15'
+                          : 'text-error hover:bg-error/15'
+                      }`}
+                      onClick={() => void toggleMamIgnored(mamContextMenu.asset)}
+                    >
+                      {mamContextMenu.asset.ignored ? '✓ Reativar Vídeo no MAM' : '🚫 Ignorar Vídeo (Ocultar)'}
+                    </button>
+                  </div>
+                )}
 
                 {/* Rodapé da Biblioteca */}
                 <div className="p-1.5 border-t border-border-subtle bg-surface-container-high font-label-mono text-[9px] text-outline flex items-center justify-between shrink-0">
@@ -1188,6 +1438,23 @@ export function PlaylistScheduleView({
                   </div>
                 </div>
               </div>
+
+              {visibleHours < 24 && (
+                <label className="flex items-center gap-2 px-1 text-[9px] font-label-mono text-outline">
+                  <span>JANELA {timelineLabel(0)}–{timelineLabel(visibleHours)}</span>
+                  <input
+                    aria-label="Deslizar janela da timeline"
+                    className="flex-1 accent-primary"
+                    type="range"
+                    min="0"
+                    max={24 - visibleHours}
+                    step="1"
+                    value={viewportStartHour}
+                    onChange={(event) => setTimelineStartHour(Number(event.target.value))}
+                  />
+                  <span>{timelineLabel(0)}</span>
+                </label>
+              )}
             </div>
 
             {/* Resumo Tático do Dia Selecionado */}
@@ -1307,7 +1574,41 @@ export function PlaylistScheduleView({
                   </span>
                 </div>
 
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-2">
+                  {visibleHours < 24 && (
+                    <div className="flex items-center gap-1.5 bg-surface-panel px-2 py-0.5 rounded border border-border-subtle font-label-mono text-[9px] text-outline">
+                      <span className="text-[8.5px] font-bold text-accent-ice-bright">
+                        {timelineLabel(0)} - {timelineLabel(visibleHours)}
+                      </span>
+                      <button
+                        onClick={() => setTimelineStartHour((prev) => Math.max(0, prev - 1))}
+                        disabled={viewportStartHour <= 0}
+                        className="px-1 py-0.2 rounded hover:bg-surface-container text-on-surface disabled:opacity-30 cursor-pointer"
+                        title="Recuar 1 hora"
+                      >
+                        ◀
+                      </button>
+                      <input
+                        aria-label="Deslizar janela da timeline"
+                        className="w-20 sm:w-28 accent-primary h-1.5 cursor-pointer"
+                        type="range"
+                        min="0"
+                        max={24 - visibleHours}
+                        step="1"
+                        value={viewportStartHour}
+                        onChange={(event) => setTimelineStartHour(Number(event.target.value))}
+                      />
+                      <button
+                        onClick={() => setTimelineStartHour((prev) => Math.min(24 - visibleHours, prev + 1))}
+                        disabled={viewportStartHour >= 24 - visibleHours}
+                        className="px-1 py-0.2 rounded hover:bg-surface-container text-on-surface disabled:opacity-30 cursor-pointer"
+                        title="Avançar 1 hora"
+                      >
+                        ▶
+                      </button>
+                    </div>
+                  )}
+
                   <div className="bg-surface-panel rounded p-0.5 border border-border-subtle flex items-center gap-0.5 text-[9px] font-label-mono">
                     <span className="text-outline px-1">ZOOM:</span>
                     {(['24h', '12h', '6h', '1h'] as const).map((z) => (
@@ -1329,58 +1630,23 @@ export function PlaylistScheduleView({
 
               {/* Régua de Horas Dinâmica conforme o zoomMode */}
               <div className="relative h-4 w-full flex text-[8px] font-label-mono text-outline select-none px-1 border-b border-border-subtle/30">
-                {zoomMode === '24h' && (
-                  <>
-                    <span className="absolute left-0">00:00</span>
-                    <span className="absolute left-[12.5%]">03:00</span>
-                    <span className="absolute left-[25%]">06:00</span>
-                    <span className="absolute left-[37.5%]">09:00</span>
-                    <span className="absolute left-[50%] font-bold text-accent-ice">12:00</span>
-                    <span className="absolute left-[62.5%]">15:00</span>
-                    <span className="absolute left-[75%]">18:00</span>
-                    <span className="absolute left-[87.5%]">21:00</span>
-                    <span className="absolute right-0">24:00</span>
-                  </>
-                )}
-                {zoomMode === '12h' && (
-                  <>
-                    <span className="absolute left-0">00:00</span>
-                    <span className="absolute left-[16.6%]">02:00</span>
-                    <span className="absolute left-[33.3%]">04:00</span>
-                    <span className="absolute left-[50%] font-bold text-accent-ice">06:00</span>
-                    <span className="absolute left-[66.6%]">08:00</span>
-                    <span className="absolute left-[83.3%]">10:00</span>
-                    <span className="absolute right-0">12:00</span>
-                  </>
-                )}
-                {zoomMode === '6h' && (
-                  <>
-                    <span className="absolute left-0">00:00</span>
-                    <span className="absolute left-[16.6%]">01:00</span>
-                    <span className="absolute left-[33.3%]">02:00</span>
-                    <span className="absolute left-[50%] font-bold text-accent-ice">03:00</span>
-                    <span className="absolute left-[66.6%]">04:00</span>
-                    <span className="absolute left-[83.3%]">05:00</span>
-                    <span className="absolute right-0">06:00</span>
-                  </>
-                )}
-                {zoomMode === '1h' && (
-                  <>
-                    <span className="absolute left-0">00:00</span>
-                    <span className="absolute left-[16.6%]">00:10</span>
-                    <span className="absolute left-[33.3%]">00:20</span>
-                    <span className="absolute left-[50%] font-bold text-accent-ice">00:30</span>
-                    <span className="absolute left-[66.6%]">00:40</span>
-                    <span className="absolute left-[83.3%]">00:50</span>
-                    <span className="absolute right-0">01:00</span>
-                  </>
-                )}
+                {[0, 1, 2, 3, 4, 5, 6].map((tick) => (
+                  <span
+                    key={tick}
+                    className={`absolute ${tick === 3 ? 'font-bold text-accent-ice' : ''}`}
+                    style={{ left: `${(tick / 6) * 100}%`, transform: tick === 6 ? 'translateX(-100%)' : undefined }}
+                  >
+                    {zoomMode === '1h'
+                      ? timelineMinuteLabel(tick * 10)
+                      : timelineLabel((visibleHours / 6) * tick)}
+                  </span>
+                ))}
               </div>
 
               {/* Trilho de Blocos 24h & Playhead Dinâmico */}
               <div className="relative h-9 w-full bg-[#050912] rounded border border-border-subtle/70 overflow-hidden flex items-center shadow-inner">
                 {/* Blocos de Eventos Programados */}
-                {timelineData.blocks.map((block) => (
+                {timelineData.blocks.filter((block) => block.widthPct > 0).map((block) => (
                   <div
                     key={block.item.item.id}
                     onClick={() => {
@@ -1715,23 +1981,23 @@ export function PlaylistScheduleView({
                         id={`row-${item.item.id}`}
                         onClick={(e) => handleRowClick(e, item, idx)}
                         onDoubleClick={() => openEditScheduleTime(item)}
-                        className={`grid grid-cols-12 px-3 py-1.5 items-center text-body-sm font-body-sm transition-colors group cursor-pointer select-none ${
+                        className={`grid grid-cols-12 px-2.5 py-1 items-center text-[11px] transition-colors group cursor-pointer select-none leading-tight ${
                           isSelected
                             ? 'bg-primary-container/25 border-l-4 border-primary font-medium text-white shadow-inner'
                             : 'bg-surface-card hover:bg-surface-panel'
                         }`}
                       >
-                        <div className="col-span-1 font-label-mono text-[11px] flex items-center gap-1.5">
+                        <div className="col-span-1 font-label-mono text-[10px] flex items-center gap-1.5">
                           <input
                             type="checkbox"
                             checked={isSelected}
                             onChange={() => {}}
-                            className="w-3.5 h-3.5 rounded border border-border-subtle bg-surface-base text-primary cursor-pointer pointer-events-none"
+                            className="w-3 h-3 rounded border border-border-subtle bg-surface-base text-primary cursor-pointer pointer-events-none"
                           />
                           <span className="text-outline">{idx + 1}</span>
                         </div>
-                        <div className="col-span-2 flex items-center gap-1.5 flex-wrap">
-                          <span className="px-1.5 py-0.5 rounded font-label-caps text-[8.5px] bg-surface-container font-semibold text-primary">
+                        <div className="col-span-2 flex items-center gap-1 flex-wrap">
+                          <span className="px-1 py-0.2 rounded font-label-caps text-[8px] bg-surface-container font-semibold text-primary">
                             {item.asset?.kind ?? item.item.type ?? 'VT'}
                           </span>
                           {item.asset?.categoryId && (() => {
@@ -1740,7 +2006,7 @@ export function PlaylistScheduleView({
                             const catColor = catInfo?.color || '#389BFF'
                             return (
                               <span
-                                className="px-1.5 py-0.2 rounded font-label-caps text-[8px] font-bold border"
+                                className="px-1 py-0.2 rounded font-label-caps text-[7.5px] font-bold border truncate max-w-[80px]"
                                 style={{
                                   color: catColor,
                                   borderColor: `${catColor}66`,
@@ -1753,19 +2019,19 @@ export function PlaylistScheduleView({
                             )
                           })()}
                         </div>
-                        <div className="col-span-2 font-label-mono text-[11px] tabular-nums text-on-surface">
+                        <div className="col-span-2 font-label-mono text-[10.5px] tabular-nums text-on-surface">
                           {scheduleMap.get(item.item.id)?.start != null
                             ? clock(scheduleMap.get(item.item.id)!.start, rate)
                             : '--:--:--:--'}
                         </div>
-                        <div className="col-span-2 font-label-mono text-[11px] tabular-nums text-outline">
+                        <div className="col-span-2 font-label-mono text-[10.5px] tabular-nums text-outline">
                           {dur(durationFrames, rate)}
                         </div>
-                        <div className="col-span-4 font-body-sm text-body-sm truncate text-on-surface">
+                        <div className="col-span-4 font-body-sm text-[11px] truncate text-on-surface">
                           {item.asset?.title || item.item.title || item.item.id}
                         </div>
                         <div className="col-span-1 text-right">
-                          <span className="font-label-mono text-[9px] text-status-ok-bright font-bold">
+                          <span className="font-label-mono text-[8.5px] text-status-ok-bright font-bold">
                             QC OK
                           </span>
                         </div>

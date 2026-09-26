@@ -32,6 +32,20 @@ Copy-Item -Recurse -Force packages/protocol/src/* "$Destination/packages/protoco
 Copy-Item packages/scheduler/package.json,packages/scheduler/tsconfig.json "$Destination/packages/scheduler/" -Force
 Copy-Item -Recurse -Force packages/scheduler/src/* "$Destination/packages/scheduler/src/"
 Copy-Item -Recurse -Force mediamtx "$Destination/"
+# O plugin gstndi carrega o runtime oficial por LoadLibrary. O servidor inicia
+# em apps/server; sem a DLL nesse diretório o provider NDI existe, mas não
+# inicia e a descoberta fica vazia no pacote.
+$ndiRuntime = @(
+  (Join-Path (Get-Location) 'Processing.NDI.Lib.x64.dll'),
+  (Join-Path (Get-Location) 'apps/server/Processing.NDI.Lib.x64.dll')
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($ndiRuntime) {
+  Copy-Item $ndiRuntime "$Destination/Processing.NDI.Lib.x64.dll" -Force
+  Copy-Item $ndiRuntime "$Destination/apps/server/Processing.NDI.Lib.x64.dll" -Force
+  Write-Host 'NDI Runtime incluído para descoberta e ingest NDI'
+} else {
+  Write-Warning 'NDI Runtime (Processing.NDI.Lib.x64.dll) não encontrado: descoberta e ingest NDI não estarão disponíveis neste pacote.'
+}
 Push-Location $Destination
 try {
   $env:CI = "true"

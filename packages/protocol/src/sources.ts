@@ -59,7 +59,7 @@ export interface MultiviewCell {
 export interface StreamEndpointConfig {
   readonly id: string
   readonly label: string
-  readonly kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI'
+  readonly kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'
   readonly uri: string
   readonly srtConfig?: SrtConfig
   readonly priority: 1 | 2
@@ -99,7 +99,7 @@ export interface ManagedLiveSource {
   readonly id: string
   readonly channelId: string
   readonly name: string
-  readonly kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI'
+  readonly kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'
   readonly targetUrl: string
   readonly srt?: SrtConfig
   readonly role: RedundancyRole

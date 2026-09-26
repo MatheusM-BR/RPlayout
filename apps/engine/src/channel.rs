@@ -14,14 +14,14 @@ use serde::Deserialize;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use crate::loudness::Reading;
 use crate::limiter_element;
 use crate::loudness::Meter;
-use crate::output::{Kind, Publisher, PublisherSpec, Report};
+use crate::output::{retain_last_video_frame, Kind, Publisher, PublisherSpec, Report};
 use crate::protocol::{Fit, ItemSpec};
 
 /// Para onde o programa sai. Todas as saídas penduram no mesmo par de tees,
@@ -51,6 +51,9 @@ pub enum Output {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputSpec {
+    /// Identidade estável do perfil no servidor. Ausente só nos atalhos CLI.
+    #[serde(default)]
+    pub id: Option<String>,
     pub kind: Kind,
     pub target: String,
     #[serde(default)]
@@ -92,6 +95,7 @@ impl Output {
 
         let shorthand = |kind: Kind, target: String| {
             Output::Encoded(OutputSpec {
+                id: None,
                 kind,
                 target,
                 width: None,
@@ -161,6 +165,10 @@ struct Item {
     pipeline: gst::Pipeline,
     volume: gst::Element,
     on_air: bool,
+    /// Só fica pronto depois que um quadro de vídeo realmente alcançou o
+    /// `intervideosink`. Para fonte ao vivo, PLAYING significa apenas que o
+    /// decoder foi aberto -- não que já há imagem segura para comutar.
+    video_ready: Arc<AtomicBool>,
     /// Só o item do preview tem: o programa é medido depois do mix, que é onde
     /// a medição vale. No preview não há mix, então mede-se o próprio item.
     meter_sink: Option<gst_app::AppSink>,
@@ -210,7 +218,12 @@ struct VideoChain {
 }
 
 impl VideoChain {
-    fn attach(self, pipeline: &gst::Pipeline, pad: &gst::Pad) -> Result<()> {
+    fn attach(
+        self,
+        pipeline: &gst::Pipeline,
+        pad: &gst::Pad,
+        video_ready: Arc<AtomicBool>,
+    ) -> Result<()> {
         // Imagem parada chega com cadência 0/1: um quadro só, e o pipeline
         // acabaria antes de aparecer. O `imagefreeze` repete o quadro pelo
         // tempo que a grade marcou e então encerra sozinho, como um arquivo.
@@ -239,6 +252,18 @@ impl VideoChain {
                 .static_pad("sink")
                 .ok_or_else(|| anyhow!("cabeça da cadeia de vídeo sem sink"))?,
         )?;
+
+        // `PAUSED`/`PLAYING` de uma entrada de rede só confirma que o
+        // decodificador foi construído. O primeiro buffer neste sink é a
+        // primeira evidência de que existe imagem que pode entrar no PGM.
+        // Sem essa fronteira, TAKE comutava para uma superfície ainda preta.
+        let tail = chain.last().ok_or_else(|| anyhow!("cadeia de vídeo sem destino"))?;
+        tail.static_pad("sink")
+            .ok_or_else(|| anyhow!("destino de vídeo sem sink"))?
+            .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                video_ready.store(true, Ordering::Release);
+                gst::PadProbeReturn::Ok
+            });
         Ok(())
     }
 }
@@ -371,7 +396,7 @@ impl Graphic {
 /// então o modelo do operador não precisa saber que existe transição.
 fn wrap_opacity(svg: &str, opacity: f64) -> String {
     format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1920 1080\" \
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1920\" height=\"1080\" viewBox=\"0 0 1920 1080\" \
          preserveAspectRatio=\"none\"><g opacity=\"{opacity:.3}\">{svg}</g></svg>"
     )
 }
@@ -385,6 +410,10 @@ pub struct Channel {
     audio_selector: gst::Element,
     on_air: Option<Item>,
     armed: Option<Item>,
+    /// TAKE de fonte ao vivo aguardando o primeiro quadro. Manter a fonte
+    /// anterior no seletor até este ponto é o que impede o flash preto entre
+    /// NDI/SRT/RTMP e o PGM.
+    pending_live_take: bool,
     frames_out: Arc<AtomicU64>,
     /// Saídas de rede. Cada uma tem pipeline próprio e cai sozinha.
     publishers: Vec<Publisher>,
@@ -399,6 +428,8 @@ pub struct Channel {
     /// Amostra reduzida do vídeo do PGM para detectar preto sustentado.
     video_sink: gst_app::AppSink,
     video_luma: f64,
+    video_signature: Option<u64>,
+    video_freeze_since: Option<Instant>,
     black_since: Option<Instant>,
     black_announced: bool,
     /// Medidor do preview. Vive à parte porque mede outro barramento.
@@ -410,6 +441,19 @@ pub struct Channel {
     /// Buffer reaproveitado da conversão de bytes para amostras. Alocar a cada
     /// volta do laço num processo que fica meses no ar não é opção.
     meter_scratch: Vec<f32>,
+}
+
+/// A regra de comutação é deliberadamente pequena e isolada para que uma
+/// alteração futura não volte a trocar para um live ainda sem frame.
+fn waits_for_live_frame(is_live: bool, video_ready: bool) -> bool {
+    is_live && !video_ready
+}
+
+#[derive(Clone, Copy)]
+pub struct VideoProbeReading {
+    pub luma: f64,
+    pub black: bool,
+    pub freeze: bool,
 }
 
 pub(crate) fn make(factory: &str) -> Result<gst::Element> {
@@ -474,6 +518,34 @@ fn source_for(spec: &ItemSpec) -> Result<LiveInput> {
         src.set_property("uri", &uri);
         return Ok(LiveInput { video: src, audio: None, dynamic: true });
     };
+
+    // Normaliza esquemas conhecidos para a forma interna do motor:
+    // decklink://0 ou sdi://0 ou decklink:0 -> sdi:0
+    // ndi://ESTUDIO -> ndi:ESTUDIO
+    let source_norm: String;
+    let source = if let Some(stripped) = source.strip_prefix("decklink://").or_else(|| source.strip_prefix("sdi://")) {
+        source_norm = format!("sdi:{stripped}");
+        source_norm.as_str()
+    } else if let Some(stripped) = source.strip_prefix("decklink:") {
+        source_norm = format!("sdi:{stripped}");
+        source_norm.as_str()
+    } else if let Some(stripped) = source.strip_prefix("ndi://") {
+        source_norm = format!("ndi:{stripped}");
+        source_norm.as_str()
+    } else {
+        source
+    };
+
+    // Um anúncio OMT/NMOS identifica o fluxo no plano de controle, mas não
+    // contém os caps RTP/SDP necessários para montar um receptor SMPTE-2110.
+    // Recusar explicitamente evita que `uridecodebin` falhe de forma opaca e
+    // pare o Preview depois de um TAKE. A fonte permanece cadastrável e
+    // monitorável até a etapa de receptor OMT/SDP dedicada.
+    if source.starts_with("omt:") {
+        return Err(anyhow!(
+            "entrada OMT/SMPTE-2110 requer URI RTP/SDP compatível; anúncio NMOS sozinho não é reproduzível neste engine"
+        ));
+    }
 
     if source.contains("://") {
         let src = make("uridecodebin")?;
@@ -662,7 +734,7 @@ fn channel_video_caps(width: i32, height: i32, framerate: gst::Fraction) -> gst:
 ///
 /// Só em MPEG-TS. O FLV do RTMP não carrega Opus, e o monitor por RTMP
 /// continua saindo em AAC -- ou seja, mudo no navegador, como sempre foi.
-fn som_de_monitor(kind: Kind) -> bool {
+pub(crate) fn som_de_monitor(kind: Kind) -> bool {
     kind == Kind::Srt
 }
 
@@ -767,10 +839,18 @@ impl Channel {
         // Entrada do programa: o que estiver publicando neste canal `inter`.
         let program_video = make("intervideosrc")?;
         program_video.set_property("channel", format!("{video_channel}-0"));
-        program_video.set_property("timeout", 200_000_000u64);
+        // Uma fonte viva pode precisar de alguns quadros para o decoder
+        // entregar imagem após o TAKE; conservar o último frame evita flash
+        // preto durante esse aquecimento transitório.
+        retain_last_video_frame(&program_video);
         let program_video_convert = make("videoconvert")?;
         let program_video_scale = make("videoscale")?;
         let program_video_rate = make("videorate")?;
+        // O relógio do canal continua entregando a cadência declarada durante
+        // jitter ou troca de fonte: repetir o último frame é preferível a
+        // publicar uma lacuna perceptível no PGM.
+        program_video_rate.set_property("drop-only", false);
+        program_video_rate.set_property("skip-to-first", false);
         let program_video_caps = make("capsfilter")?;
         program_video_caps.set_property("caps", &video_caps);
 
@@ -801,9 +881,13 @@ impl Channel {
             selector.set_property_from_str("sync-mode", "clock");
             selector.set_property("sync-streams", true);
         }
+        // A alternância não deve esvaziar a superfície anterior nem aceitar
+        // um buffer atrasado da fonte que acabou de sair do ar.
+        video_selector.set_property("cache-buffers", true);
+        video_selector.set_property("drop-backwards", true);
         let next_video = make("intervideosrc")?;
         next_video.set_property("channel", format!("{video_channel}-1"));
-        next_video.set_property("timeout", 200_000_000u64);
+        retain_last_video_frame(&next_video);
         let next_audio = make("interaudiosrc")?;
         next_audio.set_property("channel", format!("{audio_channel}-1"));
         aplicar_latencia_de_audio(&next_audio);
@@ -1011,6 +1095,7 @@ impl Channel {
             audio_selector,
             on_air: None,
             armed: None,
+            pending_live_take: false,
             frames_out,
             publishers: Vec::new(),
             sdi_devices: Vec::new(),
@@ -1024,6 +1109,8 @@ impl Channel {
                 .dynamic_cast::<gst_app::AppSink>()
                 .map_err(|_| anyhow!("appsink do detector não é appsink"))?,
             video_luma: 255.0,
+            video_signature: None,
+            video_freeze_since: None,
             black_since: None,
             black_announced: false,
             preview_meter: Meter::new(48_000, 2),
@@ -1055,11 +1142,12 @@ impl Channel {
         let aqueue = make("queue")?;
         for queue in [&vqueue, &aqueue] {
             queue.set_property("max-size-time", 2_000_000_000u64);
-            // Fila com descarte só serve para saída que pode perder frame. Num
-            // muxer, o buraco vira erro de multiplexação e a gravação morre --
-            // por isso saída codificada leva o descarte só até o `inter`, e
-            // dali para a frente corre num pipeline que ninguém segura.
-            queue.set_property_from_str("leaky", "downstream");
+            // Este é o último ponto ainda dentro do PGM. `leaky=downstream`
+            // descartava quadros aqui antes de chegarem ao inter, criando uma
+            // cadência quebrada que nenhuma configuração do encoder consegue
+            // reparar. O publisher já vive em pipeline separado, portanto a
+            // sua lentidão não deve causar descarte neste ponto.
+            queue.set_property_from_str("leaky", "no");
         }
         self.pipeline.add_many([&vqueue, &aqueue])?;
 
@@ -1248,6 +1336,7 @@ impl Channel {
         };
 
         self.publishers.push(Publisher::new(PublisherSpec {
+            output_id: spec.id.clone().unwrap_or_else(|| format!("slot-{index}")),
             kind: spec.kind,
             url: spec.target.clone(),
             video_channel,
@@ -1279,7 +1368,7 @@ impl Channel {
             // em AAC, que é o que destino de RTMP e de SRT espera receber.
             // Todo fluxo SRT gerenciado pelo MediaMTX precisa de Opus para
             // WHEP; RTMP continua em AAC para destinos externos.
-            opus: spec.kind == Kind::Srt && som_de_monitor(spec.kind),
+            opus: spec.kind == Kind::Srt && spec.role.as_deref() == Some("mon"),
         }));
         Ok(())
     }
@@ -1309,6 +1398,7 @@ impl Channel {
         // decodificando quatro fluxos grandes ao mesmo tempo.
         let (width, height) = monitor_size(self.config.width, self.config.height);
         self.publishers.push(Publisher::new(PublisherSpec {
+            output_id: spec.id.clone().unwrap_or_else(|| "preview".to_string()),
             kind: spec.kind,
             url: spec.target.clone(),
             video_channel: video_channel.clone(),
@@ -1371,8 +1461,13 @@ impl Channel {
         item.pipeline
             .set_state(gst::State::Paused)
             .with_context(|| open_failure(&spec, " no preview"))?;
-        let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
-        result.with_context(|| open_failure(&spec, " no preview"))?;
+        // Fonte viva pode ficar em ASYNC até chegar seu primeiro quadro. Não
+        // espere esse quadro na thread de comandos: uma NDI/SRT sem sinal não
+        // pode bloquear todos os previews seguintes nem o TAKE.
+        if !spec.is_live() {
+            let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
+            result.with_context(|| open_failure(&spec, " no preview"))?;
+        }
 
         if !spec.is_live() { item.pipeline
             .seek(
@@ -1404,7 +1499,7 @@ impl Channel {
     ///
     /// Roda no laço principal, sem thread nem trava: o `appsink` descarta
     /// quando enche, então uma volta lenta custa uma medição, nunca o programa.
-    pub fn measure(&mut self) -> (Reading, Reading) {
+    pub fn measure(&mut self) -> (Reading, Reading, VideoProbeReading) {
         let program = self.meter_sink.clone();
         drain(&program, &mut self.meter_scratch, &mut self.meter);
         while let Some(sample) = self.video_sink.try_pull_sample(gst::ClockTime::ZERO) {
@@ -1414,11 +1509,23 @@ impl Channel {
             if bytes.len() < 3 { continue }
             let mut total = 0.0;
             let mut count = 0usize;
+            let mut signature = 0u64;
             for rgb in bytes.chunks_exact(3) {
                 total += 0.2126 * f64::from(rgb[0]) + 0.7152 * f64::from(rgb[1]) + 0.0722 * f64::from(rgb[2]);
+                signature = signature
+                    .wrapping_mul(1_099_511_628_211)
+                    .wrapping_add(u64::from(rgb[0]) << 16 | u64::from(rgb[1]) << 8 | u64::from(rgb[2]));
                 count += 1;
             }
-            if count > 0 { self.video_luma = total / count as f64; }
+            if count > 0 {
+                self.video_luma = total / count as f64;
+                if self.on_air.is_some() && self.video_luma > 8.0 && self.video_signature == Some(signature) {
+                    self.video_freeze_since.get_or_insert_with(Instant::now);
+                } else {
+                    self.video_freeze_since = None;
+                }
+                self.video_signature = Some(signature);
+            }
         }
 
         // Sem nada aberto no preview não há o que medir, e mostrar a última
@@ -1436,7 +1543,11 @@ impl Channel {
         let mut program = self.meter.read();
         program.gain_reduction_db = self.limiter.property::<f64>("gain-reduction-db");
 
-        (program, preview)
+        let black = self.on_air.is_some() && self.video_luma <= 8.0;
+        let freeze = self.video_freeze_since
+            .map(|started| started.elapsed() >= Duration::from_secs(2))
+            .unwrap_or(false);
+        (program, preview, VideoProbeReading { luma: self.video_luma, black, freeze })
     }
 
     /// Retorna uma transição de preto sustentado no PGM. O fundo preto sem
@@ -1518,6 +1629,20 @@ impl Channel {
         achou
     }
 
+    /// Troca somente o pipeline consumidor de uma saída codificada existente.
+    /// Os canais `inter` do PGM ficam intactos, portanto não há reinício nem
+    /// corte do programa. Criar/remover ramo do `tee` não é suportado aqui.
+    pub fn replace_output(&mut self, output_id: &str, mut output: OutputSpec) -> Result<()> {
+        if !matches!(output.kind, Kind::Rtmp | Kind::Srt | Kind::File) {
+            return Err(anyhow!("reconfiguração ao vivo só suporta RTMP, SRT ou arquivo"));
+        }
+        let publisher = self.publishers.iter_mut()
+            .find(|publisher| publisher.output_id() == output_id)
+            .ok_or_else(|| anyhow!("não existe saída de rede com id {output_id}"))?;
+        output.id = Some(output_id.to_string());
+        publisher.replace(output, &self.config)
+    }
+
     pub fn service_outputs(&mut self) -> Vec<Report> {
         self.publishers
             .iter_mut()
@@ -1590,6 +1715,7 @@ impl Channel {
     /// Enquanto está armado, publica num canal `inter` que ninguém escuta --
     /// é isso que o mantém pronto sem aparecer no programa.
     pub fn load(&mut self, spec: ItemSpec) -> Result<()> {
+        self.pending_live_take = false;
         if let Some(previous) = self.armed.take() {
             discard(previous);
         }
@@ -1607,15 +1733,18 @@ impl Channel {
         item.pipeline
             .set_state(gst::State::Paused)
             .with_context(|| open_failure(&spec, ""))?;
-        let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
-        result.with_context(|| open_failure(&spec, ""))?;
 
         // Item ao vivo não tem ponto de entrada nem de saída: ele já está
-        // acontecendo. Quem decide quando ele sai é a grade.
+        // acontecendo. Quem decide quando ele sai é a grade. Não há preroll
+        // obrigatório para uma fonte viva: aguardar sinal aqui por até dez
+        // segundos trava a fila de Preview/TAKE quando o sinal está ausente.
         if spec.is_live() {
             self.armed = Some(item);
             return Ok(());
         }
+
+        let (result, _, _) = item.pipeline.state(gst::ClockTime::from_seconds(10));
+        result.with_context(|| open_failure(&spec, ""))?;
 
         // O corte vira um seek com início e fim: o item termina sozinho no
         // ponto de saída, sem ninguém precisar cronometrar.
@@ -1757,6 +1886,8 @@ impl Channel {
 
         // O vídeo só entra no pipeline se o arquivo tiver vídeo.
         let pending_video = std::sync::Mutex::new(Some(video));
+        let video_ready = Arc::new(AtomicBool::new(false));
+        let ready_for_chain = Arc::clone(&video_ready);
         let video_pipeline = pipeline.clone();
         // O áudio só entra no pipeline se o arquivo tiver áudio.
         //
@@ -1792,7 +1923,7 @@ impl Channel {
                 let Some(chain) = slot.take() else {
                     return;
                 };
-                if let Err(error) = chain.attach(&video_pipeline, pad) {
+                if let Err(error) = chain.attach(&video_pipeline, pad, Arc::clone(&ready_for_chain)) {
                     eprintln!("[engine] não montei o vídeo do item: {error}");
                 }
                 return;
@@ -1841,19 +1972,19 @@ impl Channel {
             pipeline,
             volume,
             on_air: false,
+            video_ready,
             meter_sink,
         })
     }
 
-    /// Coloca no ar o item armado: troca o nome do canal e solta o pipeline.
-    /// O canal não é tocado, então o encoder não pisca.
-    pub fn take(&mut self) -> Result<String> {
-        let mut item = self
-            .armed
-            .take()
+    /// Efetiva uma comutação já pronta. O pipeline do novo item já está em
+    /// PLAYING quando a fonte é ao vivo; para arquivo ele é iniciado aqui.
+    fn activate_armed(&mut self, start_pipeline: bool) -> Result<String> {
+        let mut item = self.armed.take()
             .ok_or_else(|| anyhow!("nada armado para entrar no ar"))?;
-
-        item.pipeline.set_state(gst::State::Playing)?;
+        if start_pipeline {
+            item.pipeline.set_state(gst::State::Playing)?;
+        }
         for selector in [&self.video_selector, &self.audio_selector] {
             let pad = selector.static_pad(&format!("sink_{}", item.slot))
                 .ok_or_else(|| anyhow!("barramento preparado não existe"))?;
@@ -1873,7 +2004,40 @@ impl Channel {
         Ok(item_id)
     }
 
+    /// Coloca no ar o item armado sem trocar o PGM por uma fonte que ainda
+    /// não produziu imagem. Para live, o TAKE inicia o decoder e fica armado;
+    /// `service_pending_take` efetiva a troca no primeiro buffer válido.
+    pub fn take(&mut self) -> Result<String> {
+        let live_needing_frame = self.armed.as_ref().is_some_and(|item| {
+            waits_for_live_frame(item.spec.is_live(), item.video_ready.load(Ordering::Acquire))
+        });
+        if live_needing_frame {
+            let item = self.armed.as_ref().expect("item armado foi verificado");
+            item.pipeline.set_state(gst::State::Playing)?;
+            self.pending_live_take = true;
+            return Ok(item.spec.item_id.clone());
+        }
+        self.pending_live_take = false;
+        self.activate_armed(true)
+    }
+
+    /// Deve ser chamado pelo laço do engine. Não bloqueia esperando rede: só
+    /// comuta depois que o pad de vídeo confirmou o primeiro frame válido.
+    pub fn service_pending_take(&mut self) -> Result<Option<String>> {
+        if !self.pending_live_take {
+            return Ok(None);
+        }
+        let ready = self.armed.as_ref()
+            .is_some_and(|item| item.video_ready.load(Ordering::Acquire));
+        if !ready {
+            return Ok(None);
+        }
+        self.pending_live_take = false;
+        self.activate_armed(false).map(Some)
+    }
+
     pub fn stop(&mut self) -> Result<()> {
+        self.pending_live_take = false;
         if let Some(item) = self.on_air.take() {
             discard(item);
         }
@@ -2005,6 +2169,22 @@ impl Channel {
             );
         }
         let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
+#[cfg(test)]
+mod tests_take_live {
+    use super::waits_for_live_frame;
+
+    #[test]
+    fn take_live_nao_comuta_antes_do_primeiro_frame() {
+        assert!(waits_for_live_frame(true, false));
+    }
+
+    #[test]
+    fn take_live_comuta_assim_que_houver_frame_e_arquivo_nao_espera() {
+        assert!(!waits_for_live_frame(true, true));
+        assert!(!waits_for_live_frame(false, false));
     }
 }
 

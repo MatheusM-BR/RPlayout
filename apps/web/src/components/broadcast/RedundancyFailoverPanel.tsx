@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import type { RedundantStreamPair, SrtTelemetry } from '@rplayout/protocol'
+import type { RedundantStreamPair } from '@rplayout/protocol'
 
 interface RedundancyFailoverPanelProps {
   pair?: RedundantStreamPair
@@ -8,78 +8,21 @@ interface RedundancyFailoverPanelProps {
   onMessage?: (msg: string) => void
 }
 
-const DEFAULT_PRIMARY_HEALTH: SrtTelemetry = {
-  rttMs: 18.2,
-  packetLossPercent: 0.05,
-  bitrateKbps: 12400,
-  packetsDropped: 0,
-  packetsRetransmitted: 4,
-  linkBandwidthKbps: 50000,
-  bufferMs: 795,
-  reconnectCount: 0,
-  linkState: 'OPTIMAL',
-}
-
-const DEFAULT_BACKUP_HEALTH: SrtTelemetry = {
-  rttMs: 24.8,
-  packetLossPercent: 0.1,
-  bitrateKbps: 12400,
-  packetsDropped: 0,
-  packetsRetransmitted: 8,
-  linkBandwidthKbps: 45000,
-  bufferMs: 790,
-  reconnectCount: 0,
-  linkState: 'OPTIMAL',
-}
-
-const DEFAULT_PAIR: RedundantStreamPair = {
-  id: 'pair-pgm-transmissao',
-  name: 'PGM MASTER // ENLACE DE DISTRIBUIÇÃO DUAL',
-  role: 'DISTRIBUTION',
-  primary: {
-    id: 'ep-primary',
-    label: 'TRANSMISSOR A (MASTER LOCAL - FIBRA)',
-    kind: 'SRT',
-    uri: 'srt://tx-primary.rplayout.net:9000?mode=caller&latency=800',
-    priority: 1,
-    enabled: true,
-  },
-  backup: {
-    id: 'ep-backup',
-    label: 'TRANSMISSOR B (HOT-STANDBY - WAN 5G)',
-    kind: 'SRT',
-    uri: 'srt://tx-backup.rplayout.net:9000?mode=caller&latency=1200',
-    priority: 2,
-    enabled: true,
-  },
-  policy: {
-    signalLossTimeoutMs: 1500,
-    packetLossThresholdPercent: 15.0,
-    rttMultiplierThreshold: 3.0,
-    qualificationTimeMs: 1000,
-    autoRevertToPrimary: true,
-    primaryHysteresisStabilizationMs: 30000,
-    transitionStrategy: 'FREEZE_FRAME_HOLD',
-  },
-  runtimeState: {
-    activeStream: 'PRIMARY',
-    primaryHealth: DEFAULT_PRIMARY_HEALTH,
-    backupHealth: DEFAULT_BACKUP_HEALTH,
-    lastSwitchTimestamp: '2026-09-24 10:14:02 UTC',
-    lastSwitchReason: 'Comutação manual preventiva pelo operador MCR',
-    switchCount: 2,
-  },
-}
-
 export const RedundancyFailoverPanel: React.FC<RedundancyFailoverPanelProps> = ({
-  pair = DEFAULT_PAIR,
+  pair,
   onSwitchStream,
   onToggleAutoFailover,
   onMessage,
 }) => {
-  const [activeStream, setActiveStream] = useState<'PRIMARY' | 'BACKUP'>(pair.runtimeState.activeStream)
-  const [autoArmed, setAutoArmed] = useState<boolean>(true)
+  const [activeStream, setActiveStream] = useState<'PRIMARY' | 'BACKUP'>(pair?.runtimeState.activeStream ?? 'PRIMARY')
+  const [autoArmed, setAutoArmed] = useState<boolean>(pair?.policy ? true : false)
   const [isSwitching, setIsSwitching] = useState<boolean>(false)
+
+  if (!pair) {
+    return <div className="flex h-full w-full items-center justify-center rounded-xl border border-dashed border-border-strong bg-surface-card p-8 text-center">
+      <div><span className="material-symbols-outlined text-[34px] text-outline">verified_user</span><p className="mt-2 font-headline-md text-[14px] font-bold text-on-surface">Redundância não configurada</p><p className="mt-1 font-label-mono text-[10px] text-outline">Cadastre uma fonte primária e associe uma fonte backup nas configurações de entradas ao vivo.</p></div>
+    </div>
+  }
 
   const handleManualSwitch = (target: 'PRIMARY' | 'BACKUP') => {
     if (activeStream === target || isSwitching) return
@@ -175,6 +118,148 @@ export const RedundancyFailoverPanel: React.FC<RedundancyFailoverPanelProps> = (
             <span className="font-label-mono text-[10px] text-outline tabular-nums">
               Comutações registradas: <strong className="text-on-surface">{pair.runtimeState.switchCount}</strong>
             </span>
+          </div>
+
+          {/* DIAGRAMA TÁTICO DE FLUXO DE SINAL BROADCAST (MAIN -> BACKUP -> DISTRIBUIÇÃO) */}
+          <div className="bg-[#040711] rounded-lg border border-border-subtle/80 p-3 flex flex-col gap-2">
+            <div className="flex items-center justify-between text-[10px] font-label-mono text-outline">
+              <span className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-accent-ice-bright">
+                <span className="material-symbols-outlined text-[14px]">account_tree</span>
+                DIAGRAMA DE FLUXO DE REDUNDÂNCIA (FAILOVER ENGINE)
+              </span>
+              <span className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-status-ok-bright animate-ping"></span>
+                  HEARTBEAT 100ms
+                </span>
+                <span>•</span>
+                <span className={activeStream === 'PRIMARY' ? 'text-on-air-crimson font-bold' : 'text-armed-amber font-bold'}>
+                  ROTA ATIVA: {activeStream === 'PRIMARY' ? 'HOST A (PRIMÁRIO)' : 'HOST B (STANDBY)'}
+                </span>
+              </span>
+            </div>
+
+            <div className="w-full overflow-x-auto py-1">
+              <svg viewBox="0 0 760 110" className="w-full min-w-[680px] h-24 select-none font-mono text-[10px]">
+                <defs>
+                  <linearGradient id="primaryGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#EF4444" stopOpacity="0.8" />
+                    <stop offset="100%" stopColor="#F87171" stopOpacity="0.9" />
+                  </linearGradient>
+                  <linearGradient id="backupGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#F59E0B" stopOpacity="0.8" />
+                    <stop offset="100%" stopColor="#FBBF24" stopOpacity="0.9" />
+                  </linearGradient>
+                  <filter id="glowGreen" x="-20%" y="-20%" width="140%" height="140%">
+                    <feGaussianBlur stdDeviation="3" result="blur" />
+                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                  </filter>
+                </defs>
+
+                {/* NÓ 1: HOST A (MAIN) */}
+                <g transform="translate(10, 10)">
+                  <rect
+                    width="180"
+                    height="38"
+                    rx="5"
+                    fill={activeStream === 'PRIMARY' ? '#1F1116' : '#0B0F19'}
+                    stroke={activeStream === 'PRIMARY' ? '#EF4444' : '#374151'}
+                    strokeWidth={activeStream === 'PRIMARY' ? '2' : '1'}
+                  />
+                  <circle cx="16" cy="19" r="5" fill={activeStream === 'PRIMARY' ? '#EF4444' : '#10B981'} />
+                  <text x="28" y="16" fill="#F3F4F6" fontSize="10.5" fontWeight="bold">HOST A (MAIN ENGINE)</text>
+                  <text x="28" y="29" fill="#9CA3AF" fontSize="8.5">SRT CALLER • FIBRA DEDICADA</text>
+                </g>
+
+                {/* NÓ 2: HOST B (HOT-STANDBY) */}
+                <g transform="translate(10, 62)">
+                  <rect
+                    width="180"
+                    height="38"
+                    rx="5"
+                    fill={activeStream === 'BACKUP' ? '#1F170A' : '#0B0F19'}
+                    stroke={activeStream === 'BACKUP' ? '#F59E0B' : '#374151'}
+                    strokeWidth={activeStream === 'BACKUP' ? '2' : '1'}
+                  />
+                  <circle cx="16" cy="19" r="5" fill={activeStream === 'BACKUP' ? '#F59E0B' : '#6B7280'} />
+                  <text x="28" y="16" fill="#F3F4F6" fontSize="10.5" fontWeight="bold">HOST B (HOT-STANDBY)</text>
+                  <text x="28" y="29" fill="#9CA3AF" fontSize="8.5">SRT CALLER • BACKUP 5G/WAN</text>
+                </g>
+
+                {/* LINHAS DE ENTRADA AO SWITCHER */}
+                <path
+                  d="M 190 29 L 320 29 L 340 45"
+                  fill="none"
+                  stroke={activeStream === 'PRIMARY' ? '#EF4444' : '#374151'}
+                  strokeWidth={activeStream === 'PRIMARY' ? '2.5' : '1.5'}
+                  strokeDasharray={activeStream === 'PRIMARY' ? 'none' : '4 3'}
+                />
+                <path
+                  d="M 190 81 L 320 81 L 340 65"
+                  fill="none"
+                  stroke={activeStream === 'BACKUP' ? '#F59E0B' : '#374151'}
+                  strokeWidth={activeStream === 'BACKUP' ? '2.5' : '1.5'}
+                  strokeDasharray={activeStream === 'BACKUP' ? 'none' : '4 3'}
+                />
+
+                {/* HEARTBEAT LINK ENTRE HOST A E B */}
+                <path
+                  d="M 100 48 L 100 62"
+                  fill="none"
+                  stroke="#06B6D4"
+                  strokeWidth="1.5"
+                  strokeDasharray="2 2"
+                />
+                <text x="106" y="58" fill="#06B6D4" fontSize="7.5">PTP SYNC</text>
+
+                {/* NÓ CENTRAL: SWITCHER MATRIZ COMUTADORA */}
+                <g transform="translate(340, 25)">
+                  <polygon
+                    points="0,0 90,15 90,45 0,60"
+                    fill="#111827"
+                    stroke="#4B5563"
+                    strokeWidth="1.5"
+                  />
+                  <text x="15" y="33" fill="#E5E7EB" fontSize="9.5" fontWeight="bold">SELETOR</text>
+                  <text x="15" y="44" fill="#9CA3AF" fontSize="7.5">SEAMLESS</text>
+
+                  {/* INDICADOR DA CHAVE FÍSICA / LÓGICA */}
+                  <line
+                    x1="2"
+                    y1={activeStream === 'PRIMARY' ? '20' : '40'}
+                    x2="85"
+                    y2="30"
+                    stroke={activeStream === 'PRIMARY' ? '#EF4444' : '#F59E0B'}
+                    strokeWidth="3"
+                  />
+                </g>
+
+                {/* LINHA SAÍDA PARA DISTRIBUIÇÃO */}
+                <line
+                  x1="430"
+                  y1="55"
+                  x2="520"
+                  y2="55"
+                  stroke="#10B981"
+                  strokeWidth="3"
+                  filter="url(#glowGreen)"
+                />
+                <text x="445" y="47" fill="#10B981" fontSize="8.5" fontWeight="bold">ON AIR PGM</text>
+
+                {/* NÓ FINAL: DESTINO DE DISTRIBUIÇÃO */}
+                <g transform="translate(520, 20)">
+                  <rect width="220" height="70" rx="6" fill="#091410" stroke="#10B981" strokeWidth="1.5" />
+                  <circle cx="16" cy="18" r="5" fill="#10B981" />
+                  <text x="28" y="18" fill="#F3F4F6" fontSize="10.5" fontWeight="bold">DISTRIBUIÇÃO MASTER PGM</text>
+                  <text x="28" y="32" fill="#34D399" fontSize="8.5">SDI DECKLINK + NDI IP + SRT CDN</text>
+
+                  <rect x="28" y="40" width="180" height="22" rx="3" fill="#040D0A" stroke="#059669" strokeWidth="0.8" />
+                  <text x="35" y="54" fill="#A7F3D0" fontSize="8.5">
+                    {activeStream === 'PRIMARY' ? 'RECEBENDO DO HOST A (FIBRA)' : 'RECEBENDO DO HOST B (CONTINGÊNCIA)'}
+                  </text>
+                </g>
+              </svg>
+            </div>
           </div>
 
           {/* Grandes Botões de Chaveamento estilo Switcher de TV */}

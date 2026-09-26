@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
 import type { AudioLevel, Channel, EditScope, Fit, Trim, ScheduleEventType, TimingFlags } from '@rplayout/protocol'
@@ -516,7 +516,7 @@ export function App() {
   }, [view, onAirId, schedule])
 
   const command = useCallback(
-    (action: 'take' | 'cue' | 'stop' | 'park' | 'seek', body?: { itemId?: string; assetId?: string; bus?: 'pgm' | 'pvw'; frames?: number }) =>
+    (action: 'take' | 'cue' | 'stop' | 'park' | 'seek', body?: { itemId?: string; assetId?: string; sourceRef?: string; sourceTitle?: string; bus?: 'pgm' | 'pvw'; frames?: number }) =>
       guard(async () => {
         if (!view) return
         absorb(await api.transport(view.channel.id, action, body))
@@ -559,18 +559,26 @@ export function App() {
         void undo('redo')
         return
       }
-      if (element?.closest('button, a, [role="button"]')) return
       if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return
 
       if (event.code === 'Space') {
         event.preventDefault()
-        if (selectedId) void command('take', { itemId: selectedId })
+        const targetItemId = selectedId ?? live?.transport.preparedItemId ?? undefined
+        void command('take', targetItemId ? { itemId: targetItemId } : undefined)
+        return
       }
+
+      if (element?.closest('button, a, [role="button"]')) return
       // Delete tira da grade. Backspace não: num teclado de notebook ele fica
       // ao lado do Enter e a chance de errar não vale a comodidade.
-      if (event.key === 'Delete' && selectedId) {
+      if (event.key === 'Delete') {
         event.preventDefault()
-        removerItem(selectedId)
+        if (marked.size > 0) {
+          removerItensEmLote(Array.from(marked))
+          setMarked(new Set())
+        } else if (selectedId) {
+          removerItem(selectedId)
+        }
       }
       if (event.key === 'i' && selected?.asset) {
         setDialog({ kind: isStill(selected.asset) ? 'still' : 'trim', view: selected })
@@ -625,6 +633,11 @@ export function App() {
       return
     }
     const alvo = view?.items.find((entry) => entry.item.id === id)
+    const targetId = targetRundownId ?? view?.rundown.id
+    // Atualização otimista imediata na interface
+    if (view && targetId === view.rundown.id) {
+      setView({ ...view, items: view.items.filter((entry) => entry.item.id !== id) })
+    }
     void guard(async () => {
       const snapshot = await api.removeItem(id)
       if (!targetRundownId || targetRundownId === view?.rundown.id) {
@@ -632,6 +645,29 @@ export function App() {
       }
       onRemoved?.(id)
       say(`"${alvo?.item.title ?? 'Item'}" saiu da grade — Ctrl+Z traz de volta.`)
+    })
+  }
+
+  const removerItensEmLote = (ids: string[], targetRundownId?: string, onRemoved?: () => void): void => {
+    if (!view || ids.length === 0) return
+    const targetId = targetRundownId ?? view.rundown.id
+    const onAir = live?.transport.onAir?.itemId
+    const validIds = ids.filter((id) => id !== onAir)
+    if (validIds.length === 0) {
+      say('O item no ar não sai da grade. Pare antes.')
+      return
+    }
+    // Atualização otimista imediata na interface
+    if (targetId === view.rundown.id) {
+      setView({ ...view, items: view.items.filter((entry) => !validIds.includes(entry.item.id)) })
+    }
+    void guard(async () => {
+      const snapshot = await api.bulkDeleteItems(targetId, validIds)
+      if (targetId === view.rundown.id) {
+        absorb(snapshot)
+      }
+      onRemoved?.()
+      say(`${validIds.length} item(ns) removido(s) da grade — Ctrl+Z traz de volta.`)
     })
   }
 
@@ -1030,6 +1066,7 @@ export function App() {
           onOpenGraphics={(item: ItemView) => setDialog({ kind: 'itemGraphics', view: item })}
           onOpenStill={(item: ItemView) => setDialog({ kind: 'still', view: item })}
           onRemoveItem={(itemId: string) => removerItem(itemId)}
+          onBulkRemoveItems={(ids: string[]) => removerItensEmLote(ids)}
           onMoveItem={(itemId: string, toIndex: number) => move(itemId, toIndex)}
           onOpenAlerts={() => setDialog({ kind: 'alerts' })}
           onOpenSettings={() => navigateWorkspace('settings')}
@@ -1039,6 +1076,7 @@ export function App() {
           onNavigate={navigateWorkspace}
           onSelectChannel={trocarCanal}
           onPreviewAsset={(asset: LibraryAsset) => void command('cue', { assetId: asset.id })}
+          onPreviewLiveSource={(sourceRef: string, title: string) => void command('cue', { sourceRef, sourceTitle: title })}
           onInsertAsset={inserirItemNaGrade}
           onOpenConflicts={() => setDialog({ kind: 'distribution' })}
         />
@@ -1053,11 +1091,16 @@ export function App() {
           categorias={categorias}
           onInsertAsset={inserirItemNaGrade}
           onPreviewAsset={(asset: LibraryAsset) => void command('cue', { assetId: asset.id })}
+          onPreviewLiveSource={(sourceRef: string, title: string) => void command('cue', { sourceRef, sourceTitle: title })}
+          onCueItem={(itemId: string) => void command('cue', { itemId })}
           onNavigate={navigateWorkspace}
           onSelectChannel={trocarCanal}
-          onPublishToMaster={() => {
+          onPublishToMaster={(snapshot?: Snapshot) => {
             void guard(async () => {
-              absorb(await api.rundown(view.rundown.id))
+              // A edição de horário retorna um snapshot já recalculado. Não
+              // buscar outro imediatamente impede que uma resposta anterior
+              // da grade vença a atualização acabada de salvar.
+              absorb(snapshot ?? await api.rundown(view.rundown.id))
               say('Programação sincronizada com o Master com sucesso!')
             })
           }}
@@ -1099,6 +1142,9 @@ export function App() {
           onRemoveItem={(itemId: string, rundownId?: string, onRemoved?: (id: string) => void) =>
             removerItem(itemId, rundownId, onRemoved)
           }
+          onBulkRemoveItems={(ids: string[], rundownId?: string, onRemoved?: () => void) =>
+            removerItensEmLote(ids, rundownId, onRemoved)
+          }
           onOpenSettings={() => navigateWorkspace('settings')}
         />
       )}
@@ -1117,6 +1163,8 @@ export function App() {
           onOpenSettings={() => navigateWorkspace('settings')}
           sessionRole={sessionRole ?? 'Operador Master'}
           authRequired={authRequired}
+          monitors={monitors}
+          onPreviewLiveSource={(sourceRef: string, title: string) => void command('cue', { sourceRef, sourceTitle: title })}
         />
       )}
 
@@ -1130,6 +1178,8 @@ export function App() {
           sessionRole={sessionRole ?? 'Operador Master'}
           authRequired={authRequired}
           onOpenSettings={() => navigateWorkspace('settings')}
+          live={live}
+          monitors={monitors}
         />
       )}
 

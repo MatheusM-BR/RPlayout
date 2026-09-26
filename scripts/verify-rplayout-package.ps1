@@ -37,6 +37,12 @@ if ((Test-Path (Join-Path $root 'runtime/node/node.exe')) -and (Test-Path (Join-
 } else {
   Write-Warning 'Node/pnpm portátil ausente: o launcher dependerá do ambiente global.'
 }
+$ndiRuntime = Join-Path $root 'apps/server/Processing.NDI.Lib.x64.dll'
+if (Test-Path $ndiRuntime) {
+  Write-Host "NDI Runtime: OK ($ndiRuntime)" -ForegroundColor Green
+} else {
+  Write-Warning 'NDI Runtime ausente: não há descoberta ou ingest NDI funcional neste pacote.'
+}
 $files = $required | ForEach-Object {
   $path = Join-Path $root $_
   $hash = (Get-FileHash $path -Algorithm SHA256).Hash

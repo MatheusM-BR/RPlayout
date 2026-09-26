@@ -164,6 +164,13 @@ fn run_command(channel: &mut Channel, command: Command) -> Result<bool> {
             }
             Ok(true)
         }
+        Command::ReplaceOutput { output_id, output } => {
+            channel.replace_output(&output_id, output)?;
+            for report in channel.outputs_report() {
+                Event::Publisher { report }.emit();
+            }
+            Ok(true)
+        }
         Command::Status => {
             announce(channel);
             Event::Output {
@@ -327,6 +334,13 @@ fn main() -> Result<()> {
             }
         }
 
+        // TAKE de fonte ao vivo só comuta o seletor depois que o decoder
+        // confirmou um frame. Enquanto a NDI/SRT/RTMP faz preroll, o PGM
+        // continua no item anterior em vez de expor o preto do inter.
+        if channel.service_pending_take()?.is_some() {
+            announce(&channel);
+        }
+
         if let Some(message) = bus.timed_pop(gst::ClockTime::from_mseconds(20)) {
             if let Some(event) = handle_message(&message) {
                 event.emit();
@@ -402,9 +416,10 @@ fn main() -> Result<()> {
 
         if last_meter.elapsed() >= METER_EVERY {
             last_meter = Instant::now();
-            let (program, preview) = channel.measure();
+            let (program, preview, video) = channel.measure();
             levels("pgm", &program).emit();
             levels("pvw", &preview).emit();
+            Event::VideoProbe { luma: video.luma, black: video.black, freeze: video.freeze }.emit();
             if let Some(black) = channel.black_transition() {
                 Event::Warning {
                     message: if black {

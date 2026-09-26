@@ -5,11 +5,27 @@ export const DB_FILE = process.env.RPLAYOUT_DB ?? resolve(process.cwd(), 'rplayo
 export const PORT = Number(process.env.PORT ?? 4000)
 export const HOST = process.env.HOST ?? '0.0.0.0'
 
+function findBinary(name: string): string {
+  if (process.env.VITEST) return ''
+  const candidates = [
+    resolve(process.cwd(), `apps/engine/target/release/${name}.exe`),
+    resolve(process.cwd(), `apps/engine/target/debug/${name}.exe`),
+    resolve(process.cwd(), `../../apps/engine/target/release/${name}.exe`),
+    resolve(process.cwd(), `../../apps/engine/target/debug/${name}.exe`),
+    resolve(process.cwd(), `target/release/${name}.exe`),
+    resolve(process.cwd(), `target/debug/${name}.exe`),
+    `C:/IA/RPlayout/apps/engine/target/release/${name}.exe`,
+    `C:/IA/RPlayout/apps/engine/target/debug/${name}.exe`,
+    resolve(process.cwd(), `${name}.exe`),
+  ]
+  return candidates.find((p) => existsSync(p)) ?? ''
+}
+
 /**
  * Caminho do binário do engine. Vazio mantém o transporte simulado, que é o
  * que permite operar a grade inteira numa máquina sem GStreamer.
  */
-export const ENGINE_BINARY = process.env.RPLAYOUT_ENGINE ?? ''
+export const ENGINE_BINARY = process.env.RPLAYOUT_ENGINE ?? findBinary('rplayout-engine')
 
 /** Saídas passadas ao engine, separadas por vírgula. */
 export const ENGINE_OUTPUTS = (process.env.RPLAYOUT_ENGINE_OUTPUT ?? 'null')
@@ -50,10 +66,10 @@ export const MEDIAMTX_BIND = process.env.RPLAYOUT_MEDIAMTX_BIND ?? '0.0.0.0'
 export const MEDIAMTX_LOGLEVEL = process.env.RPLAYOUT_MEDIAMTX_LOGLEVEL ?? 'warn'
 
 /** Binário do relay, um processo por destino externo. */
-export const RELAY_BINARY = process.env.RPLAYOUT_RELAY ?? ''
+export const RELAY_BINARY = process.env.RPLAYOUT_RELAY ?? findBinary('rplayout-relay')
 
 /** Binário da sonda de mídia. Vazio desliga a varredura do acervo. */
-export const PROBE_BINARY = process.env.RPLAYOUT_PROBE ?? ''
+export const PROBE_BINARY = process.env.RPLAYOUT_PROBE ?? findBinary('rplayout-probe')
 
 /** Pasta que a varredura percorre. */
 export const MEDIA_ROOT = process.env.RPLAYOUT_MEDIA ?? resolve(process.cwd(), 'midia')
@@ -75,7 +91,7 @@ export const HEALTH_RETENTION_DAYS = Number(process.env.RPLAYOUT_HEALTH_RETENTIO
 /** Preenchimento contínuo opt-in; desativado por padrão para preservar controle manual. */
 
 /** Binário de descoberta de fontes ao vivo. Vazio deixa só os convidados. */
-export const DEVICES_BINARY = process.env.RPLAYOUT_DEVICES ?? ''
+export const DEVICES_BINARY = process.env.RPLAYOUT_DEVICES ?? findBinary('rplayout-devices')
 
 /** Papel padrão desta estação; pode ser substituído por sessão autenticada. */
 // A estação local inicia como administrador para que o primeiro operador

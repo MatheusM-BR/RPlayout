@@ -21,8 +21,17 @@ function latencyOf(url: string): number | null {
 export function redactUrl(url: string): string {
   try {
     const value = new URL(url)
-    for (const key of ['passphrase', 'password', 'secret', 'token']) {
-      if (value.searchParams.has(key)) value.searchParams.set(key, '••••••')
+    for (const key of ['passphrase', 'password', 'secret', 'token', 'streamkey', 'key']) {
+      if (value.searchParams.has(key)) value.searchParams.set(key, 'REDACTED')
+    }
+    // RTMP normalmente separa app e stream key em dois segmentos. A chave
+    // jamais deve retornar ao navegador, logs ou qualquer API de consulta.
+    if ((value.protocol === 'rtmp:' || value.protocol === 'rtmps:')) {
+      const segments = value.pathname.split('/').filter(Boolean)
+      if (segments.length >= 2) {
+        segments[segments.length - 1] = 'REDACTED'
+        value.pathname = `/${segments.join('/')}`
+      }
     }
     return value.toString()
   } catch { return url }

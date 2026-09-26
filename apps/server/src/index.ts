@@ -7,7 +7,7 @@ import fastifyStatic from '@fastify/static'
 import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
 import { eq } from 'drizzle-orm'
-import { createApp, runtimeFor, syncDistribution } from './app.js'
+import { createApp, pgmProbeFor, runtimeFor, syncDistribution } from './app.js'
 import { BACKUP_EVERY_HOURS, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS } from './config.js'
 import { listChannels, listRundowns } from './db/repo.js'
 import { backupDatabase } from './domain/backup.js'
@@ -97,6 +97,11 @@ async function main(): Promise<void> {
       socket.send(
         JSON.stringify({ type: 'view', channelId: runtime.channel.id, view: runtime.view }),
       )
+      // A grade por si só não descreve o barramento. Sem este primeiro estado
+      // a tela recém-aberta pode ficar até um segundo dizendo que não há PVW
+      // ou PGM, apesar de o motor já estar reproduzindo. Isso também elimina a
+      // corrida entre o snapshot HTTP inicial e o primeiro tick do WebSocket.
+      socket.send(JSON.stringify({ type: 'live', channelId: runtime.channel.id, ...runtime.live() }))
     }
     socket.on('close', () => sockets.delete(socket))
   })
@@ -219,6 +224,17 @@ async function main(): Promise<void> {
       // engine parado. O medidor já vem do pipeline real (ou do simulador),
       // portanto não inferimos áudio a partir de conexão WebRTC.
       const meter = runtime.transport.programMeter()
+      const videoProbe = runtime.transport.videoProbe()
+      // A sonda recebe somente leituras publicadas pelo engine: áudio BS.1770
+      // e o quadro reduzido após o compositor PGM. O navegador não participa
+      // desta decisão, então não cria falso black/freeze por WebRTC atrasado.
+      if (meter !== null || videoProbe !== null) {
+        pgmProbeFor(app, runtime.channel.id).feedMetrics({
+          audioDbfs: meter?.momentaryLufs,
+          isBlack: videoProbe?.black,
+          isFreeze: videoProbe?.freeze,
+        })
+      }
       const silent = meter !== null && meter.momentaryLufs <= -65
       const signalKey = `signal:${runtime.channel.id}`
       if (silent) {
@@ -247,7 +263,11 @@ async function main(): Promise<void> {
       const agora = framesSinceMidnight(new Date(), runtime.channel.rate)
       const fim = runtime.view?.schedule.endsAt ?? agora
       const janela = Math.round(runtime.channel.rate.num * 60 * 5 / runtime.channel.rate.den)
-      const horizon = shouldFillHorizon(agora, fim, janela)
+      const isManualEditing = Date.now() - (runtime.lastManualEditAt ?? 0) < 60_000
+      const isPlaying = runtime.transport.state().playing
+      const hasItems = (runtime.view?.items.length ?? 0) > 0
+      const shouldAutoFill = isPlaying && hasItems && !isManualEditing
+      const horizon = shouldAutoFill && shouldFillHorizon(agora, fim, janela)
       const horizonKey = `horizon:${runtime.channel.id}`
       const horizonSignature = horizon ? `warn:${Math.floor(fim / Math.max(1, janela))}` : 'ok'
       if (recorded.get(horizonKey) !== horizonSignature) {

@@ -59,6 +59,18 @@ describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', 
     expect(body['src-camera-1'].linkState).toBe('OPTIMAL')
   })
 
+  it('GET /api/host-metrics entrega consumo real do host sem inventar GPU', async () => {
+    const res = await server.inject({ method: 'GET', url: '/api/host-metrics' })
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.generatedAt).toBeTruthy()
+    expect(body.cpu.cores).toBeGreaterThan(0)
+    expect(body.memory.totalBytes).toBeGreaterThan(0)
+    expect(body.memory.usedBytes).toBeGreaterThanOrEqual(0)
+    expect(body.gpu).toHaveProperty('utilizationPercent')
+    expect(body.gpu).toHaveProperty('error')
+  })
+
   it('CRUD completo de fontes ao vivo com mascaramento de passphrase', async () => {
     // 1. Criar fonte SRT Caller
     const createRes = await server.inject({

@@ -1,14 +1,14 @@
 import { spawn } from 'node:child_process'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
-import { guestKeys } from '../db/schema.js'
+import { guestKeys, liveSources } from '../db/schema.js'
 
 /** Uma fonte ao vivo que o operador pode pôr na grade. */
 export interface LiveSource {
   /** Referência que vai no item: `sdi:0`, `ndi:Estúdio`, `guest:<chave>`. */
   readonly reference: string
   readonly label: string
-  readonly family: 'SDI' | 'NDI' | 'GUEST'
+  readonly family: 'SDI' | 'NDI' | 'OMT' | 'GUEST'
 }
 
 export interface SourceFamily {
@@ -21,6 +21,7 @@ export interface SourceFamily {
 export interface SourceList {
   readonly sdi: SourceFamily
   readonly ndi: SourceFamily
+  readonly omt: SourceFamily
   readonly guests: SourceFamily
 }
 
@@ -47,6 +48,7 @@ export interface Faltando {
 interface Descoberta {
   decklink: ProbeFamily
   ndi: ProbeFamily
+  omt: ProbeFamily
   plugins?: { missing: Faltando[]; optional: Faltando[] }
 }
 
@@ -108,18 +110,92 @@ export class Sources {
   }
 
   private async build(): Promise<SourceList> {
-    const [hardware, guests] = await Promise.all([this.probe(), this.guests()])
+    const [hardware, guests, savedLive] = await Promise.all([
+      this.probe(),
+      this.guests(),
+      this.savedLiveSources(),
+    ])
     // O que falta na instalação vem na mesma leitura e vale para os alertas,
     // que não podem esperar por uma descoberta a cada tique.
     if (hardware) this.faltandoPlugins = hardware.plugins?.missing ?? []
+
+    const sdiFamily = toFamily(hardware?.decklink, 'SDI')
+    const ndiFamily = toFamily(hardware?.ndi, 'NDI')
+    const omtFamily = toFamily(hardware?.omt, 'OMT')
+
+    // Mescla fontes salvas no banco com as descobertas pelo hardware
+    const savedSdi = savedLive.filter((s) => s.family === 'SDI')
+    const savedNdi = savedLive.filter((s) => s.family === 'NDI')
+    const savedOmt = savedLive.filter((s) => s.family === 'OMT')
+
+    const mergedSdiSources = [...sdiFamily.sources]
+    for (const saved of savedSdi) {
+      if (!mergedSdiSources.some((s) => s.reference === saved.reference)) {
+        mergedSdiSources.push(saved)
+      }
+    }
+
+    const mergedNdiSources = [...ndiFamily.sources]
+    for (const saved of savedNdi) {
+      if (!mergedNdiSources.some((s) => s.reference === saved.reference)) {
+        mergedNdiSources.push(saved)
+      }
+    }
+    const mergedOmtSources = [...omtFamily.sources]
+    for (const saved of savedOmt) {
+      if (!mergedOmtSources.some((s) => s.reference === saved.reference)) {
+        mergedOmtSources.push(saved)
+      }
+    }
+
     const list: SourceList = {
-      sdi: toFamily(hardware?.decklink, 'SDI'),
-      ndi: toFamily(hardware?.ndi, 'NDI'),
+      sdi: {
+        available: sdiFamily.available || mergedSdiSources.length > 0,
+        reason: mergedSdiSources.length > 0 ? null : sdiFamily.reason,
+        sources: mergedSdiSources,
+      },
+      ndi: {
+        available: ndiFamily.available || mergedNdiSources.length > 0,
+        reason: mergedNdiSources.length > 0 ? null : ndiFamily.reason,
+        sources: mergedNdiSources,
+      },
+      omt: {
+        available: omtFamily.available || mergedOmtSources.length > 0,
+        reason: mergedOmtSources.length > 0 ? null : omtFamily.reason,
+        sources: mergedOmtSources,
+      },
       guests,
     }
     this.cached = list
     this.cachedAt = Date.now()
     return list
+  }
+
+  /** Fontes ao vivo cadastradas manualmente pelos operadores no banco de dados. */
+  private async savedLiveSources(): Promise<LiveSource[]> {
+    try {
+      const rows = await this.db.select().from(liveSources).where(eq(liveSources.enabled, true))
+      // Só as famílias que este endpoint descobre pertencem aos cards de
+      // hardware/rede. Antes, qualquer SRT/RTMP cadastrado caía no `else` e
+      // era exibido falsamente como uma porta DeckLink SDI.
+      return rows
+        .filter((row) => row.kind === 'SDI' || row.kind === 'NDI' || row.kind === 'OMT')
+        .map((row) => ({
+        reference: row.targetUrl.startsWith('ndi:') || row.targetUrl.startsWith('sdi:')
+          ? row.targetUrl
+          : row.kind === 'NDI'
+            ? `ndi:${row.targetUrl}`
+          : row.kind === 'SDI'
+              ? `sdi:${row.targetUrl}`
+              : row.kind === 'OMT' && !row.targetUrl.startsWith('omt:')
+                ? `omt:${row.targetUrl}`
+                : row.targetUrl,
+        label: row.name,
+        family: (row.kind === 'NDI' ? 'NDI' : row.kind === 'OMT' ? 'OMT' : 'SDI') as 'SDI' | 'NDI' | 'OMT',
+        }))
+    } catch {
+      return []
+    }
   }
 
   /** Convidados publicando no servidor local também são fonte ao vivo. */
@@ -157,7 +233,7 @@ export class Sources {
   }
 }
 
-function toFamily(probe: ProbeFamily | undefined, family: 'SDI' | 'NDI'): SourceFamily {
+function toFamily(probe: ProbeFamily | undefined, family: 'SDI' | 'NDI' | 'OMT'): SourceFamily {
   if (!probe) {
     return {
       ...EMPTY,
