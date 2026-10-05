@@ -184,12 +184,15 @@ describe('Fase D — Eventos Secundários, SCTE e Automação de Estúdio', () =
       expect(result.error).toMatch(/não configurado/i)
     })
 
-    it('controla relé GPIO em modos PULSE e LATCH', async () => {
-      const driver = new GpioRelayDriver()
+    it('simulação explicitamente solicitada de GPIO não afirma acionamento físico', async () => {
+      const physical = await new GpioRelayDriver().execute('PULSE', { pin: 2 })
+      expect(physical.success).toBe(false)
+      const driver = new GpioRelayDriver(true)
 
       const pulseResult = await driver.execute('PULSE', { pin: 2, durationMs: 100 })
       expect(pulseResult.success).toBe(true)
       expect(pulseResult.details?.mode).toBe('PULSE')
+      expect(pulseResult.details?.physicalExecutionConfirmed).toBe(false)
       expect(driver.getPinState(2)).toBe(true)
 
       const latchResult = await driver.execute('LATCH', { pin: 5, state: true })
@@ -270,11 +273,8 @@ describe('Fase D — Eventos Secundários, SCTE e Automação de Estúdio', () =
         },
       })
 
-      expect(res.statusCode).toBe(200)
-      const data = res.json()
-      expect(data.success).toBe(false)
-      expect(data.targetDevice).toBe('ATEM_SWITCHER')
-      expect(data.action).toBe('TAKE')
+      expect(res.statusCode).toBe(400)
+      expect(res.json().error).toContain('requestId')
     })
   })
 })

@@ -8,13 +8,15 @@ interface ConflictDrawerProps {
   onClose: () => void
   items: ItemView[]
   rate: Rate
+  /** Conflitos calculados pelo scheduler a cada atualização da grade. */
+  conflicts: readonly { kind: string; itemId: string; frames: number; severity: string; message: string }[]
   onAutoFill: () => void
 }
 
 interface DetectedIssue {
   id: string
   index: number
-  type: 'GAP' | 'MISSING_MEDIA' | 'OFFLINE' | 'DURATION_ZERO'
+  type: 'GAP' | 'OVERRUN' | 'ANCHOR' | 'MISSING_MEDIA' | 'OFFLINE' | 'DURATION_ZERO'
   title: string
   timecode: string
   details: string
@@ -25,17 +27,41 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
   onClose,
   items,
   rate,
+  conflicts,
   onAutoFill,
 }) => {
   const issues = useMemo(() => {
     const list: DetectedIssue[] = []
+    // A fonte de verdade para atraso de 2 min, sobra de 20 s e LIVE que
+    // estourou é o scheduler. Ele já considera duração real no ar, mínimos,
+    // itens protegidos e a próxima âncora; recalcular por soma simples aqui
+    // esconderia justamente os conflitos operacionais.
+    for (const conflict of conflicts) {
+      const index = items.findIndex((item) => item.item.id === conflict.itemId)
+      const item = items[index]
+      list.push({
+        id: `scheduler-${conflict.kind}-${conflict.itemId}`,
+        index,
+        type: conflict.kind === 'GAP'
+          ? 'GAP'
+          : conflict.kind === 'OVERRUN'
+            ? 'OVERRUN'
+            : conflict.kind === 'MEDIA_UNAVAILABLE'
+              ? 'MISSING_MEDIA'
+              : 'ANCHOR',
+        title: item?.item.title ?? 'Conflito de programação',
+        timecode: conflict.frames > 0 ? dur(conflict.frames, rate) : '--:--:--:--',
+        details: conflict.message,
+      })
+    }
     let cumulativeFrames = 0
 
     items.forEach((iv, index) => {
       const duration = iv.trim ? Math.max(0, iv.trim.out - iv.trim.in) : (iv.item.durationOverride ?? iv.asset?.durationFrames ?? 0)
       const tc = clock(cumulativeFrames, rate)
 
-      if (duration <= 0) {
+      const isLive = iv.item.type === 'LIVE' || Boolean(iv.item.sourceRef)
+      if (duration <= 0 && !isLive) {
         list.push({
           id: `dur-zero-${iv.item.id}`,
           index,
@@ -46,7 +72,9 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
         })
       }
 
-      if (!iv.asset) {
+      // Live não mora no MAM. Tratar uma fonte configurada como "mídia
+      // ausente" escondia justamente o conflito real de tempo após um TAKE.
+      if (!iv.asset && !isLive) {
         list.push({
           id: `missing-${iv.item.id}`,
           index,
@@ -70,7 +98,7 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
     })
 
     return list
-  }, [items, rate])
+  }, [items, rate, conflicts])
 
   if (!open) return null
 
@@ -134,7 +162,7 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
                 <span className="font-label-mono text-[10px] text-outline">#{issue.index + 1} • {issue.timecode}</span>
                 <span
                   className={`font-label-caps text-[9px] px-1 py-0.5 rounded font-bold ${
-                    issue.type === 'GAP' || issue.type === 'DURATION_ZERO'
+                  issue.type === 'GAP' || issue.type === 'OVERRUN' || issue.type === 'ANCHOR' || issue.type === 'DURATION_ZERO'
                       ? 'bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/40'
                       : 'bg-armed-amber/20 text-armed-amber border border-armed-amber/40'
                   }`}

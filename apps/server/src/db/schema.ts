@@ -1,4 +1,5 @@
 import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { protectedDiagnosticText, protectedText, protectedJson } from './protected-columns.js'
 import type {
   Anchor,
   AudioLevel,
@@ -11,6 +12,7 @@ import type {
   LoudnessMeasurement,
   FieldOrder,
   MediaKind,
+  QcStatus,
   OverrunPolicy,
   Scan,
   ScheduleEventType,
@@ -22,7 +24,15 @@ import type {
   SrtConfig,
 } from '@rplayout/protocol'
 
+export const channelConfigurationVersions=sqliteTable('channel_configuration_versions',{
+  channelId:text('channel_id').primaryKey(),version:integer('version').notNull(),
+})
+export const qcReviewVersions=sqliteTable('qc_review_versions',{
+  assetId:text('asset_id').primaryKey(),version:integer('version').notNull(),
+})
 export const channels = sqliteTable('channels', {
+  archivedAt: text('archived_at'),
+  qcProfile: text('qc_profile', { mode: 'json' }).$type<import('@rplayout/protocol').QcProfile | null>(),
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   /** Frame rate como razão: 60000/1001, não 59.94. */
@@ -35,6 +45,7 @@ export const channels = sqliteTable('channels', {
   targetLufs: real('target_lufs').notNull(),
   ceilingDbtp: real('ceiling_dbtp').notNull(),
   limiterLookaheadMs: integer('limiter_lookahead_ms').notNull(),
+  audioChannels: integer('audio_channels').$type<2|8|16>().notNull().default(2),
   /** Sub-dispositivo Decklink de saída. Preenchido, a placa é o clock mestre. */
   programSdiDeviceId: text('program_sdi_device_id'),
   /** Arte de apresentação técnica: entra quando nada está no ar. */
@@ -55,7 +66,7 @@ export const outputProfiles = sqliteTable('output_profiles', {
   name: text('name').notNull(),
   kind: text('kind').$type<'RTMP' | 'SRT' | 'FILE' | 'SDI' | 'NDI' | 'OMT'>().notNull(),
   /** URL de rede ou caminho de arquivo. Vazio nos gerenciados: vem do servidor. */
-  target: text('target').notNull().default(''),
+  target: protectedText('target', 'output_profiles.target').notNull(),
   role: text('role').$type<'PROGRAM' | 'PREVIEW' | 'MONITOR' | 'EXTRA'>().notNull().default('EXTRA'),
   width: integer('width'),
   height: integer('height'),
@@ -73,7 +84,7 @@ export const transmissionPresets = sqliteTable('transmission_presets', {
   channelId: text('channel_id').notNull(),
   name: text('name').notNull(),
   kind: text('kind').$type<'SRT' | 'RTMP'>().notNull(),
-  target: text('target').notNull(),
+  target: protectedText('target', 'transmission_presets.target').notNull(),
   createdAt: text('created_at').notNull(),
 })
 
@@ -82,11 +93,12 @@ export const channelProjectSnapshots = sqliteTable('channel_project_snapshots', 
   id: text('id').primaryKey(),
   channelId: text('channel_id').notNull(),
   label: text('label').notNull(),
-  payload: text('payload', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+  payload: protectedJson<Record<string, unknown>>('payload', 'channel_project_snapshots.payload').notNull(),
   createdAt: text('created_at').notNull(),
 })
 
 export const mediaAssets = sqliteTable('media_assets', {
+  videoCodec: text('video_codec'),
   id: text('id').primaryKey(),
   /** SHA-256 do conteúdo: acha o mesmo arquivo renomeado ou movido de pasta. */
   contentHash: text('content_hash').notNull(),
@@ -112,20 +124,34 @@ export const mediaAssets = sqliteTable('media_assets', {
   probeError: text('probe_error'),
   categoryId: text('category_id'),
   defaultTrim: text('default_trim', { mode: 'json' }).$type<Trim | null>(),
+  defaultTrimRateNum: integer('default_trim_rate_num'),
+  defaultTrimRateDen: integer('default_trim_rate_den'),
   defaultAudio: text('default_audio', { mode: 'json' }).$type<AudioLevel | null>(),
   loudnessFile: text('loudness_file', { mode: 'json' }).$type<LoudnessMeasurement | null>(),
   suggestedTrim: text('suggested_trim', { mode: 'json' }).$type<Trim | null>(),
+  qcStatus: text('qc_status').$type<QcStatus>().notNull().default('APPROVED'),
+  qcNotes: text('qc_notes'),
+  qcCheckedAt: text('qc_checked_at'),
   /** Removido da listagem pelo operador; permanece para não voltar no próximo scan. */
   ignored: integer('ignored', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
 })
 
+export const qcDecisions = sqliteTable('qc_decisions', {
+  id: text('id').primaryKey(), assetId: text('asset_id').notNull(), contentHash: text('content_hash').notNull(),
+  channelId: text('channel_id').notNull(), status: text('status').$type<QcStatus>().notNull(), notes: text('notes'),
+  checks: text('checks', { mode: 'json' }).$type<ReturnType<typeof import('@rplayout/protocol').assessQc>>().notNull(),
+  actor: text('actor'), createdAt: text('created_at').notNull(),
+})
+
 export const rundowns = sqliteTable('rundowns', {
+  publicationRequired: integer('publication_required',{mode:'boolean'}).notNull().default(false),
   id: text('id').primaryKey(),
   channelId: text('channel_id').notNull(),
   name: text('name').notNull(),
   /** Início da grade, em frames desde a meia-noite. */
   plannedStart: integer('planned_start').notNull(),
+  protectedZones: text('protected_zones', { mode: 'json' }).$type<import('@rplayout/protocol').ProtectedTimingZone[]>().notNull().default([]),
   loop: integer('loop', { mode: 'boolean' }).notNull(),
   date: text('date').notNull(),
   createdAt: text('created_at').notNull(),
@@ -143,6 +169,28 @@ export const playlistVersions = sqliteTable('playlist_versions', {
   skipped: integer('skipped').notNull(),
   scheduledDate: text('scheduled_date'),
   publishedAt: text('published_at').notNull(),
+})
+
+/** Revisão imutável da playlist operacional, separada da grade em edição. */
+export const operationalPlaylistRevisions = sqliteTable('operational_playlist_revisions', {
+  id: text('id').primaryKey(),
+  rundownId: text('rundown_id').notNull().references(() => rundowns.id, { onDelete: 'cascade' }),
+  revision: integer('revision').notNull(),
+  state: text('state').$type<'PUBLISHED' | 'SUPERSEDED'>().notNull(),
+  active: integer('active', { mode: 'boolean' }).notNull().default(false),
+  payload: protectedJson<Record<string, unknown>>('payload', 'operational_playlist_revisions.payload').notNull(),
+  publishedBy: text('published_by'),
+  publishedAt: text('published_at').notNull(),
+  activatedAt: text('activated_at'),
+})
+
+/** Original editable frames retained separately from immutable publications. */
+export const channelCadenceConversions=sqliteTable('channel_cadence_conversions',{
+  id:text('id').primaryKey(),channelId:text('channel_id').notNull().references(()=>channels.id),
+  fingerprint:text('fingerprint').notNull(),fromNum:integer('from_num').notNull(),fromDen:integer('from_den').notNull(),
+  toNum:integer('to_num').notNull(),toDen:integer('to_den').notNull(),
+  snapshot:protectedJson<Record<string,unknown>>('snapshot','channel_cadence_conversions.snapshot').notNull(),
+  createdAt:text('created_at').notNull(),actor:text('actor'),
 })
 
 export const users = sqliteTable('users', {
@@ -167,7 +215,7 @@ export const healthEvents = sqliteTable('health_events', {
   component: text('component').notNull(),
   state: text('state').notNull(),
   severity: text('severity').$type<'INFO' | 'WARN' | 'CRITICAL'>().notNull().default('INFO'),
-  message: text('message'),
+  message: protectedDiagnosticText('message', 'health_events.message'),
   occurredAt: text('occurred_at').notNull(),
   acknowledgedAt: text('acknowledged_at'),
 })
@@ -176,10 +224,34 @@ export const integrations = sqliteTable('integrations', {
   id: text('id').primaryKey(),
   channelId: text('channel_id'),
   name: text('name').notNull(),
-  url: text('url').notNull(),
+  url: protectedText('url', 'integrations.url').notNull(),
   events: text('events', { mode: 'json' }).$type<string[]>().notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
+})
+
+/** Editorial definitions; execution always reads the published snapshot. */
+export const secondaryEvents = sqliteTable('secondary_events', {
+  id: text('id').primaryKey(), channelId: text('channel_id').notNull(), itemId: text('item_id').notNull(),
+  definition: protectedJson<import('@rplayout/protocol').SecondaryEvent>('definition','secondary_events.definition').notNull(),
+  createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+})
+export const secondaryEventRuns = sqliteTable('secondary_event_runs', {
+  id: text('id').primaryKey(), channelId:text('channel_id').notNull(), executionId:text('execution_id').notNull(),
+  itemId:text('item_id').notNull(), revisionId:text('revision_id'), eventId:text('event_id').notNull(),
+  mode:text('mode').$type<'FIRE'|'DISMISS'>().notNull(),
+  state:text('state').$type<'FIRING'|'EXECUTED'|'FAILED'>().notNull(),
+  frames:integer('frames').notNull(), createdAt:text('created_at').notNull(), completedAt:text('completed_at'), error:text('error'),
+})
+
+/** At-least-once deliveries. The receiver can deduplicate with the stable ID. */
+export const integrationDeliveries = sqliteTable('integration_deliveries', {
+  id: text('id').primaryKey(), integrationId: text('integration_id').notNull(), channelId: text('channel_id'),
+  event: text('event').notNull(), target: protectedText('target','integration_deliveries.target').notNull(),
+  payload: protectedJson<Record<string, unknown>>('payload','integration_deliveries.payload').notNull(),
+  state: text('state').$type<'QUEUED' | 'SENDING' | 'DELIVERED' | 'FAILED' | 'CANCELLED'>().notNull(),
+  attempts: integer('attempts').notNull(), nextAttemptAt: text('next_attempt_at').notNull(),
+  lastError: text('last_error'), createdAt: text('created_at').notNull(), deliveredAt: text('delivered_at'),
 })
 
 /** Equipamentos externos que podem receber comandos de automação. */
@@ -201,12 +273,12 @@ export const rundownItems = sqliteTable('rundown_items', {
   eventType: text('event_type').$type<ScheduleEventType>().notNull().default('SEQUENTIAL'),
   title: text('title').notNull(),
   mediaId: text('media_id'),
-  sourceRef: text('source_ref'),
+  sourceRef: protectedText('source_ref', 'rundown_items.source_ref'),
   trimmable: integer('trimmable', { mode: 'boolean' }).notNull().default(false),
   optional: integer('optional', { mode: 'boolean' }).notNull().default(false),
   protected: integer('protected', { mode: 'boolean' }).notNull().default(false),
   liveSourceType: text('live_source_type').$type<LiveSourceType>(),
-  liveEndpoint: text('live_endpoint'),
+  liveEndpoint: protectedText('live_endpoint', 'rundown_items.live_endpoint'),
   liveEstimatedDuration: integer('live_estimated_duration'),
   liveMaxDuration: integer('live_max_duration'),
   liveAutoFollowOnEnd: integer('live_auto_follow_on_end', { mode: 'boolean' }).default(false),
@@ -301,6 +373,10 @@ export const asRun = sqliteTable('as_run', {
   rundownId: text('rundown_id'),
   itemId: text('item_id'),
   mediaId: text('media_id'),
+  revisionId: text('revision_id'),
+  mediaHash: text('media_hash'),
+  startPositionFrames: integer('start_position_frames'),
+  endPositionFrames: integer('end_position_frames'),
   title: text('title').notNull(),
   type: text('type').notNull(),
   /** Instante real de entrada e saída, em ISO -- o relógio de parede manda. */
@@ -311,6 +387,10 @@ export const asRun = sqliteTable('as_run', {
   actualStart: integer('actual_start').notNull(),
   /** Duração no ar, em frames, e a que a grade previa. */
   airedFrames: integer('aired_frames'),
+  rateNum: integer('rate_num'),
+  rateDen: integer('rate_den'),
+  executionKind: text('execution_kind').$type<'NATIVE' | 'SIMULATED' | 'UNKNOWN'>().notNull().default('UNKNOWN'),
+  durationEvidence: text('duration_evidence').$type<'ENGINE_POSITION' | 'CLOCK_ESTIMATE' | 'UNKNOWN'>().notNull().default('UNKNOWN'),
   plannedFrames: integer('planned_frames'),
   /** Como saiu: fim do arquivo, take manual, parada, ou queda da fonte. */
   endedBy: text('ended_by'),
@@ -326,7 +406,7 @@ export const operatorDecisions = sqliteTable('operator_decisions', {
   rundownId: text('rundown_id').notNull(),
   itemId: text('item_id'),
   kind: text('kind').notNull(),
-  payload: text('payload', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+  payload: protectedJson<Record<string, unknown>>('payload', 'operator_decisions.payload').notNull(),
   actorUsername: text('actor_username'),
   createdAt: text('created_at').notNull(),
 })
@@ -339,7 +419,7 @@ export const guestKeys = sqliteTable('guest_keys', {
   id: text('id').primaryKey(),
   channelId: text('channel_id').notNull(),
   label: text('label').notNull(),
-  streamKey: text('stream_key').notNull(),
+  streamKey: protectedText('stream_key', 'guest_keys.stream_key').notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull(),
   createdAt: text('created_at').notNull(),
 })
@@ -349,7 +429,7 @@ export const destinations = sqliteTable('destinations', {
   id: text('id').primaryKey(),
   channelId: text('channel_id').notNull(),
   name: text('name').notNull(),
-  url: text('url').notNull(),
+  url: protectedText('url', 'destinations.url').notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull(),
   createdAt: text('created_at').notNull(),
 })
@@ -391,8 +471,8 @@ export const liveSources = sqliteTable('live_sources', {
   channelId: text('channel_id').notNull(),
   name: text('name').notNull(),
   kind: text('kind').$type<'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'>().notNull(),
-  targetUrl: text('target_url').notNull(),
-  srtConfig: text('srt_config', { mode: 'json' }).$type<SrtConfig | null>(),
+  targetUrl: protectedText('target_url', 'live_sources.target_url').notNull(),
+  srtConfig: protectedJson<SrtConfig | null>('srt_config', 'live_sources.srt_config'),
   role: text('role').$type<RedundancyRole>().notNull().default('PRIMARY'),
   pairedSourceId: text('paired_source_id'),
   autoFailover: integer('auto_failover', { mode: 'boolean' }).notNull().default(true),
@@ -408,6 +488,6 @@ export const multiviewConfigs = sqliteTable('multiview_configs', {
   id: text('id').primaryKey(),
   channelId: text('channel_id'),
   layout: text('layout').$type<MultiviewLayout>().notNull().default('GRID_2X2'),
-  cells: text('cells', { mode: 'json' }).$type<MultiviewCell[] | null>(),
+  cells: protectedJson<MultiviewCell[] | null>('cells', 'multiview_configs.cells'),
   updatedAt: text('updated_at').notNull(),
 })

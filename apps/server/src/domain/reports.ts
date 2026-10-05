@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { framesToSeconds, type Rate } from '@rplayout/protocol'
+import { type Rate } from '@rplayout/protocol'
 import { calculateAncineCompliance, toAsRunRecordExtended, type AsRunEntry } from './asrun.js'
 
 export interface CommercialComplianceReport {
@@ -7,11 +7,13 @@ export interface CommercialComplianceReport {
   readonly period: { readonly since: string | null; readonly until: string | null }
   readonly commercialSpots: readonly ReturnType<typeof toAsRunRecordExtended>[]
   readonly totalCommercialSeconds: number
-  readonly hourlyCompliance: readonly { readonly hour: string; readonly percent: number; readonly compliant: boolean }[]
+  readonly missingCommercialDurations: number
+  readonly hourlyCompliance: readonly { readonly hour: string; readonly percent: number; readonly compliant: boolean | null; readonly missingDurationCount: number }[]
+  readonly regulatoryValidated: false
   readonly reportId: string
 }
 
-const isCommercial = (entry: AsRunEntry) => ['COMMERCIAL', 'SPOT', 'PUB'].includes(entry.type.toUpperCase())
+const isCommercial = (entry: AsRunEntry) => ['COMERCIAL', 'COMMERCIAL', 'SPOT', 'PUB'].includes(entry.type.toUpperCase())
 
 /** Constrói o comprovante a partir do as-run, a fonte de verdade de veiculação. */
 export function buildCommercialComplianceReport(
@@ -28,16 +30,18 @@ export function buildCommercialComplianceReport(
   }
   const hourlyCompliance = [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([hour, rows]) => {
     const summary = calculateAncineCompliance(rows, rate)
-    return { hour, percent: summary.hourlyCommercialPercent, compliant: summary.compliant }
+    return { hour, percent: summary.hourlyCommercialPercent, compliant: summary.compliant, missingDurationCount: summary.missingDurationCount ?? 0 }
   })
-  const totalCommercialSeconds = Math.round(commercialSpots.reduce((sum, item) => sum + framesToSeconds(item.durationFrames, rate), 0) * 1000) / 1000
+  const totalCommercialSeconds = Math.round(commercialSpots.reduce((sum, item) => sum + (item.durationSeconds ?? 0), 0) * 1000) / 1000
   const fingerprint = JSON.stringify({ entries: entries.map((entry) => entry.id), period, generatedAt })
   return {
     generatedAt,
     period,
     commercialSpots,
     totalCommercialSeconds,
+    missingCommercialDurations: commercialSpots.filter(item => item.durationSeconds === null).length,
     hourlyCompliance,
+    regulatoryValidated: false,
     reportId: createHash('sha256').update(fingerprint).digest('hex').slice(0, 16).toUpperCase(),
   }
 }
@@ -51,26 +55,38 @@ function pdfText(value: unknown): string {
 /** Gera um PDF real e autocontido, sem depender de um renderer externo. */
 export function renderCommercialCompliancePdf(channelName: string, report: CommercialComplianceReport): Buffer {
   const lines = [
-    'RPLAYOUT - COMPROVANTE DE VEICULACAO COMERCIAL E COMPLIANCE',
+    'RPLAYOUT - RELATORIO OPERACIONAL DE ITENS COMERCIAIS',
     `Canal: ${channelName}`,
     `Periodo: ${report.period.since ?? 'inicio'} ate ${report.period.until ?? 'agora'}`,
     `Emitido em: ${report.generatedAt}   Documento: ${report.reportId}`,
-    `Spots comerciais veiculados: ${report.commercialSpots.length}   Duracao total: ${report.totalCommercialSeconds}s`,
-    'Limite regulatorio por hora: 25.0% de publicidade.',
+    `Registros comerciais: ${report.commercialSpots.length}   Duracao conhecida/estimada: ${report.totalCommercialSeconds}s`,
+    `Registros comerciais sem duracao: ${report.missingCommercialDurations}. Totais podem ser incompletos.`,
+    'SEM ASSINATURA DIGITAL OU HOMOLOGACAO REGULATORIA/FISICA.',
+    'Relogio do host; NTP nao aferido. SIMULATED nao comprova veiculacao.',
     '',
-    'VEICULACOES COMERCIAIS',
-    ...report.commercialSpots.map((spot) => `${spot.actualStart} | ${spot.title} | ${spot.durationFrames} frames | ${spot.status}`),
+    'REGISTROS COMERCIAIS',
+    ...report.commercialSpots.flatMap((spot) => [`${spot.actualStart} | ${spot.title} | ${spot.durationFrames ?? 'N/D'} frames | ${spot.status}`, `  Transporte ${spot.executionKind ?? 'UNKNOWN'}; duracao ${spot.durationEvidence ?? 'UNKNOWN'}; fps ${spot.rate?.num ?? 'N/D'}/${spot.rate?.den ?? 'N/D'}`]),
     '',
-    'COMPLIANCE POR HORA',
-    ...report.hourlyCompliance.map((hour) => `${hour.hour} | publicidade ${hour.percent.toFixed(1)}% | ${hour.compliant ? 'CONFORME' : 'NAO CONFORME'}`),
+    'CLASSIFICACAO POR HORA DE INICIO (NAO E APURACAO DE LIMITE LEGAL)',
+    ...report.hourlyCompliance.map((hour) => `${hour.hour} | duracao classificada / 3600s: ${hour.percent.toFixed(1)}% | NAO HOMOLOGADA | ${hour.missingDurationCount} sem duracao`),
     '',
-    'Este comprovante e derivado do log as-run registrado pelo RPlayout.',
+    'Relatorio derivado do log as-run. ID do documento nao e assinatura digital.',
   ]
   // Nunca silenciosamente cortar uma lista grande de inserções comerciais.
   // Cada página reserva uma linha para cabeçalho/rodapé e guarda até 48 eventos.
-  const pages = Array.from({ length: Math.max(1, Math.ceil(lines.length / 48)) }, (_, page) => lines.slice(page * 48, page * 48 + 48))
+  // Courier 9pt: 88 characters occupy <=475.2pt, within A4 margins.
+  // Wrap long names/IDs; never silently clip or truncate them.
+  const wrapped = lines.flatMap(line => {
+    const chunks: string[] = []; let remaining = line
+    while (remaining.length > 88) {
+      const space = remaining.lastIndexOf(' ', 88), at = space > 0 ? space : 88
+      chunks.push(remaining.slice(0, at)); remaining = remaining.slice(at).trimStart()
+    }
+    return [...chunks, remaining]
+  })
+  const pages = Array.from({ length: Math.max(1, Math.ceil(wrapped.length / 48)) }, (_, page) => wrapped.slice(page * 48, page * 48 + 48))
   const streams = pages.map((pageLines, page) => [
-    'BT', '/F1 10 Tf', '50 790 Td', '14 TL',
+    'BT', '/F1 9 Tf', '50 790 Td', '14 TL',
     ...pageLines.flatMap((line, index) => [index === 0 ? `(${pdfText(line)}) Tj` : `T* (${pdfText(line)}) Tj`]),
     `T* (Pagina ${page + 1}/${pages.length}) Tj`, 'ET',
   ].join('\n'))
@@ -80,7 +96,7 @@ export function renderCommercialCompliancePdf(channelName: string, report: Comme
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     `<< /Type /Pages /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pages.length} >>`,
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>',
     ...streams.flatMap((stream, index) => {
       const pageId = pageObjectIds[index]!
       const streamId = pageId + 1

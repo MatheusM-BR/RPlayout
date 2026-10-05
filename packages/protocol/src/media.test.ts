@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   computeAutoGain,
+  convertTrim,
   durationIn,
   effectiveGainDb,
   resolveAudio,
@@ -39,6 +40,9 @@ const asset = (overrides: Partial<MediaAsset> = {}): MediaAsset => ({
   defaultAudio: null,
   loudnessFile: null,
   suggestedTrim: null,
+  qcStatus: 'PENDING',
+  qcNotes: null,
+  qcCheckedAt: null,
   createdAt: '2026-08-31T00:00:00.000Z',
   ...overrides,
 })
@@ -76,6 +80,20 @@ describe('ganho automático', () => {
 })
 
 describe('ganho efetivo por modo', () => {
+  it('mix selecionado não herda medição de loudness do arquivo inteiro',()=>{
+    const routed:AudioLevel={mode:'MANUAL',gainDb:0,measured:measurement(-18,-3),routing:{mode:'STEREO_3_4'}}
+    expect(resolveAudio(routed,asset({loudnessFile:measurement(-23,-1)})).value).toEqual({...routed,measured:null})
+  })
+  it('medição de mix só vale para conteúdo/trilha/roteamento exatos, inclusive padrão herdado',()=>{
+    const content=asset(),routing={mode:'STEREO_3_4' as const}
+    const routed:AudioLevel={mode:'AUTO',gainDb:0,analysisId:'server-owned',routing,measured:{...measurement(-18,-3),input:{contentHash:content.contentHash,audioTrack:0,routing}}}
+    expect(resolveAudio(routed,content).value.measured).toEqual(routed.measured)
+    expect(resolveAudio(null,{...content,defaultAudio:routed}).value.measured).toEqual(routed.measured)
+    expect(resolveAudio(routed,{...content,contentHash:'changed'}).value.measured).toBeNull()
+    expect(resolveAudio(routed,content,1).value.measured).toBeNull()
+    expect(resolveAudio({...routed,routing:{mode:'LEFT_ONLY'}},content).value.measured).toBeNull()
+    expect(resolveAudio({mode:'AUTO',gainDb:0,measured:null},{...content,loudnessFile:measurement(-18,-3)},1).value.measured).toBeNull()
+  })
   const measured = measurement(-18, -3)
 
   it('OFF não mexe no áudio', () => {
@@ -95,6 +113,21 @@ describe('ganho efetivo por modo', () => {
 })
 
 describe('precedência do corte', () => {
+  it.each([
+    [RATE['25'],RATE['50'],{in:25,out:100},{in:50,out:200}],
+    [RATE['50'],RATE['25'],{in:50,out:200},{in:25,out:100}],
+    [RATE['29.97'],RATE['50'],{in:300,out:600},{in:501,out:1001}],
+  ] as const)('padrão preserva tempo, não contagem de quadros: %j → %j', (from,to,trim,expected) => {
+    expect(resolveTrim(null,asset({defaultTrim:trim,defaultTrimRate:from}),to)).toEqual({value:expected,source:'ASSET'})
+    expect(resolveTrim({in:5,out:10},asset({defaultTrim:trim,defaultTrimRate:from}),to).value).toEqual({in:5,out:10})
+  })
+  it('legado sem taxa conhecida conserva valores, sem adivinhar FPS pela sonda', () => {
+    expect(resolveTrim(null,asset({defaultTrim:{in:25,out:100},defaultTrimRate:null}),RATE['50']).value).toEqual({in:25,out:100})
+  })
+  it('corte abaixo de um quadro do destino não vira duração zero silenciosamente', () => {
+    expect(()=>convertTrim({in:0,out:1},RATE['50'],{num:1,den:1})).toThrow('ficaria vazio')
+    expect(()=>convertTrim({in:-1,out:10},RATE['50'],RATE['25'])).toThrow('inválido')
+  })
   it('item ganha do padrão do asset', () => {
     const resolved = resolveTrim(
       { in: 100, out: 400 },

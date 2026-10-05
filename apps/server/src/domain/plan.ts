@@ -1,5 +1,8 @@
 import {
   effectiveGainDb,
+  qcApproved,
+  assessQc,
+  inferLiveSourceType,
   resolveAudio,
   resolveTrim,
   trimDuration,
@@ -65,7 +68,7 @@ export function toPlanItem(
     item.liveConfig ??
     (item.type === 'LIVE' || item.sourceRef || item.liveEndpoint
       ? {
-          sourceType: (item.liveSourceType ?? 'SRT') as any,
+          sourceType: item.liveSourceType ?? inferLiveSourceType(item.liveEndpoint ?? item.sourceRef ?? ''),
           sourceEndpoint: item.liveEndpoint ?? item.sourceRef ?? '',
           estimatedDuration: item.liveEstimatedDuration ?? item.durationOverride ?? 0,
           maxDuration: item.liveMaxDuration ?? null,
@@ -94,6 +97,7 @@ export function toPlanItem(
 
 /** O item com tudo que a interface precisa mostrar já resolvido. */
 export interface ItemView {
+  readonly editorialRevision?:number
   readonly item: RundownItem
   readonly asset: MediaAsset | null
   readonly trim: Trim
@@ -107,6 +111,7 @@ export interface ItemView {
 }
 
 export interface RundownView {
+  readonly editorialRevision?:number
   readonly rundown: Rundown
   readonly channel: Channel
   readonly items: readonly ItemView[]
@@ -146,7 +151,7 @@ export function buildView(
     }
 
     const trim = resolveTrim(item.trim, asset, channel.rate)
-    const audio = resolveAudio(item.audio, asset)
+    const audio = resolveAudio(item.audio, asset,item.audioTrack??0)
     return {
       item,
       asset,
@@ -165,6 +170,7 @@ export function buildView(
   const effectivePlannedStart = (() => {
     if (now === null) return rundown.plannedStart
     if (onAir) return onAir.startedAt
+    if (now < 0) return rundown.plannedStart
     if (
       rundown.loop ||
       rundown.plannedStart < now ||
@@ -180,7 +186,7 @@ export function buildView(
     items: ordered.map((item) => {
       const asset = item.mediaId ? assets.get(item.mediaId) : undefined
       const plan = toPlanItem(item, asset, channel.rate)
-      if (item.id !== onAir?.itemId && item.mediaId && (!asset || asset.probeError)) {
+      if (item.id !== onAir?.itemId && item.mediaId && (!asset || asset.probeError || asset.ignored || !qcApproved(asset.qcStatus ?? 'APPROVED') || (channel.qcProfile && !assessQc(asset, channel.qcProfile).playable))) {
         return { ...plan, duration: 0, minDuration: 0, anchor: { kind: 'FLOW' as const }, locked: false }
       }
       return plan
@@ -189,17 +195,18 @@ export function buildView(
     onAir,
     plannedStart: effectivePlannedStart,
     rundownId: rundown.id,
-  } as any)
+    protectedZones: rundown.protectedZones,
+  })
 
   const unavailable = views.filter((entry) => entry.item.id !== onAir?.itemId &&
-    entry.item.mediaId && (!entry.asset || entry.asset.probeError))
+    entry.item.mediaId && (!entry.asset || entry.asset.probeError || entry.asset.ignored || !qcApproved(entry.asset.qcStatus ?? 'APPROVED') || (channel.qcProfile && !assessQc(entry.asset, channel.qcProfile).playable)))
   const unavailableIds = new Set(unavailable.map((entry) => entry.item.id))
   return { rundown, channel, items: views, schedule: {
     ...schedule,
     items: schedule.items.map((entry) => unavailableIds.has(entry.id) ? { ...entry, state: 'DROPPED' as const } : entry),
     conflicts: [...schedule.conflicts, ...unavailable.map((entry) => ({
       kind: 'MEDIA_UNAVAILABLE' as const, itemId: entry.item.id, frames: 0,
-      severity: 'ERROR' as const, message: `Será pulado: ${entry.asset?.probeError ?? 'arquivo removido do acervo'}`,
+      severity: 'ERROR' as const, message: `Será pulado: ${(entry.asset?.probeError ?? (entry.asset && channel.qcProfile && assessQc(entry.asset, channel.qcProfile).errors.join(' '))) || (!qcApproved(entry.asset?.qcStatus ?? 'APPROVED') ? 'arquivo sem aprovação de QC' : 'arquivo removido do acervo')}`,
     }))],
   } }
 }

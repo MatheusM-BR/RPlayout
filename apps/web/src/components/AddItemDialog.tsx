@@ -11,6 +11,7 @@ import {
 import { api } from '../api.js'
 import { dur } from '../format.js'
 import type { LiveSource, SourceFamily, SourceList } from '../types.js'
+import { inputName, sourceName } from './broadcast/protocol-config.js'
 
 type AnchorMode = 'FLOW' | 'FIXED' | 'SOFT'
 type Kind = 'FILE' | 'LIVE'
@@ -35,12 +36,14 @@ interface Props {
   suggestedAt: number
   onCancel: () => void
   onAdd: (item: NewItem) => void
+  error?:string|null
+  pending?:boolean
 }
 
 const FAMILY_LABEL: Record<LiveSource['family'], string> = {
   SDI: 'PLACA (SDI/HDMI)',
   NDI: 'NDI NA REDE',
-  OMT: 'OMT / SMPTE-2110',
+  OMT: 'OPEN MEDIA TRANSPORT',
   GUEST: 'CONVIDADOS NO SERVIDOR',
 }
 
@@ -55,6 +58,8 @@ export function AddItemDialog({
   suggestedAt,
   onCancel,
   onAdd,
+  error,
+  pending=false,
 }: Props) {
   const [kind, setKind] = useState<Kind>('FILE')
   const [assetId, setAssetId] = useState(initialAssetId ?? assets[0]?.id ?? '')
@@ -66,6 +71,8 @@ export function AddItemDialog({
   const [scanning, setScanning] = useState(false)
   const [sourceRef, setSourceRef] = useState('')
   const [manualSource, setManualSource] = useState('')
+  const [liveName, setLiveName] = useState('')
+  const [liveNameEdited, setLiveNameEdited] = useState(false)
   const [liveMinutes, setLiveMinutes] = useState(15)
 
   // A descoberta só roda quando o operador pede o vivo: enumerar NDI vasculha
@@ -80,7 +87,7 @@ export function AddItemDialog({
         if (alive) setSources(list)
       })
       .catch(() => {
-        if (alive) setSources({ sdi: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED })
+        if (alive) setSources({ sdi: FAILED, sdiOutputs: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED })
       })
       .finally(() => {
         if (alive) setScanning(false)
@@ -95,23 +102,21 @@ export function AddItemDialog({
     api
       .sources(true)
       .then(setSources)
-      .catch(() => setSources({ sdi: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED }))
+      .catch(() => setSources({ sdi: FAILED, sdiOutputs: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED }))
       .finally(() => setScanning(false))
   }
 
   const families: SourceFamily[] = sources ? [sources.sdi, sources.ndi, sources.omt, sources.guests] : []
-  // Serviço NMOS descoberto é inventário/control-plane; sem SDP ou URI RTP
-  // ele não é uma entrada que o engine possa abrir. As fontes OMT cadastradas
-  // com URI continuam disponíveis normalmente.
-  const live = families.flatMap((family) => family.sources).filter((source) => !source.reference.startsWith('omt-discovery:'))
+  const live = families.flatMap((family) => family.sources)
   const chosen = live.find((source) => source.reference === sourceRef)
   const sourceValue = manualSource.trim() || chosen?.reference || ''
+  const liveNameValue = inputName(liveName, chosen?.label || sourceName(sourceValue, []), liveNameEdited)
 
   const at = parseTimecode(atText, rate)
   const asset = assets.find((candidate) => candidate.id === assetId)
   const needsTime = mode !== 'FLOW'
   const valid =
-    (kind === 'FILE' ? asset !== undefined : sourceValue !== '' && liveMinutes > 0) &&
+    (kind === 'FILE' ? asset !== undefined : sourceValue !== '' && Boolean(liveNameValue.trim()) && liveMinutes > 0) &&
     (!needsTime || at !== null)
 
   const build = (): Anchor => {
@@ -144,7 +149,7 @@ export function AddItemDialog({
       mediaId: null,
       sourceRef: sourceValue,
       type: 'LIVE',
-      title: chosen?.label ?? sourceValue,
+      title: liveNameValue.trim(),
       anchor,
       durationOverride: secondsToFrames(liveMinutes * 60, rate),
     })
@@ -194,7 +199,7 @@ export function AddItemDialog({
                 <select
                   value={sourceRef}
                   disabled={live.length === 0}
-                  onChange={(event) => setSourceRef(event.target.value)}
+                  onChange={(event) => { setSourceRef(event.target.value); setManualSource('') }}
                 >
                   <option value="">
                     {scanning
@@ -203,7 +208,7 @@ export function AddItemDialog({
                         ? 'nenhuma fonte ao vivo disponível'
                         : 'escolha a fonte'}
                   </option>
-                  {(['SDI', 'NDI', 'GUEST'] as const).map((family) => {
+                  {(['SDI', 'NDI', 'OMT', 'GUEST'] as const).map((family) => {
                     const group = live.filter((source) => source.family === family)
                     if (group.length === 0) return null
                     return (
@@ -220,11 +225,18 @@ export function AddItemDialog({
                 <input
                   type="text"
                   value={manualSource}
-                  onChange={(event) => setManualSource(event.target.value)}
+                  onChange={(event) => { setManualSource(event.target.value); setSourceRef('') }}
                   placeholder="ou informe srt://… ou rtmp://…"
                   aria-label="Fonte SRT ou RTMP"
                 />
                 <div className="sub">SRT caller/listener e RTMP são aceitos pelo engine; use uma URL completa.</div>
+              </div>
+
+              <div className="field">
+                <label htmlFor="live-input-name">Nome da entrada na grade</label>
+                <input id="live-input-name" value={liveNameValue} placeholder="Selecione a fonte acima"
+                  onChange={(event) => { setLiveName(event.target.value); setLiveNameEdited(Boolean(event.target.value.trim())) }} />
+                <div className="sub">Preenchido com o nome da fonte; você pode definir um apelido.</div>
               </div>
 
               {/* O que falta é tão informativo quanto o que existe: sem placa,
@@ -303,12 +315,13 @@ export function AddItemDialog({
           </div>
         </div>
 
+        {error && <div className="note warn" role="alert">{error} Seus campos foram mantidos. Se a grade mudou, feche e reabra para revisar a posição antes de inserir.</div>}
         <footer>
-          <button className="btn" onClick={onCancel}>
+          <button className="btn" disabled={pending} onClick={onCancel}>
             cancelar
           </button>
-          <button className="btn take" disabled={!valid} onClick={submit}>
-            inserir
+          <button className="btn take" disabled={!valid || pending} onClick={submit}>
+            {pending?'inserindo…':'inserir'}
           </button>
         </footer>
       </div>
@@ -331,7 +344,7 @@ function reasonsOf(list: SourceList): string[] {
   }
   add(list.sdi, 'placa', 'driver presente, nenhuma placa encontrada')
   add(list.ndi, 'NDI', 'nenhuma fonte anunciada na rede')
-  add(list.omt, 'OMT/NMOS', 'nenhum serviço OMT/NMOS anunciado na rede')
+  add(list.omt, 'OMT', 'nenhuma fonte Open Media Transport anunciada na rede')
   add(list.guests, 'convidados', 'nenhuma chave de convidado ativa')
   return lines
 }

@@ -1,20 +1,18 @@
-import { eq } from 'drizzle-orm'
+import { asc,eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
+import {configurationRevision} from '../db/channel-configuration.js'
 import {
   graphicTemplates,
   itemGraphics,
   rundownItems,
+  rundowns,channels,mediaAssets,
 } from '../db/schema.js'
 import {
-  assetMap,
-  getChannel,
-  getRundown,
-  listItems,
+  toAsset,toChannel,toRundown,toItem,
 } from '../db/repo.js'
 import {
   BROADCAST_CATEGORY_COLORS,
   formatTimecode,
-  framesSinceMidnight,
   framesToMs,
   RATE_PADRAO,
   type BroadcastItemCategory,
@@ -28,7 +26,8 @@ import {
   type TimelineZoomLevel,
 } from '@rplayout/protocol'
 import { buildView } from './plan.js'
-import { globalConcurrencyManager } from './concurrency.js'
+import {EditorialVersions} from '../db/editorial-revisions.js'
+import { rundownFrames } from './rundown-clock.js'
 
 export const ZOOM_CONFIGS: Record<
   TimelineZoomLevel,
@@ -85,37 +84,27 @@ export async function generateTimelineMultiTrack(
   rundownId: string,
   options?: GenerateTimelineOptions,
 ): Promise<TimelineMultiTrackData & { viewport: TimelineViewportState }> {
-  const rundown = await getRundown(db, rundownId)
-  if (!rundown) {
-    throw new Error(`Rundown não encontrado: ${rundownId}`)
-  }
-
-  const channel = (await getChannel(db, rundown.channelId)) ?? {
-    id: rundown.channelId,
-    name: 'Canal Padrão',
-    rate: RATE_PADRAO,
-    targetLufs: -23,
-    ceilingDbtp: -1,
-  }
-  const rate: Rate = channel.rate ?? RATE_PADRAO
-
-  const [items, assets, templates, cues] = await Promise.all([
-    listItems(db, rundownId),
-    assetMap(db),
-    db.select().from(graphicTemplates),
-    db
-      .select()
-      .from(itemGraphics)
-      .innerJoin(rundownItems, eq(itemGraphics.itemId, rundownItems.id))
-      .where(eq(rundownItems.rundownId, rundownId)),
-  ])
+  // One read snapshot: a late version must not be attached to older items.
+  const {rundown,channel,items,assets,templates,cues,rundownVersion,eTag}=db.transaction(tx=>{
+    const grade=tx.select().from(rundowns).where(eq(rundowns.id,rundownId)).get()
+    if(!grade)throw new Error(`Rundown não encontrado: ${rundownId}`)
+    const channelRow=tx.select().from(channels).where(eq(channels.id,grade.channelId)).get()
+    if(!channelRow || channelRow.archivedAt)throw new Error('Canal ativo não encontrado para timeline.')
+    const version=new EditorialVersions(db.$client).read(rundownId)
+    return {rundown:toRundown(grade),channel:toChannel(channelRow,configurationRevision(tx,channelRow.id)),rundownVersion:version,eTag:`w/"${version}"`,
+      items:tx.select().from(rundownItems).where(eq(rundownItems.rundownId,rundownId)).orderBy(asc(rundownItems.sortOrder),asc(rundownItems.id)).all().map(toItem),
+      assets:new Map(tx.select().from(mediaAssets).all().map(row=>[row.id,toAsset(row)])),
+      templates:tx.select().from(graphicTemplates).all(),
+      cues:tx.select().from(itemGraphics).innerJoin(rundownItems,eq(itemGraphics.itemId,rundownItems.id)).where(eq(rundownItems.rundownId,rundownId)).all()}
+  })
+  const rate:Rate=channel.rate
 
   const templateMap = new Map<string, typeof graphicTemplates.$inferSelect>(
     templates.map((tpl) => [tpl.id, tpl]),
   )
 
   const nowFrames =
-    options?.currentPlayheadFrames ?? framesSinceMidnight(new Date(), rate)
+    options?.currentPlayheadFrames ?? rundownFrames(rundown.date, rate) ?? 0
   const playheadMs = Math.round(framesToMs(nowFrames, rate))
 
   const scheduleNow =
@@ -401,9 +390,6 @@ export async function generateTimelineMultiTrack(
   const lastEntry = resolvedSchedule[resolvedSchedule.length - 1]
   const totalDurationFrames = lastEntry ? lastEntry.end : 0
   const totalDurationMs = Math.round(framesToMs(totalDurationFrames, rate))
-
-  const rundownVersion = globalConcurrencyManager.getRundownVersion(rundownId)
-  const eTag = globalConcurrencyManager.generateETag(rundownId)
 
   return {
     rundownId,

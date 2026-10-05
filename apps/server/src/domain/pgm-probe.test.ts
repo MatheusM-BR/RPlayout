@@ -1,68 +1,116 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { PgmProbe } from './pgm-probe.js'
 
-describe('sonda de qualidade de PGM (pgm-probe)', () => {
-  it('dispara alerta de Black Frame quando a duração ultrapassa 2.0s', () => {
-    let actionTriggered: string | null = null
-    const probe = new PgmProbe(
-      { blackThresholdMs: 2000 },
-      (action) => { actionTriggered = action },
-    )
-
-    // 1.5s de Black: não deve acionar alerta ativo ainda
-    probe.feedMetrics({ isBlack: true, deltaMs: 1500 })
-    expect(probe.getStatus().activeAlerts).toHaveLength(0)
-    expect(actionTriggered).toBeNull()
-
-    // Mais 600ms (total 2.1s): deve disparar alarme e auto-action SLATE_INJECTED
-    const alerts = probe.feedMetrics({ isBlack: true, deltaMs: 600 })
-    expect(alerts).toHaveLength(1)
-    expect(alerts[0]!.type).toBe('BLACK_FRAME')
-    expect(alerts[0]!.autoActionTriggered).toBe('SLATE_INJECTED')
-    expect(actionTriggered).toBe('SLATE_INJECTED')
+describe('sonda com intervenção efetivamente confirmada', () => {
+  it('aciona loop manual confirmado sem anunciar um slate inexistente', async () => {
+    const callback = vi.fn(async () => ({ ok: true, message: 'PGM confirmado' }))
+    const probe = new PgmProbe(undefined, callback)
+    expect(await probe.triggerAction('CONTINGENCY_LOOP')).toMatchObject({ actionStatus: 'SUCCEEDED', autoActionTriggered: 'CONTINGENCY_LOOP' })
+    expect(callback).toHaveBeenCalledWith('CONTINGENCY_LOOP', expect.any(Object))
+    expect(probe.getStatus().emergencySlateActive).toBe(false)
+    expect(probe.getStatus().automaticActionsEnabled).toBe(false)
+  })
+  it('alerta não anuncia slate nem muda PGM quando automação está desligada', () => {
+    const callback = vi.fn(() => ({ ok: true }))
+    const probe = new PgmProbe({ blackThresholdMs: 2000 }, callback)
+    expect(probe.feedMetrics({ isBlack: true, deltaMs: 1500 })).toHaveLength(0)
+    const [alert] = probe.feedMetrics({ isBlack: true, deltaMs: 600 })
+    expect(alert).toMatchObject({ type: 'BLACK_FRAME', actionStatus: 'DISABLED' })
+    expect(alert?.autoActionTriggered).toBeUndefined()
+    expect(callback).not.toHaveBeenCalled()
+    expect(probe.getStatus().emergencySlateActive).toBe(false)
+  })
+  it('confirma slate somente depois da resposta real do runtime', async () => {
+    let confirm!: (value: { ok: boolean }) => void
+    const probe = new PgmProbe(undefined, () => new Promise((resolve) => { confirm = resolve }))
+    probe.setAutomaticActions(true)
+    const [alert] = probe.feedMetrics({ isBlack: true, deltaMs: 2100 })
+    expect(alert?.actionStatus).toBe('PENDING')
+    expect(probe.getStatus().emergencySlateActive).toBe(false)
+    await vi.waitFor(() => expect(confirm).toBeDefined())
+    confirm({ ok: true })
+    await vi.waitFor(() => expect(alert?.autoActionTriggered).toBe('SLATE_INJECTED'))
     expect(probe.getStatus().emergencySlateActive).toBe(true)
-
-    // Vídeo normaliza: alerta deve ser desativado
     probe.feedMetrics({ isBlack: false, deltaMs: 200 })
     expect(probe.getStatus().activeAlerts).toHaveLength(0)
   })
-
-  it('dispara alerta de Silêncio contínuo (< -60 dBFS) quando ultrapassa 3.0s', () => {
-    let triggeredAction: string | null = null
-    const probe = new PgmProbe(
-      { silenceThresholdMs: 3000, silenceDbfs: -60 },
-      (action) => { triggeredAction = action },
-    )
-
-    // 2.5s com áudio em -70 dBFS: abaixo de 3s, não aciona
+  it('silêncio solicita apenas a política configurada e não inventa host B', async () => {
+    const callback = vi.fn(() => ({ ok: false, message: 'Standby não configurado' }))
+    const probe = new PgmProbe({ defaultAutoAction: 'FAILOVER_HOST_B' }, callback)
+    probe.setAutomaticActions(true)
     probe.feedMetrics({ audioDbfs: -70, deltaMs: 2500 })
-    expect(probe.getStatus().activeAlerts).toHaveLength(0)
-
-    // Mais 600ms em silêncio: total 3.1s -> dispara FAILOVER_HOST_B
-    const triggered = probe.feedMetrics({ audioDbfs: -65, deltaMs: 600 })
-    expect(triggered).toHaveLength(1)
-    expect(triggered[0]!.type).toBe('SILENCE')
-    expect(triggered[0]!.autoActionTriggered).toBe('FAILOVER_HOST_B')
-    expect(triggeredAction).toBe('FAILOVER_HOST_B')
+    const [alert] = probe.feedMetrics({ audioDbfs: -65, deltaMs: 600 })
+    expect(alert?.type).toBe('SILENCE')
+    await vi.waitFor(() => expect(alert?.actionStatus).toBe('FAILED'))
+    expect(alert?.autoActionTriggered).toBeUndefined()
+    expect(alert?.actionMessage).toBe('Standby não configurado')
   })
-
-  it('dispara alerta de Freeze Frame quando imagem congela por > 2.0s', () => {
-    const probe = new PgmProbe({ freezeThresholdMs: 2000 })
-    probe.feedMetrics({ isFreeze: true, deltaMs: 2100 })
-    const status = probe.getStatus()
-    expect(status.activeAlerts).toHaveLength(1)
-    expect(status.activeAlerts[0]!.type).toBe('FREEZE_FRAME')
-    expect(status.activeAlerts[0]!.autoActionTriggered).toBe('CONTINGENCY_LOOP')
-  })
-
-  it('dispara Slate de emergência manualmente', () => {
+  it('freeze gera incidente e parada intencional não conserva contadores', () => {
     const probe = new PgmProbe()
+    probe.feedMetrics({ isFreeze: true, deltaMs: 2100 })
+    expect(probe.getStatus().activeAlerts[0]?.type).toBe('FREEZE_FRAME')
+    probe.idle()
+    expect(probe.getStatus().activeAlerts).toHaveLength(0)
+    expect(probe.getStatus().metrics.freezeDurationMs).toBe(0)
+  })
+  it('manual sem engine conectado falha em vez de simular injeção', async () => {
+    const probe = new PgmProbe()
+    const alert = await probe.triggerEmergencySlate('MANUAL')
+    expect(alert.actionStatus).toBe('FAILED')
     expect(probe.getStatus().emergencySlateActive).toBe(false)
-    const alert = probe.triggerEmergencySlate('Operador acionou botão de pânico')
-    expect(alert.autoActionTriggered).toBe('SLATE_INJECTED')
-    expect(probe.getStatus().emergencySlateActive).toBe(true)
-
+  })
+  it('manual aguarda confirmação e informa recusa do engine', async () => {
+    const probe = new PgmProbe(undefined, async () => { throw new Error('Arte ausente') })
+    expect(await probe.triggerEmergencySlate()).toMatchObject({ actionStatus: 'FAILED', actionMessage: 'Arte ausente' })
+    probe.onAction(() => ({ ok: true }))
+    expect(await probe.triggerEmergencySlate()).toMatchObject({ actionStatus: 'SUCCEEDED', autoActionTriggered: 'SLATE_INJECTED' })
     probe.resetEmergencySlate()
     expect(probe.getStatus().emergencySlateActive).toBe(false)
+  })
+  it('três alertas e um disparo manual compartilham uma única intervenção pendente', async () => {
+    let confirm!: (value: { ok: boolean }) => void
+    const callback = vi.fn(() => new Promise<{ ok: boolean }>(resolve => { confirm = resolve }))
+    const probe = new PgmProbe(undefined, callback)
+    probe.setAutomaticActions(true)
+    const alerts = probe.feedMetrics({ isBlack: true, isFreeze: true, audioDbfs: -70, deltaMs: 3100 })
+    const manual = probe.triggerEmergencySlate()
+    expect(alerts).toHaveLength(3)
+    expect(alerts.every(alert => alert.actionStatus === 'PENDING')).toBe(true)
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1))
+    expect(probe.getStatus().emergencySlateActive).toBe(false)
+    confirm({ ok: true })
+    expect(await manual).toMatchObject({ actionStatus: 'SUCCEEDED' })
+    expect(alerts.every(alert => alert.actionStatus === 'SUCCEEDED')).toBe(true)
+    expect(callback).toHaveBeenCalledTimes(1)
+  })
+  it('recusa política diferente enquanto a anterior aguarda o runtime e libera após falha', async () => {
+    let confirm!: (value: { ok: boolean }) => void
+    const callback = vi.fn(() => new Promise<{ ok: boolean }>(resolve => { confirm = resolve }))
+    const probe = new PgmProbe(undefined, callback)
+    probe.setAutomaticActions(true)
+    const [first] = probe.feedMetrics({ isBlack: true, deltaMs: 2100 })
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1))
+    probe.setThresholds({ defaultAutoAction: 'FAILOVER_HOST_B' })
+    const [other] = probe.feedMetrics({ isBlack: true, isFreeze: true, deltaMs: 2100 })
+    expect(other).toMatchObject({ type: 'FREEZE_FRAME', actionStatus: 'FAILED' })
+    expect(callback).toHaveBeenCalledTimes(1)
+    confirm({ ok: false })
+    await vi.waitFor(() => expect(first?.actionStatus).toBe('FAILED'))
+    expect(probe.getStatus().emergencySlateActive).toBe(false)
+    callback.mockImplementation(async () => ({ ok: true }))
+    expect(await probe.triggerEmergencySlate()).toMatchObject({ actionStatus: 'SUCCEEDED' })
+    expect(callback).toHaveBeenCalledTimes(2)
+  })
+  it('não conserva nível antigo nem acumula NaN, infinito ou tempo negativo', () => {
+    const probe = new PgmProbe()
+    probe.feedMetrics({ audioDbfs: -70, deltaMs: 100 })
+    probe.feedMetrics({ isBlack: true, audioDbfs: Number.NEGATIVE_INFINITY, deltaMs: Number.NaN })
+    expect(probe.getStatus().metrics).toMatchObject({ blackDurationMs: 0, audioDbfs: null, silenceDurationMs: 0 })
+    probe.feedMetrics({ isBlack: true, deltaMs: -100 })
+    expect(probe.getStatus().metrics.blackDurationMs).toBe(0)
+    probe.feedMetrics({ audioDbfs: -20, deltaMs: 100 })
+    probe.idle()
+    expect(probe.getStatus().metrics.audioDbfs).toBe(null)
+    expect(probe.getStatus().lastSampleAt).toBeUndefined()
   })
 })

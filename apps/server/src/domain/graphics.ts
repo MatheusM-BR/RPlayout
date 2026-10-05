@@ -16,7 +16,6 @@ import type { Db } from '../db/client.js'
 import { graphicTemplates } from '../db/schema.js'
 import type { Transport } from './transport.js'
 import { globalScteDispatcher } from './scte.js'
-import { globalStudioAutomationGateway } from './external-control.js'
 
 export interface TriggerLayerOptions {
   templateId?: string
@@ -52,8 +51,14 @@ export class Graphics {
   constructor(
     private readonly channel: Channel,
     private readonly transport: Transport,
+    private readonly eventOptions?: {
+      template: (id:string) => GraphicTemplate | undefined
+      execute: (event:SecondaryEvent,mode:'FIRE'|'DISMISS',work:()=>Promise<void>) => Promise<void>
+      scte?: (message:import('@rplayout/protocol').Scte35Message,scte35Hex:string,scte104Hex:string) => Promise<void>
+      device?: (event: SecondaryEvent) => Promise<void>
+    },
   ) {
-    this.scheduler = new SecondaryEventScheduler(async (event, mode) => {
+    const dispatch = async (event:SecondaryEvent,mode:'FIRE'|'DISMISS') => {
       if (mode === 'FIRE') {
         if (event.type === 'SCTE_TRIGGER' || event.scteConfig) {
           const scteConfig = event.scteConfig ?? {
@@ -63,30 +68,32 @@ export class Graphics {
             autoReturn: Boolean(event.payload.autoReturn ?? true),
             prerollMs: Number(event.payload.prerollMs ?? 4000),
           }
-          globalScteDispatcher.dispatchSpliceInsert(scteConfig)
+          const result=globalScteDispatcher.dispatchSpliceInsert(scteConfig)
+          await this.eventOptions?.scte?.(scteConfig,result.scte35.toString('hex'),result.scte104.payload.toString('hex'))
           return
         }
 
         if (event.type === 'DEVICE_AUTOMATION' || event.deviceConfig) {
-          const deviceConfig = event.deviceConfig ?? {
-            targetDevice: 'ATEM_SWITCHER' as const,
-            action: String(event.payload.action ?? 'TAKE'),
-            params: (event.payload.params as Record<string, unknown>) ?? {},
-          }
-          await globalStudioAutomationGateway.execute(deviceConfig)
+          if (!this.eventOptions?.device) throw new Error('Gateway durável de equipamento não configurado. Nenhum comando foi enviado.')
+          await this.eventOptions.device(event)
           return
         }
 
         // Gráficos de camada
         this.triggerLayer(event.targetLayer, 'SHOW', {
           templateId: event.templateId,
+          template: this.eventOptions?.template(event.templateId),
+          values: Object.fromEntries(Object.entries(event.payload).map(([key,value])=>[key,String(value)])),
           payload: event.payload,
           durationFrames: event.durationFrames,
         })
       } else if (mode === 'DISMISS') {
+        if (event.type === 'DEVICE_AUTOMATION' || event.deviceConfig || event.type === 'SCTE_TRIGGER') throw new Error('Equipamento/SCTE não possui descarte automático de camada.')
         this.triggerLayer(event.targetLayer, 'HIDE')
       }
-    })
+    }
+    this.scheduler = new SecondaryEventScheduler((event,mode) => this.eventOptions
+      ? this.eventOptions.execute(event,mode,()=>dispatch(event,mode)) : dispatch(event,mode))
   }
 
   /** Retorna o estado atual de todas as 4 camadas. */
@@ -327,7 +334,7 @@ export class SecondaryEventScheduler {
   ) {}
 
   registerEvent(event: SecondaryEvent): void {
-    this.events.push(event)
+    this.events = [...this.events.filter(value=>value.id!==event.id),event]
   }
 
   setEvents(events: SecondaryEvent[]): void {
@@ -423,7 +430,7 @@ export class SecondaryEventScheduler {
 
   async triggerManual(eventId: string): Promise<boolean> {
     const evt = this.events.find((e) => e.id === eventId)
-    if (!evt) return false
+    if (!evt?.enabled) return false
     await this.onTrigger(evt, 'FIRE')
     return true
   }

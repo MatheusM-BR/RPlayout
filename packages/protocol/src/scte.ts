@@ -29,6 +29,9 @@ export type ExternalDeviceTarget =
   | 'LEITCH_ROUTER'
 
 export interface ExternalDeviceCommand {
+  readonly deviceId?: string
+  /** Frozen equipment endpoint identity; never a service credential. */
+  readonly configurationHash?: string
   readonly targetDevice: 'ATEM_SWITCHER' | 'VIDEOHUB_ROUTER' | 'GPIO_RELAY'
   readonly action: string
   readonly params: Record<string, unknown>

@@ -13,6 +13,7 @@ import type {
 } from '@rplayout/protocol'
 
 export interface ItemView {
+  readonly editorialRevision?:number
   item: RundownItem
   asset: MediaAsset | null
   trim: Trim
@@ -24,6 +25,7 @@ export interface ItemView {
 }
 
 export interface RundownView {
+  readonly editorialRevision?:number
   rundown: Rundown
   channel: Channel
   items: ItemView[]
@@ -43,7 +45,10 @@ export interface MeterReading {
 }
 
 export interface Live {
+  /** Recovery promise may still be settling after PGM is already visible. */
+  reconfiguration?: { ready: boolean; reason: string | null }
   transport: {
+    mode?: 'NATIVE' | 'SIMULATED'
     channelId: string
     rundownId: string | null
     onAir: { itemId: string; startedAt: Frames; elapsed: Frames } | null
@@ -53,6 +58,21 @@ export interface Live {
     preparingItemId: string | null
     playing: boolean
     standby: boolean
+    liveSources: Array<{
+      source: string
+      itemId: string
+      state: 'IDLE' | 'CUEING' | 'PVW_READY' | 'TAKE_PENDING' | 'ON_PGM' | 'LOST' | 'FAILED'
+      message: string | null
+      changedAt: string
+      busStates?: Partial<Record<'pgm' | 'pvw', 'IDLE' | 'CUEING' | 'PVW_READY' | 'TAKE_PENDING' | 'ON_PGM' | 'LOST' | 'FAILED'>>
+      busItemIds?: Partial<Record<'pgm' | 'pvw', string>>
+      measurements?: Partial<Record<'pgm' | 'pvw', {
+        width: number | null; height: number | null; rateNum: number | null; rateDen: number | null
+        interlaceMode: string | null; audioChannels: number | null; sampleRate: number | null
+        videoAgeMs: number | null; audioAgeMs: number | null; videoPresent: boolean; audioPresent: boolean
+        receivedFrames: number; arrivalJitterMs: number | null; sampledAt: string
+      }>>
+    }>
   }
   /** Grafismo no ar, ou nulo. */
   graphic: GraphicOnAir | null
@@ -64,6 +84,7 @@ export interface Live {
 
 /** Perfil de uma saída do canal. */
 export interface OutputProfile {
+  configurationRevision?:number
   id: string
   name: string
   kind: 'RTMP' | 'SRT' | 'FILE' | 'SDI' | 'NDI' | 'OMT'
@@ -83,6 +104,8 @@ export interface OutputProfile {
   suggestedBitrateKbps: number | null
   enabled: boolean
 }
+
+export interface ConfigurationOperation {state:'IDLE'|'APPLYING'|'UNCERTAIN';runId:string|null;reason:string|null;ownerLocal:boolean|null;reconcilable:boolean;phase:string|null}
 
 export interface TransmissionPreset {
   id: string
@@ -104,6 +127,12 @@ export interface MediaRoot {
   present: boolean
 }
 
+export interface ServerFolderBrowser {
+  path: string
+  parent: string | null
+  directories: Array<{ name: string; path: string }>
+}
+
 export interface ScanStatus {
   available: boolean
   running: boolean
@@ -123,6 +152,8 @@ export interface ScanStatus {
 
 /** Arquivo do explorador, com o caminho já quebrado para exibição. */
 export interface LibraryAsset extends MediaAsset {
+  /** Snapshot returned by the library, never a fresh read to authorize a draft. */
+  qcRevision?:number
   fileName: string
   thumbnailUrl: string
 }
@@ -152,10 +183,13 @@ export interface Monitors {
   port: number
   program: string
   preview: string | null
+  inspection?: string | null
 }
 
 export interface Snapshot {
   view: RundownView | null
+  executionView?: RundownView | null
+  operationalRevision?: { id: string; revision: number; publishedAt: string } | null
   live: Live
   history: HistoryState
   monitors: Monitors | null
@@ -210,7 +244,7 @@ export interface RelayStatus {
 /** Saída de rede do canal, como o engine reporta. */
 export interface PublisherStatus {
   url: string
-  health: 'connecting' | 'onAir' | 'retrying' | 'idle'
+  health: 'connecting' | 'onAir' | 'retrying' | 'failed' | 'idle'
   attempts: number
   delivered: number
   error?: string
@@ -244,6 +278,7 @@ export interface LiveSource {
   reference: string
   label: string
   family: 'SDI' | 'NDI' | 'OMT' | 'GUEST'
+  discovery?: 'DISCOVERED' | 'CONFIGURED'
 }
 
 export interface SourceFamily {
@@ -255,6 +290,7 @@ export interface SourceFamily {
 
 export interface SourceList {
   sdi: SourceFamily
+  sdiOutputs: SourceFamily
   ndi: SourceFamily
   omt: SourceFamily
   guests: SourceFamily
@@ -270,6 +306,10 @@ export interface AsRunEntry {
   plannedStart: number | null
   actualStart: number
   airedFrames: number | null
+  rateNum?: number | null
+  rateDen?: number | null
+  executionKind?: 'NATIVE' | 'SIMULATED' | 'UNKNOWN'
+  durationEvidence?: 'ENGINE_POSITION' | 'CLOCK_ESTIMATE' | 'UNKNOWN'
   plannedFrames: number | null
   endedBy: string | null
 }
@@ -281,6 +321,10 @@ export interface FillPlan {
   reason: 'FILLED' | 'OUT_OF_MATERIAL'
   items: { mediaId: string; title: string; durationFrames: number; explanation?: { category: string | null; lastAiredAt: string | null; preference: number } }[]
 }
+export interface FillProposal {
+  id:string;rundownId:string;channelId:string;editorialRevision:number;expiresAt:string;kind:'WINDOW'|'DAY'
+}
+export type FillResponse=Partial<Snapshot>&{plan:FillPlan;proposal:FillProposal;bands?:{rule:string;items:number;leftover:number}[]}
 
 /** Uma faixa da pauta: o que entra em cada hora do dia. */
 export interface ScheduleRule {

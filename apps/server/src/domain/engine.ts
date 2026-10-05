@@ -1,8 +1,18 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { stat } from 'node:fs/promises'
+import { join } from 'node:path'
+import { DiagnosticLines, sanitizeDiagnostic } from './sanitize-diagnostic.js'
+import { mediaProcessEnvironment } from './media-process-environment.js'
+import { FileVersionVerifier, MediaVersionError, isMediaSha, mediaFileIdentity } from './file-version.js'
+import {randomUUID} from 'node:crypto'
 import {
   durationIn,
+  resolvedAudioRouting,
+  validateAuxiliaryPairs,
+  knownInputAudioChannels,
+  qcApproved,
+  assessQc,
   framesSinceMidnight,
   isStill,
   secondsToFrames,
@@ -19,24 +29,44 @@ import { MediaMtx } from './mediamtx.js'
 import type { MeterReading } from './meters.js'
 import { SILENCE } from './meters.js'
 import type { RundownView } from './plan.js'
-import type { PublisherState, Transport, TransportState } from './transport.js'
+import { liveDurationLimit } from './live-timing.js'
+import { priorityLives, type LivePriorityEvent } from './priority-live.js'
+import type {
+  LiveSourceSignal,
+  LiveSourceSignalState,
+  LiveSourceMeasurement,
+  PublisherState,
+  Transport,
+  TransportState,
+} from './transport.js'
 
 /** O que o engine precisa saber para pôr um item no ar. */
 interface EngineItem {
   itemId: string
   path: string
+  /** Published file identity checked by the server, not by the native decoder. */
+  contentHash?: string
   /** Fonte ao vivo já resolvida para endereço concreto. */
   source?: string
   trimIn: Frames
   trimOut: Frames
+  startOffsetFrames?: Frames
   gainDb: number
   /** Proporção diferente da do canal: barra preta ou corte. */
   fit?: Fit
   /** Trilha de áudio, na ordem em que o arquivo as declara. */
   audioTrack?: number
+  audioRouting?:import('@rplayout/protocol').AudioRouting
+  auxiliaryPairs?:readonly import('@rplayout/protocol').AuxiliaryAudioPair[]
 }
+const specificationKey = (item: EngineItem): string => JSON.stringify([
+  item.itemId, item.path, item.source ?? null, item.trimIn, item.trimOut,
+  item.gainDb, item.fit ?? 'PILLARBOX', item.audioTrack ?? 0, item.startOffsetFrames ?? 0,item.audioRouting??{mode:'DEFAULT'},item.auxiliaryPairs??[],item.contentHash??null,
+])
 
 type EngineEvent =
+  | { event:'fenceRequest';ownerId:string;nonce:number }
+  | { event:'fenceApplied';nonce:number;term:number }
   | { event: 'ready'; channelId: string }
   | { event: 'ack'; id: number; ok: boolean; error?: string }
   | { event: 'state'; onAir?: string; armed?: string; preview?: string }
@@ -44,6 +74,8 @@ type EngineEvent =
   | { event: 'previewPosition'; itemId: string; frames: number; duration: number }
   | { event: 'eos'; itemId: string }
   | { event: 'sourceLost'; itemId: string; reason: string }
+  | { event: 'sourceReady'; itemId: string; bus: 'pgm' | 'pvw' }
+  | { event: 'sourceTelemetry'; itemId: string; bus: 'pgm' | 'pvw'; signal: LiveSourceMeasurement }
   | { event: 'itemError'; itemId: string; bus: 'pgm' | 'pvw'; message: string }
   | {
       event: 'levels'
@@ -63,15 +95,38 @@ type EngineEvent =
   | { event: 'error'; message: string }
   | { event: 'warning'; message: string }
 
+export type EnginePlaylistBoundary = { kind: 'HOLD'; reason: string } | {
+  kind: 'TAKE'; view: RundownView; itemId: string; stillCurrent: () => boolean
+  commit: (previous: { itemId: string; frames: number } | null) => void
+  beforeTake: () => void; failed: (error: Error) => void
+}
 export interface EngineOptions {
+  /** Per-native-owner witness grant. No Node timer can extend native expiry. */
+  readonly fenceLease?:(ownerId:string,nonce:number)=>Promise<{term:number;ttlMs:number}>
   /** Caminho do binário do engine. */
   readonly binary: string
   /** Saídas do canal, no formato que o engine entende. */
   readonly outputs: readonly string[]
   /** Saída do barramento de preview. Nulo deixa o canal sem preview de vídeo. */
   readonly preview: string | null
+  readonly qcPreview?: string | null
   readonly bitrateKbps: number
+  /** Stable published revision identity, independent of periodic view rebuilds. */
+  readonly executionIdentity?: () => string | null
+  readonly onLivePriority?: (event: LivePriorityEvent) => void
+  readonly onTakeConfirmed?: (itemId: string, startPositionFrames: number, recovered: boolean, previous: {itemId:string;frames:number;reason:string} | null) => void
+  readonly onProgramCleared?: (reason: string, lastPositionFrames: number) => void
+  /** Runs inside the native command queue at a natural, non-looping EOS.
+   * The provider must NOT enqueue another transport operation. */
+  readonly onPlaylistEnd?: (itemId: string) => Promise<EnginePlaylistBoundary | null>
+  readonly onPreparePlaylistEnd?: () => Promise<{view:RundownView;itemId:string;stillCurrent:()=>boolean}|null>
+  /** Unknown playlist cut must not auto-replay an older PGM after a crash. */
+  readonly canRecoverProgram?: () => boolean
+  readonly canRestartEngine?: () => boolean
+  readonly onProcessStarted?: (pid:number|null) => void
+  readonly canStartProgram?:()=>boolean
 }
+export interface TakeLifecycle {validate:()=>void;beforeTake:()=>void;confirmed:(native:boolean)=>void}
 
 /**
  * Transporte apoiado no engine de verdade.
@@ -105,6 +160,11 @@ const STALL_MS = 3_000
  * porque não subiu a tempo, e a morte custar mais uma montagem, para sempre.
  */
 const BOOT_MS = 20_000
+/** A fresh portable GStreamer registry can take longer than pipeline startup.
+ * Before native Ready there is no program to preserve; allow bounded cold
+ * discovery without killing a healthy first launch every twenty seconds.
+ * Does not change the independent native HA lease or the 3s running watchdog. */
+const COLD_START_MS = 90_000
 /**
  * Maior intervalo entre dois tiques que ainda conta como tempo observado.
  *
@@ -168,6 +228,8 @@ export interface Vigilia {
   semQuadroMs: number
   /** O contador já andou alguma vez desde que este processo subiu? */
   booted: boolean
+  /** False only while the native process has not confirmed pipeline startup. */
+  ready?: boolean
 }
 
 /**
@@ -186,11 +248,12 @@ export function decidirVigilia(v: Vigilia): {
   return {
     semQuadroMs,
     booted: v.booted,
-    matar: semQuadroMs >= (v.booted ? STALL_MS : BOOT_MS),
+    matar: semQuadroMs >= (v.booted ? STALL_MS : v.ready===false ? COLD_START_MS : BOOT_MS),
   }
 }
 
 export class EngineTransport implements Transport {
+  private readonly startupWaiters=new Set<{resolve:()=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
   private child: ChildProcess
   private nextId = 1
   private rundownId: string | null = null
@@ -212,13 +275,25 @@ export class EngineTransport implements Transport {
    * ar para sempre e a programação pararia atrás dele.
    */
   private liveEndsAt: Frames | null = null
+  private liveStartedAtMs: number | null = null
+  private priorityObservedAt: number | null = null
+  private priorityContext: string | null = null
+  private readonly handledPriorityLives = new Set<string>()
+  private priorityTake: LivePriorityEvent | null = null
   private preview: PreviewTarget | null = null
+  private previewSpecification: string | null = null
+  private previewFileVersion: string | null = null
+  /** TAKE ao vivo aceito, porém aguardando o primeiro quadro no PGM. */
+  private pendingLiveTake: { rundownId: string; itemId: string; spec: EngineItem } | null = null
+  private pendingPlaylistTake: { view: RundownView; spec: EngineItem; commit: (previous: { itemId: string; frames: number } | null) => void; confirmed: boolean; failure: Error | null; settled?:()=>void } | null = null
   private previewPosition: { frames: Frames; duration: Frames } | null = null
   private meter: MeterReading | null = null
   private previewReading: MeterReading | null = null
   private pgmVideoProbe: { luma: number; black: boolean; freeze: boolean } | null = null
   /** Uma entrada por saída de rede, chaveada pela URL de destino. */
   private readonly publisherStates = new Map<string, PublisherState>()
+  /** Estado comprovado das fontes vivas abertas nesta sessão. */
+  private readonly sourceSignals = new Map<string, LiveSourceSignal>()
   private dirty = false
   private alive = true
   private readonly args: string[]
@@ -243,26 +318,41 @@ export class EngineTransport implements Transport {
   private stalls = 0
   /** Último erro do engine, para a interface não ficar adivinhando. */
   lastError: string | null = null
+  /** Configuration restoration must not race a decoder awaiting TAKE. */
+  hasPendingCommand(): boolean { return this.pending.size > 0 || this.pendingLiveTake !== null || this.priorityTake !== null || this.pendingPlaylistTake !== null || this.advancing || this.preparingBoundary }
   /** Último aviso e quando ele chegou. Caduca sozinho: veja `AVISO_VALE_MS`. */
   private lastWarning: string | null = null
   private warningAt = 0
   private closed = false
   private operation: Promise<void> = Promise.resolve()
+  private readonly fileVersions = new FileVersionVerifier()
   private readonly pending = new Map<number, {
     resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; since: number
   }>()
   private readonly desiredMonitors = new Map<'pvw' | 'mon', boolean>()
-  private resumeItemId: string | null = null
+  private recoveryCursor: { itemId: string; frames: Frames } | null = null
+  private programEndReason = 'STOP'
+  private pendingProgramExit: {itemId:string;frames:number;reason:string;targetItemId:string} | null = null
+  private armedSpecification: string | null = null
+  private armedFileVersion: string | null = null
   private advancing = false
+  private preparingBoundary = false
+  private nextBoundaryPreparationAt = 0
   private desiredGraphic: { svg: string | null; fadeMs: number } | null = null
+  private committedOutputs:readonly string[]
+  private fenceOwner:string|null=null
+  private fencePendingOwner:string|null=null
+  private fenceTerm:number|null=null
+  private fenceNonce=0
 
   constructor(
     private readonly channel: Channel,
     private readonly view: () => RundownView | null,
     /** Acervo, para o preview abrir arquivo que nem está na grade. */
     private readonly asset: (assetId: string) => MediaAsset | null,
-    options: EngineOptions,
+    private readonly options: EngineOptions,
   ) {
+    this.committedOutputs=[...options.outputs]
     const args = [
       '--channel-id',
       channel.id,
@@ -279,6 +369,8 @@ export class EngineTransport implements Transport {
       // O teto do limiter é do canal: é a promessa que o canal faz ao destino.
       '--ceiling',
       String(channel.ceilingDbtp),
+      '--audio-channels',
+      String(channel.audioChannels??2),
       // A varredura muda a cadência de composição dentro do engine, nunca a da
       // grade: 1080i5994 são 29,97 quadros aqui e 59,94 campos lá dentro.
       '--scan',
@@ -286,8 +378,7 @@ export class EngineTransport implements Transport {
       '--field-order',
       channel.fieldOrder === 'BFF' ? 'bff' : 'tff',
     ]
-    for (const output of options.outputs) args.push('--output', output)
-    if (options.preview) args.push('--preview', options.preview)
+    args.push('--private-outputs-stdin')
 
     this.args = args
     this.binary = options.binary
@@ -302,11 +393,13 @@ export class EngineTransport implements Transport {
    * nunca morrer.
    */
   private spawnChild(): ChildProcess {
+    this.fenceOwner=this.options.fenceLease?randomUUID():null
+    this.fencePendingOwner=null;this.fenceTerm=null;this.fenceNonce=0
     // O launcher pode ser iniciado pelo Explorer, sem o PATH do GStreamer.
     // Nesse caso o Windows encerra o processo com 0xC0000135 antes de ele
     // escrever qualquer log. Inclua a instalação padrão explicitamente.
     const gstBin = process.env.GSTREAMER_1_0_ROOT_MSVC_X86_64
-      ? `${process.env.GSTREAMER_1_0_ROOT_MSVC_X86_64}bin`
+      ? join(process.env.GSTREAMER_1_0_ROOT_MSVC_X86_64, 'bin')
       : 'C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\bin'
     const envPath = process.platform === 'win32'
       ? `${gstBin};${process.env.PATH ?? ''}`
@@ -314,8 +407,9 @@ export class EngineTransport implements Transport {
     const child = spawn(this.binary, this.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      env: { ...process.env, PATH: envPath },
+      env: { ...mediaProcessEnvironment(), PATH: envPath },
     })
+    try{this.options.onProcessStarted?.(child.pid??null)}catch(error){child.kill('SIGKILL');throw error}
     child.on('error', (error) => {
       if (this.closed || this.child !== child) return
       this.alive = false
@@ -331,9 +425,9 @@ export class EngineTransport implements Transport {
       })
     }
     // O engine loga no stderr de propósito, para nunca sujar o canal de dados.
-    child.stderr?.on('data', (chunk: Buffer) => {
-      process.stderr.write(`[engine ${this.channel.name}] ${chunk.toString()}`)
-    })
+    const diagnostics = new DiagnosticLines(line => process.stderr.write(`[engine ${sanitizeDiagnostic(this.channel.name)}] ${line}\n`))
+    child.stderr?.on('data', (chunk: Buffer) => diagnostics.write(chunk))
+    child.stderr?.on('end', () => diagnostics.end())
     // Cano quebrado não pode derrubar o servidor.
     //
     // Escrever na entrada de um processo que já morreu emite `error` no
@@ -345,7 +439,7 @@ export class EngineTransport implements Transport {
     child.stdin?.on('error', (erro) => {
       if (this.closed || this.child !== child) return
       this.alive = false
-      this.lastError = `A entrada do engine fechou: ${erro.message}`
+      this.lastError = sanitizeDiagnostic(`A entrada do engine fechou: ${erro.message}`)
       this.rejectPending(this.lastError)
       child.kill()
     })
@@ -355,18 +449,29 @@ export class EngineTransport implements Transport {
     child.on('exit', (code, signal) => {
       if (this.closed || this.child !== child) return
       this.alive = false
-      this.resumeItemId = this.onAirItemId
+      if (this.onAirItemId) {
+        this.recoveryCursor = { itemId: this.onAirItemId, frames: this.elapsed }
+        this.reportProgramCleared(code===75?'HA_FENCE_EXPIRED':'ENGINE_FAILURE')
+      }
       this.onAirItemId = null
       this.armedItemId = null
+      this.armedSpecification = null
       this.meter = SILENCE
       this.previewReading = SILENCE
       this.publisherStates.clear()
       // Sinal e código separados: quem morreu por SIGKILL nosso não é o mesmo
       // caso de quem morreu por conta própria, e a mensagem tem de deixar isso
       // legível para quem está lendo o log às três da manhã.
-      this.lastError = signal
+      this.lastError = code===75?'Posse HA expirou no engine nativo; publicação encerrada antes de nova concessão.':signal
         ? `O engine foi encerrado por ${signal}.`
         : `O engine encerrou com código ${code ?? 'desconhecido'}.`
+      for (const value of this.sourceSignals.values()) {
+        if (value.state === 'IDLE') continue
+        for (const bus of ['pgm','pvw'] as const) this.updateSource({ itemId: value.itemId, source: value.source }, 'LOST', 'Engine encerrado; aguardando nova confirmação de sinal.', bus)
+      }
+      this.failPriorityTake(this.lastError)
+      this.pendingLiveTake = null
+      this.liveStartedAtMs = null
       if (!this.matandoPorTravamento) this.deaths += 1
       this.matandoPorTravamento = false
       this.mateiEm = null
@@ -374,6 +479,9 @@ export class EngineTransport implements Transport {
       this.dirty = true
     })
 
+    // Private pipe is also reused after a watchdog restart. Do not place URLs
+    // in argv or environment variables (both are visible in process tools).
+    child.stdin?.write(JSON.stringify({ outputs: this.committedOutputs, preview: this.options.preview,...(this.options.qcPreview?{qcPreview:this.options.qcPreview}:{}),...(this.fenceOwner?{fenceOwner:this.fenceOwner}:{}) }) + '\n')
     this.alive = true
     this.ready = false
     this.framesOut = 0
@@ -400,21 +508,61 @@ export class EngineTransport implements Transport {
     }
 
     switch (event.event) {
+      case 'fenceRequest': {
+        const obtain=this.options.fenceLease,owner=this.fenceOwner,child=this.child
+        if(!obtain||event.ownerId!==owner||!Number.isSafeInteger(event.nonce)||event.nonce<=0||this.fencePendingOwner===owner)break
+        this.fencePendingOwner=owner
+        void obtain(owner,event.nonce).then(grant=>{
+          if(this.closed||this.child!==child||this.fenceOwner!==owner)return
+          this.send({cmd:'fenceGrant',ownerId:owner,nonce:event.nonce,term:grant.term,ttlMs:grant.ttlMs})
+        }).catch(()=>{if(!this.closed&&this.child===child)this.fail('Concessão HA não confirmada; engine nativo encerrará a publicação ao expirar a posse.')})
+          .finally(()=>{if(this.fencePendingOwner===owner)this.fencePendingOwner=null})
+        break
+      }
+      case 'fenceApplied':
+        if(this.options.fenceLease&&Number.isSafeInteger(event.term)&&event.term>0&&event.nonce>this.fenceNonce){this.fenceTerm=event.term;this.fenceNonce=event.nonce;this.dirty=true}
+        break
       case 'ready':
+        if(this.options.fenceLease&&this.fenceTerm===null){this.fail('Engine não confirmou a cerca HA nativa; publicação recusada.');this.child.kill('SIGKILL');break}
         // Erros de uma sessão anterior não podem manter readiness em 503
         // depois que o novo processo confirmou inicialização.
         this.lastError = null
+        if(!this.booted)this.semQuadroMs=0
         this.ready = true
+        for(const waiter of this.startupWaiters){clearTimeout(waiter.timer);waiter.resolve()}
+        this.startupWaiters.clear()
         this.dirty = true
         break
       case 'state':
+        if (this.onAirItemId && !event.onAir) this.reportProgramCleared(this.programEndReason)
+        if (this.priorityTake && this.onAirItemId === this.priorityTake.previousItemId && event.onAir === this.priorityTake.itemId) this.priorityTake.previousFrames = this.elapsed
         this.onAirItemId = event.onAir ?? null
+        if (this.armedItemId !== (event.armed ?? null)) this.armedSpecification = null
         this.armedItemId = event.armed ?? null
+        const playlistTake = this.pendingPlaylistTake
+        if (playlistTake && !playlistTake.confirmed && playlistTake.spec.itemId === this.onAirItemId) {
+          playlistTake.confirmed = true
+          // Install the execution snapshot before checkpoint/as-run callbacks.
+          // A successful load or an ACK alone cannot replace the running plan.
+          try {
+            playlistTake.commit(this.pendingProgramExit)
+          } catch (error) {
+            playlistTake.failure = new Error('O engine confirmou a troca de PGM, mas o registro da playlist falhou: ' + (error instanceof Error ? error.message : String(error)))
+            this.fail(playlistTake.failure.message)
+          }
+          this.confirmTake(playlistTake.view.rundown.id, playlistTake.spec)
+          if(playlistTake.spec.source)this.updateSource(playlistTake.spec,'ON_PGM',null)
+          playlistTake.settled?.()
+        }
+        if (this.pendingLiveTake?.itemId === this.onAirItemId) {
+          this.confirmLiveTake(this.pendingLiveTake)
+        }
         this.dirty = true
         break
       case 'position':
         // A posição é a fonte da verdade sobre quanto já foi ao ar.
         if (event.itemId === this.onAirItemId) this.elapsed = event.frames
+        if (this.pendingProgramExit?.itemId===event.itemId && event.itemId!==this.pendingProgramExit.targetItemId) this.pendingProgramExit.frames=event.frames
         break
       case 'previewPosition':
         // Fonte direta não possui id de item/asset; vídeo ao vivo não envia
@@ -425,18 +573,50 @@ export class EngineTransport implements Transport {
         }
         break
       case 'eos':
-        if (event.itemId === this.onAirItemId) this.advanceAfter(event.itemId)
+        if (event.itemId === this.onAirItemId) {
+          this.programEndReason = 'EOS'
+          this.advanceAfter(event.itemId)
+        }
         break
       case 'itemError':
+        this.updateSourceForItem(event.itemId, 'FAILED', event.message, event.bus)
         this.fail(event.message)
-        if (event.bus === 'pgm' && event.itemId === this.onAirItemId) this.advanceAfter(event.itemId, true)
+        if (this.pendingLiveTake?.itemId === event.itemId) {
+          this.pendingLiveTake = null
+          this.pendingProgramExit = null
+        }
+        if (this.pendingPlaylistTake?.spec.itemId === event.itemId && !this.pendingPlaylistTake.confirmed) {this.pendingPlaylistTake.failure = new Error(sanitizeDiagnostic(event.message));this.pendingPlaylistTake.settled?.()}
+        if (this.priorityTake?.itemId === event.itemId) {
+          this.failPriorityTake(event.message)
+        }
+        if (event.bus === 'pgm' && event.itemId === this.onAirItemId) {
+          this.programEndReason = 'FAILED_MEDIA_ERROR'
+          this.advanceAfter(event.itemId, true)
+        }
         break
       case 'sourceLost':
         // Fonte ao vivo que cai não anda com a grade: o estúdio pode voltar, e
         // a hora de sair continua sendo a que a grade marcou. O engine fica
         // tentando reabrir; aqui só registramos para o operador ver.
+        this.updateSourceForItem(event.itemId, 'LOST', event.reason)
         this.fail(`fonte ao vivo caiu: ${event.reason}`)
         break
+      case 'sourceReady':
+        this.updateSourceForItem(event.itemId, event.bus === 'pgm' ? 'ON_PGM' : 'PVW_READY', null, event.bus)
+        this.dirty = true
+        break
+      case 'sourceTelemetry': {
+        const source = this.sourceForItem(event.itemId)
+        if (!source) break
+        const previous = this.sourceSignals.get(source)
+        if (!previous) break
+        // Decoded input telemetry is independent for PGM and PVW. Preparing
+        // the same source in QC cannot erase its confirmed program tally.
+        this.sourceSignals.set(source, { ...previous, measurements: { ...previous.measurements,
+          [event.bus]: { ...event.signal, sampledAt: new Date().toISOString() } } })
+        this.dirty = true
+        break
+      }
       case 'levels':
         if (event.bus === 'pgm') this.meter = toMeter(event)
         else this.previewReading = toMeter(event)
@@ -450,7 +630,7 @@ export class EngineTransport implements Transport {
           health: event.health,
           attempts: event.attempts,
           delivered: event.delivered,
-          error: event.error,
+          error: event.error == null ? event.error : sanitizeDiagnostic(event.error),
         })
         break
       case 'output':
@@ -465,7 +645,7 @@ export class EngineTransport implements Transport {
             clearTimeout(pending.timer)
             this.pending.delete(event.id)
             if (event.ok) pending.resolve()
-            else pending.reject(new Error(event.error ?? 'O engine recusou o comando.'))
+            else pending.reject(new Error(sanitizeDiagnostic(event.error ?? 'O engine recusou o comando.')))
           }
         }
         if (!event.ok && event.error) this.fail(event.error)
@@ -477,7 +657,7 @@ export class EngineTransport implements Transport {
         // Aviso não é falha: não mexe em `lastError`, que é o que a interface
         // mostra como "o motor está com problema". Vive por conta própria e
         // caduca sozinho.
-        this.lastWarning = event.message
+        this.lastWarning = sanitizeDiagnostic(event.message)
         this.warningAt = Date.now()
         this.dirty = true
         break
@@ -491,9 +671,9 @@ export class EngineTransport implements Transport {
    * canal pode estar sem sair para lugar nenhum e o log não dizer nada.
    */
   private fail(message: string): void {
-    this.lastError = message
+    this.lastError = sanitizeDiagnostic(message)
     this.dirty = true
-    process.stderr.write(`[engine ${this.channel.name}] ERRO ${message}\n`)
+    process.stderr.write(`[engine ${sanitizeDiagnostic(this.channel.name)}] ERRO ${this.lastError}\n`)
   }
 
   /**
@@ -504,6 +684,12 @@ export class EngineTransport implements Transport {
   graphic(svg: string | null, fadeMs: number): void {
     this.desiredGraphic = { svg, fadeMs }
     this.send({ cmd: 'graphic', svg, fadeMs })
+  }
+  graphicConfirmed(svg: string | null, fadeMs: number): Promise<void> {
+    return this.enqueue(async () => {
+      await this.request({ cmd: 'graphic', svg, fadeMs })
+      this.desiredGraphic = { svg, fadeMs }
+    })
   }
 
   /**
@@ -523,6 +709,7 @@ export class EngineTransport implements Transport {
     this.lastTick = agora
 
     if (!this.alive) {
+      if(this.options.canRestartEngine && !this.options.canRestartEngine())return
       // Backoff progressivo: se o engine não sobe, insistir sem pausa
       // transforma um defeito em tempestade de processos. Aumentamos somente
       // entre mortes consecutivas; um processo que voltou a produzir quadro
@@ -551,6 +738,7 @@ export class EngineTransport implements Transport {
       andou: this.framesOut !== this.lastFrames,
       semQuadroMs: this.semQuadroMs,
       booted: this.booted,
+      ready: this.ready,
     })
     const andou = this.framesOut !== this.lastFrames
     this.lastFrames = this.framesOut
@@ -599,13 +787,14 @@ export class EngineTransport implements Transport {
     return this.lastWarning
   }
 
-  health(): { restarts: number; deaths: number; stalls: number; error: string | null; ready: boolean } {
+  health(): { restarts: number; deaths: number; stalls: number; error: string | null; ready: boolean;fencing:{enabled:boolean;term:number|null;nonce:number} } {
     return {
       restarts: this.restarts,
       deaths: this.deaths,
       stalls: this.stalls,
       error: this.lastError,
-      ready: this.ready,
+      ready: this.alive && !this.closed && this.ready && this.recoveryCursor === null,
+      fencing:{enabled:Boolean(this.options.fenceLease),term:this.fenceTerm,nonce:this.fenceNonce},
     }
   }
 
@@ -613,9 +802,9 @@ export class EngineTransport implements Transport {
   private restore(): void {
     for (const [bus, on] of this.desiredMonitors) this.send({ cmd: 'monitor', bus, on })
     if (this.desiredGraphic) this.send({ cmd: 'graphic', ...this.desiredGraphic })
-    const itemId = this.resumeItemId
-    this.resumeItemId = null
-    if (itemId && this.rundownId) void this.take(this.rundownId, itemId).catch((error: Error) => this.fail(error.message))
+    const cursor = this.recoveryCursor
+    if (cursor && this.rundownId) void this.recover(this.rundownId, cursor.itemId, cursor.frames)
+      .catch((error: Error) => this.fail(error.message))
     else if (this.preview) void this.cue(this.preview).catch((error: Error) => this.fail(error.message))
   }
 
@@ -629,7 +818,27 @@ export class EngineTransport implements Transport {
     return this.enqueue(() => this.request({ cmd: 'replaceOutput', outputId: output.id, output }))
   }
 
+  /** Called synchronously only after the configuration transaction commits.
+   * The watchdog must never boot the obsolete destination after a hot ACK. */
+  commitOutputProfile(output:HotOutputProfile):void{
+    let found=false
+    const updated=this.committedOutputs.map(encoded=>{
+      try{if(JSON.parse(encoded).id===output.id){found=true;return JSON.stringify(output)}}catch{/* legacy shortcuts have no stable slot ID */}
+      return encoded
+    })
+    if(!found)throw new Error('A saída não pertence à configuração de partida deste engine. Reconcilie o canal antes de outra troca.')
+    this.committedOutputs=updated
+  }
+
+  /** Configuration DB work and publisher ACK share one queue entry. The
+   * supplied apply function must only be used during this awaited callback. */
+  mutateConfiguration<T>(action: (apply: (output: HotOutputProfile) => Promise<void>) => Promise<T>): Promise<T> {
+    return this.mutatePlaylist(() => action(output => this.request({ cmd: 'replaceOutput', outputId: output.id, output })))
+  }
+
   private rejectPending(message: string): void {
+    for(const waiter of this.startupWaiters){clearTimeout(waiter.timer);waiter.reject(new Error(message))}
+    this.startupWaiters.clear()
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer)
       pending.reject(new Error(message))
@@ -637,16 +846,42 @@ export class EngineTransport implements Transport {
     this.pending.clear()
   }
 
-  private enqueue(action: () => Promise<void>): Promise<void> {
+  private enqueue<T>(action: () => Promise<T>, requireAlive = true): Promise<T> {
     const result = this.operation.then(() => {
-      if (this.closed || !this.alive) throw new Error('O engine está indisponível.')
+      if (this.closed || requireAlive && !this.alive) throw new Error('O engine está indisponível.')
       return action()
     })
-    this.operation = result.catch(() => {})
+    this.operation = result.then(() => {}, () => {})
     return result
   }
 
-  private request(command: Record<string, unknown>): Promise<void> {
+  /** Publication shares the native transport queue. Its DB commit and runtime
+   * installation cannot overtake a CUE/TAKE still preparing a decoder. A live
+   * ACK isn't a confirmed cut, so that separate pending state is refused. */
+  mutatePlaylist<T>(action: () => Promise<T>, changesExecution = () => true): Promise<T> {
+    return this.enqueue(async () => {
+      if (changesExecution() && (this.pendingLiveTake || this.priorityTake)) throw new Error('Há uma entrada ao vivo aguardando confirmação. Cancele pelo CUE/STOP ou aguarde o PGM antes de ativar outra revisão.')
+      return action()
+    }, false)
+  }
+
+  private awaitNativeReady():Promise<void>{
+    if(this.ready)return Promise.resolve()
+    if(!this.alive||this.closed)return Promise.reject(new Error('O engine está indisponível.'))
+    return new Promise((resolve,reject)=>{
+      const waiter={resolve,reject,timer:setTimeout(()=>{
+        const message='O engine não confirmou Ready em 90 segundos. Confira plugins/runtime; nenhum TAKE foi enviado.'
+        this.fail(message);this.alive=false;this.rejectPending(message);this.child.kill('SIGKILL')
+      },COLD_START_MS)}
+      this.startupWaiters.add(waiter)
+    })
+  }
+
+  private async request(command: Record<string, unknown>): Promise<void> {
+    // Starting a 30s decoder/ACK deadline before gst_init has scanned a fresh
+    // registry kills a valid cold launch. Wait for real native Ready first;
+    // close/exit/startup timeout reject this wait, never fabricate readiness.
+    await this.awaitNativeReady()
     if (!this.alive || this.closed) return Promise.reject(new Error('O engine está indisponível.'))
     const id = this.nextId++
     return new Promise((resolve, reject) => {
@@ -673,20 +908,26 @@ export class EngineTransport implements Transport {
       // ordem, e derrubar o servidor por causa disso seria trocar um canal
       // perdido por todos eles.
       this.alive = false
-      this.lastError = falha instanceof Error ? falha.message : 'O engine não aceitou a ordem.'
+      this.lastError = falha instanceof Error ? sanitizeDiagnostic(falha.message) : 'O engine não aceitou a ordem.'
     }
   }
 
   /** Traduz um item da grade para o que o engine sabe abrir. */
-  private specFor(itemId: string): EngineItem | null {
-    const view = this.view()
+  private specFor(itemId: string, view: RundownView | null = this.view()): EngineItem | null {
     const entry = view?.items.find((candidate) => candidate.item.id === itemId)
     if (!entry) return null
+    const auxiliaryPairs=entry.audio?.auxiliaryPairs??[]
+    const track=entry.item.audioTrack??0
+    const known=knownInputAudioChannels(entry.asset,track)
+    if(validateAuxiliaryPairs(auxiliaryPairs,this.channel.audioChannels??2,known))return null
+    // An old/imported AUTO preset is not proof of the loudness of a new mix.
+    if(entry.audio?.mode==='AUTO' && (resolvedAudioRouting(entry.audio).mode!=='DEFAULT'||(entry.item.audioTrack??0)>0||entry.audio.analysisId) && !entry.audio.measured)return null
 
     // Item ao vivo não tem arquivo: tem fonte, e a duração vem da grade, não do
     // conteúdo. Corte em zero é a forma de dizer isso ao engine.
-    if (entry.item.sourceRef) {
-      const source = resolveSource(entry.item.sourceRef)
+    const sourceRef = entry.item.sourceRef ?? entry.item.liveEndpoint ?? entry.item.liveConfig?.sourceEndpoint
+    if (sourceRef) {
+      const source = resolveSource(sourceRef)
       if (!source) return null
       return {
         itemId,
@@ -695,11 +936,15 @@ export class EngineTransport implements Transport {
         trimIn: 0,
         trimOut: 0,
         gainDb: entry.gainDb,
+        audioTrack:entry.item.audioTrack??0,
+        audioRouting:entry.audio?resolvedAudioRouting(entry.audio):{mode:'DEFAULT'},
+        auxiliaryPairs,
         fit: entry.item.fit,
       }
     }
 
-    if (!entry.asset || entry.asset.probeError || entry.asset.kind !== 'VIDEO') return null
+    if (!entry.asset || entry.asset.probeError || entry.asset.ignored || !qcApproved(entry.asset.qcStatus ?? 'APPROVED') || entry.asset.kind !== 'VIDEO' || (view?.channel.qcProfile && !assessQc(entry.asset, view.channel.qcProfile).playable)) return null
+    if ((view?.rundown.publicationRequired || this.options.executionIdentity?.()) && !isMediaSha(entry.asset.contentHash)) return null
 
     // Imagem parada não tem tempo dentro do arquivo: o corte dela é a duração
     // que a grade marcou. Sem isto o item entraria com zero quadro.
@@ -710,11 +955,14 @@ export class EngineTransport implements Transport {
     return {
       itemId,
       path: entry.asset.path,
+      contentHash: entry.asset.contentHash,
       trimIn: still ? 0 : entry.trim.in,
       trimOut: still ? stillOut : entry.trim.out,
       gainDb: entry.gainDb,
       fit: entry.item.fit,
       audioTrack: entry.item.audioTrack ?? 0,
+      audioRouting:entry.audio?resolvedAudioRouting(entry.audio):{mode:'DEFAULT'},
+      auxiliaryPairs,
     }
   }
 
@@ -736,10 +984,12 @@ export class EngineTransport implements Transport {
     }
 
     const asset = this.asset(target.id)
+    // Inspection is allowed before approval. Only specFor/PGM gates QC status.
     if (!asset || asset.probeError || asset.kind !== 'VIDEO') return null
     return {
       itemId: asset.id,
       path: asset.path,
+      contentHash: asset.contentHash,
       trimIn: 0,
       // A parada não acaba sozinha: no preview ela fica um tempo fixo, o
       // suficiente para o operador olhar.
@@ -750,64 +1000,177 @@ export class EngineTransport implements Transport {
     }
   }
 
-  private async checkFile(spec: EngineItem): Promise<void> {
-    if (spec.source || spec.path.includes('://')) return
+  private async checkFile(spec: EngineItem): Promise<string | null> {
+    if (spec.source) return null
+    if (spec.path.includes('://')) {
+      if (isMediaSha(spec.contentHash)) throw new MediaVersionError('Versão de mídia não é um arquivo local verificável. Importe e publique uma cópia local antes de usar no ar.')
+      return null // Unversioned legacy URIs are not proof of an approved SHA.
+    }
+    let identity: string
     try {
-      if (!(await stat(spec.path)).isFile()) throw new Error('não é arquivo')
+      const info = await stat(spec.path, { bigint: true })
+      if (!info.isFile()) throw new Error('não é arquivo')
+      identity = mediaFileIdentity(info)
     } catch {
       throw new Error('Arquivo indisponível: ' + spec.path)
     }
+    if (isMediaSha(spec.contentHash)) {
+      let verified: string | null = null
+      try { verified = await this.fileVersions.verify(spec.path, spec.contentHash) } catch {}
+      if (!verified) {
+        if (this.armedItemId === spec.itemId) { this.armedSpecification = null; this.armedFileVersion = null }
+        throw new MediaVersionError('O arquivo mudou ou sua versão publicada não pôde ser verificada. PGM anterior preservado; faça nova ingestão/QC e publique a versão correta, ou restaure a cópia da versão publicada.')
+      }
+      identity = verified
+    }
+    return identity
   }
 
   /** Uma passagem limitada: uma grade em loop só com falhas deve parar. */
-  private async playFrom(rundownId: string, itemId: string): Promise<void> {
+  private async playFrom(rundownId: string, itemId: string, resumeFrames = 0, exact = false, copyRetry = true,lifecycle?:TakeLifecycle): Promise<void> {
+    if(!lifecycle && this.options.canStartProgram?.()===false)throw new Error('Há TAKE de retorno inconclusivo. Pare o PGM, limpe o CUE e confira a pendência antes de outra entrada.')
+    lifecycle?.validate()
     const view = this.view()
+    const executionIdentity = this.options.executionIdentity?.()
     const index = view?.items.findIndex((entry) => entry.item.id === itemId) ?? -1
-    if (!view || index < 0) throw new Error('O item não está nesta grade.')
-    const candidates = [...view.items.slice(index), ...(view.rundown.loop ? view.items.slice(0, index) : [])]
+    if (!view || view.rundown.id !== rundownId || index < 0) throw new Error('O item não está nesta grade.')
+    const candidates = exact ? [view.items[index]!] : [...view.items.slice(index), ...(view.rundown.loop ? view.items.slice(0, index) : [])]
     const failedPaths = new Set<string>()
     let lastFailure = 'Nenhum item disponível para reprodução.'
+    let versionFailure = false
     for (const entry of candidates) {
       if (view.schedule.items.find((row) => row.id === entry.item.id)?.state === 'DROPPED') continue
       const spec = this.specFor(entry.item.id)
       if (!spec) {
-        lastFailure = entry.item.title + ': ' + (entry.asset?.probeError ?? 'sem arquivo ou fonte válida')
+        lastFailure = entry.item.title + ': ' + (entry.asset?.probeError ?? ((view.rundown.publicationRequired || this.options.executionIdentity?.()) && entry.asset && !isMediaSha(entry.asset.contentHash) ? 'mídia publicada sem SHA válido; reimporte, confira no QC e publique a versão correta' : 'sem arquivo ou fonte válida'))
+        versionFailure = Boolean((view.rundown.publicationRequired || this.options.executionIdentity?.()) && entry.asset && !isMediaSha(entry.asset.contentHash))
         this.fail(lastFailure)
         continue
       }
       if (failedPaths.has(spec.path || spec.source!)) continue
+      if (exact && this.preview?.kind === 'ITEM' && this.preview.id === spec.itemId && this.previewSpecification !== specificationKey(spec)) throw new Error('O item publicado mudou após o CUE. Faça CUE novamente para conferir a mídia e os cortes antes do TAKE.')
+      if (spec.itemId === itemId && resumeFrames > 0) {
+        spec.startOffsetFrames = spec.source ? Math.max(0, Math.floor(resumeFrames))
+          : Math.min(Math.max(0, Math.floor(resumeFrames)), Math.max(0, spec.trimOut - spec.trimIn - 1))
+      }
       try {
-        await this.checkFile(spec)
-        if (this.armedItemId !== spec.itemId) {
+        const fileVersion = await this.checkFile(spec)
+        lifecycle?.validate()
+        if (exact && this.preview?.kind === 'ITEM' && this.preview.id === spec.itemId && this.previewFileVersion !== fileVersion) throw new MediaVersionError('O arquivo mudou após o CUE, mesmo que seu SHA tenha sido restaurado. Faça CUE novamente antes do TAKE; PGM anterior preservado.')
+        if (this.armedItemId !== spec.itemId || this.armedSpecification !== specificationKey(spec) || this.armedFileVersion !== fileVersion) {
           this.armedItemId = null
           await this.request({ cmd: 'load', item: spec })
+          this.armedSpecification = specificationKey(spec)
+          this.armedFileVersion = fileVersion
         }
+        const current = this.specFor(spec.itemId)
+        if (current && spec.startOffsetFrames !== undefined) current.startOffsetFrames = spec.startOffsetFrames
+        const changed = ['itemId','path','source','trimIn','trimOut','gainDb','fit','audioTrack','startOffsetFrames','audioRouting','auxiliaryPairs','contentHash'].filter(field => current && JSON.stringify(current[field as keyof EngineItem]) !== JSON.stringify(spec[field as keyof EngineItem]))
+        const currentView = this.view(), hash = entry.asset?.contentHash
+        // An archive/cache becoming available changes the decoder path, not
+        // the published version. Runtime resolves those copies by SHA-256.
+        // Re-preroll once at the new path before sending TAKE; never bypass a
+        // changed revision/hash/QC/cut or reuse the already loaded old path.
+        if (copyRetry && changed.length === 1 && changed[0] === 'path' && hash && /^[a-f0-9]{64}$/i.test(hash) && currentView?.items.find(row => row.item.id === spec.itemId)?.asset?.contentHash === hash && currentView.rundown.id === rundownId && this.options.executionIdentity?.() === executionIdentity && !(exact && this.preview?.kind === 'ITEM' && this.preview.id === spec.itemId)) return this.playFrom(rundownId, spec.itemId, resumeFrames, exact, false,lifecycle)
+        if (this.view()?.rundown.id !== rundownId || this.options.executionIdentity?.() !== executionIdentity || !current || specificationKey(current) !== specificationKey(spec)) throw new Error(`A revisão ou a mídia mudou durante o preroll. PGM anterior preservado; faça CUE novamente. Contrato alterado: ${this.options.executionIdentity?.() !== executionIdentity ? 'revisão' : this.view()?.rundown.id !== rundownId ? 'grade' : !current ? 'disponibilidade/QC' : changed.join(', ')}.`)
+        if (await this.checkFile(spec) !== fileVersion) {
+          this.armedSpecification = null; this.armedFileVersion = null
+          throw new MediaVersionError('O arquivo foi alterado durante o preroll, mesmo que seu SHA tenha sido restaurado. PGM anterior preservado; prepare o item novamente.')
+        }
+        const verifiedCurrent = this.specFor(spec.itemId)
+        if (verifiedCurrent && spec.startOffsetFrames !== undefined) verifiedCurrent.startOffsetFrames = spec.startOffsetFrames
+        if (this.view()?.rundown.id !== rundownId || this.options.executionIdentity?.() !== executionIdentity || !verifiedCurrent || specificationKey(verifiedCurrent) !== specificationKey(spec)) throw new Error('A revisão ou a mídia mudou durante a verificação. PGM anterior preservado; faça CUE novamente.')
+        if(lifecycle && spec.source)throw new Error('Retorno de VT exige arquivo, não uma entrada ao vivo.')
+        if(!lifecycle && this.options.canStartProgram?.()===false)throw new Error('Há retorno de VT inconclusivo. Nenhum TAKE será enviado.')
+        lifecycle?.beforeTake()
+        const pending = spec.source === undefined ? null : { rundownId, itemId: spec.itemId, spec }
+        if (pending) {
+          this.pendingLiveTake = pending
+          this.updateSource(spec, 'TAKE_PENDING', 'Aguardando o primeiro quadro antes de trocar o PGM.')
+        }
+        this.pendingProgramExit=this.onAirItemId ? {itemId:this.onAirItemId,frames:Math.max(0,Math.floor(this.elapsed)),reason:this.priorityTake?.itemId===spec.itemId ? 'LIVE_PRIORITY' : this.programEndReason==='STOP' ? 'TAKE' : this.programEndReason,targetItemId:spec.itemId} : null
         await this.request({ cmd: 'take' })
+        // O ACK de uma live só confirma que o decoder iniciou. A troca real
+        // chega depois no evento `state`, quando há quadro no PGM.
+        if (pending) {
+          if (this.pendingLiveTake === pending && this.onAirItemId === spec.itemId) this.confirmLiveTake(pending)
+          if (this.pendingLiveTake === pending) this.dirty = true
+          return
+        }
       } catch (failure) {
+        this.pendingProgramExit=null
+        if (this.pendingLiveTake?.itemId === spec.itemId) this.pendingLiveTake = null
         lastFailure = failure instanceof Error ? failure.message : 'Falha ao abrir item.'
+        versionFailure = failure instanceof MediaVersionError
         this.fail(entry.item.title + ': ' + lastFailure)
+        if(lifecycle)throw failure
         failedPaths.add(spec.path || spec.source!)
         // Sem engine não tente a grade inteira: deixe o watchdog recuperar.
         if (!this.alive || this.closed) throw failure
         continue
       }
-      this.rundownId = rundownId
-      // O ar mudou: a próxima janela de continuidade começa limpa. Uma falha
-      // no ciclo anterior não condena o arquivo para sempre numa grade em loop.
-      this.preparationFailures.clear()
-      this.elapsed = 0
-      this.liveEndsAt = spec.source === undefined ? null : this.plannedEnd(spec.itemId)
-      this.appliedGainDb = spec.gainDb
-      this.preview = null
-      this.previewReading = SILENCE
-      this.dirty = true
+      this.confirmTake(rundownId, spec)
+      lifecycle?.confirmed(true)
       await this.request({ cmd: 'preview', item: null })
       return
     }
     // Uma tentativa manual fracassada preserva o que já estava no ar.
     if (!this.onAirItemId) this.preview = null
     this.dirty = true
+    if (versionFailure) throw new MediaVersionError('Nenhum item reproduzível. ' + lastFailure)
     throw new Error('Nenhum item reproduzível. ' + lastFailure)
+  }
+
+  /** Recebe a confirmação tardia da primeira imagem ao vivo no PGM. */
+  private confirmLiveTake(pending: { rundownId: string; itemId: string; spec: EngineItem }): void {
+    if (this.pendingLiveTake !== pending) return
+    this.pendingLiveTake = null
+    this.updateSource(pending.spec, 'ON_PGM', null)
+
+    // Só fecha o PVW se ele ainda representa a mesma entrada. Uma nova
+    // seleção feita durante o preroll não pode ser apagada por confirmação
+    // atrasada da fonte anterior.
+    const samePreview =
+      (this.preview?.kind === 'ITEM' && this.preview.id === pending.itemId) ||
+      (this.preview?.kind === 'SOURCE' && this.preview.source === pending.spec.source)
+    this.confirmTake(pending.rundownId, pending.spec)
+    if (!samePreview) return
+    void this.enqueue(() => this.request({ cmd: 'preview', item: null }))
+      .catch((error: Error) => this.fail(error.message))
+  }
+
+  /** Estado compartilhado por qualquer TAKE já efetivado no PGM. */
+  private confirmTake(rundownId: string, spec: EngineItem): void {
+    const recovered = this.recoveryCursor?.itemId === spec.itemId
+    const previous=this.pendingProgramExit
+    this.pendingProgramExit=null
+    this.programEndReason = 'STOP'
+    if (this.priorityObservedAt === null) this.priorityObservedAt = Date.now()
+    if (this.priorityTake?.itemId === spec.itemId) {
+      this.emitLivePriority({ ...this.priorityTake, kind: 'CONFIRMED', occurredAt: new Date(Date.now()).toISOString() })
+      this.priorityTake = null
+    }
+    this.recoveryCursor = null
+    this.rundownId = rundownId
+    this.preparationFailures.clear()
+    this.elapsed = spec.startOffsetFrames ?? 0
+    try { this.options.onTakeConfirmed?.(spec.itemId, this.elapsed, recovered, previous) }
+    catch (error) { this.fail('Falha ao registrar TAKE confirmado: ' + (error instanceof Error ? error.message : String(error))) }
+    this.liveStartedAtMs = spec.source === undefined ? null : Date.now() - framesToMs(this.elapsed, this.channel.rate)
+    this.liveEndsAt = spec.source === undefined ? null : this.plannedEnd(spec.itemId)
+    this.appliedGainDb = spec.gainDb
+    this.preview = null
+    this.previewSpecification = null
+    this.previewFileVersion = null
+    this.previewPosition = null
+    this.previewReading = SILENCE
+    this.dirty = true
+  }
+
+  private reportProgramCleared(reason: string): void {
+    this.pendingProgramExit=null
+    try { this.options.onProgramCleared?.(reason, Math.max(0, Math.floor(this.elapsed))) }
+    catch (error) { this.fail('Falha ao registrar saída de PGM: ' + (error instanceof Error ? error.message : String(error))) }
   }
 
   private advanceAfter(itemId: string, failed = false): void {
@@ -819,13 +1182,35 @@ export class EngineTransport implements Transport {
       const index = view.items.findIndex((entry) => entry.item.id === itemId)
       const current = view.items[index]
       if (!current) return
-      const next = view.items[index + 1] ?? (view.rundown.loop ? view.items[0] : undefined)
+      const candidates = [...view.items.slice(index + 1), ...(view.rundown.loop ? view.items.slice(0, index + 1) : [])]
+      const next = candidates.find(entry => view.schedule.items.find(timing => timing.id === entry.item.id)?.state !== 'DROPPED')
       if (!failed && current.item.loop) {
         await this.playFrom(view.rundown.id, current.item.id)
         return
       }
       if (!failed && !current.item.autoNext) return
       if (!next) {
+        if (!failed && this.options.onPlaylistEnd) {
+          // Keep the last valid frame while the next frozen edition is
+          // checked/prerolled. Neither a failed load nor an ACK is a cut.
+          let boundary: EnginePlaylistBoundary | null = null
+          try {
+            boundary = await this.options.onPlaylistEnd(itemId)
+            if (boundary?.kind === 'HOLD') { this.fail(boundary.reason); return }
+            if (boundary?.kind === 'TAKE') {
+              await this.takeFromPlaylistNow(boundary.view, boundary.itemId, boundary.commit,
+                boundary.stillCurrent, 0, 'PLAYLIST_BOUNDARY', boundary.beforeTake)
+              return
+            }
+          } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error))
+            if (boundary?.kind === 'TAKE') {
+              try { boundary.failed(failure) } catch (recordError) { this.fail('Falha no registro da virada: ' + String(recordError)) }
+            }
+            this.fail('Virada não confirmada; confira o PGM antes de tentar novamente. ' + failure.message)
+            return
+          }
+        }
         await this.request({ cmd: 'stop' })
         this.liveEndsAt = null
         return
@@ -850,6 +1235,7 @@ export class EngineTransport implements Transport {
       : null
 
     return {
+      mode: 'NATIVE',
       channelId: this.channel.id,
       rundownId: this.rundownId,
       onAir,
@@ -859,31 +1245,204 @@ export class EngineTransport implements Transport {
       preparingItemId: this.preparingItemId,
       playing: this.onAirItemId !== null,
       standby: this.onAirItemId === null && this.preview?.kind === 'ITEM',
+      liveSources: [...this.sourceSignals.values()].map(signal => {
+        const onPgm = this.onAirItemId ? this.specFor(this.onAirItemId)?.source === signal.source : false
+        const onPvw = this.preview ? this.specForPreview(this.preview)?.source === signal.source : false
+        const busStates: Partial<Record<'pgm' | 'pvw', LiveSourceSignalState>> = {}
+        for (const [bus, active] of [['pgm',onPgm],['pvw',onPvw]] as const) {
+          const original = signal.busStates?.[bus]
+          if (!original) continue
+          if (!active) { busStates[bus] = ['ON_PGM','PVW_READY'].includes(original) ? 'IDLE' : original; continue }
+          const measurement = signal.measurements?.[bus]
+          const age = measurement ? Math.max(0,Date.now()-Date.parse(measurement.sampledAt)) : 0
+          const lost = measurement && (age > 2500 || (measurement.videoAgeMs !== null && (!measurement.videoPresent || measurement.videoAgeMs + age > 2000)))
+          busStates[bus] = lost && original !== 'FAILED' ? 'LOST' : original
+        }
+        const state = onPgm ? busStates.pgm ?? signal.state : onPvw ? busStates.pvw ?? signal.state
+          : (['FAILED','LOST','CUEING','TAKE_PENDING'].includes(signal.state) ? signal.state : 'IDLE')
+        const message = state === 'IDLE' ? 'Fonte não está sintonizada neste barramento.'
+          : state === 'LOST' && signal.state !== 'LOST' ? 'Fonte sem quadro recente (mais de 2 segundos); a imagem anterior não prova sinal ativo.' : signal.message
+        const busItemIds:Partial<Record<'pgm'|'pvw',string>>={}
+        if(onPgm && this.onAirItemId)busItemIds.pgm=this.onAirItemId
+        const previewSpec=this.preview ? this.specForPreview(this.preview) : null
+        if(onPvw && previewSpec)busItemIds.pvw=previewSpec.itemId
+        return { ...signal, state, message, busStates,busItemIds }
+      }).sort((a, b) => b.changedAt.localeCompare(a.changedAt)),
     }
   }
 
-  take(rundownId: string, itemId: string): Promise<void> {
-    return this.enqueue(() => this.playFrom(rundownId, itemId))
+  take(rundownId: string, itemId: string, resumeFrames = 0): Promise<void> {
+    // A manual TAKE means this exact CUE, never a silently selected later item.
+    return this.enqueue(() => this.playFrom(rundownId, itemId, resumeFrames, true))
+  }
+  takeWithLifecycle(rundownId:string,itemId:string,frames:number,lifecycle:TakeLifecycle):Promise<void>{
+    return this.enqueue(()=>this.playFrom(rundownId,itemId,frames,true,true,lifecycle))
+  }
+
+  recover(rundownId:string,itemId:string,frames:number):Promise<void> {
+    return this.enqueue(async()=>{
+      if(this.options.canRecoverProgram && !this.options.canRecoverProgram())throw new Error('Passagem de playlist sem conclusão durável. Recuperação automática bloqueada; confira o PGM antes de retomar.')
+      await this.playFrom(rundownId,itemId,frames,true)
+    })
+  }
+
+  /** Prepare a different published file playlist without loading it into the
+   * runtime first. Commit only upon the native PGM identity confirmation. */
+  takeFromPlaylist(view: RundownView, itemId: string, commit: (previous: { itemId: string; frames: number } | null) => void,
+    stillCurrent: () => boolean, resumeFrames = 0, reason = 'CONTINGENCY'): Promise<void> {
+    return this.enqueue(() => this.takeFromPlaylistNow(view,itemId,commit,stillCurrent,resumeFrames,reason))
+  }
+
+  /** One queue entry spans proof/DB work and native preroll/TAKE. Do not call
+   * ordinary queued transport methods from this awaited callback. */
+  insertOperational<T>(work:(commands:{prepare:(view:RundownView,itemId:string,current:()=>boolean)=>Promise<void>;take:(view:RundownView,itemId:string,current:()=>boolean,beforeTake:()=>void,commit:(previous:{itemId:string;frames:number}|null)=>void)=>Promise<void>})=>Promise<T>):Promise<T>{
+    return this.mutatePlaylist(()=>work({prepare:async(view,itemId,current)=>{
+      const spec=this.specFor(itemId,view);if(!spec || !current())throw new Error('Item indisponível ou inserção superada.')
+      const version=await this.checkFile(spec)
+      if(!current())throw new Error('A inserção mudou durante a verificação.')
+      await this.request({cmd:'load',item:spec})
+      if(await this.checkFile(spec)!==version || !current())throw new Error('Mídia/QC/execução mudou durante a preparação; PGM anterior preservado.')
+      this.armedSpecification=specificationKey(spec);this.armedFileVersion=version
+      if(spec.source)this.updateSource(spec,'IDLE','Entrada preparada; descoberta/ACK não comprovam quadro no PGM.')
+    },take:(view,itemId,current,beforeTake,commit)=>this.takeFromPlaylistNow(view,itemId,commit,current,0,'OPERATIONAL_INSERT_NOW',beforeTake)}))
+  }
+
+  private async takeFromPlaylistNow(view: RundownView, itemId: string, commit: (previous: { itemId: string; frames: number } | null) => void,
+    stillCurrent: () => boolean, resumeFrames: number, reason: string, beforeTake?: () => void): Promise<void> {
+      if(reason!=='OPERATIONAL_INSERT_NOW' && this.options.canStartProgram?.()===false)throw new Error('Há retorno de VT inconclusivo. Nenhum novo TAKE será automático.')
+      if (view.channel.id !== this.channel.id || view.rundown.channelId !== this.channel.id) throw new Error('Playlist pertence a outro canal.')
+      const spec = this.specFor(itemId, view)
+      if (!spec || spec.source && reason!=='OPERATIONAL_INSERT_NOW') throw new Error('A troca de playlist exige um arquivo de vídeo aprovado e reproduzível.')
+      if (spec.itemId === this.onAirItemId) throw new Error('Este item já está no PGM; use o fluxo de revisão da playlist atual, não uma troca de grade.')
+      if (!stillCurrent()) throw new Error('O estado operacional mudou; prepare novamente a troca de playlist.')
+      if (this.pendingLiveTake) {
+        await this.request({ cmd: 'cancelTake' })
+        this.pendingLiveTake = null
+        this.failPriorityTake('Entrada pendente cancelada pela troca de playlist.')
+      }
+      const fileVersion = await this.checkFile(spec)
+      if (resumeFrames > 0) spec.startOffsetFrames = Math.min(Math.floor(resumeFrames), Math.max(0, spec.trimOut - spec.trimIn - 1))
+      // The file load acknowledges only after a valid preroll at Mark In.
+      if (reason !== 'PLAYLIST_BOUNDARY' || this.armedItemId !== spec.itemId || this.armedSpecification !== specificationKey(spec) || this.armedFileVersion !== fileVersion) {
+        this.armedItemId = null
+        await this.request({ cmd: 'load', item: spec })
+        this.armedSpecification = specificationKey(spec)
+        this.armedFileVersion = fileVersion
+      }
+      if (!stillCurrent()) throw new Error('A playlist mudou durante o preroll; PGM anterior preservado. Prepare novamente.')
+      if (await this.checkFile(spec) !== fileVersion) {
+        this.armedSpecification = null; this.armedFileVersion = null
+        throw new MediaVersionError('O arquivo da próxima playlist foi alterado durante o preroll; PGM anterior preservado. Prepare novamente.')
+      }
+      if (!stillCurrent()) throw new Error('A playlist mudou durante a verificação; PGM anterior preservado. Prepare novamente.')
+      if(reason!=='OPERATIONAL_INSERT_NOW' && this.options.canStartProgram?.()===false)throw new Error('Há retorno de VT inconclusivo. Nenhum TAKE será enviado.')
+      beforeTake?.()
+      let settled!:()=>void
+      const signal=new Promise<void>(resolve=>settled=resolve)
+      const pending = { view, spec, commit, confirmed: false, failure: null as Error | null,settled }
+      this.pendingPlaylistTake = pending
+      if(spec.source)this.updateSource(spec,'TAKE_PENDING','Aguardando o primeiro quadro antes de confirmar inserção no PGM.')
+      this.pendingProgramExit = this.onAirItemId ? { itemId: this.onAirItemId, frames: Math.max(0, Math.floor(this.elapsed)), reason, targetItemId: itemId } : null
+      try {
+        try { await this.request({ cmd: 'take' }) }
+        catch (error) { if (!pending.confirmed) throw error }
+        if(spec.source && !pending.confirmed && !pending.failure){
+          let timer:ReturnType<typeof setTimeout>|undefined
+          try{await Promise.race([signal,new Promise<void>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Entrada não entregou quadro confirmado no PGM em 30 segundos. Confira a pendência antes de repetir.')),30_000)})])}
+          finally{if(timer)clearTimeout(timer)}
+        }
+        if (pending.failure) throw pending.failure
+        if (!pending.confirmed) throw new Error('TAKE aceito sem confirmação do arquivo no PGM; playlist operacional não foi substituída.')
+        // A preview cleanup failure cannot undo or misreport a confirmed cut.
+        try { await this.request({ cmd: 'preview', item: null }) }
+        catch (error) { this.fail('PGM confirmado; falha ao limpar PVW: ' + (error instanceof Error ? error.message : String(error))) }
+      } catch(error){
+        if(spec.source && !pending.confirmed){try{await this.request({cmd:'cancelTake'})}catch{/* outcome stays uncertain */}}
+        throw error
+      } finally {
+        if (this.pendingPlaylistTake === pending) this.pendingPlaylistTake = null
+        this.pendingProgramExit = null
+      }
   }
 
   cue(target: PreviewTarget | null): Promise<void> {
     return this.enqueue(async () => {
+      // Uma nova escolha do operador vence a fonte que ainda aguardava vídeo.
+      // Sem cancelar no engine, a fonte antiga podia cortar o PGM sozinha
+      // quando o sinal voltasse.
+      if (this.pendingLiveTake) {
+        await this.request({ cmd: 'cancelTake' })
+        this.pendingLiveTake = null
+        this.failPriorityTake('Entrada prioritária cancelada por um novo CUE do operador.')
+      }
       const spec = target ? this.specForPreview(target) : null
       if (target && !spec) throw new Error('O arquivo do preview não está disponível. Atualize o acervo.')
-      if (spec) await this.checkFile(spec)
-      await this.request({ cmd: 'preview', item: spec })
+      const fileVersion = spec ? await this.checkFile(spec) : null
+      const currentPreview = target ? this.specForPreview(target) : null
+      if (spec && (!currentPreview || specificationKey(currentPreview) !== specificationKey(spec))) throw new Error('A mídia mudou durante a verificação do CUE. Selecione novamente o preview.')
+      if (spec?.source) this.updateSource(spec, 'CUEING', 'Abrindo a fonte e aguardando o primeiro quadro no PVW.')
+      try {
+        await this.request({ cmd: 'preview', item: spec })
+        if (spec && !spec.source) {
+          try {
+            const verifiedVersion = await this.checkFile(spec), verifiedPreview = target ? this.specForPreview(target) : null
+            if (verifiedVersion !== fileVersion || !verifiedPreview || specificationKey(verifiedPreview) !== specificationKey(spec)) throw new MediaVersionError('A mídia mudou durante a preparação do CUE. Selecione novamente o preview; PGM anterior preservado.')
+          } catch (error) {
+            this.preview = null; this.previewSpecification = null; this.previewFileVersion = null; this.previewPosition = null; this.previewReading = SILENCE; this.dirty = true
+            try { await this.request({ cmd: 'preview', item: null }) } catch {}
+            throw error
+          }
+        }
+      } catch (error) {
+        if (spec?.source) this.updateSource(spec, 'FAILED', error instanceof Error ? error.message : 'O engine recusou abrir a fonte.', 'pvw')
+        throw error
+      }
       this.preview = target
+      this.previewSpecification = spec ? specificationKey(spec) : null
+      this.previewFileVersion = fileVersion
       this.previewPosition = spec && !spec.source ? { frames: 0, duration: Math.max(0, spec.trimOut - spec.trimIn) } : null
       this.previewReading = SILENCE
       this.dirty = true
     })
   }
 
+  /** Atualiza apenas quando há uma fonte concreta; arquivo MAM nunca entra aqui. */
+  private updateSource(spec: Pick<EngineItem, 'itemId' | 'source'>, state: LiveSourceSignalState, message: string | null, bus?: 'pgm' | 'pvw'): void {
+    if (!spec.source) return
+    const previous = this.sourceSignals.get(spec.source)
+    const targetBus = bus ?? (state === 'CUEING' || state === 'PVW_READY' ? 'pvw' : 'pgm')
+    const measurements = { ...previous?.measurements }
+    if (state === 'CUEING') delete measurements.pvw
+    this.sourceSignals.set(spec.source, {
+      source: spec.source,
+      itemId: spec.itemId,
+      state,
+      message: message === null ? null : sanitizeDiagnostic(message),
+      changedAt: new Date().toISOString(),
+      busStates: { ...previous?.busStates, [targetBus]: state },
+      measurements,
+    })
+  }
+
+  private sourceForItem(itemId: string): string | undefined {
+    return itemId.startsWith('source:')
+      ? itemId.slice('source:'.length)
+      : this.specFor(itemId)?.source
+  }
+  private updateSourceForItem(itemId: string, state: LiveSourceSignalState, message: string | null, bus?: 'pgm' | 'pvw'): void {
+    const source = this.sourceForItem(itemId)
+    if (source) this.updateSource({ itemId, source }, state, message, bus ?? (itemId === this.onAirItemId ? 'pgm' : 'pvw'))
+  }
+
   stop(): Promise<void> {
     return this.enqueue(async () => {
       await this.request({ cmd: 'stop' })
+      this.failPriorityTake('Entrada prioritária cancelada por STOP.')
+      this.pendingLiveTake = null
+      this.recoveryCursor = null
       this.elapsed = 0
       this.liveEndsAt = null
+      this.liveStartedAtMs = null
       this.dirty = true
     })
   }
@@ -892,13 +1451,20 @@ export class EngineTransport implements Transport {
     return this.enqueue(async () => {
       const spec = this.specFor(itemId)
       if (!spec) throw new Error('O primeiro item não está disponível. Atualize a grade.')
-      await this.checkFile(spec)
+      const fileVersion = await this.checkFile(spec)
       await this.request({ cmd: 'load', item: spec })
+      if (await this.checkFile(spec) !== fileVersion) throw new MediaVersionError('O arquivo mudou durante o preroll; PGM anterior preservado. Prepare novamente.')
       await this.request({ cmd: 'stop' })
+      this.failPriorityTake('Entrada prioritária cancelada ao armar a grade.')
+      this.pendingLiveTake = null
       await this.request({ cmd: 'preview', item: spec })
+      this.recoveryCursor = null
       this.elapsed = 0
       this.liveEndsAt = null
+      this.liveStartedAtMs = null
       this.preview = { kind: 'ITEM', id: itemId }
+      this.previewSpecification = specificationKey(spec)
+      this.previewFileVersion = fileVersion
       this.previewPosition = { frames: 0, duration: Math.max(0, spec.trimOut - spec.trimIn) }
       this.dirty = true
     })
@@ -915,18 +1481,59 @@ export class EngineTransport implements Transport {
 
   /** Hora de saída que a grade marcou para este item, em frames. */
   private plannedEnd(itemId: string): Frames | null {
-    const row = this.view()?.schedule.items.find((entry) => entry.id === itemId)
-    if (!row) return null
-    return Date.now() + framesToMs(row.duration, this.channel.rate)
+    const view = this.view()
+    const row = view?.schedule.items.find((entry) => entry.id === itemId)
+    const entry = view?.items.find(entry => entry.item.id === itemId)
+    if (!row || !entry || this.liveStartedAtMs === null) return null
+    const limit = liveDurationLimit(entry.item, row.duration)
+    return limit === null ? null : this.liveStartedAtMs + framesToMs(limit, this.channel.rate)
   }
 
   tick(): boolean {
     this.syncGain()
+    this.enterPriorityLiveWhenDue()
     this.endLiveWhenDue()
     this.prepareAhead()
     const changed = this.dirty
     this.dirty = false
     return changed
+  }
+
+  private failPriorityTake(reason: string): void {
+    if (!this.priorityTake) return
+    this.emitLivePriority({ ...this.priorityTake, kind: 'FAILED', reason: sanitizeDiagnostic(reason), occurredAt: new Date(Date.now()).toISOString() })
+    this.priorityTake = null
+  }
+
+  private emitLivePriority(event: LivePriorityEvent): void {
+    try { this.options.onLivePriority?.(event) }
+    catch (error) { this.fail('Falha ao registrar entrada prioritária: ' + (error instanceof Error ? error.message : String(error))) }
+  }
+
+  private enterPriorityLiveWhenDue(): void {
+    const now = Date.now(), view = this.view()
+    if (!view || !this.onAirItemId) { this.priorityObservedAt = now; return }
+    const context = `${view.rundown.id}:${view.rundown.date ?? new Date(now).toDateString()}`
+    if (context !== this.priorityContext) { this.priorityContext = context; this.handledPriorityLives.clear() }
+    const since = this.priorityObservedAt ?? now
+    if (now < since) { this.priorityObservedAt = now; return }
+    // Keep the observation window while another TAKE awaits its first frame.
+    // Otherwise an anchor crossed during that wait would be lost forever.
+    if (this.priorityTake || this.pendingLiveTake || this.pendingPlaylistTake || this.options.canStartProgram?.()===false) return
+    this.priorityObservedAt = now
+    const target = priorityLives(view, now).find(target => !this.handledPriorityLives.has(target.key) && target.itemId !== this.onAirItemId && target.atMs > since && target.atMs <= now)
+    if (!target) return
+    this.handledPriorityLives.add(target.key)
+    const previousItemId = this.onAirItemId
+    this.priorityTake = { kind: 'REQUESTED', rundownId: target.rundownId, itemId: target.itemId, previousItemId, previousFrames: this.elapsed, scheduledAt: new Date(target.atMs).toISOString(), occurredAt: new Date(now).toISOString() }
+    this.emitLivePriority(this.priorityTake)
+    void this.enqueue(async () => {
+      const current = this.view()
+      const unchanged = current && priorityLives(current, Date.now()).some(candidate => candidate.key === target.key)
+      if (!unchanged || this.onAirItemId !== previousItemId) { this.failPriorityTake('Grade ou PGM mudou antes da entrada prioritária.'); return }
+      try { await this.playFrom(target.rundownId, target.itemId, 0, true) }
+      catch (error) { this.failPriorityTake(error instanceof Error ? error.message : 'A fonte não abriu.'); this.fail('Entrada prioritária recusada; PGM anterior preservado.') }
+    }).catch(error => this.failPriorityTake(error instanceof Error ? error.message : 'Falha na fila do engine.'))
   }
 
   /**
@@ -936,11 +1543,15 @@ export class EngineTransport implements Transport {
    * pararia atrás de um estúdio que ficou no ar para sempre.
    */
   private endLiveWhenDue(): void {
-    if (this.liveEndsAt === null || !this.onAirItemId) return
+    if(this.pendingPlaylistTake || this.options.canStartProgram?.()===false)return
+    if (this.liveStartedAtMs === null || !this.onAirItemId) return
+    this.liveEndsAt = this.plannedEnd(this.onAirItemId)
+    if (this.liveEndsAt === null) return
     if (Date.now() < this.liveEndsAt) return
 
     const itemId = this.onAirItemId
     this.liveEndsAt = null
+    this.liveStartedAtMs = null
     this.advanceAfter(itemId)
   }
 
@@ -999,13 +1610,13 @@ export class EngineTransport implements Transport {
    * e o take deixa de pagar abertura de arquivo, descoberta de trilhas e seek.
    */
   private prepareAhead(): void {
-    if (!this.ready || !this.alive || this.closed || !this.onAirItemId || this.preparingItemId) return
+    if(this.pendingPlaylistTake || this.options.canStartProgram?.()===false)return
+    if (!this.ready || !this.alive || this.closed || !this.onAirItemId || this.preparingItemId || this.pendingLiveTake) return
 
     const view = this.view()
     if (!view) return
     if (view !== this.preparationView) {
       this.preparationView = view
-      this.preparationFailures.clear()
     }
 
     const index = view.items.findIndex((entry) => entry.item.id === this.onAirItemId)
@@ -1014,24 +1625,55 @@ export class EngineTransport implements Transport {
       ...view.items.slice(index + 1),
       ...(view.rundown.loop ? view.items.slice(0, index) : []),
     ]
-    const next = candidates.find((entry) => {
-      if (entry.item.id === this.onAirItemId || this.preparationFailures.has(entry.item.id)) return false
+    const failed = (id: string) => { const spec = this.specFor(id); return !spec || this.preparationFailures.has(specificationKey(spec)) }
+    const upcoming = priorityLives(view, Date.now()).find(target => target.atMs > Date.now() && target.atMs-Date.now() <= 5000 && target.itemId !== this.onAirItemId && !failed(target.itemId))
+    const upcomingItem = upcoming ? view.items.find(entry => entry.item.id === upcoming.itemId) : undefined
+    const next = upcomingItem ?? candidates.find((entry) => {
+      if (entry.item.id === this.onAirItemId || failed(entry.item.id)) return false
       return view.schedule.items.find((row) => row.id === entry.item.id)?.state !== 'DROPPED' &&
         this.specFor(entry.item.id) !== null
     })
-    if (!next || this.armedItemId === next.item.id) return
+    if (!next) {
+      const current=view.items[index]!,duration=view.schedule.items.find(row=>row.id===current.item.id)?.duration ?? 0
+      if(!current.item.autoNext || current.item.loop || view.rundown.loop || !this.options.onPreparePlaylistEnd || this.preparingBoundary || duration-this.elapsed>5*this.channel.rate.num/this.channel.rate.den || Date.now()<this.nextBoundaryPreparationAt)return
+      this.nextBoundaryPreparationAt=Date.now()+1000
+      this.preparingBoundary=true
+      const origin=this.onAirItemId,revision=this.options.executionIdentity?.()
+      let boundarySpecKey:string|null=null
+      void this.enqueue(async()=>{
+        const prepared=await this.options.onPreparePlaylistEnd!()
+        if(!prepared || this.onAirItemId!==origin || this.options.executionIdentity?.()!==revision || !prepared.stillCurrent())return
+        const spec=this.specFor(prepared.itemId,prepared.view)
+        if(!spec || spec.source || this.preparationFailures.has(specificationKey(spec)) || this.armedItemId===spec.itemId && this.armedSpecification===specificationKey(spec))return
+        boundarySpecKey=specificationKey(spec)
+        this.preparingItemId=spec.itemId;this.dirty=true
+        const fileVersion = await this.checkFile(spec)
+        if(!prepared.stillCurrent() || this.onAirItemId!==origin)return
+        await this.request({cmd:'load',item:spec})
+        if (await this.checkFile(spec) !== fileVersion) throw new Error('O arquivo mudou durante o preroll da próxima playlist.')
+        this.armedSpecification=specificationKey(spec)
+        this.armedFileVersion=fileVersion
+      }).catch(error=>{if(boundarySpecKey)this.preparationFailures.add(boundarySpecKey);this.fail('Preroll da próxima playlist falhou: '+String(error))}).finally(()=>{this.preparingBoundary=false;this.preparingItemId=null;this.dirty=true})
+      return
+    }
 
     const spec = this.specFor(next.item.id)
     if (!spec) return
+    if (this.armedItemId === spec.itemId && this.armedSpecification === specificationKey(spec)) return
     this.preparingItemId = next.item.id
     this.dirty = true
     void this.enqueue(async () => {
       // Uma ordem manual pode ter mudado o ar enquanto aguardávamos a fila.
-      if (this.onAirItemId === spec.itemId || this.armedItemId === spec.itemId) return
-      await this.checkFile(spec)
+      if (this.onAirItemId === spec.itemId || (this.armedItemId === spec.itemId && this.armedSpecification === specificationKey(spec))) return
+      const current = this.specFor(spec.itemId)
+      if (!current || specificationKey(current) !== specificationKey(spec)) return
+      const fileVersion = await this.checkFile(spec)
       await this.request({ cmd: 'load', item: spec })
+      if (await this.checkFile(spec) !== fileVersion) throw new Error('O arquivo mudou durante o preroll do próximo item.')
+      this.armedSpecification = specificationKey(spec)
+      this.armedFileVersion = fileVersion
     }).catch((failure: unknown) => {
-      this.preparationFailures.add(spec.itemId)
+      this.preparationFailures.add(specificationKey(spec))
       const message = failure instanceof Error ? failure.message : 'Falha no preroll.'
       this.fail(`${next.item.title}: preroll falhou — ${message}`)
     }).finally(() => {
@@ -1050,8 +1692,21 @@ export class EngineTransport implements Transport {
     this.send({ cmd: 'monitor', bus, on })
   }
 
+  /** No CUE/LOAD/TAKE; serialized with them and bound to the active source. */
+  qcMonitor(source:string,on:boolean,authorize:()=>void=()=>{}):Promise<void> {
+    return this.enqueue(async()=>{
+      authorize()
+      if(!this.options.qcPreview)throw new Error('Inspeção ao vivo em qualidade indisponível nesta instalação.')
+      const target=this.preview
+      const spec=target?.kind==='SOURCE'?this.specForPreview(target):null
+      if(!spec?.source || spec.source!==resolveSource(source))throw new Error('A fonte do QC não é mais o preview ativo.')
+      await this.request({cmd:'qcMonitor',itemId:spec.itemId,on})
+    })
+  }
+
   close(): void {
     if (this.closed) return
+    this.failPriorityTake('Entrada prioritária cancelada ao encerrar o canal.')
     const child = this.child
     this.send({ cmd: 'shutdown' })
     this.closed = true
@@ -1082,9 +1737,8 @@ function resolveSource(ref: string): string | null {
   const kind = ref.slice(0, separator)
   const rest = ref.slice(separator + 1)
 
-  // OMT chega do discovery como `omt:<serviço>`. O receiver do engine faz a
-  // validação de SDP/RTP e devolve um diagnóstico específico se o anúncio
-  // NMOS ainda não for reproduzível; rejeitar aqui escondia a causa real.
+  // OMT uses the official native runtime, not SMPTE-2110 or NMOS. Preserve
+  // its discovered reference so the engine can report SDK/source failures.
   if (kind === 'sdi' || kind === 'ndi' || kind === 'omt') return ref
   if (kind === 'guest') return MediaMtx.internalRead(`guest/${rest}`)
   if (kind === 'path') return MediaMtx.internalRead(rest)

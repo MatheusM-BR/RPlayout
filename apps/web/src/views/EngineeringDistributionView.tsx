@@ -8,9 +8,12 @@ import { OperationalMultiview } from '../components/broadcast/OperationalMultivi
 import type { MultiviewSourceItem } from '../components/broadcast/OperationalMultiview.js'
 import { SrtManagerPanel, type SrtLinkItem } from '../components/broadcast/SrtManagerPanel.js'
 import { RedundancyFailoverPanel } from '../components/broadcast/RedundancyFailoverPanel.js'
+import {HaReplicationPanel} from '../components/broadcast/HaReplicationPanel.js'
 import { ContinuityCacheBadge } from '../components/broadcast/ContinuityCacheBadge.js'
 import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
 import { StudioAutomationPanel } from '../components/broadcast/StudioAutomationPanel.js'
+import { HostResourcesPanel } from '../components/broadcast/HostResourcesPanel.js'
+import {liveSourceMonitor} from '../domain/live-source-monitor.js'
 
 interface Props {
   channel: Channel
@@ -25,24 +28,13 @@ interface Props {
   monitors?: Monitors | null
 }
 
-type EngineeringSection = 'DASHBOARD' | 'MULTIVIEW' | 'SRT' | 'REDUNDANCY' | 'OUTPUTS' | 'AUTOMATION' | 'LOGS'
+type EngineeringSection = 'DASHBOARD' | 'MULTIVIEW' | 'SRT' | 'REDUNDANCY' | 'OUTPUTS' | 'AUTOMATION' | 'HOST' | 'LOGS'
 type HostMetrics = Awaited<ReturnType<typeof api.hostMetrics>>
 type ProcessSnapshot = Awaited<ReturnType<typeof api.processes>>['processes']
 type OutputSnapshot = Awaited<ReturnType<typeof api.outputs>>['outputs']
 
 const percent = (value: number | null) => value === null ? 'N/D' : `${value.toFixed(value % 1 ? 1 : 0)}%`
 const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`
-
-/** A referência do preview é a URI canônica que o engine recebeu da fonte. */
-function isSharedPreviewSource(live: Live | null, source: ManagedLiveSource): boolean {
-  const preview = live?.transport.preview
-  if (preview?.kind !== 'SOURCE') return false
-  // NDI/SDI/OMT podem variar apenas em caixa ou espaços entre a descoberta,
-  // o cadastro e o engine. Comparar o texto cru fazia o multiview perder a
-  // imagem apesar de o mesmo PVW estar rodando.
-  const canonical = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase()
-  return canonical(preview.source) === canonical(source.targetUrl)
-}
 
 export function EngineeringDistributionView({
   channel,
@@ -91,31 +83,10 @@ export function EngineeringDistributionView({
 
   const gpu = hostMetrics?.gpu ?? null
   const engineProcess = processes.find((process) => process.kind === 'ENGINE' && process.channelId === channel.id)
+  const engineSimulated = engineProcess?.details?.transport === 'SIMULATED'
   const engineAlert = Boolean(live?.alerts.some((alert) => alert.kind === 'ENGINE')) || engineProcess?.state === 'error'
 
-  const multiviewSources: MultiviewSourceItem[] = liveSources.map((source) => {
-    const telemetry = source.kind === 'SRT' ? srtTelemetry[source.id] : undefined
-    const signalLocked = telemetry?.linkState === 'OPTIMAL'
-    return {
-      id: source.id,
-      name: source.name,
-      role: source.role === 'BACKUP' ? 'BACKUP' : 'PRIMARY',
-      kind: source.kind,
-      targetUrl: source.targetUrl,
-      format: 'Aguardando probe',
-      fps: 0,
-      tally: source.enabled ? 'CUED' : 'OFFLINE',
-      // Sem sonda de SDI/NDI/RTMP a UI não deduz lock apenas por a fonte estar
-      // cadastrada. SRT só fica LOCKED quando o manager entrega telemetria.
-      syncState: !source.enabled || !telemetry ? 'LOST' : signalLocked ? 'LOCKED' : 'DRIFT',
-      audioLevels: { leftDb: -60, rightDb: -60, peakLeftDb: -60, peakRightDb: -60 },
-      srtTelemetry: telemetry,
-      // PVW é a única renderização de entrada sob demanda. Se ela já abriu
-      // esta fonte, o Monitor lê o mesmo WHEP em vez de criar outro decoder.
-      whepPath: isSharedPreviewSource(live, source) ? monitors?.preview ?? null : null,
-      whepPort: monitors?.port,
-    }
-  })
+  const multiviewSources: MultiviewSourceItem[] = liveSources.map(source=>liveSourceMonitor(source,live,monitors,source.kind==='SRT'?srtTelemetry[source.id]:undefined))
   const srtLinks: SrtLinkItem[] = liveSources
     .filter((source) => source.kind === 'SRT')
     .map((source) => {
@@ -202,7 +173,7 @@ export function EngineeringDistributionView({
   const warmCache = async () => {
     setEngineeringAction('cache')
     try {
-      const result = await api.warmContinuityCache()
+      const result = await api.warmContinuityCache(channel.id)
       onMessage(`Cache de continuidade atualizado: ${result.cached48h} itens prontos para 48h; ${result.missing48h} pendentes.`)
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'Não foi possível atualizar o cache de continuidade.')
@@ -237,7 +208,7 @@ export function EngineeringDistributionView({
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-label-caps text-[10px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-accent-ice text-[15px]">memory</span>
-                    GPU NVENC LOAD
+                    UTILIZAÇÃO DA GPU
                   </span>
                   <span className="font-label-mono text-[10px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
                     {percent(hostMetrics?.gpu.utilizationPercent ?? null)}
@@ -273,7 +244,7 @@ export function EngineeringDistributionView({
                   <div className="font-timecode-display text-[20px] font-bold text-status-ok-bright tracking-tight leading-none">
                     {hostMetrics?.cpu.percent === null || !hostMetrics ? '—' : percent(hostMetrics.cpu.percent)}
                   </div>
-                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{hostMetrics ? `${hostMetrics.cpu.cores} núcleos • amostra a cada 3 s` : 'Aguardando coleta'}</span>
+                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{hostMetrics ? `${hostMetrics.cpu.cores} núcleos • coleta a cada ${hostMetrics.sampleIntervalSeconds} s` : 'Aguardando coleta'}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className="bg-status-ok h-full rounded-full" style={{ width: `${hostMetrics?.cpu.percent ?? 0}%` }}></div>
@@ -285,7 +256,7 @@ export function EngineeringDistributionView({
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-label-caps text-[10px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-armed-amber text-[15px]">storage</span>
-                    MEMÓRIA RAM ECC
+                    MEMÓRIA RAM
                   </span>
                   <span className="font-label-mono text-[10px] text-accent-ice font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
                     {percent(hostMetrics?.memory.percent ?? null)}
@@ -310,14 +281,14 @@ export function EngineeringDistributionView({
                     ENGINE &amp; PROCESSO
                   </span>
                   <span className={`font-label-caps text-[9px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok animate-pulse'}`}></span>{engineAlert ? 'ALERTA' : engineProcess?.state === 'running' ? 'ATIVO' : 'SEM ALERTA'}
+                    <span className={`w-1.5 h-1.5 rounded-full ${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok animate-pulse'}`}></span>{engineAlert ? 'ALERTA' : engineSimulated ? 'SIMULADO' : engineProcess?.state === 'running' ? 'ATIVO' : 'SEM ALERTA'}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mb-1">
                   <div className="font-timecode-display text-[20px] font-bold text-status-ok tracking-tight leading-none">
                     {engineProcess?.pid ? `PID ${engineProcess.pid}` : '—'}
                   </div>
-                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : 'Engine não iniciado'}</span>
+                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{engineSimulated ? 'Transporte simulado • sem saída física' : engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : 'Engine não iniciado'}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className={`${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok'} h-full rounded-full`} style={{ width: engineProcess?.state === 'running' ? '100%' : engineProcess ? '45%' : '0%' }}></div>
@@ -327,8 +298,10 @@ export function EngineeringDistributionView({
 
             {/* Ações Rápidas de Engenharia */}
             <div className="flex items-center justify-end gap-2 shrink-0 border-t lg:border-t-0 lg:border-l border-border-subtle pt-2 lg:pt-0 lg:pl-3">
+              {live?.reconfiguration?.ready === false && <span role="status" className="text-xs text-armed-amber max-w-52">{live.reconfiguration.reason ?? 'Aguardando recuperação do canal…'}</span>}
               <button
-                disabled={engineeringAction !== null}
+                disabled={engineeringAction !== null || live?.reconfiguration?.ready === false}
+                title={live?.reconfiguration?.reason ?? 'Reinício com interrupção controlada e recuperação do checkpoint'}
                 onClick={() => void restartEngine()}
                 className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel hover:bg-surface-container text-on-surface text-[10.5px] font-label-caps font-bold rounded-lg border border-border-subtle hover:border-border-strong transition-all shadow-sm cursor-pointer"
               >
@@ -355,8 +328,8 @@ export function EngineeringDistributionView({
         </div>
 
         {/* 3. BARRA DE NAVEGAÇÃO DE SUB-MÓDULOS DE ENGENHARIA (FASE B) */}
-        <div className="w-full bg-surface-panel/80 border-b border-border-subtle px-4 py-1.5 flex items-center justify-between gap-3 shrink-0 overflow-hidden">
-          <div className="flex items-center gap-1.5">
+        <div className="w-full bg-surface-panel/80 border-b border-border-subtle px-4 py-1.5 flex items-center justify-between gap-3 shrink-0 overflow-x-auto">
+          <div className="flex items-center gap-1.5 shrink-0">
             {[
               { id: 'DASHBOARD' as const, label: 'VISÃO INTEGRADA MCR', icon: 'dashboard' },
               { id: 'MULTIVIEW' as const, label: 'MULTIVIEW DE ENTRADAS', icon: 'grid_view' },
@@ -364,6 +337,7 @@ export function EngineeringDistributionView({
               { id: 'REDUNDANCY' as const, label: 'REDUNDÂNCIA N+1 / FAILOVER', icon: 'verified_user' },
               { id: 'OUTPUTS' as const, label: 'MATRIZ DE SAÍDAS (SDI/NDI)', icon: 'hub' },
               { id: 'AUTOMATION' as const, label: 'AUTOMAÇÃO & ESTÚDIO', icon: 'precision_manufacturing' },
+              { id: 'HOST' as const, label: 'RECURSOS DO SERVIDOR', icon: 'monitoring' },
               { id: 'LOGS' as const, label: 'LOGS TÉCNICOS', icon: 'terminal' },
             ].map((tab) => (
               <button
@@ -390,7 +364,7 @@ export function EngineeringDistributionView({
             </span>
             <div className="h-3.5 w-px bg-border-subtle"></div>
             {/* Badge de Cobertura do Cache de Continuidade (Fase C: 48h AIR-GAP) */}
-            <ContinuityCacheBadge />
+            <ContinuityCacheBadge channelId={channel.id} />
           </div>
         </div>
 
@@ -414,19 +388,20 @@ export function EngineeringDistributionView({
                 <OperationalMultiview
                   sources={multiviewSources}
                   initialLayout="COMPACT_LIST"
-                  onWatchingPreview={() => { void api.watching(channel.id, 'pvw').catch(() => undefined) }}
+                  onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
                 />
               </div>
 
             </div>
           )}
+          {activeSection === 'HOST' && <div className="flex-1 min-h-0"><HostResourcesPanel /></div>}
 
           {/* SEÇÃO 2: MULTIVIEW COMPLETO (FOCO TOTAL) */}
           {activeSection === 'MULTIVIEW' && (
             <div className="flex-1 min-h-0">
               <OperationalMultiview
                 sources={multiviewSources}
-                onWatchingPreview={() => { void api.watching(channel.id, 'pvw').catch(() => undefined) }}
+                onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
               />
             </div>
           )}
@@ -444,14 +419,14 @@ export function EngineeringDistributionView({
 
           {/* SEÇÃO 4: REDUNDÂNCIA PRIMÁRIO/BACKUP (FAILOVER) */}
           {activeSection === 'REDUNDANCY' && (
-            <div className="flex-1 min-h-0">
+            <div className="flex-1 min-h-0 overflow-auto space-y-3">
+              <HaReplicationPanel/>
               <RedundancyFailoverPanel
                 pair={redundancyPair}
                 onSwitchStream={(target) => {
                   if (!redundancyPair) return
-                  void api.triggerFailover(redundancyPair.primary.id, target, 'Comutação manual pelo painel de redundância')
-                    .then((result) => onMessage(`Failover registrado: ${result.event.fromRole} → ${result.event.toRole}.`))
-                    .catch((error) => onMessage(error instanceof Error ? error.message : 'Falha ao acionar failover.'))
+                  return api.triggerFailover(redundancyPair.primary.id, target, 'Preferência de fonte registrada; sem comutação de PGM')
+                    .then(() => onMessage('Preferência registrada. PGM não foi alterado; faça CUE/TAKE da fonte publicada e confira o sinal.'))
                 }}
                 onToggleAutoFailover={() => onMessage('A alteração da política deve ser salva na configuração da fonte primária.')}
                 onMessage={onMessage}

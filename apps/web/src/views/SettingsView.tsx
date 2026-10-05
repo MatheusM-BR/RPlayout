@@ -1,6 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
-import { formatVideoFormat, type Channel, type Scan, type FieldOrder } from '@rplayout/protocol'
+import { useState, useEffect, useCallback,useRef } from 'react'
+import { sameRate, type Channel, type Scan, type FieldOrder } from '@rplayout/protocol'
+import {CadenceConversionDialog,type CadenceConversionRequest} from '../components/CadenceConversionDialog.js'
+import {formatStandardRate} from '../format.js'
 import { api } from '../api.js'
+import {channelConfigurationPatch} from '../domain/channel-configuration.js'
 import { BUILD_COMMIT, buildDate } from '../build.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
@@ -10,9 +13,12 @@ import { UsersPanel } from '../components/UsersPanel.js'
 import { IntegrationsPanel } from '../components/IntegrationsPanel.js'
 import { SaidasTransmissaoPanel } from '../components/SaidasTransmissaoPanel.js'
 import { EntradasAoVivoPanel } from '../components/EntradasAoVivoPanel.js'
+import type { Live } from '../types.js'
+import { engineIndicator } from '../domain/engine-indicator.js'
 
 interface Props {
   channel: Channel
+  live?: Live | null
   channels: Channel[]
   onNavigate: (workspace: WorkspaceId) => void
   onSelectChannel: (channelId: string) => void
@@ -38,6 +44,7 @@ type SettingsTab =
 
 export function SettingsView({
   channel,
+  live = null,
   channels,
   onNavigate,
   onSelectChannel,
@@ -48,10 +55,33 @@ export function SettingsView({
   onOpenAudit,
 }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('canais')
+  const canRestoreProject = sessionRole === 'Supervisor' || sessionRole === 'Administrador'
+  const [engineProcess, setEngineProcess] = useState<Awaited<ReturnType<typeof api.processes>>['processes'][number]>()
+  const [processError, setProcessError] = useState(false)
+  useEffect(() => {
+    let active = true
+    setEngineProcess(undefined); setProcessError(false)
+    const refresh = async () => {
+      try {
+        const result = await api.processes()
+        if (active) {
+          setEngineProcess(result.processes.find(process => process.kind === 'ENGINE' && process.channelId === channel.id))
+          setProcessError(false)
+        }
+      } catch { if (active) { setEngineProcess(undefined); setProcessError(true) } }
+    }
+    void refresh()
+    const timer = setInterval(() => void refresh(), 3000)
+    return () => { active = false; clearInterval(timer) }
+  }, [channel.id])
+  const engine = engineIndicator(engineProcess, processError || Boolean(live?.alerts.some(alert => alert.kind === 'ENGINE')))
 
   // Estado de edição de canal
   const [editingChannelId, setEditingChannelId] = useState<string>(channel.id)
   const currentEditingChannel = channels.find((c) => c.id === editingChannelId) || channel
+  const [channelBaseline,setChannelBaseline]=useState(()=>structuredClone(currentEditingChannel))
+  const editingChannelRef=useRef(currentEditingChannel.id)
+  editingChannelRef.current=currentEditingChannel.id
 
   const [channelName, setChannelName] = useState(currentEditingChannel.name)
   const [width, setWidth] = useState(currentEditingChannel.width)
@@ -65,8 +95,22 @@ export function SettingsView({
 
   const [newChannelName, setNewChannelName] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [conversion,setConversion]=useState<CadenceConversionRequest|null>(null)
   const [projectLabel, setProjectLabel] = useState('')
   const [projects, setProjects] = useState<Array<{ id: string; label: string; createdAt: string }>>([])
+  const [archivedChannels,setArchivedChannels]=useState<Channel[]>([])
+  const loadArchivedChannels=useCallback(async()=>{
+    try {setArchivedChannels((await api.archivedChannels()).channels)}
+    catch(error){onMessage(error instanceof Error ? error.message : 'Não foi possível consultar canais arquivados.')}
+  },[onMessage])
+  useEffect(()=>{void loadArchivedChannels()},[loadArchivedChannels,channels])
+  const handleReactivateChannel=async(archived:Channel)=>{
+    if(!window.confirm(`Reativar “${archived.name}”? O PGM continuará parado. As saídas e chaves cadastradas voltarão a ficar disponíveis; confira a configuração antes de operar.`))return
+    setIsSaving(true)
+    try{await api.reactivateChannel(archived.id);await loadArchivedChannels();onChanged();onMessage(`Canal “${archived.name}” reativado, sem TAKE automático.`)}
+    catch(error){onMessage(error instanceof Error ? error.message : 'Não foi possível reativar o canal.')}
+    finally{setIsSaving(false)}
+  }
 
   const loadProjects = useCallback(async () => {
     try {
@@ -77,18 +121,13 @@ export function SettingsView({
     }
   }, [currentEditingChannel.id, onMessage])
 
-  // Atualiza os campos do formulário quando o canal em edição muda
-  useEffect(() => {
-    setChannelName(currentEditingChannel.name)
-    setWidth(currentEditingChannel.width)
-    setHeight(currentEditingChannel.height)
-    setRateNum(currentEditingChannel.rate.num)
-    setRateDen(currentEditingChannel.rate.den)
-    setScan(currentEditingChannel.scan)
-    setFieldOrder(currentEditingChannel.fieldOrder)
-    setTargetLufs(currentEditingChannel.targetLufs)
-    setCeilingDbtp(currentEditingChannel.ceilingDbtp)
-  }, [editingChannelId, currentEditingChannel])
+  const resetChannelDraft=(fresh:Channel)=>{
+    setChannelBaseline(structuredClone(fresh));setChannelName(fresh.name);setWidth(fresh.width);setHeight(fresh.height)
+    setRateNum(fresh.rate.num);setRateDen(fresh.rate.den);setScan(fresh.scan);setFieldOrder(fresh.fieldOrder)
+    setTargetLufs(fresh.targetLufs);setCeilingDbtp(fresh.ceilingDbtp)
+  }
+  // Background snapshots never replace the baseline or erase a local draft.
+  useEffect(() => {resetChannelDraft(currentEditingChannel)}, [currentEditingChannel.id])
 
   useEffect(() => {
     if (activeTab === 'projetos') void loadProjects()
@@ -110,13 +149,13 @@ export function SettingsView({
   }
 
   const handleRestoreProject = async (project: { id: string; label: string }) => {
-    if (!window.confirm(`Restaurar “${project.label}” somente neste canal? A configuração e a grade atuais deste canal serão substituídas.`)) return
+    if (!window.confirm(`Restaurar “${project.label}” somente neste canal? Pare o PGM e limpe o CUE primeiro. O engine será reiniciado para aplicar entradas, formato e saídas. A grade editorial será substituída; publicações existentes serão preservadas.`)) return
     setIsSaving(true)
     try {
       const result = await api.restoreChannelProject(currentEditingChannel.id, project.id)
       await loadProjects()
       onChanged()
-      onMessage(`Projeto restaurado: ${result.restored.label}.`)
+      onMessage(`Projeto restaurado: ${result.restored.label}. Configuração reaplicada com reinício controlado; revise e publique a grade antes do CUE/TAKE.`)
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'Não foi possível restaurar o projeto.')
     } finally {
@@ -126,21 +165,23 @@ export function SettingsView({
 
   // Salva alterações no canal
   const handleSaveChannel = async () => {
+    if(currentEditingChannel.id!==channelBaseline.id){onMessage('O canal selecionado mudou; nenhum campo foi enviado. Confira novamente.');return}
+    const patch=channelConfigurationPatch(channelBaseline,{name:channelName,width,height,scan,fieldOrder,targetLufs,ceilingDbtp,rateNum,rateDen})
+    if(!sameRate(channelBaseline.rate,{num:rateNum,den:rateDen})){
+      const {rateNum:ignoredNum,rateDen:ignoredDen,...format}=patch
+      setConversion({channel:channelBaseline,rate:{num:rateNum,den:rateDen},format})
+      return
+    }
+    if(!Object.keys(patch).length){onMessage('Nenhuma configuração alterada.');return}
     setIsSaving(true)
     try {
-      const result = await api.patchChannel(currentEditingChannel.id, {
-        name: channelName,
-        width,
-        height,
-        rateNum,
-        rateDen,
-        scan,
-        fieldOrder,
-      })
+      const result = await api.patchChannel(channelBaseline.id,patch,channelBaseline.configurationRevision)
+      if(editingChannelRef.current!==channelBaseline.id){onChanged();onMessage(`Configuração de ${channelBaseline.name} gravada; a tela atual foi preservada.${result.engineError?` Atenção: ${result.engineError}`:''}`);return}
+      setChannelBaseline({...channelBaseline,name:channelName,width,height,rate:{num:rateNum,den:rateDen},scan,fieldOrder,targetLufs,ceilingDbtp,configurationRevision:result.configurationRevision})
       onChanged()
       onMessage(
-        result.formatChanged
-          ? `Canal ${channelName} reconfigurado para novo formato. O engine foi reconstruído.`
+        result.engineError?`Configuração gravada, mas o engine exige conferência: ${result.engineError}. Confira antes de operar.`:result.formatChanged
+          ? `Configuração de ${channelName} gravada. Reinício controlado solicitado; confira o estado do engine antes de operar.`
           : `Canal ${channelName} atualizado com sucesso.`,
       )
     } catch (err) {
@@ -151,6 +192,18 @@ export function SettingsView({
   }
 
   // Cria um novo canal
+  const reloadChannelConfiguration=async()=>{
+    if(!window.confirm('Reabrir a configuração atual do servidor? Isso descarta somente os campos locais deste formulário.'))return
+    const id=currentEditingChannel.id
+    setIsSaving(true)
+    try{
+      const {channel:fresh}=await api.channelConfiguration(id)
+      if(editingChannelRef.current!==id)return
+      resetChannelDraft(fresh)
+      onChanged();onMessage('Configuração atual carregada. Revise antes de salvar.')
+    }catch(error){onMessage(error instanceof Error?error.message:'Não foi possível reabrir; seus campos foram conservados.')}
+    finally{setIsSaving(false)}
+  }
   const handleCreateChannel = async () => {
     const nome = newChannelName.trim()
     if (!nome) return
@@ -167,26 +220,24 @@ export function SettingsView({
     }
   }
 
-  // Exclui um canal
+  // Archive never deletes history. Only the server knows the global active
+  // count: the browser may see a single channel because of access policy.
   const handleDeleteChannel = async (id: string, nome: string) => {
-    if (channels.length <= 1) {
-      onMessage('Não é possível apagar o único canal do sistema.')
-      return
-    }
-    if (!window.confirm(`Tem certeza que deseja apagar o canal "${nome}"? Sua programação e saídas associadas serão removidas.`)) {
+    if (!window.confirm(`Arquivar o canal “${nome}”? Pare o PGM e limpe o CUE primeiro. Ele sairá da operação, mas grades, publicações, histórico de exibição e auditoria serão preservados.`)) {
       return
     }
     setIsSaving(true)
     try {
       await api.removeChannel(id)
+      await loadArchivedChannels()
       onChanged()
-      onMessage(`Canal "${nome}" excluído.`)
+      onMessage(`Canal “${nome}” arquivado. O histórico continua disponível em AIRED.`)
       if (editingChannelId === id) {
         const remaining = channels.filter((c) => c.id !== id)
         if (remaining[0]) setEditingChannelId(remaining[0].id)
       }
     } catch (err) {
-      onMessage(err instanceof Error ? err.message : 'Falha ao excluir canal.')
+      onMessage(err instanceof Error ? err.message : 'Falha ao arquivar canal.')
     } finally {
       setIsSaving(false)
     }
@@ -230,6 +281,13 @@ export function SettingsView({
     }
   }
 
+  if(conversion)return <CadenceConversionDialog request={conversion} onCancel={()=>setConversion(null)} onApplied={message=>{
+    const id=conversion.channel.id
+    setConversion(null);setIsSaving(true);onChanged();onMessage(message)
+    void api.channelConfiguration(id).then(({channel:fresh})=>{if(editingChannelRef.current===id)resetChannelDraft(fresh)})
+      .catch(error=>onMessage(`A conversão foi gravada, mas o formulário não foi recarregado. Reabra a configuração antes de salvar: ${error instanceof Error?error.message:'consulta indisponível'}`))
+      .finally(()=>setIsSaving(false))
+  }}/>
   return (
     <div className="bg-surface-base text-on-surface antialiased select-none flex flex-col h-screen overflow-hidden font-body-md text-body-md">
       {/* 1. CABEÇALHO PADRÃO RPLAYOUT */}
@@ -241,6 +299,7 @@ export function SettingsView({
         onNavigate={onNavigate}
         sessionRole={sessionRole}
         authRequired={authRequired}
+        isLiveOnAir={live ? Boolean(live.transport.onAir && live.transport.playing && engine.ok) : undefined}
         onOpenSettings={() => setActiveTab('canais')}
       />
 
@@ -256,12 +315,12 @@ export function SettingsView({
                 <h1 className="font-headline-md text-headline-md tracking-wider text-on-surface uppercase leading-none font-bold">
                   CONFIGURAÇÕES // SISTEMA & CANAIS
                 </h1>
-                <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold uppercase">
-                  MASTER ENG OK
+                <span className={`font-label-caps text-[9px] px-2 py-0.5 rounded border font-bold uppercase ${engine.ok ? 'bg-status-ok/20 text-status-ok-bright border-status-ok/40' : 'text-armed-amber border-armed-amber/40'}`}>
+                  {engine.label}
                 </span>
               </div>
               <span className="font-label-mono text-label-mono text-outline">
-                Canal em Foco: {channel.name} • Formato: {formatVideoFormat(channel)} • {channel.width}x{channel.height}
+                Canal em Foco: {channel.name} • Formato: {formatStandardRate(channel.rate,channel.scan,channel.height)} • {channel.width}x{channel.height}
               </span>
             </div>
           </div>
@@ -428,7 +487,7 @@ export function SettingsView({
               </div>
               <div className="flex items-center justify-between">
                 <span>ESTADO:</span>
-                <span className="text-status-ok-bright font-bold">ESTÁVEL</span>
+                <span className={`font-bold ${engine.ok ? 'text-status-ok-bright' : 'text-armed-amber'}`}>{engine.label}</span>
               </div>
             </div>
           </aside>
@@ -482,7 +541,7 @@ export function SettingsView({
                             <div className="flex items-center gap-1">
                               {isFocused && (
                                 <span className="font-label-caps text-[8.5px] px-1.5 py-0.5 rounded bg-primary text-surface-base font-bold">
-                                  NO AR
+                                  CANAL EM FOCO
                                 </span>
                               )}
                               {isSelected && (
@@ -495,7 +554,7 @@ export function SettingsView({
 
                           <div className="flex items-center justify-between font-label-mono text-[10px] text-on-surface-variant border-t border-border-subtle/50 pt-2">
                             <span>
-                              {ch.width}x{ch.height} • {formatVideoFormat(ch)}
+                              {ch.width}x{ch.height} • {formatStandardRate(ch.rate,ch.scan,ch.height)}
                             </span>
                             <span>
                               {ch.scan === 'INTERLACED' ? 'Entrelaçado' : 'Progressivo'}
@@ -515,15 +574,15 @@ export function SettingsView({
                               </button>
                             )}
                             <button
-                              disabled={channels.length <= 1}
+                              disabled={isSaving || !canRestoreProject}
                               onClick={(e) => {
                                 e.stopPropagation()
                                 handleDeleteChannel(ch.id, ch.name)
                               }}
                               className="px-2 py-1 rounded bg-on-air-crimson/20 hover:bg-on-air-crimson/30 text-on-air-crimson font-label-caps text-[9.5px] border border-on-air-crimson/40 cursor-pointer disabled:opacity-30"
-                              title="Excluir canal"
+                              title="Arquivar canal sem apagar histórico; exige PGM parado e CUE limpo."
                             >
-                              Excluir
+                              Arquivar
                             </button>
                           </div>
                         </div>
@@ -532,6 +591,14 @@ export function SettingsView({
                   </div>
 
                   {/* Adição Rápida de Canal */}
+                  {archivedChannels.length>0 && <div className="border border-border-subtle rounded p-3 space-y-2">
+                    <h4 className="text-sm font-bold">Canais arquivados — histórico preservado</h4>
+                    <p className="text-xs text-outline">Não aparecem no Master nem iniciam engine. Consulte os registros no seletor de histórico do AIRED.</p>
+                    {archivedChannels.map(archived=><div key={archived.id} className="flex items-center justify-between gap-3">
+                      <span className="text-xs">{archived.name} · {archived.archivedAt ? new Date(archived.archivedAt).toLocaleString('pt-BR') : ''}</span>
+                      <button disabled={isSaving || !canRestoreProject} onClick={()=>void handleReactivateChannel(archived)} className="rounded border border-border-subtle px-2 py-1 text-xs disabled:opacity-40">REATIVAR PARADO</button>
+                    </div>)}
+                  </div>}
                   <div className="flex items-center gap-2 pt-2 border-t border-border-subtle mt-1">
                     <input
                       type="text"
@@ -704,9 +771,11 @@ export function SettingsView({
                     </div>
                   </div>
 
+                  {currentEditingChannel.configurationRevision!==channelBaseline.configurationRevision&&<p role="alert" className="text-sm text-armed-amber">A configuração mudou desde a abertura. Seus campos foram conservados; reabra a configuração para conferir antes de aplicar.</p>}
+                  <button disabled={isSaving} onClick={()=>void reloadChannelConfiguration()} className="text-primary text-sm disabled:opacity-50">REABRIR CONFIGURAÇÃO DO SERVIDOR</button>
                   <div className="flex items-center justify-between pt-3 border-t border-border-subtle">
                     <span className="font-label-mono text-[11px] text-outline">
-                      Configurações aplicadas reiniciarão suavemente o pipeline de exibição do canal.
+                      Alterar o formato reconstrói o engine e provoca uma interrupção controlada do canal.
                     </span>
                     <button
                       disabled={isSaving}
@@ -746,7 +815,7 @@ export function SettingsView({
                     <span className="material-symbols-outlined text-primary text-[20px]">inventory_2</span>
                     Projetos do Canal: {currentEditingChannel.name}
                   </h3>
-                  <p className="font-body-sm text-[11.5px] text-outline mt-1">Salva grade, fontes ao vivo, saídas, regras, multiview e gráficos deste canal. Restaurar não altera os demais canais nem o acervo MAM.</p>
+                  <p className="font-body-sm text-[11.5px] text-outline mt-1">Salva grade, fontes ao vivo, saídas, regras, multiview e gráficos deste canal. Restaurar exige Supervisor/Administrador, PGM parado e CUE limpo; reinicia o engine para aplicar a configuração. Publicações existentes são preservadas: revise e publique a grade restaurada. Não altera os demais canais nem o acervo MAM.</p>
                 </div>
                 <div className="flex flex-wrap gap-2 mb-4">
                   <input value={projectLabel} onChange={(event) => setProjectLabel(event.target.value)} placeholder="Nome do ponto de restauração" className="min-w-64 flex-1 bg-surface-base border border-border-subtle rounded px-3 py-2 text-sm text-on-surface" />
@@ -759,7 +828,7 @@ export function SettingsView({
                     {projects.map((project) => (
                       <div key={project.id} className="flex items-center justify-between gap-3 p-3">
                         <div><div className="font-body-sm font-bold text-on-surface">{project.label}</div><div className="font-label-mono text-[10px] text-outline">{new Date(project.createdAt).toLocaleString('pt-BR')}</div></div>
-                        <button disabled={isSaving} onClick={() => void handleRestoreProject(project)} className="px-2.5 py-1.5 rounded border border-armed-amber text-armed-amber text-[10px] font-bold disabled:opacity-50">RESTAURAR NESTE CANAL</button>
+                        <button disabled={isSaving || !canRestoreProject} title={canRestoreProject ? 'Exige PGM parado e CUE limpo; aplica configuração com reinício controlado.' : 'Exige Supervisor ou Administrador.'} onClick={() => void handleRestoreProject(project)} className="px-2.5 py-1.5 rounded border border-armed-amber text-armed-amber text-[10px] font-bold disabled:opacity-50">RESTAURAR NESTE CANAL</button>
                       </div>
                     ))}
                   </div>
@@ -840,7 +909,7 @@ export function SettingsView({
                       Disparos SCTE-35, Webhooks & Automação de Estúdio
                     </h3>
                     <p className="font-body-sm text-[11.5px] text-outline">
-                      Envio de gatilhos HTTP em tempo real durante transições de take, início de blocos comerciais e notificações de erro.
+                      Gatilhos HTTP ficam em fila durável. A confirmação depende da resposta do gateway; não comprova inserção física SCTE na saída.
                     </p>
                   </div>
                   <IntegrationsPanel channelId={channel.id} onMessage={onMessage} />

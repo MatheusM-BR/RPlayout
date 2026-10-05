@@ -82,7 +82,6 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
   elapsedFrames = 0,
   onSelectItem,
   onAutoFill,
-  rundownId,
 }) => {
   const [zoomLevel, setZoomLevel] = useState<TimelineZoomLevel>('24H' as any)
   // Normalizar zoomLevel para a chave correspondente
@@ -98,7 +97,6 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
   const [followPlayhead, setFollowPlayhead] = useState(true)
   const [hoveredBlock, setHoveredBlock] = useState<TimelineBlock | null>(null)
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null)
-  const [isAutoFilling, setIsAutoFilling] = useState(false)
   const [scrollOffsetMs, setScrollOffsetMs] = useState(0)
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -260,22 +258,8 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
   }, [playheadFrames, rate])
 
   // Ação de 1-Clique: Autofill de Gap
-  const handleAutoFillClick = async () => {
-    if (isAutoFilling) return
-    setIsAutoFilling(true)
-    try {
-      if (rundownId) {
-        try {
-          await fetch(`/api/v1/rundowns/${rundownId}/autofill-gap`, { method: 'POST' })
-        } catch {
-          // Fallback para prop handler
-        }
-      }
-      onAutoFill?.()
-    } finally {
-      setTimeout(() => setIsAutoFilling(false), 600)
-    }
-  }
+  // Opens the parent's proposal editor; no mutation or optimistic success.
+  const handleAutoFillClick = () => onAutoFill?.()
 
   // Ticks da Régua Temporal
   const rulerTicks = useMemo(() => {
@@ -416,14 +400,14 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
 
               <button
                 onClick={handleAutoFillClick}
-                disabled={isAutoFilling}
+                disabled={!onAutoFill}
                 className="px-3 py-1.5 rounded-lg bg-armed-amber hover:bg-armed-amber-hover text-surface-base font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all shadow-md active:scale-95 cursor-pointer disabled:opacity-50"
                 title="Preencher lacunas com fillers ou colorbars com 1 clique"
               >
                 <span className="material-symbols-outlined text-[16px]">
-                  {isAutoFilling ? 'progress_activity' : 'auto_fix_high'}
+                  auto_fix_high
                 </span>
-                <span>{isAutoFilling ? 'PREENCHENDO...' : 'AUTOFILL DE GAP'}</span>
+                <span>REVISAR PREENCHIMENTO</span>
               </button>
             </div>
           ) : (

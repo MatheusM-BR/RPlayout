@@ -12,6 +12,7 @@ serde_json = "1"
 anyhow = "1"
 gstreamer-app = "0.23"
 gstreamer-base = { version = "0.23", features = ["v1_18"] }
+libloading = "0.8"
 
 [[bin]]
 name = "rplayout-engine"
@@ -39,3 +40,11 @@ path = "src/bin/launcher.rs"
 [[bin]]
 name = "rplayout-avsync"
 path = "src/bin/avsync.rs"
+
+[[bin]]
+name = "rplayout-proxy"
+path = "src/bin/proxy.rs"
+
+[[bin]]
+name = "rplayout-audio-analysis"
+path = "src/bin/audio_analysis.rs"

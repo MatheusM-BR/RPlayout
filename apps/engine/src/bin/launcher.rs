@@ -86,9 +86,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// O launcher sobe `cmd -> pnpm -> node`; matar só o primeiro processo deixa
-/// descendentes vivos no Windows. Limpe a árvore ao sair para não criar
-/// engines órfãos na próxima execução.
+/// O launcher sobe o Node portátil diretamente. Limpe a árvore ao sair para
+/// não criar engines órfãos na próxima execução.
 fn encerrar_arvore(pid: u32) {
     if !cfg!(windows) { return; }
     let _ = Command::new("taskkill")
@@ -186,14 +185,22 @@ fn raiz_da_instalacao() -> Result<PathBuf> {
 /// tirando um recurso. Passar caminho de arquivo que não existe seria pior --
 /// falharia no meio, longe daqui.
 fn subir_servidor(raiz: &Path) -> Result<Child> {
-    let mut comando = shell();
+    let node_portatil = raiz.join("runtime").join("node").join(executavel("node"));
+    let node = if node_portatil.exists() { node_portatil } else { PathBuf::from(executavel("node")) };
+    let servidor = raiz.join("apps").join("server").join("dist").join("server.cjs");
+    if !servidor.exists() {
+        return Err(anyhow!("servidor empacotado não encontrado: {}", servidor.display()));
+    }
+    let mut comando = Command::new(node);
     comando.current_dir(raiz);
+    comando.env("RPLAYOUT_INSTALL_ROOT", raiz);
     configurar_runtime_gstreamer(&mut comando, raiz);
 
     let bin = raiz.join("apps/engine/target/release");
     let opcionais = [
         ("RPLAYOUT_ENGINE", bin.join(executavel("rplayout-engine"))),
         ("RPLAYOUT_PROBE", bin.join(executavel("rplayout-probe"))),
+        ("RPLAYOUT_PROXY", bin.join(executavel("rplayout-proxy"))),
         ("RPLAYOUT_DEVICES", bin.join(executavel("rplayout-devices"))),
         ("RPLAYOUT_RELAY", bin.join(executavel("rplayout-relay"))),
         ("RPLAYOUT_MEDIAMTX", raiz.join("mediamtx").join(executavel("mediamtx"))),
@@ -214,11 +221,11 @@ fn subir_servidor(raiz: &Path) -> Result<Child> {
     }
 
     comando
-        .arg("pnpm --filter @rplayout/server start")
+        .arg(servidor)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
-    let mut filho = comando.spawn().context("não consegui subir o servidor (o pnpm está no PATH?)")?;
+    let mut filho = comando.spawn().context("não consegui subir o servidor Node portátil")?;
 
     // O log do servidor vai para esta janela: é onde o operador vê por que uma
     // saída caiu ou um arquivo não abriu.
@@ -243,8 +250,6 @@ fn configurar_runtime_gstreamer(comando: &mut Command, raiz: &Path) {
     let node_dir = runtime_dir.join("node");
     let mut prefixes = Vec::new();
     if node_dir.exists() { prefixes.push(node_dir); }
-    let pnpm_dir = runtime_dir.join("pnpm");
-    if pnpm_dir.exists() { prefixes.push(pnpm_dir); }
     if bin.exists() { prefixes.push(bin); }
     if !prefixes.is_empty() {
         let current = std::env::var("PATH").unwrap_or_default();
@@ -254,7 +259,9 @@ fn configurar_runtime_gstreamer(comando: &mut Command, raiz: &Path) {
     if !runtime.join("bin").exists() { return; }
     comando.env("GSTREAMER_1_0_ROOT_MSVC_X86_64", &runtime);
     comando.env("GST_PLUGIN_PATH", &plugins);
-    comando.env("GST_REGISTRY_1_0_FILE", raiz.join(".cache").join("gstreamer-registry.bin"));
+    comando.env("GST_PLUGIN_SYSTEM_PATH", &plugins);
+    comando.env("GST_PLUGIN_SCANNER", runtime.join("libexec").join("gstreamer-1.0").join("gst-plugin-scanner.exe"));
+    comando.env("GST_REGISTRY", raiz.join(".cache").join("gstreamer-registry.bin"));
     println!("  GStreamer portátil: {}", runtime.display());
 }
 
@@ -282,18 +289,6 @@ fn abrir_navegador(workspace: Option<&str>) {
     };
     if resultado.is_err() {
         println!("Abra o navegador em {endereco}");
-    }
-}
-
-fn shell() -> Command {
-    if cfg!(windows) {
-        let mut comando = Command::new("cmd");
-        comando.arg("/C");
-        comando
-    } else {
-        let mut comando = Command::new("sh");
-        comando.arg("-c");
-        comando
     }
 }
 

@@ -15,6 +15,7 @@ import {
 } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
 import { liveSources, multiviewConfigs } from '../db/schema.js'
+import { sourceWire } from './source-wire.js'
 
 export {
   buildSrtUri,
@@ -36,6 +37,8 @@ export interface LiveSourceRecord {
   name: string
   kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'
   targetUrl: string
+  controlRef?: string
+  credentialProtected?: boolean
   srtConfig: SrtConfig | null
   role: RedundancyRole
   pairedSourceId: string | null
@@ -270,7 +273,7 @@ export async function listLiveSources(
     if (srt && !includePassphrase) {
       srt = sanitizeSrtConfig(srt)
     }
-    return {
+    const record: LiveSourceRecord = {
       id: row.id,
       channelId: row.channelId,
       name: row.name,
@@ -284,6 +287,7 @@ export async function listLiveSources(
       enabled: row.enabled,
       createdAt: row.createdAt,
     }
+    return includePassphrase ? record : sourceWire().publicValue(record)
   })
 }
 
@@ -299,7 +303,7 @@ export async function getLiveSource(
   if (srt && !includePassphrase) {
     srt = sanitizeSrtConfig(srt)
   }
-  return {
+  const record: LiveSourceRecord = {
     id: row.id,
     channelId: row.channelId,
     name: row.name,
@@ -313,6 +317,7 @@ export async function getLiveSource(
     enabled: row.enabled,
     createdAt: row.createdAt,
   }
+  return includePassphrase ? record : sourceWire().publicValue(record)
 }
 
 export async function createLiveSource(
@@ -320,7 +325,7 @@ export async function createLiveSource(
   input: CreateLiveSourceInput,
 ): Promise<LiveSourceRecord> {
   const id = `live-${randomUUID()}`
-  let targetUrl = input.targetUrl ?? ''
+  let targetUrl = sourceWire().resolve(input.targetUrl ?? '')
 
   // Se for SRT e srtConfig estiver preenchido, compõe a URI padrão se targetUrl não for dada
   if (input.kind === 'SRT' && input.srtConfig) {
@@ -371,16 +376,19 @@ export async function updateLiveSource(
   if (input.autoFailover !== undefined) updates.autoFailover = input.autoFailover
 
   if (input.srtConfig !== undefined) {
-    updates.srtConfig = input.srtConfig
+    const config = { ...input.srtConfig }
+    if (config.passphrase && /^(?:•+|REDACTED)$/.test(config.passphrase)) config.passphrase = existing.srtConfig?.passphrase
+    if (config.streamId === 'REDACTED') config.streamId = existing.srtConfig?.streamId
+    updates.srtConfig = config
     if (input.kind === 'SRT' || existing.kind === 'SRT') {
       if (input.targetUrl === undefined && input.srtConfig) {
-        updates.targetUrl = buildSrtUri(input.srtConfig)
+        updates.targetUrl = buildSrtUri(config)
       }
     }
   }
 
   if (input.targetUrl !== undefined) {
-    updates.targetUrl = input.targetUrl
+    updates.targetUrl = sourceWire().resolve(input.targetUrl)
   }
 
   if (input.failoverConfig !== undefined) {

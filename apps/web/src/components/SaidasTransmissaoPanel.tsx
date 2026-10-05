@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback,useRef } from 'react'
 import type { Channel } from '@rplayout/protocol'
 import { api } from '../api.js'
-import type { Distribution, OutputProfile, TransmissionPreset } from '../types.js'
+import type { Distribution, OutputProfile, TransmissionPreset,ConfigurationOperation } from '../types.js'
 import { CanonicalProtocolSelector } from './broadcast/CanonicalProtocolSelector.js'
+import {captureConfigurationRevision} from '../domain/channel-configuration.js'
 
 interface Props {
   channel: Channel
@@ -11,11 +12,26 @@ interface Props {
 }
 
 export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props) {
+  // A different channel gets a different editor, not the previous draft.
+  return <SaidasTransmissaoContent key={channel.id} channel={channel} onMessage={onMessage} onChanged={onChanged}/>
+}
+
+function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
   const [outputs, setOutputs] = useState<OutputProfile[]>([])
   const [presets, setPresets] = useState<TransmissionPreset[]>([])
   const [distribution, setDistribution] = useState<Distribution | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [loadError,setLoadError]=useState<string|null>(null)
+  const [presetRevision,setPresetRevision]=useState<number|undefined>()
+  const [draftRevision,setDraftRevision]=useState<number|undefined>()
+  const draftRevisionRef=useRef<number|undefined>()
+  const [formKey,setFormKey]=useState(0)
+  const [operation,setOperation]=useState<ConfigurationOperation|null>(null)
+  const [outputRevision,setOutputRevision]=useState<number|undefined>()
+  const mounted=useRef(true),loadSequence=useRef(0)
+  const controlsBlocked=isLoading || isSaving || Boolean(loadError) || Boolean(operation && operation.state!=='IDLE')
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;loadSequence.current++}},[])
 
   // Formulário para nova saída
   const [newKind, setNewKind] = useState<'SDI' | 'SRT' | 'RTMP' | 'FILE' | 'NDI' | 'OMT'>('RTMP')
@@ -24,21 +40,30 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
   const [newBitrate, setNewBitrate] = useState(6000)
   const [presetName, setPresetName] = useState('')
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (reopenDraft=false) => {
+    const sequence=++loadSequence.current
     setIsLoading(true)
     try {
       const [outs, dist, savedPresets] = await Promise.all([
-        api.outputs(channel.id).catch(() => ({ outputs: [] as OutputProfile[] })),
-        api.distribution().catch(() => null),
-        api.transmissionPresets(channel.id).catch(() => ({ presets: [] as TransmissionPreset[] })),
+        api.outputs(channel.id),
+        api.distribution(),
+        api.transmissionPresets(channel.id),
       ])
+      if(!mounted.current || sequence!==loadSequence.current)return
+      if(outs.configurationRevision!==savedPresets.configurationRevision)throw new Error('A configuração mudou durante a consulta de saídas/presets. Atualize a lista; o rascunho foi preservado.')
+      const captured=captureConfigurationRevision(channel.id,draftRevisionRef.current,savedPresets.configurationRevision,reopenDraft)
       setOutputs(outs.outputs || [])
+      setOutputRevision(outs.configurationRevision);setOperation(outs.configurationOperation)
       setDistribution(dist)
       setPresets(savedPresets.presets || [])
+      setPresetRevision(savedPresets.configurationRevision)
+      setLoadError(null)
+      draftRevisionRef.current=captured;setDraftRevision(captured)
+      if(reopenDraft){setNewName('');setNewTarget('');setPresetName('');setNewKind('RTMP');setNewBitrate(6000);setFormKey(value=>value+1)}
     } catch (err) {
-      console.error('Falha ao carregar saídas:', err)
+      if(mounted.current && sequence===loadSequence.current)setLoadError(err instanceof Error?err.message:'Não foi possível consultar saídas e presets. A lista anterior e seu rascunho foram preservados.')
     } finally {
-      setIsLoading(false)
+      if(mounted.current && sequence===loadSequence.current)setIsLoading(false)
     }
   }, [channel.id])
 
@@ -47,10 +72,12 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
   }, [loadData])
 
   const handleToggle = async (output: OutputProfile) => {
+    if(controlsBlocked)return
     setIsSaving(true)
     try {
-      await api.patchOutput(output.id, { enabled: !output.enabled })
-      onMessage(`Saída "${output.name}" ${!output.enabled ? 'ativada' : 'desativada'}.`)
+      const result=await api.patchOutput(output.id, { enabled: !output.enabled },channel.id,output.configurationRevision)
+      if(!mounted.current)return
+      onMessage(result.engineError?`Configuração gravada; atenção no engine: ${result.engineError}`:`Saída "${output.name}" configurada. Confira a imagem e a entrega após o reinício solicitado.`)
       await loadData()
       onChanged()
     } catch (err) {
@@ -61,11 +88,13 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
   }
 
   const handleDelete = async (output: OutputProfile) => {
+    if(controlsBlocked)return
     if (!window.confirm(`Tem certeza que deseja excluir a saída "${output.name}"?`)) return
     setIsSaving(true)
     try {
-      await api.removeOutput(output.id)
-      onMessage(`Saída "${output.name}" excluída.`)
+      const result=await api.removeOutput(output.id,channel.id,output.configurationRevision)
+      if(!mounted.current)return
+      onMessage(result.engineError?`Saída removida do cadastro; atenção no engine: ${result.engineError}`:`Saída "${output.name}" removida do cadastro. Reinício controlado solicitado.`)
       await loadData()
       onChanged()
     } catch (err) {
@@ -76,6 +105,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
   }
 
   const handleCreate = async () => {
+    if(controlsBlocked)return
     const nome = newName.trim()
     const target = newTarget.trim()
     if (!nome) {
@@ -93,10 +123,13 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
         name: nome,
         kind: newKind,
         target,
-      })
+        ...(newKind==='SDI'?{}:{bitrateKbps:newBitrate}),
+      },draftRevision)
+      if(!mounted.current)return
+      draftRevisionRef.current=res.configurationRevision;setDraftRevision(res.configurationRevision)
       onMessage(
-        res.restartRequired
-          ? `Saída "${nome}" adicionada. O engine refez o pipeline; houve uma interrupção breve e controlada no PGM.`
+        res.engineError?`Saída "${nome}" gravada; atenção no engine: ${res.engineError}`:res.restartRequired
+          ? `Saída "${nome}" gravada. Reinício controlado solicitado; confira a imagem e o destino.`
           : `Saída "${nome}" criada com sucesso.`,
       )
       setNewName('')
@@ -111,6 +144,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
   }
 
   const handleSavePreset = async () => {
+    if(controlsBlocked)return
     const name = presetName.trim() || newName.trim()
     if (!name || (newKind !== 'SRT' && newKind !== 'RTMP') || !newTarget.trim()) {
       onMessage('Para salvar um preset, informe nome, destino e escolha SRT ou RTMP.')
@@ -118,46 +152,54 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
     }
     setIsSaving(true)
     try {
-      await api.addTransmissionPreset(channel.id, { name, kind: newKind, target: newTarget.trim() })
+      const result=await api.addTransmissionPreset(channel.id, { name, kind: newKind, target: newTarget.trim() },draftRevision)
+      if(!mounted.current)return
+      // Only our own confirmed mutation may advance this draft's baseline.
+      draftRevisionRef.current=result.configurationRevision;setDraftRevision(result.configurationRevision)
       setPresetName('')
       onMessage(`Preset "${name}" salvo. Credenciais permanecem protegidas.`)
       await loadData()
     } catch (err) {
-      onMessage(err instanceof Error ? err.message : 'Falha ao salvar preset.')
+      if(mounted.current)onMessage(err instanceof Error ? err.message : 'Falha ao salvar preset.')
     } finally {
       setIsSaving(false)
     }
   }
 
   const handleApplyPreset = async (preset: TransmissionPreset) => {
+    if(controlsBlocked)return
     setIsSaving(true)
     try {
-      await api.applyTransmissionPreset(channel.id, preset.id)
-      onMessage(`Preset "${preset.name}" aplicado como nova saída.`)
+      const result=await api.applyTransmissionPreset(channel.id, preset.id,presetRevision)
+      if(!mounted.current)return
+      onMessage(result.engineError?`Saída do preset "${preset.name}" gravada, mas o engine precisa de atenção: ${result.engineError}`:`Saída do preset "${preset.name}" gravada. Reinício controlado solicitado; confira a imagem e a entrega no destino.`)
       await loadData()
       onChanged()
     } catch (err) {
-      onMessage(err instanceof Error ? err.message : 'Falha ao aplicar preset.')
+      if(mounted.current)onMessage(err instanceof Error ? err.message : 'Falha ao aplicar preset.')
     } finally {
       setIsSaving(false)
     }
   }
 
   const handleDeletePreset = async (preset: TransmissionPreset) => {
+    if(controlsBlocked)return
     if (!window.confirm(`Remover o preset "${preset.name}"? As saídas já criadas não serão alteradas.`)) return
     setIsSaving(true)
     try {
-      await api.removeTransmissionPreset(channel.id, preset.id)
+      await api.removeTransmissionPreset(channel.id, preset.id,presetRevision)
+      if(!mounted.current)return
       onMessage(`Preset "${preset.name}" removido.`)
       await loadData()
     } catch (err) {
-      onMessage(err instanceof Error ? err.message : 'Falha ao remover preset.')
+      if(mounted.current)onMessage(err instanceof Error ? err.message : 'Falha ao remover preset.')
     } finally {
       setIsSaving(false)
     }
   }
 
   const handleRestartChannel = async () => {
+    if(controlsBlocked)return
     setIsSaving(true)
     try {
       await api.restartChannel(channel.id)
@@ -197,7 +239,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
         <div className="flex items-center gap-2">
           <button
             onClick={() => void loadData()}
-            disabled={isLoading}
+            disabled={isLoading || isSaving}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle font-label-caps text-[10px] transition-colors cursor-pointer disabled:opacity-50"
           >
             <span className={`material-symbols-outlined text-[15px] ${isLoading ? 'animate-spin' : ''}`}>
@@ -207,7 +249,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
           </button>
           <button
             onClick={handleRestartChannel}
-            disabled={isSaving}
+            disabled={controlsBlocked}
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-primary-container hover:bg-accent-ice text-on-primary-container font-headline-md text-headline-md tracking-wide transition-all shadow-sm cursor-pointer disabled:opacity-50"
           >
             <span className="material-symbols-outlined text-[16px]">restart_alt</span>
@@ -215,6 +257,18 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
           </button>
         </div>
       </div>
+
+      {loadError && <p role="alert" className="text-on-air-crimson text-sm">Falha na consulta: {loadError} A lista anterior foi preservada; atualize antes de operar.</p>}
+      {operation && operation.state!=='IDLE' && <div role="alert" className="border border-armed-amber rounded p-3 text-armed-amber text-sm">
+        <p>{operation.reason} Pare o PGM e limpe o CUE antes de reconciliar. A reconciliação reabre as saídas gravadas, sem TAKE automático.</p>
+        <button type="button" disabled={!operation.reconcilable || isSaving || isLoading} className="mt-2 text-primary disabled:opacity-40" onClick={async()=>{
+          if(!operation.runId || !window.confirm('Reconstruir as saídas da configuração gravada? PGM precisa estar parado e CUE limpo. Nenhum TAKE será automático.'))return
+          setIsSaving(true)
+          try{await api.reconcileConfiguration(channel.id,operation.runId,outputRevision);if(mounted.current){onMessage('Configuração reconciliada com o canal parado. Confira o sinal antes de CUE/TAKE.');await loadData();onChanged()}}
+          catch(error){if(mounted.current)onMessage(error instanceof Error?error.message:'Reconciliação não confirmada.')}
+          finally{if(mounted.current)setIsSaving(false)}
+        }}>RECONCILIAR CONFIGURAÇÃO PARADA</button>
+      </div>}
 
       {/* 2. ENDEREÇOS LOCAIS DE STREAMING (WEBRTC, RTMP, SRT) */}
       {channelDist?.urls && Object.keys(channelDist.urls).length > 0 && (
@@ -254,11 +308,11 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
             Saídas Configuradas ({outputs.length})
           </span>
           <span className="font-label-mono text-[10px] text-outline">
-            {outputs.filter((o) => o.enabled).length} ativas no ar
+            {outputs.filter((o) => o.enabled).length} habilitadas · confira o sinal
           </span>
         </div>
 
-        {outputs.length === 0 ? (
+        {isLoading && outputs.length===0 ? <p role="status" className="text-outline text-sm">Consultando saídas…</p> : loadError && outputs.length===0 ? null : outputs.length === 0 ? (
           <div className="bg-surface-card rounded-xl border border-border-subtle p-8 text-center text-outline flex flex-col items-center justify-center gap-2">
             <span className="material-symbols-outlined text-[40px] opacity-30">output_circle</span>
             <span className="font-body-md text-body-md font-medium text-on-surface">
@@ -333,7 +387,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
                             : 'bg-surface-container text-outline border-border-subtle'
                         }`}
                       >
-                        {out.enabled ? 'ATIVO NO AR' : 'DESLIGADO'}
+                        {out.enabled ? 'HABILITADA' : 'DESLIGADO'}
                       </span>
                     </div>
 
@@ -401,15 +455,14 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
                       <div className="p-2.5 rounded-lg bg-surface-base border border-purple-500/25 flex flex-col gap-1.5 font-label-mono text-[10px]">
                         <div className="flex items-center justify-between">
                           <span className="text-purple-400 font-bold uppercase flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span>
-                            STATUS: OPTIMAL (RTT: 1.8ms • PERDA: 0.0%)
+                            <span className="material-symbols-outlined text-[13px] text-outline">help</span>
+                            SINAL NO DESTINO: NÃO HOMOLOGADO NESTA TELA
                           </span>
-                          <span className="text-outline">BUFFER: 800ms</span>
                         </div>
                         <div className="flex items-center justify-between text-outline border-t border-border-subtle/40 pt-1">
                           <span className="flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px] text-accent-ice">key</span>
-                            AES-256: ••••••••••••
+                            CREDENCIAIS MASCARADAS
                           </span>
                           <span className="text-outline">SEGREDO PROTEGIDO</span>
                         </div>
@@ -421,7 +474,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
                   <div className="flex items-center justify-between pt-2 border-t border-border-subtle/50">
                     <button
                       onClick={() => handleToggle(out)}
-                      disabled={isSaving}
+                      disabled={controlsBlocked}
                       className={`px-3 py-1 rounded font-label-caps text-[9.5px] font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
                         out.enabled
                           ? 'bg-on-air-crimson/15 hover:bg-on-air-crimson/25 text-on-air-crimson border-on-air-crimson/30'
@@ -433,7 +486,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
 
                     <button
                       onClick={() => handleDelete(out)}
-                      disabled={isSaving}
+                      disabled={controlsBlocked}
                       className="flex items-center gap-1 px-2.5 py-1 rounded bg-surface-panel hover:bg-error-container text-outline hover:text-on-error-container font-label-caps text-[9.5px] transition-colors cursor-pointer disabled:opacity-50"
                       title="Excluir esta saída"
                     >
@@ -458,8 +511,15 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
           <p className="font-body-sm text-[11px] text-outline mt-0.5">
             Defina o protocolo de envio, o destino remoto ou conector físico e o identificador do stream.
           </p>
+          <p className="text-outline text-[11px] mt-2">Atualizar a lista não reconfirma seu rascunho. Em conflito, reabra para conferir a configuração atual.</p>
+          <button type="button" disabled={isLoading || isSaving} className="mt-2 text-primary text-[11px] disabled:opacity-40" onClick={()=>{
+            if((newName || newTarget || presetName) && !window.confirm('Reabrir a configuração atual descarta os campos da nova saída/preset. Deseja continuar?'))return
+            void loadData(true)
+          }}>REABRIR CONFIGURAÇÃO E LIMPAR RASCUNHO</button>
+          {draftRevision!==undefined && presetRevision!==undefined && draftRevision!==presetRevision && <p role="status" className="text-armed-amber text-[11px] mt-2">A configuração mudou. O rascunho mantém a revisão anterior; confira antes de salvar o preset.</p>}
         </div>
 
+        <fieldset disabled={controlsBlocked || draftRevision===undefined} className="contents">
         <div className="rounded-lg border border-border-subtle bg-surface-base p-3 flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
             <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Presets SRT / RTMP ({presets.length})</span>
@@ -500,6 +560,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
 
           {/* Seletor Modular de Protocolo de Saída (RTMP, SRT, SDI, NDI, OMT, FILE) */}
           <CanonicalProtocolSelector
+            key={formKey}
             mode="OUTPUT"
             defaultKind="RTMP"
             initialUri={newTarget}
@@ -515,7 +576,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
 
         <div className="flex items-center justify-between pt-2 border-t border-border-subtle">
           <span className="font-label-mono text-[10.5px] text-outline">
-            Saídas adicionadas ficam prontas para transmissão imediata no motor de playout.
+            Cadastro não comprova entrega. Confira o publisher, a imagem e o destino após aplicar.
           </span>
           <button
             onClick={handleCreate}
@@ -526,6 +587,7 @@ export function SaidasTransmissaoPanel({ channel, onMessage, onChanged }: Props)
             <span>CRIAR SAÍDA</span>
           </button>
         </div>
+        </fieldset>
       </div>
     </div>
   )

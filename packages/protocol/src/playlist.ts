@@ -125,3 +125,14 @@ export function samePath(a: string, b: string): boolean {
   const normal = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
   return normal(a) === normal(b)
 }
+
+/** Preconditions for the exact operational plan reviewed by the operator. */
+export interface OperationalReview {
+  readonly operation: 'PUBLISH' | 'ROLLBACK'
+  readonly rundownId: string
+  readonly channelId: string
+  readonly editorialRevision: number
+  readonly activeRevisionId: string | null
+  readonly sourceRevisionId?: string
+  readonly token: string
+}

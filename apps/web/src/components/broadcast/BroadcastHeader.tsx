@@ -28,7 +28,7 @@ export function BroadcastHeader({
   sessionRole,
   authRequired,
   problemasCount = 0,
-  isLiveOnAir = true,
+  isLiveOnAir,
   onOpenAlerts,
   onOpenSettings,
   onOpenLiveInput,
@@ -70,7 +70,9 @@ export function BroadcastHeader({
               <span className="material-symbols-outlined text-accent-ice text-[24px]">play_circle</span>
               RPlayout
             </span>
-            {isLiveOnAir ? (
+            {isLiveOnAir === undefined ? (
+              <span className="px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline text-[9px] whitespace-nowrap">PGM: N/D</span>
+            ) : isLiveOnAir ? (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[9px] font-bold tracking-wider whitespace-nowrap shrink-0">
                 <span className="w-1.5 h-1.5 rounded-full bg-on-air-crimson animate-pulse"></span> NO AR
               </span>
@@ -162,7 +164,7 @@ export function BroadcastHeader({
 
           {/* Repositioned Master Clock */}
           <div className="flex items-center gap-space-sm bg-surface-base px-3 py-1 rounded-lg border border-border-subtle shadow-inner">
-            <span className="font-label-mono text-label-mono text-outline uppercase">NTP REF</span>
+            <span title="Relógio local; sincronização NTP externa não é medida aqui" className="font-label-mono text-label-mono text-outline uppercase">HORA LOCAL</span>
             <span className="font-timecode-display text-[24px] text-on-surface tracking-widest font-bold tabular-nums">
               {ntpTime}
             </span>
@@ -170,7 +172,7 @@ export function BroadcastHeader({
           </div>
 
           {/* Badge de Continuidade e Cache 48h (XMirror) */}
-          <ContinuityCacheBadge className="hidden xl:inline-flex" />
+          <ContinuityCacheBadge className="hidden xl:inline-flex" channelId={channel.id} />
         </div>
 
         {/* Right: Nav & User Profile & Quick Dialogs */}

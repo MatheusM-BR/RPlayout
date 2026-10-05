@@ -23,7 +23,8 @@ describe('as-run compliance e exportadores (Fase C)', () => {
       actualStart: 0,
       airedFrames: 27000, // 15 minutos a 30fps
       plannedFrames: 27000,
-      endedBy: 'NEXT',
+      endedBy: 'EOF',
+      rateNum: 30, rateDen: 1, durationEvidence: 'ENGINE_POSITION', executionKind: 'NATIVE',
       createdAt: '2026-09-24T14:00:00.000Z',
     },
     {
@@ -41,6 +42,7 @@ describe('as-run compliance e exportadores (Fase C)', () => {
       airedFrames: 900, // 30s
       plannedFrames: 900,
       endedBy: 'NEXT',
+      rateNum: 30, rateDen: 1, durationEvidence: 'ENGINE_POSITION', executionKind: 'NATIVE',
       createdAt: '2026-09-24T14:15:00.000Z',
     },
     {
@@ -58,6 +60,7 @@ describe('as-run compliance e exportadores (Fase C)', () => {
       airedFrames: 450, // 15s (truncado)
       plannedFrames: 900,
       endedBy: 'TAKE',
+      rateNum: 30, rateDen: 1, durationEvidence: 'ENGINE_POSITION', executionKind: 'NATIVE',
       createdAt: '2026-09-24T14:15:30.000Z',
     },
   ]
@@ -65,12 +68,14 @@ describe('as-run compliance e exportadores (Fase C)', () => {
   it('converte AsRunEntry para AsRunRecordExtended detectando truncamento', () => {
     const ext1 = toAsRunRecordExtended(dummyEntries[0]!)
     expect(ext1.status).toBe('PLAYED_FULL')
-    expect(ext1.ancineQuotaEligible).toBe(true)
+    expect(ext1.ancineQuotaEligible).toBeNull()
+    expect(ext1.audioLufs).toBeNull()
+    expect(ext1.audioTruePeakDb).toBeNull()
 
     const ext3 = toAsRunRecordExtended(dummyEntries[2]!)
     expect(ext3.status).toBe('INTERRUPTED')
     expect(ext3.ancineQuotaEligible).toBe(false)
-    expect(ext3.commercialContractId).toBeDefined()
+    expect(ext3.commercialContractId).toBeUndefined()
   })
 
   it('calcula conformidade com limite de 25% de publicidade por hora (ANCINE)', () => {
@@ -78,8 +83,13 @@ describe('as-run compliance e exportadores (Fase C)', () => {
     // 30s + 15s = 45s de comercial em 3600s (1.25%)
     expect(summary.hourlyCommercialPercent).toBeLessThan(25.0)
     expect(summary.maxAllowedCommercialPercent).toBe(25.0)
-    expect(summary.compliant).toBe(true)
-    expect(summary.nationalContentMinutes).toBeGreaterThan(14.0)
+    expect(summary.compliant).toBeNull()
+    expect(summary.regulatoryValidated).toBe(false)
+    expect(summary.commercialThresholdExceeded).toBe(false)
+    expect(summary.nationalContentMinutes).toBeNull()
+    expect(summary.nationalContentQuotaMin).toBeNull()
+    expect(summary.nationalMetadataComplete).toBe(false)
+    expect(calculateAncineCompliance(dummyEntries.map(entry => toAsRunRecordExtended(entry))).hourlyCommercialPercent).toBe(summary.hourlyCommercialPercent)
 
     // Cenário não-conforme: 20 minutos de comerciais em 1 hora (33.3% > 25%)
     const heavyCommercialEntries: AsRunEntry[] = [
@@ -90,7 +100,8 @@ describe('as-run compliance e exportadores (Fase C)', () => {
     ]
     const nonCompliant = calculateAncineCompliance(heavyCommercialEntries)
     expect(nonCompliant.hourlyCommercialPercent).toBeCloseTo(33.3, 0)
-    expect(nonCompliant.compliant).toBe(false)
+    expect(nonCompliant.compliant).toBeNull()
+    expect(nonCompliant.commercialThresholdExceeded).toBe(true)
   })
 
   it('exporta log As-Run em formato CSV estruturado', () => {
@@ -102,7 +113,7 @@ describe('as-run compliance e exportadores (Fase C)', () => {
     expect(csv).toContain('INTERRUPTED')
   })
 
-  it('exporta log As-Run em formato SMPTE-2021 BXF XML', () => {
+  it('exporta XML legado explicitamente não validado como SMPTE/BXF', () => {
     const bxf = exportAsRunBxf(dummyEntries, {
       channelName: 'TV Teste PGM',
       channelId: 'CH-PGM-01',
@@ -110,6 +121,8 @@ describe('as-run compliance e exportadores (Fase C)', () => {
     expect(bxf).toContain('<?xml version="1.0" encoding="UTF-8"?>')
     expect(bxf).toContain('<BxfMessage')
     expect(bxf).toContain('messageType="AsRun"')
+    expect(bxf).toContain('schemaValidated="false"')
+    expect(bxf).toContain('NOT XSD-VALIDATED OR SMPTE-HOMOLOGATED')
     expect(bxf).toContain('channelName="TV Teste PGM"')
     expect(bxf).toContain('<ScheduleItem itemId="it-1">')
     expect(bxf).toContain('<BroadcastEvent eventType="VT">')

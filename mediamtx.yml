@@ -27,4 +27,5 @@ paths:
   canal-presets/pgm:
   canal-presets/clean:
   canal-presets/pvw:
+  canal-presets/qc:
   canal-presets/mon:

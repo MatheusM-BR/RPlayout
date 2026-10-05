@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { writeFile } from 'node:fs/promises'
+import { DiagnosticLines, sanitizeDiagnostic } from './sanitize-diagnostic.js'
+import { mediaProcessEnvironment } from './media-process-environment.js'
+import { writePrivateConfig } from './private-config-file.js'
 
 /** Portas do servidor local. Fixas de propósito: são o que se documenta. */
 export const PORTS = {
@@ -30,8 +32,10 @@ export interface ChannelPaths {
   readonly clean: string
   /** Caminho do preview: o que o operador olha sem estar no ar. */
   readonly preview: string
+  /** QC opt-in, never the normal low-bandwidth monitor. */
+  readonly inspection?: string
   /**
-   * Caminho do monitor do programa: o mesmo conteúdo do ar, em 480p.
+   * Caminho do monitor do programa: o mesmo conteúdo do ar, em 240p.
    *
    * Existe para o navegador não ter que decodificar o programa inteiro numa
    * janela de trezentos pixels. Com quatro canais abertos, eram quatro fluxos
@@ -96,6 +100,7 @@ export function channelPaths(
       program: `${app}/pgm`,
       clean: `${app}/clean`,
       preview: `${app}/pvw`,
+      inspection: `${app}/qc`,
       monitor: `${app}/mon`,
     }
   })
@@ -115,6 +120,8 @@ export class MediaMtx {
   private child: ChildProcess | null = null
   private restartAt: number | null = null
   private restartStreak = 0
+  private configWrite: Promise<void> = Promise.resolve()
+  private configWrittenAt: number | null = null
   /**
    * Por que o servidor de mídia não está de pé.
    *
@@ -159,6 +166,7 @@ export class MediaMtx {
         channel.program,
         channel.clean,
         channel.preview,
+        ...(channel.inspection ? [channel.inspection] : []),
         channel.monitor,
       ]),
       ...guests.map((guest) => `guest/${guest.streamKey}`),
@@ -195,7 +203,21 @@ export class MediaMtx {
       '',
     ].join('\n')
 
-    await writeFile(this.options.configPath, config, 'utf8')
+    // Serialize reloads; a slower previous key revocation cannot replace a
+    // newer config after its caller has returned. Secrets are written only
+    // after owner-only permissions have been checked on the empty file.
+    const write = this.configWrite.then(async () => {
+      // MediaMTX's watcher debounces events inside one second. An immediate
+      // second revocation could otherwise remain only on disk, not applied.
+      if (this.running && this.configWrittenAt !== null) {
+        const delay = 1100 - (performance.now() - this.configWrittenAt)
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+      }
+      await writePrivateConfig(this.options.configPath, config)
+      this.configWrittenAt = performance.now()
+    })
+    this.configWrite = write.catch(() => {})
+    await write
   }
 
   start(): void {
@@ -203,6 +225,8 @@ export class MediaMtx {
 
     const child = spawn(this.options.binary, [this.options.configPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: mediaProcessEnvironment(),
     })
     this.child = child
 
@@ -210,9 +234,9 @@ export class MediaMtx {
     // trava na hora de logar: a API continua respondendo e a publicação para de
     // funcionar sem nenhum erro aparecer em lugar nenhum.
     for (const stream of [this.child.stdout, this.child.stderr]) {
-      stream?.on('data', (chunk: Buffer) => {
-        process.stderr.write(`[mediamtx] ${chunk.toString()}`)
-      })
+      const diagnostics = new DiagnosticLines(line => process.stderr.write(`[mediamtx] ${line}\n`))
+      stream?.on('data', (chunk: Buffer) => diagnostics.write(chunk))
+      stream?.on('end', () => diagnostics.end())
     }
     this.child.on('exit', (code) => {
       this.child = null
@@ -223,7 +247,7 @@ export class MediaMtx {
     this.child.on('error', (erro) => {
       if (this.child !== child) return
       this.child = null
-      this.lastError = `não consegui executar o servidor de mídia: ${erro.message}`
+      this.lastError = sanitizeDiagnostic(`não consegui executar o servidor de mídia: ${erro.message}`)
     })
   }
 

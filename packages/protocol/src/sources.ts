@@ -101,6 +101,9 @@ export interface ManagedLiveSource {
   readonly name: string
   readonly kind: 'SRT' | 'RTMP' | 'SDI' | 'NDI' | 'OMT'
   readonly targetUrl: string
+  /** Opaque server reference for control; targetUrl is display-only when protected. */
+  readonly controlRef?: string
+  readonly credentialProtected?: boolean
   readonly srt?: SrtConfig
   readonly role: RedundancyRole
   readonly pairedSourceId?: string

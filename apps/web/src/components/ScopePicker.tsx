@@ -80,7 +80,7 @@ export function ScopePicker({ value, onChange, siblingCount, hasAsset, what }: P
       </div>
       {wide && (
         <div className="note warn">
-          Este escopo sai desta grade. Confira antes de aplicar: não há desfazer ainda.
+          Este escopo sai desta grade. Confira os canais afetados antes de aplicar. Desfazer também exige acesso a todos eles.
         </div>
       )}
     </div>

@@ -1,5 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import { DiagnosticLines, sanitizeDiagnostic } from './sanitize-diagnostic.js'
+import { sourceAddress } from './source-wire.js'
+import { mediaProcessEnvironment } from './media-process-environment.js'
 
 function parsed(url: string): URL | null {
   try { return new URL(url) } catch { return null }
@@ -19,22 +22,7 @@ function latencyOf(url: string): number | null {
   return Number.isFinite(value) && value >= 0 ? value : null
 }
 export function redactUrl(url: string): string {
-  try {
-    const value = new URL(url)
-    for (const key of ['passphrase', 'password', 'secret', 'token', 'streamkey', 'key']) {
-      if (value.searchParams.has(key)) value.searchParams.set(key, 'REDACTED')
-    }
-    // RTMP normalmente separa app e stream key em dois segmentos. A chave
-    // jamais deve retornar ao navegador, logs ou qualquer API de consulta.
-    if ((value.protocol === 'rtmp:' || value.protocol === 'rtmps:')) {
-      const segments = value.pathname.split('/').filter(Boolean)
-      if (segments.length >= 2) {
-        segments[segments.length - 1] = 'REDACTED'
-        value.pathname = `/${segments.join('/')}`
-      }
-    }
-    return value.toString()
-  } catch { return url }
+  return sourceAddress(url)
 }
 
 export interface RelayTarget {
@@ -133,9 +121,10 @@ export class RelaySupervisor {
   }
 
   private spawn(target: RelayTarget, source: string): void {
-    const child = spawn(this.binary, ['--from', source, '--to', target.url], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const child = spawn(this.binary, ['--private-connection-stdin'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      env: mediaProcessEnvironment(),
     })
 
     const relay: Relay = {
@@ -157,6 +146,13 @@ export class RelaySupervisor {
       relay.state = 'FALHOU'
       relay.reason = `Não foi possível iniciar o relay: ${error.message}`
     })
+    child.stdin?.on('error', () => {
+      if (this.relays.get(target.id) !== relay) return
+      relay.state = 'FALHOU'
+      relay.reason = 'A conexão privada com o relay fechou; aguardando nova tentativa.'
+      child.kill()
+    })
+    child.stdin?.end(JSON.stringify({ from: source, to: target.url }) + '\n')
 
     if (child.stdout) {
       createInterface({ input: child.stdout }).on('line', (line) => {
@@ -212,9 +208,9 @@ export class RelaySupervisor {
         }
       })
     }
-    child.stderr?.on('data', (chunk: Buffer) => {
-      process.stderr.write(`[relay ${target.name}] ${chunk.toString()}`)
-    })
+    const diagnostics = new DiagnosticLines(line => process.stderr.write(`[relay ${sanitizeDiagnostic(target.name)}] ${line}\n`))
+    child.stderr?.on('data', (chunk: Buffer) => diagnostics.write(chunk))
+    child.stderr?.on('end', () => diagnostics.end())
     child.on('exit', () => {
       const current = this.relays.get(target.id)
       if (current?.child === child) current.state = 'FALHOU'
@@ -257,7 +253,7 @@ export class RelaySupervisor {
       url: redactUrl(relay.target.url),
       state: relay.state,
       attempts: relay.attempts,
-      reason: relay.reason,
+      reason: relay.reason === null ? null : sanitizeDiagnostic(relay.reason),
       delivered: relay.delivered,
       streams: relay.streams,
       transport: relay.target.transport ?? transportOf(relay.target.url),

@@ -2,11 +2,16 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { createApp, type App } from '../app.js'
 import { registerRoutes } from '../routes.js'
-import { channels } from '../db/schema.js'
+import { channels, transmissionPresets, outputProfiles } from '../db/schema.js'
+import { eq } from 'drizzle-orm'
+import { SECRET_PREFIX } from './secret-vault.js'
+import {configurationRevision} from '../db/channel-configuration.js'
+import {channelConfigurationETag} from '@rplayout/protocol'
 
 describe('presets persistentes de transmissão', () => {
   let app: App
   let server: FastifyInstance
+  const headers=()=>({'if-match':channelConfigurationETag('preset-channel',configurationRevision(app.db,'preset-channel'))})
 
   beforeAll(async () => {
     app = await createApp(':memory:')
@@ -20,11 +25,11 @@ describe('presets persistentes de transmissão', () => {
     await server.ready()
   })
 
-  afterAll(async () => { await server.close() })
+  afterAll(async () => { await server.close();app.close() })
 
-  it('guarda segredo no SQLite, mas mascara SRT e RTMP em todas as respostas', async () => {
+  it('protege segredo no SQLite, preserva aplicação ao engine e mascara respostas', async () => {
     const srtSecret = 'SenhaSrtNaoPodeVazar'
-    const create = await server.inject({ method: 'POST', url: '/api/channels/preset-channel/transmission-presets', payload: {
+    const create = await server.inject({ method: 'POST', url: '/api/channels/preset-channel/transmission-presets', headers:headers(), payload: {
       name: 'SRT Afiliada', kind: 'SRT', target: `srt://198.51.100.40:9000?mode=caller&passphrase=${srtSecret}`,
     } })
     expect(create.statusCode).toBe(201)
@@ -35,15 +40,21 @@ describe('presets persistentes de transmissão', () => {
     const listed = await server.inject({ method: 'GET', url: '/api/channels/preset-channel/transmission-presets' })
     expect(listed.body).not.toContain(srtSecret)
 
-    const applied = await server.inject({ method: 'POST', url: `/api/channels/preset-channel/transmission-presets/${presetId}/apply`, payload: {} })
+    const applied = await server.inject({ method: 'POST', url: `/api/channels/preset-channel/transmission-presets/${presetId}/apply`, headers:headers(), payload: {} })
     expect(applied.statusCode).toBe(201)
     expect(applied.body).not.toContain(srtSecret)
+    const stored = app.sqlite.prepare('SELECT target FROM transmission_presets WHERE id=?').get(presetId) as { target: string }
+    expect(stored.target).toMatch(new RegExp('^' + SECRET_PREFIX))
+    expect(stored.target).not.toContain(srtSecret)
+    expect((await app.db.select().from(transmissionPresets).where(eq(transmissionPresets.id, presetId)))[0]!.target).toContain(srtSecret)
+    expect((await app.db.select().from(outputProfiles).where(eq(outputProfiles.channelId, 'preset-channel'))).some(row => row.target.includes(srtSecret))).toBe(true)
+    expect(JSON.stringify(app.sqlite.prepare('SELECT target FROM output_profiles').all())).not.toContain(srtSecret)
 
     const outputs = await server.inject({ method: 'GET', url: '/api/channels/preset-channel/outputs' })
     expect(outputs.body).not.toContain(srtSecret)
 
     const rtmpKey = 'rtmp-stream-key-nao-vaza'
-    const rtmp = await server.inject({ method: 'POST', url: '/api/channels/preset-channel/transmission-presets', payload: {
+    const rtmp = await server.inject({ method: 'POST', url: '/api/channels/preset-channel/transmission-presets', headers:headers(), payload: {
       name: 'CDN Principal', kind: 'RTMP', target: `rtmps://live.example.test/app/${rtmpKey}`,
     } })
     expect(rtmp.statusCode).toBe(201)
@@ -51,13 +62,22 @@ describe('presets persistentes de transmissão', () => {
   })
 
   it('remove somente o preset solicitado', async () => {
-    const created = await server.inject({ method: 'POST', url: '/api/channels/preset-channel/transmission-presets', payload: {
+    const created = await server.inject({ method: 'POST', url: '/api/channels/preset-channel/transmission-presets', headers:headers(), payload: {
       name: 'Temporário', kind: 'RTMP', target: 'rtmp://localhost/live/chave-temporaria',
     } })
     const id = JSON.parse(created.body).preset.id as string
-    const removed = await server.inject({ method: 'DELETE', url: `/api/channels/preset-channel/transmission-presets/${id}` })
+    const removed = await server.inject({ method: 'DELETE', url: `/api/channels/preset-channel/transmission-presets/${id}`,headers:headers() })
     expect(removed.statusCode).toBe(200)
     const list = await server.inject({ method: 'GET', url: '/api/channels/preset-channel/transmission-presets' })
     expect(JSON.parse(list.body).presets.some((preset: { id: string }) => preset.id === id)).toBe(false)
+  })
+
+  it('recusa criar preset com o segredo já mascarado sem gravar conexão inválida', async () => {
+    const before = app.db.select().from(transmissionPresets).all().length
+    for (const target of ['srt://host:9000?passphrase=REDACTED', 'rtmps://cdn.example/app/REDACTED']) {
+      const response = await server.inject({ method: 'POST', url: '/api/channels/preset-channel/transmission-presets', headers:headers(), payload: { name: 'Máscara inválida', kind: target.startsWith('srt:') ? 'SRT' : 'RTMP', target } })
+      expect(response.statusCode).toBe(400)
+    }
+    expect(app.db.select().from(transmissionPresets).all()).toHaveLength(before)
   })
 })

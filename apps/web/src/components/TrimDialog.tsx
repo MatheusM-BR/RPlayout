@@ -11,12 +11,14 @@ import {
 import type { ItemView } from '../types.js'
 import { dur } from '../format.js'
 import { ScopePicker } from './ScopePicker.js'
+import {EditScopeReviewPanel,useEditScopeReview} from './EditScopeReviewPanel.js'
+import {lightweightPreviewUrl} from '../domain/media-preview.js'
 
 interface Props {
   view: ItemView
   rate: Rate
   onCancel: () => void
-  onApply: (trim: Trim, scope: EditScope) => void
+  onApply: (trim: Trim, scope: EditScope,scopeReviewToken?:string) => Promise<void>
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -28,23 +30,6 @@ const SOURCE_LABEL: Record<string, string> = {
 
 /** Quantos quadros formam a fita embaixo da régua. */
 const FITA = 16
-
-const MIME: Record<string, string> = {
-  mp4: 'video/mp4',
-  m4v: 'video/mp4',
-  mov: 'video/quicktime',
-  webm: 'video/webm',
-  mkv: 'video/x-matroska',
-  ogv: 'video/ogg',
-}
-
-function podeTocar(path: string | undefined): boolean {
-  if (path === undefined) return false
-  const ext = path.split('.').pop()?.toLowerCase() ?? ''
-  const tipo = MIME[ext]
-  if (tipo === undefined) return true
-  return document.createElement('video').canPlayType(tipo) !== ''
-}
 
 function motivoDoErro(video: HTMLVideoElement | null): string {
   const erro = video?.error
@@ -68,6 +53,14 @@ type Alça = 'in' | 'out' | 'cabeça' | null
 export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
   const asset = view.asset
   const [scope, setScope] = useState<EditScope>('ITEM')
+  const scopeReview=useEditScopeReview(view.item.id,view.editorialRevision,scope)
+  const [pending,setPending]=useState(false)
+  const [operationError,setOperationError]=useState<string|null>(null)
+  const apply=async(trim:Trim)=>{
+    if(pending || !scopeReview.ready)return
+    setPending(true);setOperationError(null)
+    try{await onApply(trim,scope,scopeReview.review?.token)}catch(error){setOperationError(error instanceof Error?error.message:'Não foi possível gravar o corte.')}finally{setPending(false)}
+  }
   const [inText, setInText] = useState(formatTimecode(view.trim.in, rate))
   const [outText, setOutText] = useState(formatTimecode(view.trim.out, rate))
 
@@ -82,7 +75,8 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
   /** Onde a cabeça de leitura está, em frames. */
   const [cabeça, setCabeça] = useState(view.trim.in)
   const [tocando, setTocando] = useState(false)
-  const [tocável, setTocável] = useState(() => podeTocar(asset?.path))
+  // The original MXF/ProRes extension says nothing about the H.264 proxy.
+  const [tocável, setTocável] = useState(true)
   const [motivo, setMotivo] = useState<string | null>(null)
   const [pegando, setPegando] = useState<Alça>(null)
 
@@ -231,12 +225,12 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                 {tocável ? (
                   <video
                     ref={video}
-                    src={`/api/assets/${asset.id}/media`}
+                    src={lightweightPreviewUrl(asset)}
                     poster={`/api/assets/${asset.id}/thumbnail.svg`}
                     preload="metadata"
                     className="w-full h-full object-contain"
                     onError={() => {
-                      setMotivo(motivoDoErro(video.current))
+                      setMotivo(`${motivoDoErro(video.current)}. Preview usa somente o proxy leve; confira a fila de mídia. A régua de quadros continua disponível.`)
                       setTocável(false)
                       setTocando(false)
                     }}
@@ -265,6 +259,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                   </div>
                 )}
               </div>
+              {!tocável && <button type="button" onClick={()=>{setTocável(true);setMotivo(null)}} className="text-sm text-amber-300 self-start">Tentar abrir o proxy novamente</button>}
 
               {/* TIMELINE RULER NA PARTE INFERIOR COM MARCADORES I / O */}
               <div className="flex flex-col gap-1 pt-space-xs">
@@ -472,8 +467,13 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
             hasAsset={asset !== null}
             what="corte"
           />
+          <EditScopeReviewPanel state={scopeReview}/>
+          {asset?.defaultTrim && !asset.defaultTrimRate && (
+            <p className="text-sm text-amber-300" role="note">Este padrão antigo não informa a taxa de quadros. Confira a entrada e a saída; ao salvar como padrão do acervo, a taxa deste canal será registrada. Itens com corte próprio não mudam.</p>
+          )}
         </div>
 
+        {operationError && <div role="alert" className="note warn">{operationError} Seus pontos de entrada e saída foram mantidos. Confira a grade antes de reabrir a edição.</div>}
         {/* Footer Actions */}
         <div className="px-space-lg py-space-sm bg-surface-panel border-t border-border-subtle flex items-center justify-end gap-space-sm">
           <button
@@ -485,8 +485,8 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
           </button>
           <button
             type="button"
-            disabled={!valid}
-            onClick={() => valid && onApply({ in: inFrames, out: outFrames }, scope)}
+            disabled={!valid || pending || !scopeReview.ready}
+            onClick={() => valid && void apply({ in: inFrames, out: outFrames })}
             className="px-space-lg py-2 rounded bg-primary-container text-on-primary-container hover:brightness-110 font-label-caps text-label-caps uppercase font-bold transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
           >
             <span className="material-symbols-outlined text-[16px]">check_circle</span>

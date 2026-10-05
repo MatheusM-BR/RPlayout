@@ -1,16 +1,36 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, desc, eq, gt, inArray, isNotNull } from 'drizzle-orm'
+import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
+import { setChannelArchived } from './domain/channel-archive.js'
+import {assertChannelAudioChange} from './domain/audio-bus.js'
+import {requireChannelConfiguration} from './domain/channel-configuration-guard.js'
+import {configurationRevision} from './db/channel-configuration.js'
+import {qcRevision} from './db/qc-revisions.js'
+import {requireQcReview} from './domain/qc-review-guard.js'
+import {EditorialVersions} from './db/editorial-revisions.js'
+import {Interruptions,type InterruptedItem} from './domain/interruptions.js'
+import {inspectInsertion,requireInsertionReview,OperationalInsertions,type InsertionInput} from './domain/operational-insertion.js'
+import {installationVault} from './domain/secret-vault.js'
+import {Checkpoints} from './domain/checkpoints.js'
+import type {ConfigurationLease} from './domain/configuration-changes.js'
+import {applyCollaborativeEdit,CollaborativeEditError} from './domain/collaborative-edit.js'
+import {readAudit} from './domain/audit.js'
+import { resolveTakeTarget, TakeTargetError } from './domain/take-target.js'
+import { and, asc, desc, eq, inArray, isNotNull,or,sql } from 'drizzle-orm'
 import { z } from 'zod'
-import type { FastifyInstance } from 'fastify'
+import { scheduledDeviceSchema, freezeDeviceAutomation } from './domain/device-automation.js'
+import type { FastifyInstance,FastifyRequest } from 'fastify'
 import {
-  durationIn,
+  resolveTrim,
+  channelConfigurationETag,
+  DEFAULT_QC_PROFILE, assessQc, qcApproved, type QcStatus,
+  qcDecisionETag,
+  inferLiveSourceType,
   fieldsUsedIn,
   dateInName,
   formatVideoFormat,
   formatTimecode,
   type GraphicsLayer,
   type Scte35Message,
-  type ExternalDeviceCommand,
   framesSinceMidnight,
   isStill,
   RATE_PADRAO,
@@ -22,19 +42,22 @@ import {
   type Frames,
   type MediaAsset,
   type PreviewTarget,
+  type EditScope,
 } from '@rplayout/protocol'
-import { cpus, freemem, networkInterfaces, totalmem } from 'node:os'
+import { networkInterfaces } from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
   runtimeFor,
-  runtimeForItem,
-  runtimeForRundown,
+  runtimeForRundown as initialRuntimeForRundown,
   type App,
   type ChannelRuntime,
 } from './app.js'
 import {
   assetMap,
+  toAsset,
+  toItem,
+  toChannel,
   getChannel,
   getItem,
   getRundown,
@@ -52,18 +75,32 @@ import {
 } from './domain/asrun.js'
 import { exportXmltv } from './domain/epg.js'
 import { buildCommercialComplianceReport, renderCommercialCompliancePdf } from './domain/reports.js'
-import { buildCandidates, planFill } from './domain/autofill.js'
+import {proposeFill,applyFillProposal} from './domain/autofill-proposal.js'
+import type {Db} from './db/client.js'
 import { backupDatabase, listBackups } from './domain/backup.js'
 import { pgmProbeFor, syncDistribution } from './app.js'
 import { MediaMtx, PORTS } from './domain/mediamtx.js'
 import { can, parseRole, roleLabel, type Action } from './domain/permissions.js'
 import { hashPassword, verifyPassword } from './domain/auth.js'
+import { AccessControl, sessionDigest, sessionToken, trustedOrigin, secretEquals, normalizedIp } from './domain/access.js'
+import { applyQcDecisions,applyQcDecisionsNow } from './domain/qc-workflow.js'
+import { channelCachePlan, warmChannelCache } from './domain/published-cache-plan.js'
+import { ProcessMetrics } from './domain/process-metrics.js'
+import { isIP } from 'node:net'
 import { emitIntegrationEvent } from './domain/integrations.js'
 import { redactUrl } from './domain/relays.js'
 import { probeN1Peer } from './domain/n1.js'
+import {HaError} from './domain/ha-replication.js'
+import {HaRecoveryError} from './domain/ha-recovery.js'
+import { createEditorialRundown, EditorialRundownError } from './domain/editorial-rundown.js'
+import { diagnosticValue, sanitizeDiagnostic } from './domain/sanitize-diagnostic.js'
+import { ExternalCommandLedger, DeviceCommandConflict } from './domain/external-command-ledger.js'
+import { sourceWire, sourceAddress, credentialAddress } from './domain/source-wire.js'
 import { conflictsWithScheduleRule } from './domain/schedule-rules.js'
-import { activeHorizonRule } from './domain/continuous.js'
-import { DEFAULT_ROLE, AUTH_PASSWORD, AUTH_USER, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from './config.js'
+import { activeHorizonRule, executionHorizon } from './domain/continuous.js'
+import { localDate, rundownClock, rundownFrames, rundownMidnight } from './domain/rundown-clock.js'
+import { inspectBoundary, PlaylistBoundaryLedger } from './domain/playlist-boundary.js'
+import { AUTH_PASSWORD, AUTH_USER, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from './config.js'
 
 const execFileAsync = promisify(execFile)
 import * as Roots from './domain/roots.js'
@@ -76,6 +113,7 @@ import {
   guestKeys,
   itemGraphics,
   mediaAssets,
+  qcDecisions,
   rundownItems,
   scheduleRules,
   outputProfiles,
@@ -84,10 +122,14 @@ import {
   sessions,
   healthEvents,
   integrations,
+  integrationDeliveries,
+  secondaryEvents,
+  secondaryEventRuns,
   externalDevices,
   liveSources,
   multiviewConfigs,
   transmissionPresets,
+  operationalPlaylistRevisions,
 } from './db/schema.js'
 import { listChannelProjects, restoreChannelProject, saveChannelProject } from './domain/channel-projects.js'
 import {
@@ -105,24 +147,47 @@ import {
 import { globalScteDispatcher } from './domain/scte.js'
 import { globalStudioAutomationGateway } from './domain/external-control.js'
 import { asRun, operatorDecisions } from './db/schema.js'
-import { applyAudio, applyTrim, targetItemIds } from './domain/scopes.js'
+import { applyAudio, applyTrim, type ScopeGuard } from './domain/scopes.js'
+import {inspectEditScope,requireScopeReview,type ScopeOwner} from './domain/scoped-edit-review.js'
+import type {HistoryGuard} from './domain/history.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { extname, resolve as resolvePath } from 'node:path'
 import {
   createOutput,
+  newOutputProfile,
+  validateOutputProfile,
   deleteOutput,
   toEngineProfile,
   listOutputs,
   outputCapability,
+  outputUpdatePatch,
+  type OutputProfileRow,
   targetOf,
-  updateOutput,
 } from './domain/outputs.js'
 import { thumbnailSvg } from './domain/thumbnail.js'
 import * as Playlists from './domain/playlists.js'
 import { buildView, type RundownView } from './domain/plan.js'
+import {readEditorialState,editorialView} from './domain/editorial-state.js'
+import {mutateEditorial,requireEditorialRevision} from './domain/editorial-mutation.js'
+import {readItemAutomationState} from './domain/item-automation-state.js'
 import { generateTimelineMultiTrack } from './domain/timeline.js'
-import { globalConcurrencyManager } from './domain/concurrency.js'
+import {
+  activeOperationalPlaylist,
+  inspectOperationalPlaylist,
+  inspectOperationalRollback,
+  assertOnAirMediaUnchanged,
+  adjustPublishedLiveDuration,
+  listOperationalPlaylists,
+  publishOperationalPlaylist,
+  simulateOperationalPlaylist,
+  readOperationalPayload,
+  rollbackOperationalPlaylist,
+  diffOperationalItems,
+  diffOperationalGraphics,
+} from './domain/operational-playlist.js'
+import {requireOperationalReview} from './domain/operational-review.js'
+import type {OperationalReview} from '@rplayout/protocol'
 import type { TimelineZoomLevel, ConflictResolutionDecision } from '@rplayout/protocol'
 
 /**
@@ -171,6 +236,10 @@ const trimSchema = z.object({ in: z.number().int().min(0), out: z.number().int()
 const audioSchema = z.object({
   mode: z.enum(['AUTO', 'MANUAL', 'OFF']),
   gainDb: z.number().min(-40).max(20),
+  analysisId:z.string().uuid().optional(),
+  channelMap:z.array(z.number().int().min(0).max(31)).max(32).optional(),
+  auxiliaryPairs:z.array(z.object({outputPair:z.number().int().min(2).max(8),inputPair:z.number().int().min(1).max(32),gainDb:z.number().finite().min(-60).max(12).optional()}).strict()).max(7).optional(),
+  routing:z.object({mode:z.enum(['DEFAULT','STEREO_1_2','STEREO_3_4','DOWNMIX_MONO','LEFT_ONLY','RIGHT_ONLY','MATRIX','PAIR_MIX']),matrix:z.array(z.array(z.number().finite().min(-1).max(1)).min(1).max(64)).length(2).optional(),pairs:z.array(z.number().int().min(0).max(31)).min(1).max(32).optional()}).strict().optional(),
   measured: z
     .object({
       integratedLufs: z.number(),
@@ -210,6 +279,16 @@ const anchorSchema = z.discriminatedUnion('kind', [
 ])
 
 const scopeSchema = z.enum(['ITEM', 'RUNDOWN', 'ALL_RUNDOWNS', 'ASSET_DEFAULT'])
+// Legacy collaborative editing uses the same bounded operational fields; it
+// must never accept arbitrary keys, fractional frames or non-finite numbers.
+const collaborativePatchSchema = z.object({
+  title:z.string().trim().min(1).max(500).optional(),
+  durationOverride:z.number().int().min(0).max(100_000_000).nullable().optional(),
+  minDuration:z.number().int().min(0).max(100_000_000).optional(),
+  trimmable:z.boolean().optional(),optional:z.boolean().optional(),protected:z.boolean().optional(),
+  notes:z.string().max(20_000).nullable().optional(),
+}).strict().refine(value => typeof value.durationOverride !== 'number' || value.minDuration === undefined || value.minDuration <= value.durationOverride,
+  'A duração mínima não pode exceder a duração definida.')
 
 /**
  * Onde entra um item que tem hora marcada.
@@ -241,12 +320,71 @@ async function logDecision(
   })
 }
 
-const snapshot = (app: App, runtime: ChannelRuntime) => ({
+type EditorialContext = Pick<ChannelRuntime, 'view' | 'channel' | 'executionView' | 'operationalRevision' | 'transport' | 'live' | 'refresh' | 'markManualEdit' | 'cuesOf'>
+
+/** Request-local editorial context. It never swaps another date into execution. */
+async function runtimeForRundown(app: App, rundownId: string): Promise<EditorialContext | null> {
+  const rundown = await getRundown(app.db, rundownId)
+  if (!rundown) return null
+  const runtime = await runtimeFor(app, rundown.channelId)
+  if (!runtime) return null
+  // Preserve the first-load compatibility of an idle, uninitialized channel.
+  if (!runtime.view) return initialRuntimeForRundown(app, rundownId)
+  if (runtime.view.rundown.id === rundownId) return runtime
+  let cues: ReturnType<ChannelRuntime['cuesOf']> = []
+  const context: EditorialContext = {
+    view: null, channel: runtime.channel,
+    get executionView() { return runtime.executionView },
+    get operationalRevision() { return runtime.operationalRevision },
+    transport: runtime.transport, live: () => runtime.live(),
+    markManualEdit: () => {},
+    cuesOf: itemId => cues.filter(cue => cue.itemId === itemId),
+    refresh: async () => {
+      // Asset-wide edits may affect the current schedule, but its identity stays.
+      await runtime.refresh()
+      context.channel = runtime.channel
+      const result = await editorialSnapshot(app, rundownId)
+      context.view = result?.view ?? null
+      const rows = await app.db.select().from(itemGraphics)
+        .innerJoin(rundownItems, eq(itemGraphics.itemId, rundownItems.id))
+        .innerJoin(graphicTemplates, eq(itemGraphics.templateId, graphicTemplates.id))
+        .where(eq(rundownItems.rundownId, rundownId))
+      cues = rows.map(row => ({ ...row.item_graphics, templateName: row.graphic_templates.name }))
+      return context.view
+    },
+  }
+  await context.refresh()
+  return context
+}
+
+async function runtimeForItem(app: App, itemId: string): Promise<EditorialContext | null> {
+  const item = await getItem(app.db, itemId)
+  return item ? runtimeForRundown(app, item.rundownId) : null
+}
+
+const snapshot = (app: App, runtime: Pick<EditorialContext, 'view' | 'executionView' | 'operationalRevision' | 'live' | 'channel'>) => ({
   view: runtime.view,
+  executionView: runtime.executionView,
+  operationalRevision: runtime.operationalRevision,
   live: runtime.live(),
   history: app.history.state(runtime.view?.rundown.id ?? ''),
   monitors: monitors(app, runtime.channel.id),
 })
+
+/** Browsing/exporting editorial dates must never replace the running playlist. */
+async function editorialSnapshot(app: App, rundownId: string) {
+  const rundown = await getRundown(app.db, rundownId)
+  if (!rundown) return null
+  const runtime = await runtimeFor(app, rundown.channelId)
+  if (!runtime) return null
+  const state=readEditorialState(app.db,rundownId)
+  if(!state)return null
+  const current=runtime.view?.rundown.id===rundownId
+  const clock = rundownClock(state.rundown.date, state.channel.rate, new Date(), current ? runtime.transport.state().onAir : null)
+  const view=editorialView(state,current?clock.now:null,current?clock.onAir:null)
+  const currentSnapshot = snapshot(app, runtime)
+  return { ...currentSnapshot, live: current && clock.now !== null ? { ...currentSnapshot.live, now: clock.now } : currentSnapshot.live, view, history: app.history.state(rundownId) }
+}
 
 /**
  * Onde a interface vai buscar a imagem dos monitores.
@@ -277,19 +415,16 @@ async function dentroDoAcervo(app: App, candidato: string): Promise<boolean> {
 function monitors(app: App, channelId: string) {
   const path = app.paths.find((entry) => entry.channelId === channelId)
   if (!app.mediamtx?.running || !path) return null
-  // PGM web aponta para o mesmo master que alimenta os relays externos. O
-  // caminho `mon` era uma segunda publicação sob demanda; como o card PGM não
-  // fazia o heartbeat dela, a tela podia dizer "sem sinal" enquanto o PGM
-  // externo estava perfeito. WHEP negocia vídeo H.264 deste mesmo caminho e
-  // mantém uma única composição/renderização do programa.
-  return { port: PORTS.webrtc, program: path.program, preview: path.preview }
+  // Browser monitoring is a low-bandwidth derivative, not the full broadcast
+  // master. The PGM card must heartbeat `mon` just as PVW heartbeats `pvw`.
+  return { port: PORTS.webrtc, program: path.monitor, preview: path.preview, inspection: path.inspection ?? null }
 }
 
 /**
  * Itens que andam junto com este. Um item de bloco nunca se move sozinho: o
  * bloco comercial que se parte no meio é o pesadelo clássico do playout.
  */
-function blockCompanions(runtime: ChannelRuntime, itemId: string): string[] {
+function blockCompanions(runtime: Pick<EditorialContext, 'view'>, itemId: string): string[] {
   const items = runtime.view?.items ?? []
   const found = items.find((entry) => entry.item.id === itemId)
   const blockId = found?.item.blockId
@@ -298,62 +433,274 @@ function blockCompanions(runtime: ChannelRuntime, itemId: string): string[] {
 }
 
 export function registerRoutes(app: App, server: FastifyInstance, onChange: () => void): void {
-  const roleOf = async (request: { headers: Record<string, string | string[] | undefined> }) => {
-    const cookie = typeof request.headers.cookie === 'string' ? request.headers.cookie : ''
-    const token = cookie.split(';').map((part: string) => part.trim()).find((part: string) => part.startsWith('rplayout_session='))?.slice(17)
-    if (token) {
-      const [row] = await app.db.select({ role: users.role }).from(sessions).innerJoin(users, eq(sessions.userId, users.id)).where(and(eq(sessions.token, token), gt(sessions.expiresAt, new Date().toISOString()), eq(users.enabled, true))).limit(1)
-      if (row) return parseRole(row.role)
-    }
-    // Com autenticação configurada, cabeçalho nunca pode elevar privilégio.
-    if (AUTH_USER && AUTH_PASSWORD) return 'OPERATOR'
-    return parseRole(request.headers['x-rplayout-role'] ?? DEFAULT_ROLE)
+  const globalConcurrencyManager=app.concurrency
+  const auditChannels=new WeakMap<object,string[]>()
+  const mutatePlaylist = async (runtime: ChannelRuntime, reply: any, work: () => Promise<unknown>, changesExecution = () => true) => {
+    try { return await (runtime.transport instanceof EngineTransport ? runtime.transport.mutatePlaylist(work, changesExecution) : work()) }
+    catch (error) { if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({ error: error instanceof Error ? error.message : 'Revisão não ativada; confira a operação pendente.' }) }
   }
+  const configureChannel = async (id: string, reply: any, work: (applyOutput?: (output: HotOutputProfile) => Promise<void>,lease?:ConfigurationLease) => Promise<unknown>) => {
+    const previous = app.runtimes.get(id)
+    const guarded = async (applyOutput?: (output: HotOutputProfile) => Promise<void>) => {
+      if (app.runtimes.get(id) !== previous) throw new Error('O runtime mudou enquanto a configuração aguardava. Confira o canal antes de repetir.')
+      previous?.assertReconfigurationReady()
+      return app.configurationChanges.execute(id,previous?.transport instanceof EngineTransport?previous.transport.processId():null,access.identity(reply.request)?.username??null,`${reply.request.method} ${reply.request.routeOptions.url}`,lease=>work(applyOutput,lease))
+    }
+    try { return await (previous?.transport instanceof EngineTransport ? previous.transport.mutateConfiguration(guarded) : guarded()) }
+    catch (error) { if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({ error: sanitizeDiagnostic(error instanceof Error ? error.message : 'Configuração não aplicada; confira a operação pendente.') }) }
+  }
+  // Called inside the old transport queue: old queued commands fail closed,
+  // and the replacement restores the confirmed PGM rather than just its grade.
+  const rebuildChannel = async (id: string, beforeCreate?: () => Promise<void>,checkpointAlreadyHandled=false) => {
+    const previous = app.runtimes.get(id), rundownId = previous?.view?.rundown.id ?? null
+    if (previous) {
+      if(!checkpointAlreadyHandled)previous.checkpoint(true)
+      previous.close()
+      app.runtimes.delete(id)
+    }
+    await beforeCreate?.()
+    const runtime = await runtimeFor(app, id)
+    const recoveryRequested = runtime ? await runtime.recoverCheckpoint() : false
+    if (!recoveryRequested && runtime && rundownId && runtime.view?.rundown.id !== rundownId) await runtime.load(rundownId)
+    return { controlledInterruption: Boolean(previous), recoveryRequested, recoveryError: runtime?.recoveryError ?? null }
+  }
+  server.addHook('preValidation', async (request, reply) => {
+    if (!request.url.startsWith('/api')) return
+    // Peer comparison accepts a redacted diagnostic snapshot, not decoder
+    // configuration. It must remain byte-consistent with the public digest.
+    if (request.url.split('?')[0] === '/api/n1/compare') return
+    try { request.body = sourceWire().incoming(request.body, /^\/api\/(?:v1\/)?sources\/live(?:\/|\?|$)/.test(request.url)) }
+    catch { return reply.code(400).send({ error: 'Referência de entrada inválida. Atualize a lista e selecione a fonte novamente; nenhum comando foi enviado.' }) }
+  })
+  server.addHook('preSerialization', async (request, _reply, payload) => request.url.startsWith('/api') ? sourceWire().publicValue(payload) : payload)
+  const access = new AccessControl(app.sqlite)
+  const assertEditorialAccess=(request:FastifyRequest,channelId:string)=>{
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão deste canal mudou; entre novamente antes de editar.'})
+  }
+  const assertConfigurationAccess=(request:FastifyRequest,channelId:string)=>{
+    if(access.required()&&!access.identity(request) || !can(access.role(request),'OUTPUT_CONTROL') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de configuração mudou; entre novamente antes de confirmar.'})
+  }
+  const assertQcAccess=(request:FastifyRequest,channelId:string|null,ownerId:string|null)=>{
+    const identity=access.identity(request)
+    if((identity?.id??null)!==ownerId || access.required()&&!identity || !can(access.role(request),'PLAYLIST_EDIT') ||
+      (channelId===null ? identity?.channelIds!==undefined&&identity.channelIds!==null : !access.channelAllowed(request,channelId)))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de QC mudou; entre novamente antes de confirmar.'})
+    if(channelId!==null && app.sqlite.prepare('SELECT 1 FROM channels WHERE id=? AND archived_at IS NOT NULL').get(channelId))throw new CollaborativeEditError(409,{error:'Canal arquivado: nenhuma decisão QC foi aplicada.'})
+  }
+  type EditorialTransaction=Parameters<Parameters<Db['transaction']>[0]>[0]
+  const editItemAutomation=(request:FastifyRequest,itemId:string,kind:string,work:(tx:EditorialTransaction,state:NonNullable<ReturnType<typeof readEditorialState>>)=>Record<string,unknown>)=>{
+    const owner=app.db.select().from(rundownItems).where(eq(rundownItems.id,itemId)).get()
+    if(!owner)throw new CollaborativeEditError(404,{error:'Item não encontrado.'})
+    return mutateEditorial(app.db,app.concurrency,owner.rundownId,request.headers['if-match'],(tx,state)=>{
+      assertEditorialAccess(request,state.channel.id)
+      auditChannels.set(request,[state.channel.id])
+      const remember=app.history.prepareCapture(tx,state.rundown.id,kind,{itemIds:[itemId],itemAutomation:true})
+      const details=work(tx,state)
+      tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:state.rundown.id,itemId,kind,payload:details,actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString()}).run()
+      return {value:{...readItemAutomationState(app.db,itemId)!,...details},remember}
+    },itemId)
+  }
+  const automationError=(reply:any,error:unknown)=>{if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
+  const authorizePublication=(request:FastifyRequest,review:OperationalReview)=>{
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_PUBLISH') || !access.channelAllowed(request,review.channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de publicação mudou; entre novamente antes de confirmar.'})
+    if(review.rundownId!==(request.params as {id:string}).id)throw new CollaborativeEditError(409,{error:'A grade desta conferência mudou.'})
+    requireEditorialRevision(app.concurrency,review.rundownId,request.headers['if-match'],review.editorialRevision)
+    auditChannels.set(request,[review.channelId])
+  }
+  const authorizeScope=(request:FastifyRequest,owners:ScopeOwner[])=>{
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão mudou; entre novamente antes de editar.'})
+    if(!owners.length)throw new CollaborativeEditError(409,{error:'Os vínculos dos itens mudaram; atualize a grade antes de repetir.'})
+    if(owners.some(row=>!access.channelAllowed(request,row.channelId)))throw new CollaborativeEditError(403,{error:'Este escopo altera um canal não autorizado. Escolha somente este item ou esta grade.'})
+    if(owners.some(row=>row.archivedAt))throw new CollaborativeEditError(409,{error:'Este escopo alcança uma grade arquivada. Escolha somente este item ou reative explicitamente o canal.'})
+    const itemId=(request.params as {id:string}).id,source=owners.find(row=>row.itemId===itemId)
+    if(!source)throw new CollaborativeEditError(409,{error:'A origem não pertence mais a este escopo.'})
+    requireEditorialRevision(app.concurrency,source.rundownId,request.headers['if-match'],app.concurrency.getRundownVersion(source.rundownId),itemId)
+  }
+  const scopedEditGuard=(request:FastifyRequest,scope:EditScope,label:string,reviewToken?:string):ScopeGuard=>(db,targets)=>{
+    const review=inspectEditScope(db,(request.params as {id:string}).id,scope,id=>app.concurrency.getRundownVersion(id),owners=>authorizeScope(request,owners))
+    requireScopeReview(review,reviewToken)
+    auditChannels.set(request,[...new Set(review.owners.map(row=>row.channelId))])
+    return app.history.prepareCapture(db,targets.rundownId,label,{
+      itemIds:scope==='ASSET_DEFAULT'?[targets.ids[0]!]:targets.ids,
+      assetIds:scope==='ASSET_DEFAULT' && targets.mediaId?[targets.mediaId]:[],
+    })
+  }
+  const historyGuard=(request:FastifyRequest):HistoryGuard=>(db,footprint)=>{
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão mudou; entre novamente antes de desfazer.'})
+    if(footprint.deviceAutomation&&!can(access.role(request),'OUTPUT_CONTROL'))throw new CollaborativeEditError(403,{error:'Desfazer/refazer automação de equipamento exige permissão atual de controle de saídas.'})
+    const sourceId=(request.params as {id:string}).id
+    requireEditorialRevision(app.concurrency,sourceId,request.headers['if-match'],app.concurrency.getRundownVersion(sourceId))
+    const references=db.select({rundownId:rundownItems.rundownId}).from(rundownItems)
+      .where(or(inArray(rundownItems.id,footprint.itemIds),inArray(rundownItems.mediaId,footprint.assetIds))).all()
+    const ids=[...new Set([...footprint.rundownIds,...references.map(row=>row.rundownId)])]
+    const owners=db.select({id:rundowns.id,channelId:rundowns.channelId,archivedAt:channels.archivedAt}).from(rundowns)
+      .innerJoin(channels,eq(channels.id,rundowns.channelId)).where(inArray(rundowns.id,ids)).all()
+    if(owners.length!==ids.length)throw new CollaborativeEditError(409,{error:'O histórico alcança uma grade que não existe mais. Nenhum item foi restaurado.'})
+    if(owners.some(row=>!access.channelAllowed(request,row.channelId)))throw new CollaborativeEditError(403,{error:'Este desfazer/refazer alcança um canal não autorizado. Peça a um operador com acesso a todos os canais afetados.'})
+    if(owners.some(row=>row.archivedAt))throw new CollaborativeEditError(409,{error:'Este desfazer/refazer alcança uma grade arquivada. Reative o canal antes de restaurar os dados.'})
+    if(footprint.wholeRundownId)for(const runtime of app.runtimes.values()){
+      const onAir=runtime.transport.state().onAir?.itemId
+      if(onAir && db.select({id:rundownItems.id}).from(rundownItems).where(and(eq(rundownItems.id,onAir),eq(rundownItems.rundownId,footprint.wholeRundownId))).get() && !footprint.restoredItemIds?.includes(onAir))throw new CollaborativeEditError(409,{error:'Desfazer/refazer removeria o item no ar. Pare o canal antes de restaurar essa operação; o PGM foi preservado.'})
+    }
+    auditChannels.set(request,[...new Set(owners.map(row=>row.channelId))])
+  }
+  const securityAudit = (kind: string, actor: string | null, details: Record<string, unknown>) => logDecision(app, '@security', null, kind, details, actor)
+  const configurationAudit = (request: any, channelId: string, kind: string, details: Record<string, unknown>) => securityAudit(kind, access.identity(request)?.username ?? null, { channelId, ...details })
+  const origins = (process.env.RPLAYOUT_ALLOWED_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean)
+  const publicPaths = new Set(['/api/session', '/api/auth/login', '/api/auth/logout', '/api/health'])
+  const servicePaths = new Set(['/api/external/control', '/api/v1/external/control', '/api/n1/state', '/api/n1/compare'])
+  server.addHook('onRequest', async (request, reply) => {
+    const path = request.url.split('?')[0]!
+    if (!path.startsWith('/api') && path !== '/ws') return
+    if (!trustedOrigin(request.headers.origin, request.headers.host, origins)) return reply.code(403).send({ error: 'Esta origem não está autorizada a acessar o playout. Abra a página no endereço do servidor.' })
+    if(path==='/api/ha/replica'||path==='/api/ha/media'){
+      if(request.method!=='POST'||!app.ha?.authenticate(request.headers,path==='/api/ha/media'?'MEDIA':'STATE'))return reply.code(403).send({error:'Pareamento HA não autorizado.'})
+      return
+    }
+    if(app.ha?.options.role==='STANDBY'&&!['GET','HEAD','OPTIONS'].includes(request.method)&&!['/api/auth/login','/api/auth/logout','/api/ha/rehearsal','/api/ha/rehearsal/reconcile'].includes(path))return reply.code(409).send({error:'Nó reserva: operação local bloqueada. Espelhar não autoriza assumir o PGM.'})
+    if (publicPaths.has(path) || !access.required() || access.identity(request)) return
+    const bearer = request.headers.authorization?.replace(/^Bearer /i, '') ?? request.headers['x-rplayout-control-token'] ?? ''
+    if (servicePaths.has(path) && EXTERNAL_CONTROL_TOKEN && typeof bearer === 'string' && secretEquals(bearer, EXTERNAL_CONTROL_TOKEN)) return
+    return reply.code(401).send({ error: 'Entre com usuário e senha. A sessão expirou, foi revogada ou a conta está desativada.' })
+  })
+  server.addHook('onResponse', async (request, reply) => {
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) || !request.url.startsWith('/api') || request.url.startsWith('/api/auth/')) return
+    // Record route/actor/result, never request bodies or credential-bearing URLs.
+    // The domain decision/as-run remains the detailed operational record.
+    try { await logDecision(app, '@http', null, 'API_MUTATION', { requestId: request.id, method: request.method, route: request.routeOptions.url, status: reply.statusCode, station: request.ip,channelIds:auditChannels.get(request) ?? [] }, access.identity(request)?.username ?? null) }
+    catch (error) { server.log.error({ err: error }, 'Falha ao persistir auditoria da requisição') }
+  })
+  const sharedReads = new Set(['/api/state', '/api/session', '/api/health', '/api/library', '/api/assets', '/api/categories', '/api/library/scan', '/api/library/roots', '/api/library/roots/browse', '/api/sources', '/api/media/jobs', '/api/srt/telemetry', '/api/v1/srt/telemetry'])
+  sharedReads.add('/api/channels/archived')
+  sharedReads.add('/api/scheduler/status') // Its collection is filtered per authorized channel.
+  const channelParameterRoutes = new Set(['/api/library', '/api/health-events', '/api/health-events.csv', '/api/sources/live', '/api/v1/sources/live', '/api/multiview/config', '/api/v1/multiview/config', '/api/v1/engineering/pgm-probe/status', '/api/v1/engineering/pgm-probe/emergency-slate', '/api/v1/engineering/pgm-probe/policy', '/api/v1/continuity/cache/status', '/api/v1/cache/status', '/api/v1/continuity/cache/warm', '/api/v1/cache/prewarm'])
+  channelParameterRoutes.add('/api/integrations')
+  channelParameterRoutes.add('/api/audit')
+  channelParameterRoutes.add('/api/integration-deliveries')
+  channelParameterRoutes.add('/api/graphics')
+  channelParameterRoutes.add('/api/v1/engineering/pgm-probe/contingency-loop')
+  for (const route of ['/api/v1/graphics/layers','/api/v1/graphics/layers/:layer/trigger','/api/v1/scte/splice-insert']) channelParameterRoutes.add(route)
+  server.addHook('preHandler', async (request, reply) => {
+    const identity = access.identity(request)
+    const path = request.url.split('?')[0]!, params = request.params as Record<string, string> | undefined
+    const query = request.query as Record<string, unknown> | undefined, body = request.body as Record<string, unknown> | undefined
+    const channelIds = new Set<string>()
+    for (const value of [query?.channelId, body?.channelId]) if (typeof value === 'string') channelIds.add(value)
+    const route = request.routeOptions.url ?? ''
+    const scopedRoute = channelParameterRoutes.has(path) || channelParameterRoutes.has(route) || route === '/api/assets/:id/qc' || /^\/api\/(?:v1\/)?(channels\/:id|rundowns\/:id|items\/:id|sources\/live\/:id|outputs\/:id|health-events\/:id|integrations\/:id|integration-deliveries\/:id|item-graphics\/:id|graphics\/:id|guests\/:id|destinations\/:id|blocks\/:blockId|timeline\/:rundownId|tenants\/:tenantId\/channels\/:channelId)(?:\/|$)/.test(route)
+    if (/^\/api\/(?:v1\/)?channels\/:id(?:\/|$)/.test(route) && params?.id) channelIds.add(params.id)
+    const lookup = (sql: string, id: unknown) => {
+      if (typeof id !== 'string') return
+      const rows = app.sqlite.prepare(sql).all(id) as { channelId: string | null }[]
+      for (const row of rows) if (row.channelId) channelIds.add(row.channelId)
+    }
+    if (/^\/api\/(?:v1\/)?rundowns\/:id(?:\/|$)/.test(route)) lookup('SELECT channel_id AS channelId FROM rundowns WHERE id=?', params?.id)
+    if (/^\/api\/(?:v1\/)?items\/:id(?:\/|$)/.test(route)) lookup('SELECT r.channel_id AS channelId FROM rundown_items i JOIN rundowns r ON r.id=i.rundown_id WHERE i.id=?', params?.id)
+    for (const value of [body?.rundownId, body?.copyFromRundownId, query?.rundownId, params?.rundownId]) lookup('SELECT channel_id AS channelId FROM rundowns WHERE id=?', value)
+    for (const value of [body?.itemId, params?.itemId]) lookup('SELECT r.channel_id AS channelId FROM rundown_items i JOIN rundowns r ON r.id=i.rundown_id WHERE i.id=?', value)
+    if (route.startsWith('/api/v1/tenants/:tenantId/channels/:channelId/') && params?.channelId) channelIds.add(params.channelId)
+    if (route.startsWith('/api/item-graphics/:id')) lookup('SELECT r.channel_id AS channelId FROM item_graphics g JOIN rundown_items i ON i.id=g.item_id JOIN rundowns r ON r.id=i.rundown_id WHERE g.id=?', params?.id)
+    if (route.startsWith('/api/blocks/:blockId')) lookup('SELECT DISTINCT r.channel_id AS channelId FROM rundown_items i JOIN rundowns r ON r.id=i.rundown_id WHERE i.block_id=?', params?.blockId)
+    if (route.startsWith('/api/guests/:id')) lookup('SELECT channel_id AS channelId FROM guest_keys WHERE id=?', params?.id)
+    if (route.startsWith('/api/destinations/:id')) lookup('SELECT channel_id AS channelId FROM destinations WHERE id=?', params?.id)
+    const templateTarget = route.startsWith('/api/graphics/:id') && params?.id
+      ? app.sqlite.prepare('SELECT channel_id AS channelId FROM graphic_templates WHERE id=?').get(params.id) as {channelId:string|null}|undefined : undefined
+    if (templateTarget?.channelId) channelIds.add(templateTarget.channelId)
+    // A global template may be used on any authorized channel, not rewritten
+    // or moved into one by spoofing a channel in the query/body.
+    lookup('SELECT channel_id AS channelId FROM graphic_templates WHERE id=?', body?.templateId)
+    const sharedTemplateMutation = !['GET','HEAD','OPTIONS'].includes(request.method) &&
+      ((route === '/api/graphics' && typeof body?.channelId !== 'string') ||
+       (route === '/api/graphics/:id' && (templateTarget?.channelId === null || body?.channelId === null)))
+    if (/^\/api\/(?:v1\/)?sources\/live\/:id/.test(route)) lookup('SELECT channel_id AS channelId FROM live_sources WHERE id=?', params?.id)
+    if (route.startsWith('/api/outputs/:id')) lookup('SELECT channel_id AS channelId FROM output_profiles WHERE id=?', params?.id)
+    if (route.startsWith('/api/health-events/:id')) lookup('SELECT channel_id AS channelId FROM health_events WHERE id=?', params?.id)
+    if (route.startsWith('/api/integrations/:id')) lookup('SELECT channel_id AS channelId FROM integrations WHERE id=?',params?.id)
+    if (route.startsWith('/api/integration-deliveries/:id')) lookup('SELECT channel_id AS channelId FROM integration_deliveries WHERE id=?',params?.id)
+    auditChannels.set(request,[...channelIds])
+    if (identity?.channelIds && [...channelIds].some(id => !identity.channelIds!.includes(id))) return reply.code(403).send({error:'Sua conta não pode acessar este canal.'})
+    if (!['GET','HEAD','OPTIONS'].includes(request.method) && route!=='/api/channels/:id/reactivate' && !(route==='/api/channels/:id' && request.method==='DELETE')) {
+      for (const channelId of channelIds) {
+        if (app.sqlite.prepare('SELECT 1 FROM channels WHERE id=? AND archived_at IS NOT NULL').get(channelId)) return reply.code(409).send({error:'Este canal está arquivado e disponível somente para histórico. Reative-o explicitamente antes de editar ou comandar a operação.'})
+      }
+    }
+    if (!identity || identity.channelIds === null) return
+    if (sharedTemplateMutation) return reply.code(403).send({error:'Sua conta pode usar grafismos compartilhados, mas não editar, remover ou compartilhar estes modelos.'})
+    const scopedTransaction=route==='/api/items/:id/trim' || route==='/api/items/:id/audio'
+    if (scopedRoute && channelIds.size && [...channelIds].every(id => identity.channelIds!.includes(id)) && (scopedTransaction || !['ALL_RUNDOWNS', 'ASSET_DEFAULT'].includes(String(body?.scope)))) return
+    if (!channelIds.size && (request.method === 'GET' || request.method === 'HEAD') && (path==='/api/audit' || path==='/api/graphics' || sharedReads.has(path) || /^\/api\/assets\/[^/]+\/(thumbnail\.svg|file|media|workflow|frame\/)/.test(path))) return
+    if (path === '/api/auth/logout' || path === '/api/auth/login' || path === '/ws') return
+    return reply.code(403).send({ error: 'Sua conta não pode acessar este canal ou alterar configurações compartilhadas. Peça ao administrador para revisar os canais permitidos.' })
+  })
+  const roleOf = async (request: { headers: Record<string, string | string[] | undefined> }) => access.role(request)
   const usernameOf = async (request: { headers: Record<string, string | string[] | undefined> }): Promise<string | null> => {
-    const cookie = typeof request.headers.cookie === 'string' ? request.headers.cookie : ''
-    const token = cookie.split(';').map((part: string) => part.trim()).find((part: string) => part.startsWith('rplayout_session='))?.slice(17)
-    if (!token) return null
-    const [row] = await app.db.select({ username: users.username }).from(sessions).innerJoin(users, eq(sessions.userId, users.id)).where(and(eq(sessions.token, token), gt(sessions.expiresAt, new Date().toISOString()), eq(users.enabled, true))).limit(1)
-    return row?.username ?? null
+    return access.identity(request)?.username ?? null
   }
   const allowed = async (request: { headers: Record<string, string | string[] | undefined> }, action: Action): Promise<boolean> =>
-    can(await roleOf(request), action)
+    (!access.required() || access.identity(request) !== null) && can(await roleOf(request), action)
 
   server.get('/api/session', async (request) => {
     const role = await roleOf(request)
     const authenticated = (await usernameOf(request)) !== null
-    return { role, label: roleLabel(role), authenticated, required: Boolean(AUTH_USER && AUTH_PASSWORD) }
+    return { role, label: roleLabel(role), authenticated, required: access.required() }
   })
+  const loginAttempts = new Map<string, { count: number; until: number }>()
   server.post('/api/auth/login', async (request, reply) => {
+    const attempt = loginAttempts.get(request.ip)
+    if (attempt && attempt.until > Date.now() && attempt.count >= 10) return reply.header('retry-after', String(Math.ceil((attempt.until - Date.now()) / 1000))).code(429).send({ error: 'Muitas tentativas. Aguarde antes de tentar entrar novamente.' })
+    if (loginAttempts.size > 1000) for (const [ip, entry] of loginAttempts) { if (entry.until <= Date.now()) loginAttempts.delete(ip) }
+    if (loginAttempts.size > 2000 && !attempt) return reply.code(429).send({ error: 'Limite de tentativas de login atingido.' })
+    loginAttempts.set(request.ip, attempt && attempt.until > Date.now() ? { ...attempt, count: attempt.count + 1 } : { count: 1, until: Date.now() + 900_000 })
     const body = z.object({ username: z.string().min(1), password: z.string().min(1) }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe usuário e senha.' })
     let [user] = await app.db.select().from(users).where(eq(users.username, body.data.username)).limit(1)
-    if (!user && AUTH_USER && AUTH_PASSWORD && body.data.username === AUTH_USER && body.data.password === AUTH_PASSWORD) {
+    if (!user && AUTH_USER && AUTH_PASSWORD && body.data.username === AUTH_USER && secretEquals(body.data.password, AUTH_PASSWORD)) {
       const created = { id: randomUUID(), username: AUTH_USER, passwordHash: await hashPassword(AUTH_PASSWORD), role: 'ADMIN' as const, enabled: true, createdAt: new Date().toISOString() }
       await app.db.insert(users).values(created)
       user = created
     }
-    if (!user || !user.enabled || !(await verifyPassword(body.data.password, user.passwordHash))) return reply.code(401).send({ error: 'Usuário ou senha inválidos.' })
+    if (!user || !user.enabled || !(await verifyPassword(body.data.password, user.passwordHash))) {
+      await securityAudit('LOGIN_FAILED', null, { username: body.data.username, station: request.ip })
+      return reply.code(401).send({ error: 'Usuário ou senha inválidos.' })
+    }
+    const policy = access.policy(user.id)
+    if (policy.stationIps !== null && !policy.stationIps.includes(normalizedIp(request.ip))) return reply.code(403).send({ error: 'Esta estação não está autorizada para a conta. Peça ao administrador para revisar os endereços permitidos.' })
     const token = randomUUID() + randomUUID()
-    await app.db.insert(sessions).values({ token, userId: user.id, expiresAt: new Date(Date.now() + 43_200_000).toISOString(), createdAt: new Date().toISOString() })
-    return reply.header('set-cookie', `rplayout_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`).send({ role: user.role, label: roleLabel(parseRole(user.role)) })
+    await app.db.insert(sessions).values({ token: sessionDigest(token), userId: user.id, expiresAt: new Date(Date.now() + 43_200_000).toISOString(), createdAt: new Date().toISOString() })
+    loginAttempts.delete(request.ip)
+    await securityAudit('SESSION_CREATED', user.username, { userId: user.id, station: request.ip })
+    const secure = request.protocol === 'https' || process.env.RPLAYOUT_SECURE_COOKIES === '1' ? '; Secure' : ''
+    return reply.header('set-cookie', `rplayout_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}`).send({ role: user.role, label: roleLabel(parseRole(user.role)) })
   })
   server.post('/api/auth/logout', async (request, reply) => {
-    const cookie = typeof request.headers.cookie === 'string' ? request.headers.cookie : ''
-    const token = cookie.split(';').map((part: string) => part.trim()).find((part: string) => part.startsWith('rplayout_session='))?.slice(17)
-    if (token) await app.db.delete(sessions).where(eq(sessions.token, token))
+    const token = sessionToken(request), actor = access.identity(request)?.username ?? null
+    if (token) await app.db.delete(sessions).where(eq(sessions.token, sessionDigest(token)))
+    if (actor) await securityAudit('SESSION_ENDED', actor, { station: request.ip })
     return reply.header('set-cookie', 'rplayout_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0').send({ ok: true })
   })
   server.get('/api/users', async (request, reply) => {
     if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
-    return { users: await app.db.select({ id: users.id, username: users.username, role: users.role, enabled: users.enabled, createdAt: users.createdAt }).from(users) }
+    const rows = await app.db.select({ id: users.id, username: users.username, role: users.role, enabled: users.enabled, createdAt: users.createdAt }).from(users)
+    return { users: rows.map(row => ({ ...row, ...access.policy(row.id) })) }
+  })
+  server.get('/api/users/:id/sessions', async (request, reply) => {
+    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem consultar sessões.' })
+    const { id } = request.params as { id: string }
+    return { sessions: await app.db.select({ id: sessions.token, createdAt: sessions.createdAt, expiresAt: sessions.expiresAt }).from(sessions).where(eq(sessions.userId, id)) }
+  })
+  server.delete('/api/users/:id/sessions', async (request, reply) => {
+    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem revogar sessões.' })
+    const { id } = request.params as { id: string }, actor = await usernameOf(request)
+    await app.db.delete(sessions).where(eq(sessions.userId, id))
+    await securityAudit('SESSIONS_REVOKED', actor, { userId: id, station: request.ip })
+    return { ok: true }
   })
   server.get('/api/audit', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar auditoria.' })
-    const query = request.query as { limit?: string }
-    const limit = Math.min(1000, Math.max(1, Number(query.limit ?? 200) || 200))
-    const rows = await app.db.select().from(operatorDecisions).orderBy(desc(operatorDecisions.createdAt)).limit(limit)
-    return { entries: rows.reverse() }
+    const query = request.query as { limit?: string;channelId?:string }
+    const limit = Math.min(1000, Math.max(1, Math.trunc(Number(query.limit ?? 200) || 200)))
+    const identity=access.identity(request)
+    const entries=await readAudit(app.db,{channelId:query.channelId,channelIds:identity?.channelIds ?? null,globalAdmin:access.role(request)==='ADMIN'},limit)
+    return { entries }
   })
   server.get('/api/health-events', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar saúde.' })
@@ -389,23 +736,29 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     await app.db.update(healthEvents).set({ acknowledgedAt: new Date().toISOString() }).where(eq(healthEvents.id, id))
     return { ok: true }
   })
+  const gatewayUrl = z.string().url().refine(value => { const url = new URL(value); return ['http:','https:'].includes(url.protocol) && !url.username && !url.password }, 'Use HTTP(S) sem usuário/senha na URL.')
+  const publicIntegration = (row: typeof integrations.$inferSelect) => {
+    const url = new URL(row.url)
+    // Webhook paths commonly contain bearer secrets (not just query tokens).
+    return { ...row,url:url.origin + (url.pathname !== '/' || url.search ? '/REDACTED' : '/') }
+  }
   server.get('/api/integrations', async (request, reply) => {
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
     const { channelId } = request.query as { channelId?: string }
     const rows = await app.db.select().from(integrations)
-    return { integrations: channelId ? rows.filter((row) => row.channelId === channelId || row.channelId === null) : rows }
+    return { integrations: (channelId ? rows.filter((row) => row.channelId === channelId || row.channelId === null) : rows).map(publicIntegration) }
   })
   server.post('/api/integrations', async (request, reply) => {
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
-    const body = z.object({ channelId: z.string().nullable().optional(), name: z.string().min(1), url: z.string().url(), events: z.array(z.string()).min(1) }).safeParse(request.body)
+    const body = z.object({ channelId: z.string().nullable().optional(), name: z.string().min(1), url: gatewayUrl, events: z.array(z.string()).min(1) }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe nome, URL válida e pelo menos um evento.' })
     const row = { id: randomUUID(), channelId: body.data.channelId ?? null, name: body.data.name, url: body.data.url, events: body.data.events, enabled: false, createdAt: new Date().toISOString() }
     await app.db.insert(integrations).values(row)
-    return { integration: row }
+    return { integration: publicIntegration(row) }
   })
   server.patch('/api/integrations/:id', async (request, reply) => {
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
-    const body = z.object({ name: z.string().min(1).optional(), url: z.string().url().optional(), events: z.array(z.string()).min(1).optional(), enabled: z.boolean().optional() }).safeParse(request.body)
+    const body = z.object({ name: z.string().min(1).optional(), url: gatewayUrl.optional(), events: z.array(z.string()).min(1).optional(), enabled: z.boolean().optional() }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Alteração inválida.' })
     const { id } = request.params as { id: string }
     await app.db.update(integrations).set(body.data).where(eq(integrations.id, id))
@@ -417,9 +770,26 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const [integration] = await app.db.select().from(integrations).where(eq(integrations.id, id)).limit(1)
     if (!integration) return reply.code(404).send({ error: 'Integração não encontrada.' })
     try {
-      const response = await fetch(integration.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'rplayout.test', sentAt: new Date().toISOString() }) })
+      const response = await fetch(integration.url, { method: 'POST', redirect:'error',signal:AbortSignal.timeout(5000),headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'rplayout.test', sentAt: new Date().toISOString() }) })
+      await response.body?.cancel()
       return { ok: response.ok, status: response.status }
-    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : 'falha de rede' } }
+    } catch { return { ok: false, error: 'Gateway indisponível, redirecionamento recusado ou tempo de 5s excedido.' } }
+  })
+  server.get('/api/integration-deliveries',async (request,reply) => {
+    if (!(await allowed(request,'OUTPUT_CONTROL'))) return reply.code(403).send({error:'Sem permissão para consultar entregas externas.'})
+    const { channelId } = request.query as {channelId?:string}
+    const rows = await app.db.select({id:integrationDeliveries.id,integrationId:integrationDeliveries.integrationId,channelId:integrationDeliveries.channelId,event:integrationDeliveries.event,state:integrationDeliveries.state,attempts:integrationDeliveries.attempts,nextAttemptAt:integrationDeliveries.nextAttemptAt,lastError:integrationDeliveries.lastError,createdAt:integrationDeliveries.createdAt,deliveredAt:integrationDeliveries.deliveredAt})
+      .from(integrationDeliveries).where(channelId ? eq(integrationDeliveries.channelId,channelId) : undefined).orderBy(desc(integrationDeliveries.createdAt)).limit(100)
+    return { deliveries:rows,limit:100,deliverySemantics:'AT_LEAST_ONCE' }
+  })
+  server.post('/api/integration-deliveries/:id/retry',async (request,reply) => {
+    if (!(await allowed(request,'OUTPUT_CONTROL'))) return reply.code(403).send({error:'Sem permissão para reenviar alertas.'})
+    const {id} = request.params as {id:string}
+    const result = app.db.update(integrationDeliveries).set({state:'QUEUED',attempts:0,nextAttemptAt:new Date().toISOString(),lastError:null})
+      .where(and(eq(integrationDeliveries.id,id),inArray(integrationDeliveries.state,['FAILED','CANCELLED']))).run()
+    if (!result.changes) return reply.code(409).send({error:'A entrega não está em falha/cancelada. Entregas em andamento ou confirmadas não serão duplicadas.'})
+    await logDecision(app,'@integrations',null,'INTEGRATION_RETRY',{deliveryId:id},await usernameOf(request))
+    return {ok:true}
   })
   // Entrada normalizada para automação SCTE-35/104. O playout registra a
   // intenção e distribui para os gateways configurados; a inserção física no
@@ -465,10 +835,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
     const body = z.object({ username: z.string().min(1).max(80), password: z.string().min(8), role: z.enum(['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']) }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe usuário, senha com 8 caracteres e papel.' })
+    const bootstrap = !access.required()
+    if (bootstrap && body.data.role !== 'ADMIN') return reply.code(409).send({ error: 'A primeira conta precisa ser Administrador para não bloquear a instalação.' })
+    if (bootstrap && !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.ip)) return reply.code(403).send({ error: 'Crie a primeira conta diretamente na página do servidor local; depois entre normalmente pela estação remota.' })
     try {
+      const actor = await usernameOf(request)
       const row = { id: randomUUID(), username: body.data.username, passwordHash: await hashPassword(body.data.password), role: body.data.role, enabled: true, createdAt: new Date().toISOString() }
       await app.db.insert(users).values(row)
-      return { user: { id: row.id, username: row.username, role: row.role, enabled: true } }
+      await securityAudit('USER_CREATED', actor, { userId: row.id, username: row.username, role: row.role, station: request.ip })
+      return { user: { id: row.id, username: row.username, role: row.role, enabled: true }, requiresLogin: bootstrap }
     } catch { return reply.code(409).send({ error: 'Esse usuário já existe.' }) }
   })
   server.patch('/api/users/:id', async (request, reply) => {
@@ -476,18 +851,82 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const body = z.object({ password: z.string().min(8).optional(), role: z.enum(['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']).optional(), enabled: z.boolean().optional() }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Alteração inválida.' })
     const { id } = request.params as { id: string }
-    await app.db.update(users).set({ ...(body.data.role ? { role: body.data.role } : {}), ...(body.data.enabled === undefined ? {} : { enabled: body.data.enabled }), ...(body.data.password ? { passwordHash: await hashPassword(body.data.password) } : {}) }).where(eq(users.id, id))
+    const passwordHash = body.data.password ? await hashPassword(body.data.password) : undefined
+    const actor = await usernameOf(request)
+    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'A permissão de administrador mudou durante a operação.' })
+    try {
+      app.db.transaction(tx => {
+        const target = tx.select().from(users).where(eq(users.id, id)).get()
+        if (!target) throw new Error('Usuário não encontrado.')
+        if (target.enabled && target.role === 'ADMIN' && (body.data.enabled === false || body.data.role && body.data.role !== 'ADMIN')) {
+          const others = tx.select({ id: users.id }).from(users).where(and(eq(users.enabled, true), eq(users.role, 'ADMIN'))).all()
+          if (!others.some(user => user.id !== id)) throw new Error('Mantenha ao menos um administrador ativo para não bloquear a instalação.')
+        }
+        tx.update(users).set({ ...(body.data.role ? { role: body.data.role } : {}), ...(body.data.enabled === undefined ? {} : { enabled: body.data.enabled }), ...(passwordHash ? { passwordHash } : {}) }).where(eq(users.id, id)).run()
+        tx.delete(sessions).where(eq(sessions.userId, id)).run()
+      })
+    } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Alteração de usuário recusada.' }) }
+    await securityAudit('USER_UPDATED_SESSIONS_REVOKED', actor, { userId: id, role: body.data.role, enabled: body.data.enabled, passwordChanged: Boolean(body.data.password), station: request.ip })
+    return { ok: true }
+  })
+  server.put('/api/users/:id/access', async (request, reply) => {
+    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem definir canais e estações.' })
+    const body = z.object({ channelIds: z.array(z.string().min(1)).max(128).nullable(), stationIps: z.array(z.string().refine(value => isIP(value) > 0)).max(128).nullable() }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe canais existentes e IPs válidos; vazio bloqueia, sem restrição permite todos.' })
+    const { id } = request.params as { id: string }, [user] = await app.db.select().from(users).where(eq(users.id, id)).limit(1)
+    if (!user) return reply.code(404).send({ error: 'Usuário não encontrado.' })
+    if (user.role === 'ADMIN' && body.data.channelIds !== null) return reply.code(409).send({ error: 'Administradores precisam conservar acesso a todos os canais. Use outro papel para uma conta restrita.' })
+    if (body.data.channelIds && body.data.channelIds.some(id => !app.sqlite.prepare('SELECT 1 FROM channels WHERE id=?').get(id))) return reply.code(400).send({ error: 'Um dos canais selecionados não existe.' })
+    const actor = access.identity(request)
+    if (actor?.id === id && body.data.stationIps !== null && !body.data.stationIps.map(normalizedIp).includes(normalizedIp(request.ip))) return reply.code(409).send({ error: 'Não remova sua estação atual da própria conta. Defina outro administrador antes.' })
+    app.sqlite.transaction(() => {
+      app.sqlite.prepare('INSERT INTO user_access VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET channel_ids=excluded.channel_ids, station_ips=excluded.station_ips, updated_at=excluded.updated_at')
+        .run(id, body.data.channelIds === null ? null : JSON.stringify([...new Set(body.data.channelIds)]), body.data.stationIps === null ? null : JSON.stringify([...new Set(body.data.stationIps.map(normalizedIp))]), new Date().toISOString())
+      app.sqlite.prepare('DELETE FROM sessions WHERE user_id=?').run(id)
+    })()
+    await securityAudit('USER_ACCESS_CHANGED_SESSIONS_REVOKED', actor?.username ?? null, { userId: id, channelIds: body.data.channelIds, stationIps: body.data.stationIps, station: request.ip })
     return { ok: true }
   })
   server.get('/api/health', async () => ({
     ok: true,
     uptimeSeconds: Math.floor(process.uptime()),
     channels: app.runtimes.size,
-    engines: [...app.runtimes.values()].filter((runtime) => runtime.transport.health().ready).length,
+    engines: [...app.runtimes.values()].filter((runtime) => runtime.transport instanceof EngineTransport && runtime.transport.health().ready).length,
+    nativeEngines: [...app.runtimes.values()].filter((runtime) => runtime.transport instanceof EngineTransport).length,
+    simulatedChannels: [...app.runtimes.values()].filter((runtime) => !(runtime.transport instanceof EngineTransport)).length,
     mediamtx: app.mediamtx ? (app.mediamtx.running ? 'running' : 'stopped') : 'disabled',
     checkedAt: new Date().toISOString(),
   }))
   server.get('/api/n1/status', async () => probeN1Peer(N1_PEER_URL || null, EXTERNAL_CONTROL_TOKEN))
+  server.get('/api/ha/status',async(request,reply)=>{
+    if(!(await allowed(request,'OUTPUT_CONTROL')))return reply.code(403).send({error:'Sem permissão para consultar redundância.'})
+    reply.header('Cache-Control','private, no-store')
+    return app.ha?.status()??{configured:false,failoverReady:false,automaticTake:false,reason:'HA não configurada; heartbeat N+1 não replica a operação.'}
+  })
+  server.post('/api/ha/replica',{bodyLimit:48*1024*1024},async(request,reply)=>{
+    try{reply.header('Cache-Control','private, no-store');return app.ha!.receive(request.body,request.headers)}
+    catch(error){return reply.code(error instanceof HaError?error.status:400).send({error:error instanceof HaError?error.message:'Snapshot HA inválido. Nenhum estado local foi instalado.'})}
+  })
+  server.post('/api/ha/media',{bodyLimit:1024*1024},async(request,reply)=>{
+    try{reply.header('Cache-Control','private, no-store');return await app.ha!.receiveMedia(request.body,request.headers)}
+    catch(error){return reply.code(error instanceof HaError?error.status:400).send({error:error instanceof HaError?error.message:'Cópia HA recusada. Confira SHA, pasta, quota e edição; nenhum parcial está pronto para PGM.'})}
+  })
+  server.get('/api/ha/rehearsal',async(request,reply)=>{
+    if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Ensaio HA exige administrador.'})
+    reply.header('Cache-Control','private, no-store')
+    const status=app.ha?.recoveryStatus()??{enabled:false,reports:[],promotionReady:false,automaticTake:false}
+    return {...status,reports:status.reports.filter(report=>access.channelAllowed(request,report.channelId))}
+  })
+  for(const endpoint of ['/api/ha/rehearsal','/api/ha/rehearsal/reconcile'])server.post(endpoint,async(request,reply)=>{
+    if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Ensaio HA exige administrador.'})
+    const body=z.object({requestId:z.string().uuid(),sequence:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),channelId:z.string().min(1).max(128)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe pedido único, sequência espelhada e canal; não há ação de TAKE neste endpoint.'})
+    if(!access.channelAllowed(request,body.data.channelId))return reply.code(403).send({error:'Sem acesso a este canal.'})
+    reply.header('Cache-Control','private, no-store')
+    auditChannels.set(request,[body.data.channelId])
+    try{if(!app.ha)throw new HaError(409,'HA não configurada.');return endpoint.endsWith('/reconcile')?app.ha.reconcileRecovery(body.data,access.identity(request)?.username??null):await app.ha.rehearse(body.data)}
+    catch(error){return reply.code(error instanceof HaError?error.status:409).send({error:error instanceof HaError||error instanceof HaRecoveryError?error.message:'Ensaio recusado ou pedido anterior em andamento. Nenhum PGM foi aberto.'})}
+  })
   server.get('/api/n1/state', async () => {
     const channels = [...app.runtimes.values()].map((runtime) => ({
       channelId: runtime.channel.id,
@@ -498,7 +937,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return {
       checkedAt: new Date().toISOString(),
       stateHash: createHash('sha256').update(canonical).digest('hex'),
-      channels,
+      // Recovery availability is diagnostic, not part of the canonical
+      // transport hash exchanged with existing N+1 peers.
+      channels: diagnosticValue(channels.map(row => ({ ...row, reconfiguration: app.runtimes.get(row.channelId)?.reconfigurationStatus() }))),
     }
   })
   server.post('/api/n1/compare', async (request, reply) => {
@@ -528,37 +969,160 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       checkedAt: new Date().toISOString(),
     })
   })
-  server.get('/api/scheduler/status', async () => {
+  server.get('/api/scheduler/status', async (request) => {
     const now = new Date()
     const nowMinute = now.getHours() * 60 + now.getMinutes()
     const weekday = now.getDay()
     const result = []
     for (const runtime of app.runtimes.values()) {
+      if (!access.channelAllowed(request, runtime.channel.id)) continue
       const rules = await app.db.select().from(scheduleRules).where(eq(scheduleRules.channelId, runtime.channel.id))
       const activeRule = activeHorizonRule(rules, nowMinute, weekday)
-      const nowFrames = framesSinceMidnight(now, runtime.channel.rate)
-      const endFrames = runtime.view?.schedule.endsAt ?? nowFrames
-      const minutesRemaining = Math.max(0, Math.round((endFrames - nowFrames) * runtime.channel.rate.den / runtime.channel.rate.num / 60))
-      const targetMinutes = 48 * 60
+      const horizon = executionHorizon(runtime.executionView, runtime.transport.state().onAir, runtime.operationalRevision?.id ?? null, now)
+      const passage=runtime.boundaryStatus()
       result.push({
         channelId: runtime.channel.id,
-        rundownId: runtime.view?.rundown.id ?? null,
         activeRule: activeRule ?? null,
-        endsAtFrames: endFrames,
-        minutesRemaining,
-        coverageMinutes: minutesRemaining,
-        coverageHours: Math.round((minutesRemaining / 60) * 10) / 10,
-        targetHours: 48,
-        coverageReady: minutesRemaining >= targetMinutes,
+        ...horizon,
+        automaticHandover:passage.nativeEngine && passage.current?.plan.sourceRevisionId===passage.sourceRevisionId && ['QUEUED','PREPARING','SWITCHING'].includes(passage.current.state),
+        nextPlaylist:passage.current?{state:passage.current.state,targetName:passage.current.plan.targetName,targetRevisionId:passage.current.plan.targetRevisionId,policy:passage.automaticPolicy}:null,
       })
     }
     return { checkedAt: now.toISOString(), channels: result }
+  })
+
+  server.get('/api/channels/:id/schedule-publication',async(request,reply)=>{
+    const {id}=request.params as {id:string},channel=await getChannel(app.db,id)
+    if(!channel)return reply.code(404).send({error:'Canal não encontrado.'})
+    return {...app.schedulePublication.status(id),canConfigure:await allowed(request,'PLAYLIST_PUBLISH')}
+  })
+  server.get('/api/channels/:id/schedule-publication/review',async(request,reply)=>{
+    if(!(await allowed(request,'PLAYLIST_PUBLISH')))return reply.code(403).send({error:'Seu papel não pode autorizar publicação automática.'})
+    const {id}=request.params as {id:string},body=z.object({daysAhead:z.coerce.number().int().min(1).max(7),maxItems:z.coerce.number().int().min(1).max(5000)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Antecedência de 1–7 dias; limite de 1–5000 itens.'})
+    const actor=access.identity(request)
+    try{return {review:app.schedulePublication.review(id,body.data.daysAhead,body.data.maxItems,{userId:actor?.id??null,username:actor?.username??null})}}
+    catch(error){return reply.code(error instanceof CollaborativeEditError?error.status:409).send(error instanceof CollaborativeEditError?error.payload:{error:error instanceof Error?error.message:'Pauta inválida.'})}
+  })
+  server.post('/api/channels/:id/schedule-publication',async(request,reply)=>{
+    if(!(await allowed(request,'PLAYLIST_PUBLISH')))return reply.code(403).send({error:'Seu papel não pode configurar publicação automática.'})
+    const {id}=request.params as {id:string},body=z.object({action:z.enum(['ENABLE','DISABLE']),version:z.number().int().min(0),daysAhead:z.number().int().min(1).max(7).optional(),maxItems:z.number().int().min(1).max(5000).optional(),reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional()}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Política de publicação inválida.'})
+    if(!await getChannel(app.db,id))return reply.code(404).send({error:'Canal não encontrado.'})
+    const actor=access.identity(request),owner={userId:actor?.id??null,username:actor?.username??null}
+    const authorize=()=>{
+      if(access.required()&&!access.identity(request)||!can(access.role(request),'PLAYLIST_PUBLISH')||!access.channelAllowed(request,id)||(access.identity(request)?.id??null)!==owner.userId)throw new CollaborativeEditError(403,{error:'Sessão/permissão mudou; política não alterada.'})
+      if(app.schedulePublication.status(id).version!==body.data.version)throw new CollaborativeEditError(409,{error:'A política mudou desde a leitura. Confira novamente.'})
+    }
+    try{return app.db.transaction(()=>{
+      authorize()
+      if(body.data.action==='ENABLE')return app.schedulePublication.enable(id,body.data.daysAhead??2,body.data.maxItems??2000,owner,body.data.reviewToken,authorize)
+      return app.schedulePublication.suspend(id,owner.username,'Publicação automática desligada explicitamente. Grades já publicadas permanecem intactas.','DISABLED')
+    },{behavior:'immediate'})}
+    catch(error){return reply.code(error instanceof CollaborativeEditError?error.status:409).send(error instanceof CollaborativeEditError?error.payload:{error:'Política não foi alterada. Confira a pauta e tente novamente.'})}
+  })
+
+  server.get('/api/channels/:id/published-continuity',async(request,reply)=>{
+    const {id}=request.params as {id:string},runtime=await runtimeFor(app,id)
+    if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    return {...app.publishedContinuity.status(id),sourceRevisionId:runtime.operationalRevision?.id??null,nativeEngine:runtime.transport instanceof EngineTransport,canConfigure:await allowed(request,'PLAYLIST_PUBLISH')}
+  })
+  server.get('/api/channels/:id/published-continuity/review',async(request,reply)=>{
+    if(!(await allowed(request,'PLAYLIST_PUBLISH')))return reply.code(403).send({error:'Seu papel não pode autorizar continuidade.'})
+    const {id}=request.params as {id:string},body=z.object({maxLateMinutes:z.coerce.number().int().min(0).max(180)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe atraso máximo de 0 a 180 minutos.'})
+    const runtime=await runtimeFor(app,id);if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    const actor=access.identity(request)
+    try{return {review:app.publishedContinuity.review(runtime,body.data.maxLateMinutes,{userId:actor?.id??null,username:actor?.username??null})}}
+    catch(error){return reply.code(409).send({error:error instanceof Error?error.message:String(error)})}
+  })
+  server.post('/api/channels/:id/published-continuity',async(request,reply)=>{
+    if(!(await allowed(request,'PLAYLIST_PUBLISH')))return reply.code(403).send({error:'Seu papel não pode configurar continuidade.'})
+    const {id}=request.params as {id:string},body=z.object({action:z.enum(['ENABLE','DISABLE']),version:z.number().int().min(0),maxLateMinutes:z.number().int().min(0).max(180).optional(),reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional()}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Política de continuidade inválida.'})
+    const runtime=await runtimeFor(app,id);if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    const actor=access.identity(request),owner={userId:actor?.id??null,username:actor?.username??null}
+    const authorize=()=>{
+      if(access.required()&&!access.identity(request)||!can(access.role(request),'PLAYLIST_PUBLISH')||!access.channelAllowed(request,id)||(access.identity(request)?.id??null)!==owner.userId)throw new CollaborativeEditError(403,{error:'Sessão/permissão mudou; política não alterada.'})
+      if(app.publishedContinuity.status(id).version!==body.data.version)throw new CollaborativeEditError(409,{error:'A política mudou desde a leitura. Confira novamente.'})
+    }
+    return mutatePlaylist(runtime,reply,async()=>app.db.transaction(()=>{
+      authorize()
+      if(body.data.action==='ENABLE')return app.publishedContinuity.enable(runtime,body.data.maxLateMinutes??5,owner,body.data.reviewToken,authorize)
+      const status=app.publishedContinuity.suspend(id,owner.username,'Desligada explicitamente. TAKE já enviado não pode ser desfeito por esta opção.','DISABLED')
+      const ledger=new PlaylistBoundaryLedger(app.db,id)
+      for(const run of ledger.list().filter(run=>run.plan.owner.policy && ['QUEUED','PREPARING'].includes(run.state)))ledger.phase(run.id,[run.state],'CANCELLED',()=>true,{message:'Política recorrente desligada; intenção ainda não enviada cancelada.'},owner.username)
+      runtime.restoreBoundaryProtection();return status
+    },{behavior:'immediate'}))
+  })
+  server.get('/api/channels/:id/next-playlist',async(request,reply)=>{
+    const {id}=request.params as {id:string},runtime=await runtimeFor(app,id)
+    if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    const status=runtime.boundaryStatus()
+    const rows=await app.db.select({revision:operationalPlaylistRevisions}).from(operationalPlaylistRevisions)
+      .innerJoin(rundowns,eq(rundowns.id,operationalPlaylistRevisions.rundownId))
+      .where(and(eq(rundowns.channelId,id),eq(operationalPlaylistRevisions.active,true)))
+    const publicRun=(run:typeof status.current)=>run?{id:run.id,state:run.state,createdAt:run.createdAt,updatedAt:run.updatedAt,message:run.message?sanitizeDiagnostic(run.message):undefined,
+      plan:{sourceRevisionId:run.plan.sourceRevisionId,targetRevisionId:run.plan.targetRevisionId,sourceName:run.plan.sourceName,targetName:run.plan.targetName,targetDate:run.plan.targetDate,firstItemTitle:run.plan.firstItemTitle,notBeforeMs:run.plan.notBeforeMs}}:null
+    return {...status,channelId:id,current:publicRun(status.current),history:status.history.map(publicRun),canConfigure:await allowed(request,'PLAYLIST_PUBLISH'),
+      canReconcile:await allowed(request,'OUTPUT_CONTROL'),options:rows.filter(({revision})=>revision.id!==status.sourceRevisionId).map(({revision})=>{
+        const payload=readOperationalPayload(revision.payload)
+        return {revisionId:revision.id,revision:revision.revision,name:payload.rundown.name,date:payload.rundown.date}
+      })}
+  })
+  server.get('/api/channels/:id/next-playlist/review',async(request,reply)=>{
+    if(!(await allowed(request,'PLAYLIST_PUBLISH')))return reply.code(403).send({error:'Seu papel não pode autorizar a próxima playlist.'})
+    const {id}=request.params as {id:string},body=z.object({revisionId:z.string().min(1)}).safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Selecione a revisão publicada de destino.'})
+    const runtime=await runtimeFor(app,id)
+    if(!runtime?.operationalRevision)return reply.code(409).send({error:'Publique e carregue a grade de origem antes de conferir a passagem.'})
+    const identity=access.identity(request),owner={userId:identity?.id??null,username:identity?.username??null}
+    try {
+      const review=inspectBoundary(app.db,id,runtime.operationalRevision.id,body.data.revisionId,owner)
+      const {owner:_owner,...publicReview}=review
+      return {review:publicReview,nativeEngine:runtime.transport instanceof EngineTransport}
+    }catch(error){return reply.code(409).send({error:error instanceof Error?error.message:String(error)})}
+  })
+  server.post('/api/channels/:id/next-playlist',async(request,reply)=>{
+    const body=z.object({action:z.enum(['QUEUE','CANCEL','RECONCILE']),requestId:z.string().uuid(),sourceRevisionId:z.string().optional(),targetRevisionId:z.string().optional(),reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional()}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Pedido de passagem inválido.'})
+    const action=body.data.action==='RECONCILE'?'OUTPUT_CONTROL':'PLAYLIST_PUBLISH'
+    if(!(await allowed(request,action)))return reply.code(403).send({error:'Seu papel não pode configurar/reconhecer esta passagem.'})
+    const {id}=request.params as {id:string},runtime=await runtimeFor(app,id)
+    if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    const identity=access.identity(request),owner={userId:identity?.id??null,username:identity?.username??null}
+    const authorize=()=>{
+      const fresh=access.identity(request)
+      if(access.required()&&!fresh || !can(access.role(request),action) || !access.channelAllowed(request,id) || (fresh?.id??null)!==owner.userId)throw new CollaborativeEditError(403,{error:'A sessão/permissão mudou. Nenhuma passagem foi autorizada.'})
+    }
+    try {
+      if(body.data.action==='QUEUE') {
+        if(!body.data.sourceRevisionId || !body.data.targetRevisionId || runtime.operationalRevision?.id!==body.data.sourceRevisionId)throw new Error('A grade/revisão em execução mudou. Confira a passagem novamente.')
+        const plan=inspectBoundary(app.db,id,body.data.sourceRevisionId,body.data.targetRevisionId,owner)
+        const run=await runtime.queuePlaylistBoundary(body.data.requestId,plan,body.data.reviewToken,authorize)
+        return {id:run.id,state:run.state,nativeProgramConfirmed:false,physicalOutputValidated:false}
+      }
+      if(body.data.action==='CANCEL') {
+        const ledger=new PlaylistBoundaryLedger(app.db,id)
+        const run=app.db.transaction(()=>{
+          const cancelled=ledger.phase(body.data.requestId,['QUEUED','PREPARING','FAILED'],'CANCELLED',()=>{authorize();return true},{message:'Cancelada explicitamente pelo operador.'},owner.username)
+          app.publishedContinuity.suspend(id,owner.username,'Passagem cancelada pelo operador; continuidade recorrente suspensa.')
+          return cancelled
+        },{behavior:'immediate'})
+        runtime.restoreBoundaryProtection()
+        return {id:run.id,state:run.state,nativeProgramConfirmed:false}
+      }
+      return mutatePlaylist(runtime,reply,async()=>{
+        authorize();runtime.reconcilePlaylistBoundary(body.data.requestId,owner.username)
+        return {id:body.data.requestId,state:'CANCELLED',replayed:false}
+      })
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:String(error)})}
   })
   server.get('/api/channels/:id/timeline', async (request, reply) => {
     const { id } = request.params as { id: string }
     const runtime = await runtimeFor(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Canal sem grade carregada.' })
-    const now = framesSinceMidnight(new Date(), runtime.channel.rate)
+    const now = rundownFrames(runtime.view.rundown.date, runtime.channel.rate) ?? 0
     return {
       channelId: id,
       rate: runtime.channel.rate,
@@ -575,18 +1139,20 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
-  server.get('/api/state', async () => {
-    const channels = await listChannels(app.db)
-    const rundowns = await listRundowns(app.db)
+  server.get('/api/state', async (request) => {
+    const channels = (await listChannels(app.db)).filter(channel => access.channelAllowed(request, channel.id))
+    const activeIds=new Set(channels.map(channel=>channel.id))
+    const rundowns = (await listRundowns(app.db)).filter(rundown => activeIds.has(rundown.channelId))
     return { channels, rundowns }
   })
 
   const channelSchema = z.object({
     name: z.string().min(1),
+    audioChannels:z.union([z.literal(2),z.literal(8),z.literal(16)]).optional(),
     width: z.number().int().min(160).max(7680).optional(),
     height: z.number().int().min(120).max(4320).optional(),
-    rateNum: z.number().int().min(1).optional(),
-    rateDen: z.number().int().min(1).optional(),
+    rateNum: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+    rateDen: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
     scan: z.enum(['PROGRESSIVE', 'INTERLACED']).optional(),
     fieldOrder: z.enum(['TFF', 'BFF']).optional(),
   })
@@ -613,6 +1179,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       targetLufs: reference?.targetLufs ?? -23,
       ceilingDbtp: reference?.ceilingDbtp ?? -1,
       limiterLookaheadMs: reference?.limiterLookaheadMs ?? 5,
+      audioChannels:body.data.audioChannels??reference?.audioChannels??2,
       programSdiDeviceId: null,
       slateTemplateId: null,
       createdAt: new Date().toISOString(),
@@ -627,7 +1194,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       name: `Grade — ${body.data.name}`,
       plannedStart: framesSinceMidnight(new Date(), rate),
       loop: true,
-      date: new Date().toISOString().slice(0, 10),
+      date: localDate(new Date()),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     })
@@ -641,15 +1208,25 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   const channelPatch = z.object({
+    audioChannels:z.union([z.literal(2),z.literal(8),z.literal(16)]).optional(),
+    expectedAudioChannels:z.union([z.literal(2),z.literal(8),z.literal(16)]).optional(),
     name: z.string().min(1).optional(),
     width: z.number().int().min(160).max(7680).optional(),
     height: z.number().int().min(120).max(4320).optional(),
-    rateNum: z.number().int().min(1).optional(),
-    rateDen: z.number().int().min(1).optional(),
+    rateNum: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+    rateDen: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
     scan: z.enum(['PROGRESSIVE', 'INTERLACED']).optional(),
     fieldOrder: z.enum(['TFF', 'BFF']).optional(),
     targetLufs: z.number().min(-40).max(0).optional(),
     ceilingDbtp: z.number().min(-20).max(0).optional(),
+  }).strict()
+
+  server.get('/api/channels/:id/configuration',async(request,reply)=>{
+    const {id}=request.params as {id:string},channel=await getChannel(app.db,id)
+    if(!channel)return reply.code(404).send({error:'Canal ativo não encontrado.'})
+    reply.header('ETag',channelConfigurationETag(id,channel.configurationRevision!))
+    reply.header('Cache-Control','private, no-store')
+    return {channel}
   })
 
   /**
@@ -665,42 +1242,90 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode configurar canais.' })
     const body = channelPatch.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    if(!Object.keys(body.data).some(key=>key!=='expectedAudioChannels'))return reply.code(400).send({error:'Selecione ao menos uma configuração para alterar.'})
 
-    const current = await getChannel(app.db, id)
-    if (!current) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    if (!(await getChannel(app.db, id))) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    return configureChannel(id, reply, async () => {
+      const changed=app.db.transaction(tx=>{
+      assertConfigurationAccess(request,id)
+      const row=tx.select().from(channels).where(eq(channels.id,id)).get()
+      if(!row || row.archivedAt)throw new CollaborativeEditError(404,{error:'Canal ativo não encontrado.'})
+      const revisionBefore=requireChannelConfiguration(tx,id,request.headers['if-match'])
+      const current=toChannel(row)
+      const audioChanged=body.data.audioChannels!==undefined && body.data.audioChannels!==(current.audioChannels??2)
+      if(body.data.audioChannels!==undefined){
+        if(body.data.expectedAudioChannels===undefined)throw new CollaborativeEditError(428,{error:'Confira o barramento atual antes de alterar os canais de áudio.'})
+        if(body.data.expectedAudioChannels!==(current.audioChannels??2))throw new CollaborativeEditError(409,{error:'O barramento mudou desde a abertura. Reabra a configuração; nenhum canal foi alterado.'})
+      }
+      if(audioChanged){
+        const state=app.runtimes.get(id)?.transport.state()
+        if(state?.onAir || state?.preview || state?.playing)throw new CollaborativeEditError(409,{error:'Pare o PGM e limpe o CUE antes de mudar o barramento de áudio. Revise e publique novamente as grades após a mudança.'})
+      }
+      const rateChanged = BigInt(body.data.rateNum ?? current.rate.num) * BigInt(current.rate.den) !==
+        BigInt(current.rate.num) * BigInt(body.data.rateDen ?? current.rate.den)
+      if (rateChanged) {
+        throw new CollaborativeEditError(409,{error:'Cortes, durações e horários são armazenados em quadros. Simule e confirme a conversão de cadência antes de alterar o FPS; revise e publique a grade convertida.'})
+      }
+      const antes = {
+        width: current.width, height: current.height,
+        rateNum: current.rate.num, rateDen: current.rate.den,
+        scan: current.scan, fieldOrder: current.fieldOrder,
+        audioChannels:current.audioChannels??2,
+      }
+      const formatChanged = Object.entries(antes).some(
+        ([field, valor]) => body.data[field as keyof typeof antes] !== undefined && body.data[field as keyof typeof antes] !== valor,
+      )
 
-    await app.db.update(channels).set(body.data).where(eq(channels.id, id))
+      const {expectedAudioChannels,...patch}=body.data
+        if(audioChanged)assertChannelAudioChange(tx,id,patch.audioChannels!)
+        tx.update(channels).set(patch).where(eq(channels.id,id)).run()
+        if(audioChanged){
+          const gradeIds=tx.select({id:rundowns.id}).from(rundowns).where(eq(rundowns.channelId,id)).all().map(row=>row.id)
+          tx.update(rundowns).set({publicationRequired:true}).where(eq(rundowns.channelId,id)).run()
+          for(let offset=0;offset<gradeIds.length;offset+=400)tx.update(operationalPlaylistRevisions).set({active:false,state:'SUPERSEDED'}).where(inArray(operationalPlaylistRevisions.rundownId,gradeIds.slice(offset,offset+400))).run()
+        }
+        tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@configuration',kind:'CHANNEL_CONFIGURATION_CHANGED',payload:{channelId:id,fields:Object.keys(patch),before:Object.fromEntries(Object.keys(patch).map(key=>[key,row[key as keyof typeof row]])),after:patch,revisionBefore,revisionAfter:configurationRevision(tx,id),formatChanged,recovery:'REQUEST_AFTER_CONTROLLED_RESTART'},actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString()}).run()
+        return {formatChanged,nameChanged:patch.name!==undefined&&patch.name!==current.name}
+      },{behavior:'immediate'})
+      let recovery:{controlledInterruption:boolean;recoveryRequested:boolean;recoveryError:string|null}
+      try{recovery=await rebuildChannel(id,changed.nameChanged?()=>syncDistribution(app):undefined)}
+      catch(error){onChange();return {ok:true,applied:true,formatChanged:changed.formatChanged,engineError:sanitizeDiagnostic(error instanceof Error?error.message:'Engine não reconstruído. Confira o diagnóstico antes de operar.'),configurationRevision:configurationRevision(app.db,id)}}
+      onChange()
+      return { ok: true, applied:true,restarted: recovery.controlledInterruption,formatChanged:changed.formatChanged,engineError:recovery.recoveryError,configurationRevision:configurationRevision(app.db,id),...recovery }
+    })
+  })
 
-    // Formato mudou: o engine tem de nascer de novo. Trocar só o registro
-    // deixaria o banco dizendo uma coisa e o ar fazendo outra.
-    const antes = {
-      width: current.width,
-      height: current.height,
-      rateNum: current.rate.num,
-      rateDen: current.rate.den,
-      scan: current.scan,
-      fieldOrder: current.fieldOrder,
-    }
-    const formatChanged = Object.entries(antes).some(
-      ([field, valor]) =>
-        body.data[field as keyof typeof antes] !== undefined &&
-        body.data[field as keyof typeof antes] !== valor,
-    )
-
-    const previous = app.runtimes.get(id)
-    const rundownId = previous?.view?.rundown.id ?? null
-    if (previous) {
-      previous.transport.close()
-      app.runtimes.delete(id)
-    }
-
-    // Nome mudou, caminho no servidor de mídia muda junto.
-    if (body.data.name && body.data.name !== current.name) await syncDistribution(app)
-
-    const runtime = await runtimeFor(app, id)
-    if (runtime && rundownId) await runtime.load(rundownId)
-    onChange()
-    return { ok: true, restarted: previous !== undefined, formatChanged }
+  const cadenceRequest=z.object({rateNum:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),rateDen:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    format:channelPatch.omit({rateNum:true,rateDen:true,audioChannels:true,expectedAudioChannels:true}).strict().optional()})
+  server.post('/api/channels/:id/cadence-preview',async(request,reply)=>{
+    if(!(await allowed(request,'OUTPUT_CONTROL')))return reply.code(403).send({error:'Conversão de cadência exige Supervisor ou Administrador.'})
+    const {id}=request.params as {id:string},body=cadenceRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Formato/cadência inválidos.'})
+    try{return {report:previewCadenceConversion(app.db,id,{num:body.data.rateNum,den:body.data.rateDen},body.data.format,tx=>{assertConfigurationAccess(request,id);requireChannelConfiguration(tx,id,request.headers['if-match'])}),applied:false}}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Conversão não simulada.'})}
+  })
+  server.post('/api/channels/:id/cadence-convert',async(request,reply)=>{
+    if(!(await allowed(request,'OUTPUT_CONTROL')))return reply.code(403).send({error:'Conversão de cadência exige Supervisor ou Administrador.'})
+    const {id}=request.params as {id:string},body=cadenceRequest.extend({fingerprint:z.string().regex(/^[a-f0-9]{64}$/),confirm:z.literal(true)}).safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Simule e confirme explicitamente a conversão antes de aplicar.'})
+    return configureChannel(id,reply,async()=>{
+      const previous=app.runtimes.get(id),state=previous?.transport.state()
+      if(state?.onAir || state?.preview || state?.playing)return reply.code(409).send({error:'Pare o PGM e limpe o CUE antes de converter a cadência.'})
+      const actor=await usernameOf(request)
+      const freshState=previous?.transport.state()
+      if(freshState?.onAir || freshState?.preview || freshState?.playing)return reply.code(409).send({error:'O estado mudou durante a confirmação. Pare o PGM e limpe o CUE antes de converter.'})
+      let converted
+      try{converted=applyCadenceConversion(app.db,id,{num:body.data.rateNum,den:body.data.rateDen},body.data.fingerprint,actor,body.data.format,tx=>{assertConfigurationAccess(request,id);requireChannelConfiguration(tx,id,request.headers['if-match'])})}
+      catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Conversão recusada; nenhum dado alterado.'})}
+      for(const rundownId of converted.rundownIds){
+        app.history.forget(rundownId)
+      }
+      let engineError:string|null=null
+      try{await rebuildChannel(id,()=>syncDistribution(app),true)}
+      catch(error){engineError=sanitizeDiagnostic(error instanceof Error?error.message:'Engine não reconstruído; confira o diagnóstico antes de operar.')}
+      onChange()
+      return {ok:true,applied:true,...converted,engineError,automaticTake:false,controlledInterruption:Boolean(previous)}
+    })
   })
 
   /**
@@ -722,13 +1347,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return { rundowns: channelRundowns, rundown: null, view: null }
     }
 
-    const [items, assets] = await Promise.all([
-      listItems(app.db, matched.id),
-      assetMap(app.db),
-    ])
-
-    const view = buildView(matched, channel, items, assets, null, null)
-    return { rundowns: channelRundowns, rundown: matched, view }
+    const state=readEditorialState(app.db,matched.id)
+    if(!state || state.channel.id!==id)return reply.code(404).send({error:'Grade ativa não encontrada.'})
+    return { rundowns: channelRundowns, rundown: state.rundown, view:editorialView(state) }
   })
 
   /**
@@ -745,65 +1366,25 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     const body = z
       .object({
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => rundownMidnight(value) !== null, 'Data de calendário inválida.'),
         name: z.string().min(1).optional(),
         copyFromRundownId: z.string().optional(),
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
-    const newRundownId = randomUUID()
-    const nowIso = new Date().toISOString()
     const rundownName = body.data.name ?? `Grade — ${channel.name} — ${body.data.date}`
-
-    await app.db.insert(rundowns).values({
-      id: newRundownId,
-      channelId: id,
-      name: rundownName,
-      plannedStart: 0,
-      loop: true,
-      date: body.data.date,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    })
-
-    if (body.data.copyFromRundownId) {
-      const sourceItems = await listItems(app.db, body.data.copyFromRundownId)
-      for (const item of sourceItems) {
-        await app.db.insert(rundownItems).values({
-          id: randomUUID(),
-          rundownId: newRundownId,
-          sortOrder: item.order,
-          type: item.type,
-          title: item.title,
-          mediaId: item.mediaId,
-          sourceRef: item.sourceRef,
-          trim: item.trim,
-          audio: item.audio,
-          durationOverride: item.durationOverride,
-          minDuration: item.minDuration,
-          anchor: item.anchor,
-          onOverrun: item.onOverrun,
-          elastic: item.elastic,
-          blockId: item.blockId,
-          fit: item.fit,
-          audioTrack: item.audioTrack,
-          locked: item.locked,
-          autoNext: item.autoNext,
-          loop: item.loop,
-          notes: item.notes,
-        })
-      }
+    let newRundownId:string
+    try {
+      newRundownId=createEditorialRundown(app.db,{channelId:id,date:body.data.date,name:rundownName,copyFromRundownId:body.data.copyFromRundownId})
+    } catch(error) {
+      if(error instanceof EditorialRundownError)return reply.code(404).send({error:error.message})
+      throw error
     }
 
-    const created = await getRundown(app.db, newRundownId)
-    const [items, assets] = await Promise.all([
-      listItems(app.db, newRundownId),
-      assetMap(app.db),
-    ])
-    const view = buildView(created!, channel, items, assets, null, null)
+    const state=readEditorialState(app.db,newRundownId)!
     onChange()
-    return { rundown: created, view }
+    return { rundown: state.rundown, view:editorialView(state) }
   })
 
   /**
@@ -820,8 +1401,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     const runtime = await runtimeFor(app, id)
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
-
-    const loadedView = await runtime.load(body.data.rundownId)
+    const target = await getRundown(app.db, body.data.rundownId)
+    if (!target || target.channelId !== id) return reply.code(404).send({ error: 'Grade não encontrada neste canal.' })
+    let loadedView
+    try { loadedView = await runtime.activateRundown(body.data.rundownId) }
+    catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'A grade não pôde ser ativada.' }) }
     if (!loadedView) return reply.code(404).send({ error: 'Grade não encontrada.' })
 
     onChange()
@@ -834,10 +1418,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * Explorador de arquivos. A árvore sai do próprio caminho do arquivo, então
    * a organização em disco é a organização que o operador vê.
    */
-  server.get('/api/library', async () => {
+  server.get('/api/library', async (request) => {
     // Playout trabalha com vídeo; imagens e áudios podem continuar registrados
     // para não quebrar referências antigas, mas não entram no explorador.
-    const assets = (await listAssets(app.db)).filter((asset) => asset.kind === 'VIDEO')
+    const channelId = (request.query as { channelId?: string }).channelId
+    const assets = app.db.transaction(tx=>{
+      const raw=new Map(tx.select().from(mediaAssets).all().map(row=>[row.id,toAsset(row)]))
+      return [...(channelId?applyQcDecisionsNow(tx,raw,channelId):raw).values()].filter(asset=>asset.kind==='VIDEO').map(asset=>({...asset,qcRevision:qcRevision(tx,asset.id)}))
+    })
     const roots = await Roots.listRoots(app.db, app.mediaRoot)
 
     // A pasta é o caminho inteiro de dentro da raiz, não o último pedaço dele.
@@ -847,7 +1435,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     // toda a estrutura de subpastas sumia. Do lado de fora isso aparece como
     // "a pasta não está sendo lida por completo" -- os arquivos estão no
     // acervo, mas não onde o operador sabe procurar.
-    const grupos = new Map<string, { rootId: string; rel: string; assets: MediaAsset[] }>()
+    const grupos = new Map<string, { rootId: string; rel: string; assets: Array<MediaAsset&{qcRevision:number}> }>()
     for (const asset of assets) {
       const caminho = asset.path.replace(/\\/g, '/')
       const root = roots.find((entry) => Roots.contem(entry.path, asset.path))
@@ -946,18 +1534,29 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const { id } = request.params as { id: string }
     const assets = await listAssets(app.db)
     const asset = assets.find((candidate) => candidate.id === id)
-    if (!asset || !existsSync(asset.path)) {
+    if (!asset) {
       return reply.code(404).send({ error: 'Arquivo não encontrado.' })
     }
+    const query=request.query as {preview?:string;hash?:string;quality?:string}
+    const preview = query.preview === '1'
+    const quality=query.quality==='original'
+    if(quality && preview)return reply.code(400).send({error:'Escolha preview leve ou inspeção do original, não ambos.'})
+    if(quality && !query.hash)return reply.code(428).send({error:'Informe a versão conferida para inspecionar em qualidade.'})
+    if(query.hash!==undefined && query.hash!==asset.contentHash)return reply.code(409).send({error:'A versão desta mídia mudou. Atualize a seleção; nenhum vídeo original foi enviado.'})
+    if(quality)reply.header('cache-control','private, no-store').header('x-rplayout-rendition','original')
+    const path = quality ? await app.mediaWorkflow.inspectionOriginal(asset.id,asset.contentHash,asset.path)
+      : preview && asset.kind === 'VIDEO' ? await app.mediaWorkflow.preview(asset.id, asset.contentHash) : asset.path
+    if(quality && !path)return reply.code(409).send({error:'Conteúdo do original não corresponde à versão conferida ou está indisponível. Reescaneie e selecione a edição correta antes de aprovar.'})
+    if (!path || !existsSync(path)) return reply.code(preview ? 425 : 404).send({ error: preview ? 'Proxy leve ainda não disponível. Consulte a fila de mídia ou use a régua de quadros.' : 'Arquivo não encontrado.' })
 
-    const tamanho = statSync(asset.path).size
-    const tipo = MIME[extname(asset.path).toLowerCase()] ?? 'application/octet-stream'
+    const tamanho = statSync(path).size
+    const tipo = MIME[extname(path).toLowerCase()] ?? 'application/octet-stream'
     const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? '')
 
     reply.header('accept-ranges', 'bytes').type(tipo)
 
     if (!range) {
-      return reply.header('content-length', tamanho).send(createReadStream(asset.path))
+      return reply.header('content-length', tamanho).send(createReadStream(path))
     }
 
     const inicio = range[1] === '' ? 0 : Number(range[1])
@@ -970,7 +1569,26 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .code(206)
       .header('content-range', `bytes ${inicio}-${fim}/${tamanho}`)
       .header('content-length', fim - inicio + 1)
-      .send(createReadStream(asset.path, { start: inicio, end: fim }))
+      .send(createReadStream(path, { start: inicio, end: fim }))
+  })
+
+  server.get('/api/assets/:id/workflow', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const asset = (await listAssets(app.db)).find(candidate => candidate.id === id)
+    if (!asset) return reply.code(404).send({ error: 'Mídia não encontrada.' })
+    const expectedHash=(request.query as {hash?:string}).hash
+    if(expectedHash!==undefined && expectedHash!==asset.contentHash)return reply.code(409).send({error:'A versão desta mídia mudou. Atualize a seleção antes de conferir o preview.'})
+    const preview = await app.mediaWorkflow.preview(id, asset.contentHash)
+    return { versions: app.mediaWorkflow.versions(id), previewReady: Boolean(preview), previewUrl: preview ? `/api/assets/${encodeURIComponent(id)}/media?preview=1&hash=${encodeURIComponent(asset.contentHash)}` : null }
+  })
+  server.get('/api/media/jobs', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar fila de mídia.' })
+    return { jobs: app.mediaWorkflow.jobs(), batches: app.sqlite.prepare('SELECT id,roots,state,error,created_at,updated_at FROM ingest_batches ORDER BY created_at DESC LIMIT 100').all() }
+  })
+  server.post('/api/media/jobs/:id/retry', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Sem permissão para reexecutar análise de mídia.' })
+    const { id } = request.params as { id: string }
+    return app.mediaWorkflow.retry(id) ? { ok: true } : reply.code(409).send({ error: 'Somente trabalhos com falha podem ser reexecutados.' })
   })
 
   /**
@@ -989,7 +1607,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.get('/api/assets/:id/frame/:pos.jpg', async (request, reply) => {
     const { id, pos } = request.params as { id: string; pos: string }
-    const { total } = request.query as { total?: string }
+    const { total,quality,hash } = request.query as { total?: string;quality?:string;hash?:string }
 
     const quantos = Math.min(Math.max(Number(total ?? '12') | 0, 1), 64)
     const indice = Math.min(Math.max(Number(pos) | 0, 0), quantos - 1)
@@ -998,16 +1616,24 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const asset = assets.find((candidate) => candidate.id === id)
     if (!asset) return reply.code(404).send({ error: 'Arquivo não encontrado.' })
 
+    const highQuality=quality==='original'
+    if(highQuality && !hash)return reply.code(428).send({error:'Informe a versão conferida para inspecionar quadros em qualidade.'})
+    if(hash!==undefined && hash!==asset.contentHash)return reply.code(409).send({error:'A mídia mudou. Atualize a seleção antes de inspecionar os quadros.'})
+
     // Quantas fatias diz para que serve o pedido: a fita embaixo da régua é
     // grosseira e cada quadro dela ocupa uns quarenta pixels na tela, enquanto
     // a divisão fina é a que alimenta a tela de conferência -- essa precisa dar
     // para ver onde cortar.
-    const largura = quantos > 24 ? 640 : 320
-    const prefixo = resolvePath(app.thumbnailDir, `${asset.contentHash}-${quantos}`)
+    const largura = highQuality ? (Math.max(64,Math.min(asset.probe?.width??1920,3840)) & ~1) : quantos > 24 ? 640 : 320
+    const prefixo = resolvePath(app.thumbnailDir, `${asset.contentHash}-${quantos}${highQuality?`-qc-${largura}`:''}`)
     const destino = `${prefixo}-${indice}.jpg`
 
+    const inspectionPath=highQuality?await app.mediaWorkflow.inspectionOriginal(asset.id,asset.contentHash,asset.path):asset.path
+    if(highQuality&&!inspectionPath)return reply.code(409).send({error:'Original não corresponde à edição selecionada ou está indisponível. Reescaneie antes de aprovar.'})
+
     if (!existsSync(destino)) {
-      if ((await app.ingest.strip(asset.path, quantos, prefixo, largura)) === 0) {
+      if ((await app.ingest.strip(inspectionPath!, quantos, prefixo, largura)) === 0) {
+        if(highQuality)return reply.code(425).send({error:'Não foi possível extrair quadros em qualidade. Nenhuma miniatura foi anunciada como inspeção em qualidade.'})
         // Sem quadro, a régua usa a miniatura de sempre: ela fica pobre, e não
         // quebrada.
         return reply.redirect(`/api/assets/${asset.id}/thumbnail.svg`)
@@ -1015,13 +1641,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       // A sonda pode ter parado no meio -- arquivo sem índice não busca até o
       // fim. As fatias que saíram servem; as que faltam caem na miniatura.
       if (!existsSync(destino)) {
+        if(highQuality)return reply.code(425).send({error:'Quadro em qualidade indisponível; tente outro ponto ou confira a análise do arquivo.'})
         return reply.redirect(`/api/assets/${asset.id}/thumbnail.svg`)
       }
     }
 
     return reply
       .type('image/jpeg')
-      .header('cache-control', 'public, max-age=604800, immutable')
+      .header('cache-control', 'private, max-age=604800, immutable')
+      .header('x-rplayout-rendition',highQuality?`qc-jpeg-${largura}`:'thumbnail')
       .send(createReadStream(destino))
   })
 
@@ -1050,7 +1678,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     // A do dia é a que tem a data de hoje. Não havendo, não há lista do dia:
     // adivinhar "a mais recente" poria a programação de ontem no ar hoje.
-    const hoje = new Date().toISOString().slice(0, 10)
+    const hoje = localDate(new Date())
     return {
       playlists: listas.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt)),
       today: Playlists.playlistOfDay(listas, hoje)?.path ?? null,
@@ -1079,6 +1707,159 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .where(eq(playlistVersions.rundownId, id))
       .orderBy(asc(playlistVersions.publishedAt))
     return { versions: versions.reverse() }
+  })
+
+  /**
+   * Revisões operacionais são fotografias imutáveis da grade e do timing.
+   * Editar o rundown depois disto não reescreve a revisão que foi aprovada.
+   */
+  server.get('/api/rundowns/:id/operational-playlists', async (request) => {
+    const { id } = request.params as { id: string }
+    return { revisions: await listOperationalPlaylists(app.db, id) }
+  })
+
+  server.put('/api/rundowns/:id/protected-zones', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar zonas protegidas.' })
+    const { id } = request.params as { id: string }
+    const body = z.object({ expectedZones: z.array(z.unknown()).max(100).optional(), zones: z.array(z.object({ id: z.string().min(1).max(80), label: z.string().trim().min(1).max(120), from: z.number().int().min(0), to: z.number().int().positive(), priority: z.union([z.literal(1),z.literal(2),z.literal(3),z.literal(4),z.literal(5)]) }).refine(zone => zone.to > zone.from, { message: 'Fim deve ser depois do início.' })).max(100) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe zonas válidas, com nome, início/fim em frames e prioridade 1–5.' })
+    if (new Set(body.data.zones.map(zone => zone.id)).size !== body.data.zones.length) return reply.code(400).send({ error: 'As zonas precisam de identificadores distintos.' })
+    const actor = await usernameOf(request)
+    const conflictMessage = 'Outro operador alterou as zonas. Reabra a configuração e confira as regras atuais antes de salvar.'
+    try {
+      mutateEditorial(app.db,app.concurrency,id,request.headers['if-match'],(tx,state) => {
+        assertEditorialAccess(request,state.channel.id)
+        auditChannels.set(request,[state.channel.id])
+        const horizon=Math.ceil(48*3600*state.channel.rate.num/state.channel.rate.den)
+        if(body.data.zones.some(zone=>zone.to>horizon))throw new CollaborativeEditError(400,{error:'As zonas devem ficar dentro das 48 horas da grade; para cruzar meia-noite, use horário acima de 24h.'})
+        const current=tx.select().from(rundowns).where(eq(rundowns.id,id)).get()
+        if (!current || (body.data.expectedZones !== undefined && JSON.stringify(current.protectedZones ?? []) !== JSON.stringify(body.data.expectedZones))) throw new CollaborativeEditError(409,{error:conflictMessage})
+        const remember=app.history.prepareCapture(tx,id,'zonas protegidas',{protectedZones:true})
+        tx.update(rundowns).set({ protectedZones: body.data.zones, updatedAt: new Date().toISOString() }).where(eq(rundowns.id,id)).run()
+        tx.insert(operatorDecisions).values({ id:randomUUID(), rundownId:id, itemId:null, kind:'PROTECTED_ZONES_EDITED', payload:{ previous:current.protectedZones ?? [], next:body.data.zones }, actorUsername:actor, createdAt:new Date().toISOString() }).run()
+        return {value:true,remember}
+      })
+    } catch(error) {return automationError(reply,error)}
+    const owner=await getRundown(app.db,id)
+    await (owner&&app.runtimes.get(owner.channelId))?.refresh()
+    onChange()
+    return { ...await editorialSnapshot(app,id), zones: body.data.zones, publicationRequired: true }
+  })
+
+  server.get('/api/rundowns/:id/operational-playlist', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const active = await activeOperationalPlaylist(app.db, id)
+    if (!active) return reply.code(404).send({ error: 'Nenhuma playlist operacional foi publicada para esta grade.' })
+    return active
+  })
+
+  server.post('/api/rundowns/:id/operational-publish', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_PUBLISH'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode publicar a playlist operacional.' })
+    }
+    const body=z.object({reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional()}).safeParse(request.body??{})
+    if(!body.success)return reply.code(400).send({error:'Conferência de publicação inválida.'})
+    const target = await getRundown(app.db, id)
+    if (!target) return reply.code(404).send({ error: 'Grade não encontrada.' })
+    const runtime = await runtimeFor(app, target.channelId)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    return mutatePlaylist(runtime, reply, async () => {
+    const actor = await usernameOf(request)
+    const isLoaded = runtime.view?.rundown.id === id
+    const onAirId = isLoaded ? runtime.transport.state().onAir?.itemId : null
+    let revision
+    try {
+      // The first publication must protect a legacy execution too. Subsequent
+      // publications use the persisted snapshot inside the domain service.
+      revision = await publishOperationalPlaylist(app.db, runtime.channel, id, actor, onAirId ?? null,(review,payload)=>{
+        authorizePublication(request,review);requireOperationalReview(review,body.data.reviewToken)
+        if(onAirId && !runtime.operationalRevision && runtime.executionView)assertOnAirMediaUnchanged({rate:runtime.channel.rate,items:runtime.executionView.items.map(entry=>entry.item),assets:runtime.executionView.items.flatMap(entry=>entry.asset?[entry.asset]:[])},payload,onAirId)
+      })
+    }
+    catch (error) { if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
+    if (isLoaded) await runtime.refresh()
+    const payload = readOperationalPayload(revision.payload)
+    onChange()
+    void emitIntegrationEvent(app.db, 'operational-playlist.published', {
+      rundownId: id,
+      revision: revision.revision,
+      conflicts: payload.schedule.conflicts.length,
+    }, runtime.channel.id)
+    return reply.code(201).send({
+      id: revision.id,
+      revision: revision.revision,
+      publishedAt: revision.publishedAt,
+      conflicts: payload.schedule.conflicts,
+    })
+    }, () => runtime.view?.rundown.id === id)
+  })
+
+  server.get('/api/rundowns/:id/operational-simulation', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    // A planning/read operation must never replace the channel's execution.
+    let inspection
+    try{inspection=inspectOperationalPlaylist(app.db,id)}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Não foi possível conferir a grade.'})}
+    const {payload:simulated,active,review}=inspection
+    return { simulated,review, activeRevision: active?.revision ?? null,
+      differences: { ...diffOperationalItems(active ? readOperationalPayload(active.payload).items : [], simulated.items), graphicsChanged: diffOperationalGraphics(active ? readOperationalPayload(active.payload) : null, simulated), timingPolicyChanged: JSON.stringify(active ? readOperationalPayload(active.payload).rundown.protectedZones ?? [] : []) !== JSON.stringify(simulated.rundown.protectedZones ?? []) } }
+  })
+
+  server.get('/api/rundowns/:id/operational-rollback-review',async(request,reply)=>{
+    const {id}=request.params as {id:string},query=z.object({revisionId:z.string().min(1)}).safeParse(request.query)
+    if(!query.success)return reply.code(400).send({error:'Informe a revisão a conferir.'})
+    try{return app.db.transaction(()=>{
+      const inspected=inspectOperationalRollback(app.db,id,query.data.revisionId)
+      authorizePublication(request,inspected.review)
+      const {payload:simulated,active,review,source}=inspected
+      return {review,sourceRevision:source.revision,simulated,activeRevision:active?.revision??null,differences:{...diffOperationalItems(active?readOperationalPayload(active.payload).items:[],simulated.items),graphicsChanged:diffOperationalGraphics(active?readOperationalPayload(active.payload):null,simulated),timingPolicyChanged:JSON.stringify(active?readOperationalPayload(active.payload).rundown.protectedZones??[]:[])!==JSON.stringify(simulated.rundown.protectedZones??[])}}
+    })}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Conferência de rollback recusada.'})}
+  })
+
+  server.post('/api/channels/:id/live-duration', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode ajustar a duração ao vivo.' })
+    const { id } = request.params as { id: string }
+    const body = z.object({ deltaSeconds: z.number().int().min(-600).max(600).refine(value => value !== 0) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe ajuste em segundos entre -600 e +600, diferente de zero.' })
+    const runtime = await runtimeFor(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    return mutatePlaylist(runtime, reply, async () => {
+    const onAir = runtime.transport.state().onAir
+    if (!runtime.executionView || !onAir) return reply.code(409).send({ error: 'Não há live no ar para ajustar.' })
+    try {
+      const actor = await usernameOf(request), rundownId = runtime.executionView.rundown.id
+      if (runtime.transport.state().onAir?.itemId !== onAir.itemId || runtime.executionView.rundown.id !== rundownId) throw new Error('O PGM mudou durante o ajuste. Confira o item no ar e tente novamente.')
+      const revision = adjustPublishedLiveDuration(app.db, runtime.channel, rundownId, onAir.itemId, secondsToFrames(body.data.deltaSeconds, runtime.channel.rate), Math.floor(onAir.elapsed), actor)
+      await runtime.refresh()
+      await logDecision(app, rundownId, onAir.itemId, 'LIVE_DURATION_ADJUSTED', { revision: revision.revision, operation: readOperationalPayload(revision.payload).operation }, actor)
+      runtime.checkpoint(true); onChange()
+      return { ...snapshot(app, runtime), revision: revision.revision }
+    } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Ajuste recusado.' }) }
+    })
+  })
+
+  server.post('/api/rundowns/:id/operational-rollback', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'PLAYLIST_PUBLISH'))) return reply.code(403).send({ error: 'Seu papel não pode ativar revisões operacionais.' })
+    const body = z.object({ revisionId: z.string().min(1),reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional() }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe a revisão a restaurar.' })
+    const target = await getRundown(app.db, id)
+    if (!target) return reply.code(404).send({ error: 'Grade não encontrada.' })
+    const runtime = await runtimeFor(app, target.channelId)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    return mutatePlaylist(runtime, reply, async () => {
+    try {
+      const actor = await usernameOf(request)
+      const isLoaded = runtime.executionView?.rundown.id === id
+      const revision = await rollbackOperationalPlaylist(app.db, id, body.data.revisionId, actor, isLoaded ? runtime.transport.state().onAir?.itemId ?? null : null,(review)=>{authorizePublication(request,review);requireOperationalReview(review,body.data.reviewToken)})
+      if (isLoaded) await runtime.refresh()
+      onChange()
+      return { ...snapshot(app, runtime), revision: revision.revision }
+    } catch (error) {
+      if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload)
+      return reply.code(409).send({ error: error instanceof Error ? error.message : 'Rollback recusado.' })
+    }
+    }, () => runtime.executionView?.rundown.id === id)
   })
 
   /**
@@ -1130,8 +1911,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Diga qual lista.' })
-    if (!(await allowed(request, body.data.replace ? 'PLAYLIST_PUBLISH' : 'PLAYLIST_EDIT'))) {
-      return reply.code(403).send({ error: 'Seu papel não pode publicar esta playlist.' })
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
+      return reply.code(403).send({ error: 'Seu papel não pode importar para a grade editorial.' })
     }
     // Ou o caminho de uma lista que mora numa pasta do acervo, ou o conteúdo
     // de uma que foi arrastada para a janela -- o navegador não entrega o
@@ -1147,28 +1928,38 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForRundown(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Grade não encontrada.' })
 
-    const assets = await listAssets(app.db)
+    const assets = [...(await applyQcDecisions(app.db, await assetMap(app.db), runtime.channel.id)).values()]
     const entradas =
       body.data.path !== undefined
         ? await Playlists.entriesOf(body.data.path, assets)
         : Playlists.resolveEntries(body.data.text ?? '', assets)
-    const aproveitadas = entradas.filter((entrada) => entrada.mediaId !== null)
+    let loadedCount:number
+    try {
+    loadedCount=mutateEditorial(app.db,app.concurrency,id,request.headers['if-match'],(tx,state)=>{
+    assertEditorialAccess(request,state.channel.id)
+    const assets=[...state.assets.values()]
+    const currentView=editorialView(state)
+    const aproveitadas = entradas.filter((entrada) => {
+      const asset = entrada.mediaId ? assets.find((candidate) => candidate.id === entrada.mediaId) : null
+      return asset && qcApproved(asset.qcStatus) && !asset.ignored && assessQc(asset,state.channel.qcProfile??DEFAULT_QC_PROFILE).playable
+    })
 
-    await app.history.capture(app.db, runtime.view.rundown.id, 'carregar lista', {
+    const remember=app.history.prepareCapture(tx,id,'carregar lista',{
       wholeRundown: true,
     })
 
     if (body.data.replace) {
       const noAr = runtime.transport.state().onAir?.itemId ?? null
-      for (const entrada of runtime.view.items) {
+      for (const entrada of currentView.items) {
         if (entrada.item.id === noAr) continue
-        await app.db.delete(rundownItems).where(eq(rundownItems.id, entrada.item.id))
+        tx.delete(secondaryEvents).where(eq(secondaryEvents.itemId,entrada.item.id)).run()
+        tx.delete(rundownItems).where(eq(rundownItems.id, entrada.item.id)).run()
       }
     }
 
     // A ordem é recalculada no fim: os itens que ficaram (o que está no ar,
     // ou a grade inteira quando não é substituição) vêm antes da lista.
-    const ficaram = runtime.view.items
+    const ficaram = currentView.items
       .map((entrada) => entrada.item.id)
       .filter((itemId) => !body.data.replace || itemId === runtime.transport.state().onAir?.itemId)
     const novos: string[] = []
@@ -1178,17 +1969,17 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if (!asset) continue
 
       const parada = isStill(asset)
-        ? secondsToFrames(STILL_DEFAULT_SECONDS, runtime.channel.rate)
+        ? secondsToFrames(STILL_DEFAULT_SECONDS, state.channel.rate)
         : null
       const duracao =
         parada ??
-        trimDuration(asset.defaultTrim ?? { in: 0, out: durationIn(asset, runtime.channel.rate) })
+        trimDuration(resolveTrim(null, asset, state.channel.rate).value)
 
       const itemId = randomUUID()
       novos.push(itemId)
-      await app.db.insert(rundownItems).values({
+      tx.insert(rundownItems).values({
         id: itemId,
-        rundownId: runtime.view.rundown.id,
+        rundownId: id,
         sortOrder: 0,
         type: 'VT',
         // O título da lista manda quando ela dá um: é o nome que o operador
@@ -1207,21 +1998,19 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         autoNext: true,
         loop: false,
         notes: null,
-      })
+      }).run()
     }
 
     for (const [posicao, itemId] of [...ficaram, ...novos].entries()) {
-      await app.db
+      tx
         .update(rundownItems)
         .set({ sortOrder: (posicao + 1) * 10 })
         .where(eq(rundownItems.id, itemId))
+        .run()
     }
-
-    await runtime.refresh()
-    onChange()
-    await app.db.insert(playlistVersions).values({
+    tx.insert(playlistVersions).values({
       id: randomUUID(),
-      rundownId: runtime.view.rundown.id,
+      rundownId: id,
       sourcePath: body.data.path ?? null,
       sourceName: body.data.path?.split(/[\\/]/).pop() ?? 'lista importada',
       mode: body.data.replace ? 'PUBLISH_NEXT' : 'APPEND',
@@ -1229,25 +2018,112 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       skipped: entradas.length - aproveitadas.length,
       scheduledDate: body.data.scheduledDate ?? null,
       publishedAt: new Date().toISOString(),
+    }).run()
+    return {value:aproveitadas.length,remember}
     })
-    await logDecision(app, runtime.view.rundown.id, null, body.data.replace ? 'PLAYLIST_PUBLISHED' : 'PLAYLIST_INSERTED', {
-      source: body.data.path ?? 'importada', loaded: aproveitadas.length, skipped: entradas.length - aproveitadas.length,
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
+    await runtime.refresh()
+    onChange()
+    await logDecision(app, id, null, 'EDITORIAL_PLAYLIST_IMPORTED', {
+      replace:body.data.replace,editorialOnly:true,
+      source: body.data.path ?? 'importada', loaded: loadedCount, skipped: entradas.length - loadedCount,
     }, await usernameOf(request))
-    void emitIntegrationEvent(app.db, body.data.replace ? 'playlist.published' : 'playlist.inserted', { rundownId: runtime.view.rundown.id, loaded: aproveitadas.length, skipped: entradas.length - aproveitadas.length }, runtime.channel.id)
+    void emitIntegrationEvent(app.db, 'editorial-playlist.imported', { rundownId: id,replace:body.data.replace,editorialOnly:true, loaded: loadedCount, skipped: entradas.length - loadedCount }, runtime.channel.id)
     return {
       ...snapshot(app, runtime),
-      loaded: aproveitadas.length,
-      skipped: entradas.length - aproveitadas.length,
+      loaded: loadedCount,
+      skipped: entradas.length - loadedCount,
     }
   })
 
   // ---- acervo -----------------------------------------------------------
 
+  const qcProfileSchema = z.object({
+    codecs: z.array(z.string().min(1).max(100)).max(30), width: z.number().int().min(1).max(8192).nullable(), height: z.number().int().min(1).max(8192).nullable(),
+    fps: z.number().positive().max(240).nullable(), scan: z.enum(['ANY', 'PROGRESSIVE', 'INTERLACED']), requireAudio: z.boolean(),
+    minDurationSeconds: z.number().min(0).max(86400), requireLoudness: z.boolean(), minLufs: z.number().min(-100).max(0), maxLufs: z.number().min(-100).max(0), maxTruePeakDbtp: z.number().min(-100).max(12),
+  }).refine(profile => profile.minLufs <= profile.maxLufs, 'Faixa de loudness inválida.')
+  server.get('/api/channels/:id/qc-profile', async (request, reply) => {
+    const id=(request.params as {id:string}).id
+    const result=app.db.transaction(tx=>{
+      const channel=tx.select().from(channels).where(eq(channels.id,id)).get()
+      return channel?{profile:channel.qcProfile??DEFAULT_QC_PROFILE,configurationRevision:configurationRevision(tx,id)}:null
+    })
+    if(!result)return reply.code(404).send({error:'Canal não encontrado.'})
+    return reply.header('cache-control','private, no-store').header('etag',channelConfigurationETag(id,result.configurationRevision)).send(result)
+  })
+  server.put('/api/channels/:id/qc-profile', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Supervisor precisa definir o perfil técnico.' })
+    const body = qcProfileSchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    const id = (request.params as { id: string }).id
+    const ownerId=access.identity(request)?.id??null
+    let result:{profile:typeof body.data;configurationRevision:number}
+    try{result=app.db.transaction(tx=>{
+      assertConfigurationAccess(request,id)
+      if((access.identity(request)?.id??null)!==ownerId)throw new CollaborativeEditError(403,{error:'A sessão mudou antes da confirmação.'})
+      const channel=tx.select().from(channels).where(eq(channels.id,id)).get()
+      if(!channel)throw new CollaborativeEditError(404,{error:'Canal não encontrado.'})
+      if(channel.archivedAt)throw new CollaborativeEditError(409,{error:'Canal arquivado: perfil preservado.'})
+      const before=requireChannelConfiguration(tx,id,request.headers['if-match'])
+      tx.update(channels).set({qcProfile:body.data}).where(eq(channels.id,id)).run()
+      const revision=configurationRevision(tx,id)
+      tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@qc',kind:'QC_PROFILE_CHANGED',payload:{channelId:id,before:channel.qcProfile??DEFAULT_QC_PROFILE,profile:body.data,revisionBefore:before,revisionAfter:revision},actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString()}).run()
+      return {profile:body.data,configurationRevision:revision}
+    },{behavior:'immediate'})}catch(error){return automationError(reply,error)}
+    // A committed profile change isn't a rollback if updating the view fails.
+    // This route never reconfigures the decoder or issues transport commands.
+    let refreshError:string|null=null
+    try{await app.runtimes.get(id)?.refresh();onChange()}catch{refreshError='Perfil gravado; falha ao atualizar a visão. Consulte o canal novamente.'}
+    return reply.header('etag',channelConfigurationETag(id,result.configurationRevision)).send({...result,refreshError,message:refreshError??'Perfil gravado. Elegibilidade dos próximos arquivos será reconferida; o decoder do item no ar foi preservado.'})
+  })
+  server.get('/api/assets/:id/qc', async (request, reply) => {
+    const id = (request.params as { id: string }).id, channelId = (request.query as { channelId?: string }).channelId
+    const result=app.db.transaction(tx=>{
+      const asset=tx.select().from(mediaAssets).where(eq(mediaAssets.id,id)).get()
+      const channel=channelId?tx.select().from(channels).where(eq(channels.id,channelId)).get():null
+      if(!asset||!channel)return null
+      const review={assetId:id,channelId:channel.id,contentHash:asset.contentHash,assetRevision:qcRevision(tx,id),configurationRevision:configurationRevision(tx,channel.id)}
+      const decisions=tx.select().from(qcDecisions).where(and(eq(qcDecisions.assetId,id),eq(qcDecisions.contentHash,asset.contentHash),or(eq(qcDecisions.channelId,channel.id),eq(qcDecisions.channelId,'@all')))).orderBy(desc(sql`rowid`)).all()
+      return {contentHash:asset.contentHash,review,profile:channel.qcProfile??DEFAULT_QC_PROFILE,checks:assessQc(toAsset(asset),channel.qcProfile??DEFAULT_QC_PROFILE),decisions}
+    })
+    if(!result)return reply.code(404).send({error:'Arquivo/canal não encontrado.'})
+    return reply.header('cache-control','private, no-store').header('etag',qcDecisionETag(result.review)).send(result)
+  })
+  server.post('/api/assets/:id/qc', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Sem permissão para avaliar mídia.' })
+    const body = z.object({ channelId: z.string(), contentHash: z.string(), status: z.enum(['PENDING', 'ANALYSIS', 'APPROVED', 'APPROVED_WITH_NOTES', 'REJECTED', 'BLOCKED']), notes: z.string().max(2000).optional() }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    if (body.data.status === 'APPROVED_WITH_NOTES' && !body.data.notes?.trim()) return reply.code(400).send({ error: 'Descreva a ressalva para liberar com exceção registrada.' })
+    const id=(request.params as {id:string}).id,channelId=body.data.channelId,ownerId=access.identity(request)?.id??null
+    let saved:{checks:ReturnType<typeof assessQc>;assetRevision:number}
+    try{saved=app.db.transaction(tx=>{
+      assertQcAccess(request,channelId,ownerId)
+      const current=tx.select().from(mediaAssets).where(eq(mediaAssets.id,id)).get(),channel=tx.select().from(channels).where(eq(channels.id,channelId)).get()
+      if(!current||!channel)throw new CollaborativeEditError(404,{error:'Arquivo/canal não encontrado.'})
+      const before=requireQcReview(tx,id,request.headers['if-match'],channelId)
+      if(current.contentHash!==body.data.contentHash)throw new CollaborativeEditError(409,{error:'O arquivo mudou durante a conferência. Revise a nova versão antes de decidir.'})
+      const checks=assessQc(toAsset(current),channel.qcProfile??DEFAULT_QC_PROFILE)
+      if(qcApproved(body.data.status)&&!checks.playable)throw new CollaborativeEditError(409,{error:checks.errors.join(' '),checks})
+      const actor=access.identity(request)?.username??null,now=new Date().toISOString(),decisionId=randomUUID()
+      tx.insert(qcDecisions).values({id:decisionId,assetId:id,contentHash:current.contentHash,channelId,status:body.data.status,notes:body.data.notes?.trim()??null,checks,actor,createdAt:now}).run()
+      const after=qcRevision(tx,id)
+      tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@qc',kind:'QC_DECISION',payload:{assetId:id,contentHash:current.contentHash,channelId,status:body.data.status,notes:body.data.notes?.trim()??null,checks,decisionId,revisionBefore:before,revisionAfter:after},actorUsername:actor,createdAt:now}).run()
+      return {checks,assetRevision:after}
+    },{behavior:'immediate'})}catch(error){return automationError(reply,error)}
+    let refreshError:string|null=null
+    try{for(const runtime of app.runtimes.values())await runtime.refresh();onChange()}catch{refreshError='QC gravado; falha ao atualizar a visão. Consulte a conferência novamente.'}
+    return {ok:true,...saved,refreshError}
+  })
+
   const assetPatch = z.object({
+    expectedContentHash: z.string().optional(),
     title: z.string().min(1).optional(),
     categoryId: z.string().min(1).nullable().optional(),
     ignored: z.boolean().optional(),
-  })
+    qcStatus: z.enum(['PENDING', 'ANALYSIS', 'APPROVED', 'APPROVED_WITH_NOTES', 'REJECTED', 'FAILED', 'BLOCKED']).optional(),
+    qcNotes: z.string().max(2_000).nullable().optional(),
+  }).refine(body=>body.qcNotes===undefined || body.qcStatus!==undefined || body.ignored!==undefined,'Informe o estado QC junto com a observação.')
 
   server.patch('/api/assets/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
@@ -1255,10 +2131,47 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const body = assetPatch.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
-    await app.db.update(mediaAssets).set(body.data).where(eq(mediaAssets.id, id))
-    for (const runtime of app.runtimes.values()) await runtime.refresh()
-    onChange()
-    return { ok: true }
+    const [asset] = await app.db.select().from(mediaAssets).where(eq(mediaAssets.id, id)).limit(1)
+    if (!asset) return reply.code(404).send({ error: 'Arquivo não encontrado no acervo.' })
+    if (body.data.expectedContentHash !== undefined && body.data.expectedContentHash !== asset.contentHash) return reply.code(409).send({ error: 'A versão do arquivo mudou. Atualize a conferência.' })
+
+    // A decisão de QC é atômica: aprovar também o devolve do acervo oculto;
+    // rejeitar o coloca em quarentena. O antigo campo `ignored` continua
+    // aceito para compatibilidade, mas passa a produzir uma decisão explícita.
+    const qcStatus = body.data.qcStatus ??
+      (body.data.ignored === true ? 'REJECTED' : body.data.ignored === false ? 'APPROVED' : undefined)
+    if (qcStatus === 'APPROVED_WITH_NOTES' && !body.data.qcNotes?.trim()) return reply.code(400).send({ error: 'Informe a ressalva.' })
+    if (qcStatus && qcApproved(qcStatus) && asset.probeError) return reply.code(409).send({ error: asset.probeError })
+    const { expectedContentHash: _expectedContentHash, ...fields } = body.data
+    const update = {
+      ...fields,
+      ...(qcStatus ? {
+        qcStatus,
+        qcCheckedAt: qcStatus === 'PENDING' ? null : new Date().toISOString(),
+        ignored: ['REJECTED', 'FAILED', 'BLOCKED'].includes(qcStatus) ? true : qcApproved(qcStatus) ? false : asset.ignored,
+      } : {}),
+    }
+    const ownerId=access.identity(request)?.id??null
+    let saved:boolean
+    try{saved = app.db.transaction(tx => {
+      assertQcAccess(request,null,ownerId)
+      const current = tx.select().from(mediaAssets).where(eq(mediaAssets.id, id)).get()
+      if (!current || current.contentHash !== asset.contentHash || (qcStatus && qcApproved(qcStatus) && current.probeError)) return false
+      const before=qcStatus?requireQcReview(tx,id,request.headers['if-match']):null
+      const checks=assessQc(toAsset(current))
+      if(qcStatus&&qcApproved(qcStatus)&&!checks.playable)throw new CollaborativeEditError(409,{error:checks.errors.join(' '),checks})
+      tx.update(mediaAssets).set(update).where(eq(mediaAssets.id, id)).run()
+      if(qcStatus){
+        const now=new Date().toISOString(),decisionId=randomUUID(),notes=body.data.qcNotes?.trim()??null
+        tx.insert(qcDecisions).values({id:decisionId,assetId:id,contentHash:current.contentHash,channelId:'@all',status:qcStatus as QcStatus,notes,checks,actor:access.identity(request)?.username??null,createdAt:now}).run()
+        tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@qc',kind:'QC_GLOBAL_DECISION',payload:{assetId:id,contentHash:current.contentHash,status:qcStatus,notes,checks,decisionId,revisionBefore:before,revisionAfter:qcRevision(tx,id)},actorUsername:access.identity(request)?.username??null,createdAt:now}).run()
+      }
+      return true
+    },{behavior:'immediate'})}catch(error){return automationError(reply,error)}
+    if (!saved) return reply.code(409).send({ error: 'O arquivo mudou ou ficou indisponível antes de salvar. Atualize a conferência.' })
+    let refreshError:string|null=null
+    try{for(const runtime of app.runtimes.values())await runtime.refresh();onChange()}catch{refreshError='Alteração gravada; falha ao atualizar a visão. Consulte o acervo novamente.'}
+    return { ok: true,refreshError }
   })
 
   /**
@@ -1397,55 +2310,44 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { ok: true, soltos: soltos.changes ?? 0 }
   })
 
-  /**
-   * Apaga um canal inteiro.
-   *
-   * O último não sai: um playout sem canal nenhum não tem o que operar, e a
-   * tela de primeira vez existe para o caso de banco vazio, não para o
-   * operador cair nela por engano.
-   */
+  /** Archive decommissions the channel, preserving published/as-run history. */
   server.delete('/api/channels/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode remover canais.' })
-    const todos = await listChannels(app.db)
-    if (todos.length <= 1) {
-      return reply.code(409).send({ error: 'Este é o único canal. Crie outro antes de apagar.' })
-    }
-    if (!todos.some((channel) => channel.id === id)) {
-      return reply.code(404).send({ error: 'Canal não encontrado.' })
-    }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode arquivar canais.' })
+    if (!(await getChannel(app.db,id,true))) return reply.code(404).send({error:'Canal não encontrado.'})
+    return configureChannel(id,reply,async()=>{
+      const runtime=app.runtimes.get(id),state=runtime?.transport.state()
+      if (state?.playing || state?.onAir || state?.preview) return reply.code(409).send({error:'Pare o PGM e limpe o CUE antes de arquivar o canal.'})
+      if (runtime) { await runtime.followAsRun(); runtime.checkpoint(true) }
+      const result=app.sqlite.transaction(()=>{
+        const archived=setChannelArchived(app.sqlite,id,true,access.identity(request)?.username ?? null)
+        runtime?.cancelQueuedBoundaryOnStop(access.identity(request)?.username ?? null)
+        app.publishedContinuity.suspend(id,access.identity(request)?.username ?? null,'Canal arquivado; continuidade recorrente suspensa.')
+        app.schedulePublication.suspend(id,access.identity(request)?.username ?? null,'Canal arquivado; publicação automática suspensa.')
+        return archived
+      })()
+      runtime?.close();app.runtimes.delete(id);app.pgmProbes.delete(id)
+      for(const owner of [`runtime:${id}`,`channel:${id}`,`contingency:${id}`,`boundary:${id}`]) app.continuityCache.replaceProtection(owner,[])
+      await syncDistribution(app);onChange()
+      return {ok:true,...result,historyPreserved:true}
+    })
+  })
 
-    const runtime = app.runtimes.get(id)
-    if (runtime) {
-      runtime.transport.close()
-      app.runtimes.delete(id)
-    }
-
-    // O que pende do canal sai antes dele, à mão.
-    //
-    // Saídas, convidados, destinos, grafismo e regras caem por cascata, mas
-    // `rundowns` foi declarada sem `ON DELETE CASCADE` -- e o banco de quem já
-    // instalou continua assim, porque o SQLite não altera restrição sem
-    // reconstruir a tabela. Confiar na cascata dava
-    // `FOREIGN KEY constraint failed` e um 500 no rosto do operador. Apagar
-    // aqui funciona nos dois bancos, o velho e o novo, e deixa à vista o que a
-    // operação destrói.
-    const grades = await app.db.select().from(rundowns).where(eq(rundowns.channelId, id))
-    for (const grade of grades) {
-      // Histórico de desfazer de uma grade que deixou de existir é lixo.
-      await app.db.delete(operatorDecisions).where(eq(operatorDecisions.rundownId, grade.id))
-    }
-    // Itens e grafismo de item caem por cascata a partir da grade.
-    await app.db.delete(rundowns).where(eq(rundowns.channelId, id))
-    // O as-run não tem chave estrangeira nenhuma: ficaria para sempre, sem
-    // canal a que pertencer e sem tela que o mostre. A caixa de confirmação já
-    // avisa que a grade vai junto.
-    await app.db.delete(asRun).where(eq(asRun.channelId, id))
-
-    await app.db.delete(channels).where(eq(channels.id, id))
-    await syncDistribution(app)
-    onChange()
-    return { ok: true }
+  server.get('/api/channels/archived',async(request,reply)=>{
+    if (!(await allowed(request,'REPORT_EXPORT'))) return reply.code(403).send({error:'Sem permissão para consultar histórico.'})
+    return {channels:(await listChannels(app.db,true)).filter(channel=>channel.archivedAt && access.channelAllowed(request,channel.id))}
+  })
+  server.post('/api/channels/:id/reactivate',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    if (!(await allowed(request,'OUTPUT_CONTROL'))) return reply.code(403).send({error:'Reativar canal exige Supervisor ou Administrador.'})
+    if (!(await getChannel(app.db,id,true))) return reply.code(404).send({error:'Canal não encontrado.'})
+    return configureChannel(id,reply,async()=>{
+      const result=setChannelArchived(app.sqlite,id,false,access.identity(request)?.username ?? null)
+      await syncDistribution(app);onChange()
+      // Do not instantiate/TAKE here. The explicit operator activation/startup
+      // may open configured publishers, but its persisted PGM remains stopped.
+      return {ok:true,...result,automaticTake:false}
+    })
   })
 
 
@@ -1477,17 +2379,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return reply.code(404).send({ error: 'Canal não encontrado.' })
     }
 
-    const anterior = app.runtimes.get(id)
-    const rundownId = anterior?.view?.rundown.id ?? null
-    if (anterior) {
-      anterior.transport.close()
-      app.runtimes.delete(id)
-    }
-
-    const runtime = await runtimeFor(app, id)
-    if (runtime && rundownId) await runtime.load(rundownId)
-    onChange()
-    return { ok: true }
+    return configureChannel(id, reply, async () => {
+      await configurationAudit(request, id, 'CHANNEL_RESTART_REQUESTED', { controlledInterruption: true })
+      const result = await rebuildChannel(id)
+      onChange()
+      return { ok: true, ...result }
+    })
   })
 
   /** As pastas do acervo. */
@@ -1495,21 +2392,37 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     roots: await Roots.listRoots(app.db, app.mediaRoot),
   }))
 
+  // Seletor remoto: enumera pastas no host do servidor e devolve JSON para a
+  // página. Nunca abre Explorer/WinForms na estação onde o servidor está.
+  server.get('/api/library/roots/browse', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode navegar as pastas do servidor.' })
+    const { path } = request.query as { path?: string }
+    try {
+      return await Roots.browseServerFolders(app.mediaRoot, path)
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : 'Não consegui abrir a pasta no servidor.' })
+    }
+  })
+
   server.post('/api/library/roots/pick', async (request, reply) => {
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode adicionar pastas.' })
-    const path = await Roots.pickFolder()
-    if (!path) return reply.code(204).send()
-    const resultado = await Roots.addRoot(app.db, path)
-    if (!resultado.ok) return reply.code(400).send({ error: resultado.error })
-    if (app.ingest.available) app.ingest.start([resultado.root.path])
-    return { root: resultado.root, scanning: app.ingest.status().running }
+    return reply.code(410).send({
+      error: 'O seletor local foi desativado. Use “Navegar no servidor” na página para escolher a pasta remotamente.',
+    })
   })
 
   server.post('/api/files/pick', async (request, reply) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Sem permissão para escolher arquivos.' })
-    const path = await Roots.pickFile()
-    if (!path) return reply.code(204).send()
-    return { path }
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para escolher destinos de gravação.' })
+    return reply.code(410).send({ error: 'O seletor local foi desativado. Escolha a pasta do servidor e o nome da gravação na página.' })
+  })
+
+  server.post('/api/files/target', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para escolher destinos de gravação.' })
+    const body = z.object({ folder: z.string().min(1).max(4096), filename: z.string().min(1).max(160) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe a pasta do servidor e o nome do arquivo .mkv.' })
+    const target = Roots.recordingTarget(body.data.folder, body.data.filename)
+    if (!target.ok) return reply.code(target.status).send({ error: target.error })
+    return { path: target.path }
   })
 
   server.post('/api/library/roots', async (request, reply) => {
@@ -1570,9 +2483,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.get('/api/rundowns/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const runtime = await runtimeForRundown(app, id)
-    if (!runtime) return reply.code(404).send({ error: 'Rundown não encontrado.' })
-    return snapshot(app, runtime)
+    const result = await editorialSnapshot(app, id)
+    if (!result) return reply.code(404).send({ error: 'Rundown não encontrado.' })
+    return result
   })
 
   /** Exporta a grade atual (itens e caminhos de mídia) para conferência ou
@@ -1582,17 +2495,17 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/rundowns/:id/export.csv', async (request, reply) => {
     const { id } = request.params as { id: string }
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar a grade.' })
-    const runtime = await runtimeForRundown(app, id)
-    if (!runtime?.view) return reply.code(404).send({ error: 'Grade não encontrada.' })
+    const result = await editorialSnapshot(app, id)
+    if (!result) return reply.code(404).send({ error: 'Grade não encontrada.' })
     const esc = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
     const lines = ['ordem;item;tipo;arquivo;entrada prevista;duração;âncora;estado']
-    runtime.view.items.forEach((item, index) => {
-      const planned = runtime.view!.schedule.items.find((entry) => entry.id === item.item.id)
+    result.view.items.forEach((item, index) => {
+      const planned = result.view.schedule.items.find((entry) => entry.id === item.item.id)
       lines.push([
         index + 1,
         esc(item.item.title),
         esc(item.item.type),
-        esc(item.asset?.path ?? item.item.sourceRef ?? ''),
+        esc(item.asset?.path ?? sourceAddress(item.item.sourceRef ?? '')),
         esc(planned?.start ?? ''),
         esc(planned?.duration ?? ''),
         esc(item.item.anchor.kind),
@@ -1600,7 +2513,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       ].join(';'))
     })
     void reply.header('content-type', 'text/csv; charset=utf-8')
-    void reply.header('content-disposition', `attachment; filename="grade-${runtime.channel.name.replace(/\W+/g, '-')}.csv"`)
+    void reply.header('content-disposition', `attachment; filename="grade-${result.view.channel.name.replace(/\W+/g, '-')}.csv"`)
     return `\ufeff${lines.join('\n')}`
   })
 
@@ -1608,7 +2521,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const query = request.query as { channelId?: string; rundownId?: string }
     let runtime: ChannelRuntime | null = null
     if (query.rundownId) {
-      runtime = await runtimeForRundown(app, query.rundownId)
+      const result = await editorialSnapshot(app, query.rundownId)
+      if (!result) return reply.code(404).send({ error: 'Grade não encontrada.' })
+      return result.view.schedule.compensationReport
     } else if (query.channelId) {
       runtime = (await runtimeFor(app, query.channelId)) ?? null
     } else {
@@ -1630,13 +2545,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.get('/api/rundowns/:id/compensation-report', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const runtime = await runtimeForRundown(app, id)
-    if (!runtime?.view) return reply.code(404).send({ error: 'Grade não encontrada.' })
-    return runtime.view.schedule.compensationReport ?? {
-      rundownId: runtime.view.rundown.id,
+    const result = await editorialSnapshot(app, id)
+    if (!result) return reply.code(404).send({ error: 'Grade não encontrada.' })
+    return result.view.schedule.compensationReport ?? {
+      rundownId: result.view.rundown.id,
       generatedAt: new Date().toISOString(),
-      rateNum: runtime.channel.rate.num,
-      rateDen: runtime.channel.rate.den,
+      rateNum: result.view.channel.rate.num,
+      rateDen: result.view.channel.rate.den,
       initialDriftFrames: 0,
       compensatedDriftFrames: 0,
       residualDriftFrames: 0,
@@ -1667,7 +2582,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         protected: z.boolean(),
       })
       .optional(),
-    liveSourceType: z.enum(['SDI', 'NDI', 'SRT', 'RTMP', 'WEBRTC']).optional(),
+    liveSourceType: z.enum(['SDI', 'NDI', 'OMT', 'SRT', 'RTMP', 'WEBRTC']).optional(),
     liveEndpoint: z.string().optional(),
     liveEstimatedDuration: z.number().int().min(0).optional(),
     liveMaxDuration: z.number().int().min(0).nullable().optional(),
@@ -1675,7 +2590,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     liveFallbackMediaId: z.string().nullable().optional(),
     liveConfig: z
       .object({
-        sourceType: z.enum(['SDI', 'NDI', 'SRT', 'RTMP', 'WEBRTC']),
+        sourceType: z.enum(['SDI', 'NDI', 'OMT', 'SRT', 'RTMP', 'WEBRTC']),
         sourceEndpoint: z.string(),
         estimatedDuration: z.number().int().min(0),
         maxDuration: z.number().int().min(0).nullable().optional(),
@@ -1694,42 +2609,53 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForRundown(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
 
-    const assets = await listAssets(app.db)
-    const asset = body.data.mediaId ? assets.find((a) => a.id === body.data.mediaId) : undefined
+    let inserted
+    try {
+    inserted=mutateEditorial(app.db,app.concurrency,id,request.headers['if-match'],(tx,state)=>{
+    assertEditorialAccess(request,state.channel.id)
+    const currentView=editorialView(state)
+    const asset=body.data.mediaId?state.assets.get(body.data.mediaId):undefined
     if (body.data.mediaId && !asset) {
-      return reply.code(400).send({ error: 'Arquivo não existe no acervo.' })
+      throw new CollaborativeEditError(400,{ error: 'Arquivo não existe no acervo.' })
     }
     if (asset?.ignored) {
-      return reply.code(400).send({ error: 'Este arquivo está ignorado. Aceite-o no acervo antes de inserir na grade.' })
+      throw new CollaborativeEditError(400,{ error: 'Este arquivo está ignorado. Aceite-o no acervo antes de inserir na grade.' })
+    }
+    if (asset && !qcApproved(asset.qcStatus)) {
+      throw new CollaborativeEditError(400,{ error: `Este arquivo está ${asset.qcStatus === 'PENDING' ? 'pendente de QC' : 'reprovado no QC'}. Aprove-o no Quality Control antes de inserir na grade.` })
+    }
+    if (asset) {
+      const checks = assessQc(asset, state.channel.qcProfile ?? DEFAULT_QC_PROFILE)
+      if (!checks.playable) throw new CollaborativeEditError(409,{ error: checks.errors.join(' '), checks })
     }
 
     // Imagem parada não traz duração: quem diz quanto ela fica é a grade, e
     // sem um valor o item entraria com zero quadro.
     const stillDefault =
       asset && isStill(asset)
-        ? secondsToFrames(STILL_DEFAULT_SECONDS, runtime.channel.rate)
+        ? secondsToFrames(STILL_DEFAULT_SECONDS, state.channel.rate)
         : null
 
     const duration =
       body.data.durationOverride ??
       stillDefault ??
       (asset
-        ? trimDuration(asset.defaultTrim ?? { in: 0, out: durationIn(asset, runtime.channel.rate) })
+        ? trimDuration(resolveTrim(null, asset, state.channel.rate).value)
         : 0)
 
     const anchor = body.data.anchor ?? { kind: 'FLOW' as const }
     const index =
       body.data.atIndex ??
       (anchor.kind === 'FIXED' || anchor.kind === 'HARD_TIME'
-        ? insertionIndexForTime(runtime.view, anchor.at)
+        ? insertionIndexForTime(currentView, anchor.at)
         : anchor.kind === 'SOFT'
-          ? insertionIndexForTime(runtime.view, anchor.at)
-          : runtime.view.items.length)
+          ? insertionIndexForTime(currentView, anchor.at)
+          : state.items.length)
 
-    await app.history.capture(app.db, id, 'inserir item', { wholeRundown: true })
+    const remember=app.history.prepareCapture(tx,id,'inserir item',{wholeRundown:true})
 
     const itemId = randomUUID()
-    const ordered = runtime.view.items.map((v) => v.item.id)
+    const ordered = state.items.map(item=>item.id)
     ordered.splice(index, 0, itemId)
 
     const eventType =
@@ -1750,7 +2676,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     const liveCfg = body.data.liveConfig
     const liveSourceType =
-      liveCfg?.sourceType ?? body.data.liveSourceType ?? (body.data.type === 'LIVE' ? 'SRT' : null)
+      liveCfg?.sourceType ?? body.data.liveSourceType ?? (body.data.type === 'LIVE' ? inferLiveSourceType(body.data.sourceRef ?? body.data.liveEndpoint ?? '') : null)
     const liveEndpoint =
       liveCfg?.sourceEndpoint ?? body.data.liveEndpoint ?? body.data.sourceRef ?? null
     const liveEstimatedDuration =
@@ -1762,7 +2688,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const liveFallbackMediaId =
       liveCfg?.fallbackMediaId ?? body.data.liveFallbackMediaId ?? null
 
-    await app.db.insert(rundownItems).values({
+    tx.insert(rundownItems).values({
       id: itemId,
       rundownId: id,
       sortOrder: 0,
@@ -1801,14 +2727,19 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       autoNext: true,
       loop: false,
       notes: null,
-    })
+    }).run()
 
     for (const [position, existingId] of ordered.entries()) {
-      await app.db
+      tx
         .update(rundownItems)
         .set({ sortOrder: (position + 1) * 10 })
         .where(eq(rundownItems.id, existingId))
+        .run()
     }
+    return {value:{itemId,index,anchor,eventType},remember}
+    })
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
+    const {itemId,index,anchor,eventType}=inserted
 
     // O arquivo vai no registro, não só o item: é o arquivo que volta a ser
     // oferecido na próxima montagem automática, e é sobre ele que se aprende.
@@ -1850,7 +2781,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         protected: z.boolean(),
       })
       .optional(),
-    liveSourceType: z.enum(['SDI', 'NDI', 'SRT', 'RTMP', 'WEBRTC']).nullable().optional(),
+    liveSourceType: z.enum(['SDI', 'NDI', 'OMT', 'SRT', 'RTMP', 'WEBRTC']).nullable().optional(),
     liveEndpoint: z.string().nullable().optional(),
     liveEstimatedDuration: z.number().int().min(0).nullable().optional(),
     liveMaxDuration: z.number().int().min(0).nullable().optional(),
@@ -1858,7 +2789,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     liveFallbackMediaId: z.string().nullable().optional(),
     liveConfig: z
       .object({
-        sourceType: z.enum(['SDI', 'NDI', 'SRT', 'RTMP', 'WEBRTC']),
+        sourceType: z.enum(['SDI', 'NDI', 'OMT', 'SRT', 'RTMP', 'WEBRTC']),
         sourceEndpoint: z.string(),
         estimatedDuration: z.number().int().min(0),
         maxDuration: z.number().int().min(0).nullable().optional(),
@@ -1879,6 +2810,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
     const updatePayload: Record<string, unknown> = { ...body.data }
+    // A resolução da grade percorre a ordem física dos itens. Trocar apenas
+    // a âncora de um VT que já estava no fim deixava o horário marcado sem
+    // efeito operacional. Guardamos a ordem atual para reinseri-lo junto ao
+    // primeiro evento programado depois da hora solicitada.
 
     if (body.data.timingFlags) {
       updatePayload.trimmable = body.data.timingFlags.trimmable
@@ -1908,8 +2843,41 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       delete updatePayload.liveConfig
     }
 
-    await app.history.capture(app.db, runtime.view.rundown.id, 'editar item', { itemIds: [id] })
-    await app.db.update(rundownItems).set(updatePayload).where(eq(rundownItems.id, id))
+    try{
+      mutateEditorial(app.db,app.concurrency,runtime.view.rundown.id,request.headers['if-match'],(tx,state)=>{
+        assertEditorialAccess(request,state.channel.id)
+        const previousView=editorialView(state)
+        const reorders=Boolean(body.data.anchor && body.data.anchor.kind!=='FLOW')
+        const remember=app.history.prepareCapture(tx,state.rundown.id,'editar item',{itemIds:reorders?state.items.map(item=>item.id):[id]})
+    tx.update(rundownItems).set(updatePayload).where(eq(rundownItems.id, id)).run()
+
+    const requestedAnchor = body.data.anchor
+    if (
+      requestedAnchor &&
+      (requestedAnchor.kind === 'FIXED' || requestedAnchor.kind === 'HARD_TIME' || requestedAnchor.kind === 'SOFT')
+    ) {
+      const before = previousView.items.map((entry) => entry.item.id)
+      const currentIndex = before.indexOf(id)
+      const requestedIndex = insertionIndexForTime(previousView, requestedAnchor.at)
+      const ordered = before.filter((itemId) => itemId !== id)
+      // Remover o item desloca uma posição quando ele estava antes do ponto
+      // de inserção. `splice` aceita o fim da lista, que é o caso de uma hora
+      // posterior a toda a programação existente.
+      const targetIndex = Math.max(
+        0,
+        Math.min(ordered.length, requestedIndex - (currentIndex >= 0 && currentIndex < requestedIndex ? 1 : 0)),
+      )
+      ordered.splice(targetIndex, 0, id)
+      for (const [position, itemId] of ordered.entries()) {
+        tx
+          .update(rundownItems)
+          .set({ sortOrder: (position + 1) * 10 })
+          .where(eq(rundownItems.id, itemId)).run()
+      }
+    }
+        return {value:true,remember}
+      },id)
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     await logDecision(app, runtime.view.rundown.id, id, 'ITEM_EDITED', body.data)
     await runtime.refresh()
     onChange()
@@ -1922,27 +2890,26 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
-    const onAir = runtime.transport.state().onAir?.itemId
-    if (id === onAir) {
-      return reply.code(400).send({ error: 'O item no ar não pode ser removido da grade. Pare primeiro.' })
-    }
-
+    let removed
+    try {
+      removed=mutateEditorial(app.db,app.concurrency,runtime.view.rundown.id,request.headers['if-match'],(tx,state)=>{
+        assertEditorialAccess(request,state.channel.id)
+        if(id===runtime.transport.state().onAir?.itemId)throw new CollaborativeEditError(400,{error:'O item no ar não pode ser removido da grade. Pare primeiro.'})
+        const item=state.items.find(entry=>entry.id===id)!
+        const remember=app.history.prepareCapture(tx,state.rundown.id,'remover item',{wholeRundown:true})
+        tx.delete(secondaryEvents).where(eq(secondaryEvents.itemId,id)).run()
+        tx.delete(rundownItems).where(eq(rundownItems.id,id)).run()
+        tx.update(rundowns).set({updatedAt:new Date().toISOString()}).where(eq(rundowns.id,state.rundown.id)).run()
+        return {value:item,remember}
+      },id)
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     runtime.markManualEdit()
-
-    const prepared = runtime.transport.state().preparedItemId
-    const preview = runtime.transport.state().preview
-    if (prepared === id || (preview?.kind === 'ITEM' && preview.id === id)) {
-      await runtime.transport.cue(null)
-    }
-
-    await app.history.capture(app.db, runtime.view.rundown.id, 'remover item', {
-      wholeRundown: true,
-    })
-    const removed = runtime.view.items.find((entry) => entry.item.id === id)
-    await app.db.delete(rundownItems).where(eq(rundownItems.id, id))
-    await app.db.update(rundowns).set({ updatedAt: new Date().toISOString() }).where(eq(rundowns.id, runtime.view.rundown.id))
+    const preview=runtime.transport.state().preview
+    // PRÓXIMO/preroll is not the operator's CUE. Removing the next editorial
+    // line must not cancel an unrelated manual PVW or pending live TAKE.
+    if(preview?.kind==='ITEM' && preview.id===id)await runtime.transport.cue(null)
     await logDecision(app, runtime.view.rundown.id, id, 'ITEM_REMOVED', {
-      mediaId: removed?.item.mediaId ?? null,
+      mediaId: removed.mediaId ?? null,
     })
     await runtime.refresh()
     onChange()
@@ -1958,29 +2925,24 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForRundown(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
 
+    let idsToRemove:string[]
+    try {
+      idsToRemove=mutateEditorial(app.db,app.concurrency,id,request.headers['if-match'],(tx,state)=>{
+        assertEditorialAccess(request,state.channel.id)
+        const gradeIds=new Set(state.items.map(item=>item.id)),chosen=[...new Set(body.data.ids)]
+        if(chosen.some(itemId=>!gradeIds.has(itemId)))throw new CollaborativeEditError(400,{error:'Os itens selecionados não pertencem todos a esta grade. Nenhum item foi removido.'})
+        const ids=chosen.filter(itemId=>itemId!==runtime.transport.state().onAir?.itemId)
+        if(!ids.length)throw new CollaborativeEditError(400,{error:'O item no ar não pode ser removido da grade.'})
+        const remember=app.history.prepareCapture(tx,id,'remover itens em lote',{wholeRundown:true})
+        tx.delete(secondaryEvents).where(inArray(secondaryEvents.itemId,ids)).run()
+        tx.delete(rundownItems).where(and(eq(rundownItems.rundownId,id),inArray(rundownItems.id,ids))).run()
+        tx.update(rundowns).set({updatedAt:new Date().toISOString()}).where(eq(rundowns.id,id)).run()
+        return {value:ids,remember}
+      })
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     runtime.markManualEdit()
-
-    const onAir = runtime.transport.state().onAir?.itemId
-    const idsToRemove = body.data.ids.filter((itemId) => itemId !== onAir)
-    if (idsToRemove.length === 0) {
-      return reply.code(400).send({ error: 'O item no ar não pode ser removido da grade.' })
-    }
-
-    const prepared = runtime.transport.state().preparedItemId
-    const preview = runtime.transport.state().preview
-    if ((prepared && idsToRemove.includes(prepared)) || (preview?.kind === 'ITEM' && idsToRemove.includes(preview.id))) {
-      await runtime.transport.cue(null)
-    }
-
-    await app.history.capture(app.db, id, 'remover itens em lote', { wholeRundown: true })
-
-    await app.db.delete(rundownItems).where(
-      and(
-        eq(rundownItems.rundownId, id),
-        inArray(rundownItems.id, idsToRemove),
-      ),
-    )
-    await app.db.update(rundowns).set({ updatedAt: new Date().toISOString() }).where(eq(rundowns.id, id))
+    const preview=runtime.transport.state().preview
+    if(preview?.kind==='ITEM' && idsToRemove.includes(preview.id))await runtime.transport.cue(null)
 
     for (const itemId of idsToRemove) {
       await logDecision(app, id, itemId, 'ITEM_REMOVED', { mediaId: null })
@@ -2000,32 +2962,21 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
-    const ids = runtime.view.items.map((v) => v.item.id)
-    const from = ids.indexOf(id)
-    if (from < 0) return reply.code(404).send({ error: 'Item não está nesta grade.' })
-
-    await app.history.capture(app.db, runtime.view.rundown.id, 'mover item', {
-      wholeRundown: true,
-    })
-
-    // O bloco inteiro viaja com o item arrastado, na ordem em que estava.
-    const moving = blockCompanions(runtime, id)
-    const movingSet = new Set(moving)
-    const anchorId = ids[Math.min(body.data.toIndex, ids.length - 1)]
-    const rest = ids.filter((candidate) => !movingSet.has(candidate))
-    const target =
-      anchorId && !movingSet.has(anchorId) ? rest.indexOf(anchorId) : Math.min(body.data.toIndex, rest.length)
-
-    rest.splice(target < 0 ? rest.length : target, 0, ...moving)
-    ids.length = 0
-    ids.push(...rest)
-
-    for (const [position, itemId] of ids.entries()) {
-      await app.db
-        .update(rundownItems)
-        .set({ sortOrder: (position + 1) * 10 })
-        .where(eq(rundownItems.id, itemId))
-    }
+    let from:number
+    try{
+      from=mutateEditorial(app.db,app.concurrency,runtime.view.rundown.id,request.headers['if-match'],(tx,state)=>{
+        assertEditorialAccess(request,state.channel.id)
+        const ids=state.items.map(item=>item.id),from=ids.indexOf(id),item=state.items[from]!
+        const moving=item.blockId?state.items.filter(candidate=>candidate.blockId===item.blockId).map(candidate=>candidate.id):[id]
+        const movingSet=new Set(moving),anchorId=ids[Math.min(body.data.toIndex,ids.length-1)]
+        const rest=ids.filter(candidate=>!movingSet.has(candidate))
+        const target=anchorId && !movingSet.has(anchorId)?rest.indexOf(anchorId):Math.min(body.data.toIndex,rest.length)
+        rest.splice(target<0?rest.length:target,0,...moving)
+        const remember=app.history.prepareCapture(tx,state.rundown.id,'mover item',{itemIds:ids})
+        for(const [position,itemId] of rest.entries())tx.update(rundownItems).set({sortOrder:(position+1)*10}).where(eq(rundownItems.id,itemId)).run()
+        return {value:from,remember}
+      },id)
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
 
     await logDecision(app, runtime.view.rundown.id, id, 'ITEM_MOVED', {
       from,
@@ -2038,10 +2989,19 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   // ---- corte e nível, com escopo ---------------------------------------
 
+  server.get('/api/items/:id/edit-scope',async(request,reply)=>{
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode revisar esta edição.'})
+    const query=z.object({scope:scopeSchema}).safeParse(request.query)
+    if(!query.success)return reply.code(400).send({error:'Informe o escopo da edição.'})
+    try{
+      return app.db.transaction(tx=>({review:inspectEditScope(tx,(request.params as {id:string}).id,query.data.scope,id=>app.concurrency.getRundownVersion(id),owners=>authorizeScope(request,owners))}))
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
+  })
+
   server.post('/api/items/:id/trim', async (request, reply) => {
     const { id } = request.params as { id: string }
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode cortar itens.' })
-    const body = z.object({ trim: trimSchema, scope: scopeSchema }).safeParse(request.body)
+    const body = z.object({ trim: trimSchema, scope: scopeSchema,scopeReviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional() }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
     if (body.data.trim.out <= body.data.trim.in) {
       return reply.code(400).send({ error: 'A saída tem de vir depois da entrada.' })
@@ -2050,13 +3010,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
-    const targets = await targetItemIds(app.db, id, body.data.scope)
-    await app.history.capture(app.db, runtime.view.rundown.id, 'marcar entrada e saída', {
-      itemIds: body.data.scope === 'ASSET_DEFAULT' ? [id] : targets.ids,
-      assetIds: body.data.scope === 'ASSET_DEFAULT' && targets.mediaId ? [targets.mediaId] : [],
-    })
-
-    const result = await applyTrim(app.db, id, body.data.trim, body.data.scope)
+    let result
+    try{result=await applyTrim(app.db,id,body.data.trim,body.data.scope,scopedEditGuard(request,body.data.scope,'marcar entrada e saída',body.data.scopeReviewToken))}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     await logDecision(app, runtime.view.rundown.id, id, 'TRIM_APPLIED', {
       ...body.data,
       itemsAffected: result.itemsAffected,
@@ -2066,22 +3022,36 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { ...snapshot(app, runtime), result }
   })
 
+  server.post('/api/items/:id/audio-analysis',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode medir o mix deste item.'})
+    const body=z.object({contentHash:z.string().regex(/^[a-f0-9]{64}$/i),audioTrack:z.number().int().min(0).max(63),routing:audioSchema.shape.routing.unwrap()}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Configuração de mix inválida.'})
+    try{
+      const job=app.audioMixAnalysis.queue(id,body.data.contentHash,body.data.audioTrack,body.data.routing,await usernameOf(request),()=>{
+        const owners=inspectEditScope(app.db,id,'ITEM',rid=>app.concurrency.getRundownVersion(rid),rows=>authorizeScope(request,rows));auditChannels.set(request,owners.owners.map(row=>row.channelId))
+      })
+      const {worker,...publicJob}=job;return reply.code(job.state==='READY'?200:202).send({analysis:publicJob})
+    }catch(error){return automationError(reply,error)}
+  })
+  server.get('/api/items/:id/audio-analysis/:analysisId',async(request,reply)=>{
+    const {id,analysisId}=request.params as {id:string;analysisId:string}
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode consultar esta medição.'})
+    const job=app.audioMixAnalysis.read(id,analysisId);if(!job)return reply.code(404).send({error:'Medição não encontrada neste item.'})
+    const {worker,...publicJob}=job;return {analysis:publicJob}
+  })
   server.post('/api/items/:id/audio', async (request, reply) => {
     const { id } = request.params as { id: string }
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode ajustar áudio.' })
-    const body = z.object({ audio: audioSchema, scope: scopeSchema }).safeParse(request.body)
+    const body = z.object({ audio: audioSchema, scope: scopeSchema,audioTrack:z.number().int().min(0).max(63).optional(),scopeReviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional() }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
     const runtime = await runtimeForItem(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Item não encontrado.' })
 
-    const targets = await targetItemIds(app.db, id, body.data.scope)
-    await app.history.capture(app.db, runtime.view.rundown.id, 'nivelar áudio', {
-      itemIds: body.data.scope === 'ASSET_DEFAULT' ? [id] : targets.ids,
-      assetIds: body.data.scope === 'ASSET_DEFAULT' && targets.mediaId ? [targets.mediaId] : [],
-    })
-
-    const result = await applyAudio(app.db, id, body.data.audio, body.data.scope)
+    let result
+    try{result=await applyAudio(app.db,id,body.data.audio,body.data.scope,scopedEditGuard(request,body.data.scope,'nivelar áudio',body.data.scopeReviewToken),body.data.audioTrack)}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     await logDecision(app, runtime.view.rundown.id, id, 'AUDIO_APPLIED', {
       ...body.data,
       itemsAffected: result.itemsAffected,
@@ -2096,49 +3066,19 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   // A utilização de CPU só pode ser calculada pela diferença entre duas
   // leituras. O estado fica no processo do servidor e nunca vem de valores
   // decorativos da interface.
-  let previousHostCpu: { idle: number; total: number } | null = null
 
   /** Métricas do computador que efetivamente hospeda esta instância. */
   server.get('/api/host-metrics', async () => {
-    const cpu = cpus().reduce((sum, core) => ({
-      idle: sum.idle + core.times.idle,
-      total: sum.total + core.times.user + core.times.nice + core.times.sys + core.times.idle + core.times.irq,
-    }), { idle: 0, total: 0 })
-    const cpuPercent = previousHostCpu && cpu.total > previousHostCpu.total
-      ? Math.max(0, Math.min(100, Math.round((1 - (cpu.idle - previousHostCpu.idle) / (cpu.total - previousHostCpu.total)) * 1000) / 10))
-      : null
-    previousHostCpu = cpu
-
-    const memoryTotalBytes = totalmem()
-    const memoryFreeBytes = freemem()
-    const memoryUsedBytes = Math.max(0, memoryTotalBytes - memoryFreeBytes)
-    let gpu: { utilizationPercent: number | null; memoryUsedMiB: number | null; memoryTotalMiB: number | null; temperatureC: number | null; name: string | null; error: string | null } = {
-      utilizationPercent: null, memoryUsedMiB: null, memoryTotalMiB: null, temperatureC: null, name: null, error: null,
-    }
-    try {
-      const { stdout } = await execFileAsync('nvidia-smi', ['--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu', '--format=csv,noheader,nounits'], { timeout: 1500 })
-      const fields = stdout.trim().split(/\r?\n/)[0]?.split(',').map((field) => field.trim()) ?? []
-      const numberAt = (index: number) => {
-        const value = Number(fields[index])
-        return Number.isFinite(value) ? value : null
-      }
-      gpu = {
-        name: fields[0] || null,
-        utilizationPercent: numberAt(1),
-        memoryUsedMiB: numberAt(2),
-        memoryTotalMiB: numberAt(3),
-        temperatureC: numberAt(4),
-        error: null,
-      }
-    } catch {
-      gpu.error = 'nvidia-smi indisponível (GPU NVIDIA/NVENC não detectada)'
-    }
-    return {
-      generatedAt: new Date().toISOString(),
-      cpu: { percent: cpuPercent, cores: cpus().length },
-      memory: { totalBytes: memoryTotalBytes, usedBytes: memoryUsedBytes, freeBytes: memoryFreeBytes, percent: memoryTotalBytes > 0 ? Math.round(memoryUsedBytes / memoryTotalBytes * 1000) / 10 : null },
-      gpu,
-    }
+    return app.hostMetrics.latest()
+  })
+  server.get('/api/host-metrics/history', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar histórico do servidor.' })
+    const body = z.object({ hours: z.coerce.number().min(0.1).max(336).default(1), limit: z.coerce.number().int().min(1).max(5000).default(2000) }).safeParse(request.query)
+    if (!body.success) return reply.code(400).send({ error: 'Janela de histórico inválida.' })
+    const since = new Date(Date.now()-body.data.hours*3600_000).toISOString()
+    const samples = app.hostMetrics.history(since, body.data.limit)
+    const totalSamples = app.hostMetrics.historyCount(since)
+    return { since, retainedDays: 14, limit: body.data.limit, totalSamples, truncated: totalSamples > samples.length, samples }
   })
 
   /**
@@ -2148,6 +3088,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * Isso permite fechar monitores sem confundir um Preview desligado com uma
    * falha do canal.
    */
+  const processMetrics = new ProcessMetrics()
   server.get('/api/processes', async () => {
     const rows: Array<{
       id: string
@@ -2187,12 +3128,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         cpuTimeMs: null,
         memoryBytes: null,
         details: {
+          transport: runtime.transport instanceof EngineTransport ? 'NATIVE' : 'SIMULATED',
           restarts: runtime.transport.health().restarts,
           deaths: runtime.transport.health().deaths,
           stalls: runtime.transport.health().stalls,
           ready: runtime.transport.health().ready,
           publishers: publishers.map((publisher) => ({
-            url: publisher.url,
+            url: redactUrl(publisher.url),
             health: publisher.health,
             attempts: publisher.attempts,
             delivered: publisher.delivered,
@@ -2214,7 +3156,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
           cpuTimeMs: null,
           memoryBytes: null,
           details: {
-            url: target,
+            url: redactUrl(target),
             transport: (target.split(':', 1)[0] ?? '').toUpperCase(),
             attempts: publisher.attempts,
             delivered: publisher.delivered,
@@ -2225,44 +3167,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
 
     const pids = rows.map((row) => row.pid).filter((pid): pid is number => pid !== null)
-    if (pids.length > 0 && process.platform === 'win32') {
-      try {
-        const { stdout } = await execFileAsync('tasklist', ['/FO', 'CSV', '/NH'])
-        const byPid = new Map<number, { memoryBytes: number; cpuTimeMs: number | null }>()
-        for (const line of stdout.split(/\r?\n/)) {
-          const columns = line.match(/"([^"]*)"/g)?.map((value) => value.slice(1, -1))
-          if (!columns || columns.length < 5) continue
-          const pid = Number((columns[1] ?? '').replace(/\D/g, ''))
-          if (!pids.includes(pid)) continue
-          const memory = Number((columns[4] ?? '').replace(/[^\d]/g, ''))
-          byPid.set(pid, { memoryBytes: Number.isFinite(memory) ? memory * 1024 : 0, cpuTimeMs: null })
-        }
-        for (const row of rows) {
-          const sample = row.pid === null ? undefined : byPid.get(row.pid)
-          if (sample) {
-            row.memoryBytes = sample.memoryBytes
-            row.cpuTimeMs = sample.cpuTimeMs
-          }
-        }
-      } catch {
-        // A ausência do tasklist não pode derrubar a API de operação.
-      }
-      // tasklist não expõe CPU. Uma consulta curta ao contador nativo do
-      // Windows completa o painel sem manter um coletor permanente no servidor.
-      try {
-        const query = pids.join(',')
-        const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ids=@(${query}); Get-Process -Id $ids -ErrorAction SilentlyContinue | Select-Object Id,CPU | ConvertTo-Json -Compress`])
-        const parsed = JSON.parse(stdout.trim() || '[]') as Array<{ Id?: number; CPU?: number }> | { Id?: number; CPU?: number }
-        const samples = Array.isArray(parsed) ? parsed : [parsed]
-        for (const sample of samples) {
-          const row = rows.find((candidate) => candidate.pid === sample.Id)
-          if (row && typeof sample.CPU === 'number' && Number.isFinite(sample.CPU)) row.cpuTimeMs = Math.round(sample.CPU * 1000)
-        }
-      } catch {
-        // CPU é informativo: se a consulta falhar, memória e estado continuam.
-      }
+    const counters = await processMetrics.latest(pids)
+    for (const row of rows) {
+      const sample = row.pid === null ? undefined : counters.samples.get(row.pid)
+      if (sample) { row.memoryBytes = sample.memoryBytes; row.cpuTimeMs = sample.cpuTimeMs }
     }
-    return { generatedAt: new Date().toISOString(), processes: rows }
+    return { generatedAt: new Date().toISOString(), processes: rows, measurementError:counters.error }
   })
 
   server.get('/api/distribution', async () => {
@@ -2332,13 +3242,17 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   // ==========================================
 
   // Telemetria SRT em tempo real
-  const handleSrtTelemetry = async (request: any) => {
+  const handleSrtTelemetry = async (request: any, reply: any) => {
     const { sourceId } = request.query as { sourceId?: string }
+    const restricted = access.identity(request)?.channelIds != null
+    const allowedSources = restricted ? new Set((await listLiveSources(app.db, undefined, false)).filter(source => access.channelAllowed(request, source.channelId)).map(source => source.id)) : null
     if (sourceId) {
+      if (allowedSources && !allowedSources.has(sourceId)) return reply.code(403).send({ error: 'Sua conta não pode consultar esta fonte.' })
       const tel = globalSrtManager.getTelemetry(sourceId)
       return tel ?? { error: 'Telemetria não encontrada para a fonte informada' }
     }
-    return globalSrtManager.getAllTelemetry()
+    const telemetry = globalSrtManager.getAllTelemetry()
+    return allowedSources ? Object.fromEntries(Object.entries(telemetry).filter(([id]) => allowedSources.has(id))) : telemetry
   }
   server.get('/api/v1/srt/telemetry', handleSrtTelemetry)
   server.get('/api/srt/telemetry', handleSrtTelemetry)
@@ -2393,6 +3307,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return {
       ok: true,
       event,
+      operation:'METADATA_DECISION_ONLY',nativeProgramConfirmed:false,physicalOutputValidated:false,
     }
   }
   server.post('/api/v1/engineering/failover/trigger', handleFailoverTrigger)
@@ -2581,7 +3496,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     })
 
     onChange()
-    return { ok: true, event }
+    return { ok: true, event,operation:'METADATA_DECISION_ONLY',nativeProgramConfirmed:false,physicalOutputValidated:false }
   }
   server.post('/api/v1/sources/live/:id/force-failover', handleForceFailover)
   server.post('/api/sources/live/:id/force-failover', handleForceFailover)
@@ -2685,118 +3600,42 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * faixa da manhã empurraria a noite inteira -- que é exatamente o que a pauta
    * existe para evitar.
    */
-  server.post('/api/rundowns/:id/autofill-day', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode montar a grade.' })
-    const runtime = await runtimeForRundown(app, id)
-    if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
-
-    const weekday = String(new Date(`${runtime.view.rundown.date}T12:00:00`).getDay())
-    const rules = (
-      await app.db
-        .select()
-        .from(scheduleRules)
-        .where(eq(scheduleRules.channelId, runtime.channel.id))
-        .orderBy(asc(scheduleRules.startMinute))
-    ).filter((rule) => rule.weekdays.includes(weekday))
-
-    if (rules.length === 0) {
-      return reply.code(400).send({ error: 'Nenhuma faixa da pauta vale para este dia.' })
-    }
-
-    const assets = await listAssets(app.db)
-    const byId = new Map(assets.map((asset) => [asset.id, asset]))
-    const candidates = await buildCandidates(app.db, runtime.channel, assets)
-
-    await app.history.capture(app.db, id, 'montar o dia pela pauta', { wholeRundown: true })
-
-    const bands: { rule: string; items: number; leftover: number }[] = []
-    // O que uma faixa usou não volta na seguinte: o dia inteiro montado com o
-    // mesmo VT em todas as faixas seria pior do que não montar.
-    const used = new Set<string>()
-    /** Ordem final da grade: o que já existia mais as faixas, no lugar delas. */
-    const ordered = runtime.view.items.map((entry) => entry.item.id)
-    const inserts: { id: string; mediaId: string; title: string; duration: Frames; anchor: Anchor }[] =
-      []
-
-    for (const rule of rules) {
-      // A pauta com 0h explicitamente autoriza repetir mídias. Não remova os
-      // candidatos usados entre faixas nesse caso, ou o primeiro bloco consome
-      // o acervo e os seguintes ficam vazios apesar de a repetição estar livre.
-      const availableCandidates = rule.avoidHours === 0
-        ? candidates
-        : candidates.filter((candidate) => !used.has(candidate.id))
-      const plan = planFill(
-        availableCandidates,
-        runtime.channel,
-        secondsToFrames((rule.endMinute - rule.startMinute) * 60, runtime.channel.rate),
-        rule.categories,
-        rule.avoidHours * 60,
-      )
-
-      // A faixa entra onde a hora dela cai, não no fim da grade: pendurada no
-      // fim, a âncora das seis da manhã fica atrás do que já estava marcado
-      // para as seis da tarde, e o scheduler não tem como puxá-la de volta.
-      const startFrames = secondsToFrames(rule.startMinute * 60, runtime.channel.rate)
-      let at = insertionIndexForTime(runtime.view, startFrames)
-      at += inserts.filter((entry) => ordered.indexOf(entry.id) < at).length
-
-      let first = true
-      for (const item of plan.items) {
-        const asset = byId.get(item.id)
-        if (!asset) continue
-        used.add(item.id)
-
-        const itemId = randomUUID()
-        inserts.push({
-          id: itemId,
-          mediaId: asset.id,
-          title: asset.title,
-          duration: item.durationFrames,
-          anchor: first ? { kind: 'FIXED', at: startFrames } : { kind: 'FLOW' },
-        })
-        ordered.splice(at, 0, itemId)
-        at += 1
-        first = false
+  const handleFill = async (request:FastifyRequest, reply:import('fastify').FastifyReply, kind:'WINDOW'|'DAY') => {
+    const {id}=request.params as {id:string}
+    const parsed=z.object({
+      minutes:z.number().positive().max(1440).optional(),categories:z.array(z.string()).optional(),
+      avoidHours:z.number().min(0).max(720).optional(),preview:z.boolean().optional(),proposalId:z.string().uuid().optional(),
+      insertAtMinute:z.number().min(0).max(1440).optional(),insertAfterItemId:z.string().optional(),insertAtOrder:z.number().optional(),
+    }).strict().safeParse(request.body)
+    if(!parsed.success)return reply.code(400).send({error:parsed.error.flatten()})
+    const body=parsed.data,actor=access.identity(request)?.username??null
+    try {
+      if(body.preview){
+        if(kind==='WINDOW' && body.minutes===undefined)return reply.code(400).send({error:'Informe a duração a preencher.'})
+        const result=app.db.transaction(tx=>{
+          const state=readEditorialState(app.db,id)
+          if(!state)throw new CollaborativeEditError(404,{error:'Grade ativa não encontrada.'})
+          assertEditorialAccess(request,state.channel.id)
+          // An optional captured header protects the opening context. Review
+          // itself only persists the encrypted proposal, never grade or PGM.
+          if(request.headers['if-match'])requireEditorialRevision(app.concurrency,id,request.headers['if-match'],state.editorialRevision)
+          return proposeFill(tx,state,kind,body.minutes===undefined?undefined:{...body,minutes:body.minutes},actor)
+        },{behavior:'immediate'})
+        return result
       }
-      bands.push({ rule: rule.name, items: plan.items.length, leftover: plan.leftover })
-    }
-
-    for (const entry of inserts) {
-      await app.db.insert(rundownItems).values({
-        id: entry.id,
-        rundownId: id,
-        sortOrder: 0,
-        type: 'VT',
-        title: entry.title,
-        mediaId: entry.mediaId,
-        sourceRef: null,
-        trim: null,
-        audio: null,
-        durationOverride: null,
-        minDuration: entry.duration,
-        anchor: entry.anchor,
-        onOverrun: 'PUSH',
-        elastic: null,
-        locked: false,
-        autoNext: true,
-        loop: false,
-        notes: null,
+      const result=mutateEditorial(app.db,app.concurrency,id,request.headers['if-match'],(tx,state)=>{
+        assertEditorialAccess(request,state.channel.id)
+        if(body.proposalId && Object.keys(body).some(key=>key!=='proposalId'&&key!=='preview'))
+          throw new CollaborativeEditError(400,{error:'A aplicação aceita somente a proposta conferida, não novos critérios.'})
+        const remember=app.history.prepareCapture(tx,id,'aplicar proposta de montagem',{wholeRundown:true})
+        return {value:applyFillProposal(tx,state,body.proposalId,kind,actor),remember}
       })
-      await logDecision(app, id, entry.id, 'AUTO_FILLED', { mediaId: entry.mediaId })
-    }
-
-    for (const [position, itemId] of ordered.entries()) {
-      await app.db
-        .update(rundownItems)
-        .set({ sortOrder: (position + 1) * 10 })
-        .where(eq(rundownItems.id, itemId))
-    }
-
-    await runtime.refresh()
-    onChange()
-    return { bands, ...snapshot(app, runtime) }
-  })
+      await app.runtimes.get((readEditorialState(app.db,id))!.channel.id)?.refresh()
+      onChange()
+      return {...result,...await editorialSnapshot(app,id)}
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
+  }
+  server.post('/api/rundowns/:id/autofill-day', (request,reply)=>handleFill(request,reply,'DAY'))
 
   /**
    * As-run em CSV.
@@ -2808,7 +3647,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const { id } = request.params as { id: string }
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Seu papel não pode exportar relatórios.' })
     const { since, until, nome, categoria, data, hora } = request.query as { since?: string; until?: string; nome?: string; categoria?: string; data?: string; hora?: string }
-    const channel = await getChannel(app.db, id)
+    const channel = await getChannel(app.db, id, true)
     if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
     const defaultSince = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
@@ -2862,126 +3701,181 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   // ---- montagem automática -----------------------------------------------
 
-  const fillSchema = z.object({
-    /** Quanto tempo preencher, em minutos. */
-    minutes: z.number().int().min(1).max(1440),
-    categories: z.array(z.string()).optional(),
-    /** Não repetir o que foi ao ar nas últimas N horas. */
-    avoidHours: z.number().min(0).max(720).optional(),
-    /** Só planejar, sem gravar. É o que a interface mostra antes de aplicar. */
-    preview: z.boolean().optional(),
-    /** Minuto do dia (0 a 1440) para inserção exata do GAP */
-    insertAtMinute: z.number().min(0).max(1440).optional(),
-    /** Inserir logo após este item específico da grade */
-    insertAfterItemId: z.string().optional(),
-    /** Inserir nesta ordem específica */
-    insertAtOrder: z.number().optional(),
-  })
+  server.post('/api/rundowns/:id/autofill', (request,reply)=>handleFill(request,reply,'WINDOW'))
 
-  server.post('/api/rundowns/:id/autofill', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    const body = fillSchema.safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-
-    const runtime = await runtimeForRundown(app, id)
-    if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
-
-    const assets = await listAssets(app.db)
-    const candidates = await buildCandidates(app.db, runtime.channel, assets)
-    const plan = planFill(
-      candidates,
-      runtime.channel,
-      secondsToFrames(body.data.minutes * 60, runtime.channel.rate),
-      body.data.categories ?? [],
-      (body.data.avoidHours ?? 0) * 60,
-    )
-
-    const byId = new Map(assets.map((asset) => [asset.id, asset]))
-    const chosen = plan.items.map((item) => ({
-      mediaId: item.id,
-      title: byId.get(item.id)?.title ?? 'arquivo',
-      durationFrames: item.durationFrames,
-      explanation: {
-        category: item.categoryId,
-        lastAiredAt: item.lastAiredMs === null ? null : new Date(item.lastAiredMs).toISOString(),
-        preference: item.preference,
-      },
-    }))
-
-    // Planejar é de graça; aplicar mexe na grade, e por isso é pedido à parte.
-    if (body.data.preview) {
-      return { plan: { ...plan, items: chosen } }
-    }
-
-    await app.history.capture(app.db, id, 'montagem automática', { wholeRundown: true })
-
-    // Determina onde os novos itens devem ser posicionados na grade
-    let targetIdx = runtime.view.items.length
-    if (body.data.insertAfterItemId) {
-      const found = runtime.view.items.findIndex((it) => it.item.id === body.data.insertAfterItemId)
-      if (found >= 0) targetIdx = found + 1
-    } else if (body.data.insertAtMinute !== undefined) {
-      const atFrames = secondsToFrames(body.data.insertAtMinute * 60, runtime.channel.rate)
-      targetIdx = insertionIndexForTime(runtime.view, atFrames)
-    } else if (body.data.insertAtOrder !== undefined) {
-      const found = runtime.view.items.findIndex((it) => it.item.order >= body.data.insertAtOrder!)
-      if (found >= 0) targetIdx = found
-    }
-
-    const existingIds = runtime.view.items.map((it) => it.item.id)
-    const newIds: string[] = []
-    let isFirst = true
-
-    for (const item of plan.items) {
-      const asset = byId.get(item.id)
-      if (!asset) continue
-      const itemId = randomUUID()
-      newIds.push(itemId)
-
-      const anchor =
-        isFirst && body.data.insertAtMinute !== undefined
-          ? { kind: 'FIXED' as const, at: secondsToFrames(body.data.insertAtMinute * 60, runtime.channel.rate) }
-          : { kind: 'FLOW' as const }
-      isFirst = false
-
-      await app.db.insert(rundownItems).values({
-        id: itemId,
-        rundownId: id,
-        sortOrder: 0,
-        type: 'VT',
-        title: asset.title,
-        mediaId: asset.id,
-        sourceRef: null,
-        trim: null,
-        audio: null,
-        durationOverride: null,
-        minDuration: item.durationFrames,
-        anchor,
-        onOverrun: 'PUSH',
-        elastic: null,
-        locked: false,
-        autoNext: true,
-        loop: false,
-        notes: null,
+  // ---- retorno explícito de VT interrompido -----------------------------
+  const insertions=new OperationalInsertions(app.db)
+  const insertionError=(reply:any,error:unknown)=>error instanceof CollaborativeEditError?reply.code(error.status).send(error.payload):reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:'Inserção não confirmada; confira o registro sem repetir o TAKE.')})
+  const insertionInput=z.object({requestId:z.string().uuid(),mode:z.enum(['NEXT','NOW']),mediaId:z.string().min(1).optional(),sourceId:z.string().min(1).optional(),durationFrames:z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()}).strict()
+  const assertInsertionAccess=(request:FastifyRequest,id:string)=>{
+    if(access.required()&&!access.identity(request) || !can(access.role(request),'TRANSPORT') || !access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:'Sessão/permissão de operação deste canal mudou.'})
+    const row=app.db.select().from(channels).where(eq(channels.id,id)).get()
+    if(!row || row.archivedAt)throw new CollaborativeEditError(404,{error:'Canal ativo não encontrado.'})
+  }
+  server.post('/api/channels/:id/operational-insert/review',async(request,reply)=>{
+    const {id}=request.params as {id:string},body=insertionInput.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Escolha um vídeo/entrada e o modo de inserção.'})
+    try{
+      return app.db.transaction(()=>{
+        assertInsertionAccess(request,id);const runtime=app.runtimes.get(id)
+        if(!runtime)throw new CollaborativeEditError(409,{error:'Canal sem execução carregada.'})
+        const reason=runtime.reconfigurationStatus().reason;if(reason)throw new CollaborativeEditError(409,{error:reason})
+        const plan=inspectInsertion(app.db,runtime.insertionContext(),body.data)
+        reply.header('Cache-Control','private, no-store')
+        return {reviewToken:plan.reviewToken,input:plan.input,item:{id:plan.itemId,title:plan.view.items.find(row=>row.item.id===plan.itemId)!.item.title},sourceRevisionId:plan.context.revisionId,conflicts:runtime.insertionTiming(plan.view,body.data).schedule.conflicts,nativeEngine:runtime.transport instanceof EngineTransport,estimatedTiming:true,notice:'Intervenção somente na revisão operacional. Não publica rascunhos. Timing é recalculado na execução; uma entrada descoberta ainda precisa entregar quadro. NEXT não altera PGM/CUE; NOW corta somente após confirmação.'}
       })
-      await logDecision(app, id, itemId, 'AUTO_FILLED', { mediaId: asset.id })
+    }catch(error){return insertionError(reply,error)}
+  })
+  server.get('/api/channels/:id/operational-insert/:requestId',async(request,reply)=>{
+    const {id,requestId}=request.params as {id:string;requestId:string}
+    try{return app.db.transaction(()=>{
+      assertInsertionAccess(request,id);const run=insertions.read(requestId)
+      if(!run || run.channelId!==id)throw new CollaborativeEditError(404,{error:'Pedido deste canal não encontrado.'})
+      reply.header('Cache-Control','private, no-store')
+      return {run:insertions.publicRun(run),configurationOperation:app.configurationChanges.status(id),automaticTake:false}
+    })}catch(error){return insertionError(reply,error)}
+  })
+  server.post('/api/channels/:id/operational-insert',async(request,reply)=>{
+    const {id}=request.params as {id:string},body=z.object({input:insertionInput,reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/),confirm:z.literal(true)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Confira a inserção e confirme o pedido original.'})
+    const {input,reviewToken}=body.data,actor=await usernameOf(request),runtime=app.runtimes.get(id)
+    try{
+      assertInsertionAccess(request,id)
+      const duplicate=insertions.read(input.requestId)
+      if(duplicate){
+        if(duplicate.channelId!==id || duplicate.digest!==insertions.digest(input,reviewToken,actor))throw new CollaborativeEditError(409,{error:'Identificador pertence a outra inserção/decisão.'})
+        return reply.code(duplicate.phase==='CONFIRMED'?200:409).send({ok:duplicate.phase==='CONFIRMED',...(duplicate.phase==='CONFIRMED'?{}:{error:duplicate.message??'Inserção em andamento/inconclusiva. Nenhum TAKE será repetido.'}),deduplicated:true,run:insertions.publicRun(duplicate)})
+      }
+      if(!runtime)throw new CollaborativeEditError(409,{error:'Canal sem execução carregada.'})
+      if(input.mode==='NOW' && !(runtime.transport instanceof EngineTransport))throw new CollaborativeEditError(409,{error:'Inserir agora exige confirmação do engine nativo. Simulação não comprova corte de PGM.'})
+      const initial=inspectInsertion(app.db,runtime.insertionContext(),input);requireInsertionReview(initial,reviewToken)
+      const reason=runtime.reconfigurationStatus().reason;if(reason)throw new CollaborativeEditError(409,{error:reason})
+      const native=runtime.transport instanceof EngineTransport?runtime.transport:null
+      return await app.configurationChanges.execute(id,native?.processId()??null,actor,'OPERATIONAL_INSERT_'+input.mode,async lease=>{
+        const guard=(afterTake=false)=>{
+          assertInsertionAccess(request,id);lease.assertOwned(app.db)
+          if(app.runtimes.get(id)!==runtime)throw new CollaborativeEditError(409,{error:'Runtime mudou; nenhuma nova inserção será enviada.'})
+          const current=runtime.insertionContext(),old=initial.context
+          if(current.rundownId!==old.rundownId || current.revisionId!==old.revisionId || current.executionId!==old.executionId || (!afterTake && current.onAirItemId!==old.onAirItemId) || (afterTake && current.onAirItemId!==initial.itemId))throw new CollaborativeEditError(409,{error:'A ocorrência de PGM/edição mudou durante a preparação.'})
+          const reason=runtime.reconfigurationStatus(false).reason;if(reason)throw new CollaborativeEditError(409,{error:reason})
+          requireInsertionReview(inspectInsertion(app.db,initial.context,input),reviewToken)
+        }
+        app.db.transaction(tx=>{guard();insertions.claim(input,initial,reviewToken,actor,lease.runId);lease.record(tx,'INSERT_PREPARING')},{behavior:'immediate'})
+        let dispatched=false,committed=false
+        const work=async(controls:Parameters<EngineTransport['insertOperational']>[0] extends (commands:infer T)=>unknown?T:never)=>{
+          guard();const view=await runtime.prepareInsertionView(initial.payload);guard()
+          const current=()=>{guard();return true}
+          const commit=(previous:{itemId:string;frames:number}|null)=>{
+            const timedView=runtime.insertionTiming(view,input)
+            let revision
+            try{revision=app.db.transaction(tx=>{
+              guard(input.mode==='NOW')
+              const revision=insertions.commit(initial,actor,input.mode==='NOW',timedView)
+              lease.record(tx,'COMMITTED',{requestId:input.requestId,revisionId:revision.id});return revision
+            },{behavior:'immediate'})}
+            catch(error){if(input.mode==='NOW')runtime.observeUnconfirmedInsertion(view);throw error}
+            committed=true;runtime.installInsertion(initial.payload,timedView,revision,input,previous)
+          }
+          if(input.mode==='NEXT'){
+            if(native)await controls.prepare(view,initial.itemId,current)
+            guard();commit(null)
+          }else await controls.take(view,initial.itemId,current,()=>app.db.transaction(tx=>{guard();lease.record(tx,'INSERT_SWITCHING',{requestId:input.requestId});insertions.phase(input.requestId,'SWITCHING');dispatched=true},{behavior:'immediate'}),commit)
+        }
+        try{
+          if(native)await native.insertOperational(work)
+          else await work({prepare:async()=>{},take:async()=>{throw new Error('Sem engine nativo')}})
+          onChange();return {ok:true,deduplicated:false,run:insertions.publicRun(insertions.read(input.requestId)!),...snapshot(app,runtime)}
+        }catch(error){
+          const message=sanitizeDiagnostic(error instanceof Error?error.message:'Inserção não confirmada.')
+          if(committed){onChange();return {ok:true,run:insertions.publicRun(insertions.read(input.requestId)!),message:'Revisão confirmada; confira limpeza de PVW/checkpoint. '+message,...snapshot(app,runtime)}}
+          if(dispatched){lease.markUncertain('TAKE de inserção inconclusivo. Pare PGM/limpe CUE e reconcilie a configuração sem repetir o pedido. '+message);insertions.phase(input.requestId,'UNCERTAIN',{message})}
+          else insertions.phase(input.requestId,'FAILED',{message})
+          throw error
+        }
+      })
+    }catch(error){return insertionError(reply,error)}
+  })
+  const interruptedItems=new Interruptions(app.sqlite)
+  const assertInterruptionAccess=(request:FastifyRequest,id:string,action:Action='TRANSPORT')=>{
+    if(access.required()&&!access.identity(request) || !can(access.role(request),action) || !access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de operação deste canal mudou.'})
+    const channel=app.db.select().from(channels).where(eq(channels.id,id)).get()
+    if(!channel || channel.archivedAt)throw new CollaborativeEditError(404,{error:'Canal ativo não encontrado.'})
+  }
+  const interruptionReview=(row:InterruptedItem,runtime:ChannelRuntime|undefined)=>installationVault().reviewIdentity(JSON.stringify({
+    row:{id:row.id,channelId:row.channel_id,rundownId:row.rundown_id,itemId:row.item_id,revisionId:row.revision_id,frames:row.frames},
+    context:runtime?.interruptionContext()??null,configurationRevision:configurationRevision(app.db,row.channel_id),
+    editorialRevision:new EditorialVersions(app.sqlite).read(row.rundown_id),entry:runtime?.executionView?.items.find(entry=>entry.item.id===row.item_id)??null,
+    media:app.db.select().from(mediaAssets).where(eq(mediaAssets.id,runtime?.executionView?.items.find(entry=>entry.item.id===row.item_id)?.item.mediaId??'')).get()??null,
+    qc:app.db.select().from(qcDecisions).where(eq(qcDecisions.assetId,runtime?.executionView?.items.find(entry=>entry.item.id===row.item_id)?.item.mediaId??'')).orderBy(asc(qcDecisions.createdAt),asc(qcDecisions.id)).all(),
+  }),'interrupted-return:v1')
+  const requireInterruptionReview=(row:InterruptedItem,runtime:ChannelRuntime|undefined,token:string)=>{
+    if(interruptionReview(row,runtime)!==token)throw new CollaborativeEditError(409,{error:'A execução, edição, mídia/QC ou configuração mudou depois da conferência. Atualize a lista; nenhum TAKE foi enviado.'})
+  }
+  server.get('/api/channels/:id/interruptions', async (request, reply) => {
+    const {id}=request.params as {id:string}
+    try{return app.db.transaction(()=>{
+      assertInterruptionAccess(request,id)
+      const runtime=app.runtimes.get(id)
+      reply.header('Cache-Control','private, no-store')
+      return {items:interruptedItems.list(id).map(row=>{const run=app.interruptionCommands.current(row.id);return {...row,reviewToken:interruptionReview(row,runtime),operation:run?app.interruptionCommands.publicRun(run):null,canReconcile:can(access.role(request),'OUTPUT_CONTROL') && app.interruptionCommands.canReconcile(row.id)}}),cursorEvidence:'LAST_ENGINE_REPORT'}
+    })}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
+  })
+  server.post('/api/channels/:id/interruptions/:interruptionId', async (request, reply) => {
+    if (!(await allowed(request, 'TRANSPORT'))) return reply.code(403).send({ error: 'Sem permissão para operar o PGM.' })
+    const { id, interruptionId } = request.params as { id: string; interruptionId: string }
+    const body = z.object({ action: z.enum(['RESUME', 'DISCARD']),requestId:z.string().uuid(),reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Confira o retorno e envie a decisão, seu identificador e a conferência original.' })
+    const runtime = app.runtimes.get(id)
+    const actor = await usernameOf(request)
+    const authorize=()=>assertInterruptionAccess(request,id)
+    const claim=()=>{
+      if(app.runtimes.get(id)!==runtime)throw new CollaborativeEditError(409,{error:'O runtime mudou. Confira novamente o retorno.'})
+      const row=interruptedItems.list(id).find(item=>item.id===interruptionId)
+      if(!row)throw new CollaborativeEditError(409,{error:'Interrupção mudou ou já foi resolvida.'})
+      requireInterruptionReview(row,runtime,body.data.reviewToken)
+      if(body.data.action==='RESUME'){
+        const view=runtime?.executionView,entry=view?.items.find(item=>item.item.id===row.item_id)
+        if(!runtime || !view || !entry)throw new CollaborativeEditError(409,{error:'O VT não está na playlist operacional carregada.'})
+        const reason=runtime.reconfigurationStatus(true,false).reason;if(reason)throw new CollaborativeEditError(409,{error:reason})
+        if(runtime.transport.state().onAir?.itemId===row.item_id)throw new CollaborativeEditError(409,{error:'O VT já está no PGM. Não é seguro repetir seu cursor de retorno.'})
+        interruptedItems.validateEntry(id,interruptionId,view.rundown.id,entry)
+        const media=entry.asset,latest=media?app.db.select().from(mediaAssets).where(eq(mediaAssets.id,media.id)).get():undefined
+        const base=media&&latest?.contentHash===media.contentHash?{...media,...toAsset(latest),path:media.path}:media
+        const checked=base?applyQcDecisionsNow(app.db,new Map([[base.id,base]]),id).get(base.id):null
+        const channel=app.db.select().from(channels).where(eq(channels.id,id)).get()!
+        if(!checked || checked.probeError || checked.ignored || !qcApproved(checked.qcStatus??'APPROVED') || !assessQc(checked,channel.qcProfile??DEFAULT_QC_PROFILE).playable)throw new CollaborativeEditError(409,{error:'A versão do VT está indisponível ou não está aprovada no QC deste canal. PGM anterior preservado.'})
+      }
     }
-
-    const combinedIds = [
-      ...existingIds.slice(0, targetIdx),
-      ...newIds,
-      ...existingIds.slice(targetIdx),
-    ]
-
-    await renumber(app.db, id, combinedIds)
-
-    await runtime.refresh()
-    onChange()
-    const targetItems = await listItems(app.db, id)
-    const targetAssets = await assetMap(app.db)
-    const targetRundown = await getRundown(app.db, id)
-    const targetView = targetRundown ? buildView(targetRundown, runtime.channel, targetItems, targetAssets, null, null) : runtime.view
-    return { plan: { ...plan, items: chosen }, ...snapshot(app, runtime), view: targetView }
+    try{
+      const result=await app.interruptionCommands.execute(body.data.requestId,{channelId:id,interruptionId,action:body.data.action,reviewToken:body.data.reviewToken},actor,runtime?.transport instanceof EngineTransport?runtime.transport.processId():null,authorize,claim,async lifecycle=>{
+        const row=interruptedItems.list(id).find(item=>item.id===interruptionId)!,view=runtime!.executionView!
+        if(runtime!.transport instanceof EngineTransport)await runtime!.transport.takeWithLifecycle(view.rundown.id,row.item_id,row.frames,lifecycle)
+        else{lifecycle.validate();lifecycle.beforeTake();await runtime!.transport.take(view.rundown.id,row.item_id,row.frames);if(runtime!.transport.state().onAir?.itemId!==row.item_id)throw new Error('Simulador não confirmou o retorno.');lifecycle.confirmed(false)}
+      })
+      onChange()
+      if(result.run.phase!=='CONFIRMED')return reply.code(409).send({error:result.run.message??'Retorno em andamento ou inconclusivo; nenhum TAKE será repetido.',...result})
+      return {ok:true,...result,cursorEvidence:'LAST_ENGINE_REPORT'}
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:'Retorno não confirmado; confira a pendência.')})}
+  })
+  server.post('/api/channels/:id/interruptions/:interruptionId/acknowledge',async(request,reply)=>{
+    const {id,interruptionId}=request.params as {id:string;interruptionId:string}
+    const body=z.object({requestId:z.string().uuid(),reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/),confirm:z.literal(true)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Confira e confirme o encerramento da pendência, sem retorno automático.'})
+    const runtime=app.runtimes.get(id)
+    try{
+      const work=()=>app.interruptionCommands.acknowledge(id,interruptionId,body.data.requestId,access.identity(request)?.username??null,()=>{
+        assertInterruptionAccess(request,id,'OUTPUT_CONTROL')
+        const row=interruptedItems.list(id).find(item=>item.id===interruptionId)
+        if(!row || app.runtimes.get(id)!==runtime)throw new CollaborativeEditError(409,{error:'A pendência/runtime mudou; confira novamente.'})
+        requireInterruptionReview(row,runtime,body.data.reviewToken)
+        const state=runtime?.transport.state(),reason=runtime?.reconfigurationStatus(false,false).reason
+        if(reason || state?.playing || state?.onAir || state?.preview)throw new CollaborativeEditError(409,{error:reason??'Pare o PGM e limpe o CUE antes de encerrar a pendência.'})
+        const checkpoints=new Checkpoints(app.sqlite),saved=checkpoints.read(id)
+        if(saved)checkpoints.write({...saved,playing:false,itemId:null,elapsed:0,contingency:undefined})
+      })
+      const result=await (runtime?.transport instanceof EngineTransport?runtime.transport.mutatePlaylist(async()=>work()):work())
+      onChange();return result
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:'Pendência não encerrada.')})}
   })
 
   // ---- as-run ------------------------------------------------------------
@@ -2989,7 +3883,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/channels/:id/asrun', async (request, reply) => {
     const { id } = request.params as { id: string }
     const { since, until, limit } = request.query as { since?: string; until?: string; limit?: string }
-    const channel = await getChannel(app.db, id)
+    const channel = await getChannel(app.db, id, true)
     if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
     // Sincroniza a linha aberta antes da consulta. O laço operacional também
@@ -3044,7 +3938,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar relatórios.' })
     const channelId = request.params?.id ?? request.query.channelId
     if (!channelId) return reply.code(400).send({ error: 'Informe channelId.' })
-    const channel = await getChannel(app.db, channelId)
+    const channel = await getChannel(app.db, channelId, true)
     if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
     const since = request.query.since ?? new Date(Date.now() - 24 * 3600 * 1000).toISOString()
     const limit = Math.min(10_000, Math.max(1, Number(request.query.limit ?? 5000) || 5000))
@@ -3067,7 +3961,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     // Template sem canal vale para todos; com canal, só para o dele.
     return {
       templates: rows.filter(
-        (row) => !channelId || row.channelId === null || row.channelId === channelId,
+        (row) => (row.channelId === null || access.channelAllowed(request,row.channelId)) && (!channelId || row.channelId === null || row.channelId === channelId),
       ),
     }
   })
@@ -3172,6 +4066,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .from(graphicTemplates)
       .where(eq(graphicTemplates.id, body.data.templateId))
     if (!template) return reply.code(404).send({ error: 'Template não existe.' })
+    if (template.channelId && template.channelId !== id) return reply.code(400).send({error:'Template não pertence a este canal.'})
 
     runtime.graphics.show(template, body.data.values ?? {})
     onChange()
@@ -3190,9 +4085,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.get('/api/items/:id/graphics', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const runtime = await runtimeForItem(app, id)
-    if (!runtime) return reply.code(404).send({ error: 'Item não encontrado.' })
-    return { cues: runtime.cuesOf(id) }
+    const current=readItemAutomationState(app.db,id)
+    if(!current)return reply.code(404).send({error:'Item não encontrado.'})
+    try{if(request.headers['if-match'])requireEditorialRevision(app.concurrency,current.rundownId,request.headers['if-match'],current.editorialRevision,id)}catch(error){return automationError(reply,error)}
+    return current
   })
 
   const cueSchema = z.object({
@@ -3201,26 +4097,91 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     atSeconds: z.number().int().min(0).max(86_400),
   })
 
+  const secondarySchema = z.object({
+    name:z.string().trim().min(1).max(120), targetLayer:z.enum(['STATION_LOGO','ONAIR_CLOCK','CRAWL_TICKER','LOWER_THIRD']),
+    triggerMode:z.enum(['OFFSET_FROM_START','OFFSET_BEFORE_END','MANUAL']),offsetFrames:z.number().int().min(0).max(100_000_000),
+    durationFrames:z.number().int().positive().max(100_000_000).optional(),templateId:z.string().default(''),
+    payload:z.record(z.unknown()).default({}),enabled:z.boolean().default(true),type:z.enum(['GRAPHICS_OVERLAY','SCTE_TRIGGER','DEVICE_AUTOMATION']).default('GRAPHICS_OVERLAY'),
+    deviceConfig: scheduledDeviceSchema.optional(),
+  }).refine(value=>value.type==='GRAPHICS_OVERLAY' || !value.durationFrames,'SCTE/equipamento não possui descarte automático; use evento separado para retorno.')
+    .refine(value=>value.type==='DEVICE_AUTOMATION' ? Boolean(value.deviceConfig) : !value.deviceConfig,'Configuração de equipamento exige tipo DEVICE_AUTOMATION explícito.')
+  server.get('/api/items/:id/secondary-events',async (request,reply)=>{
+    const {id}=request.params as {id:string}
+    const current=readItemAutomationState(app.db,id)
+    return current??reply.code(404).send({error:'Item não encontrado.'})
+  })
+  server.post('/api/items/:id/secondary-events',async (request,reply)=>{
+    if (!(await allowed(request,'PLAYLIST_EDIT'))) return reply.code(403).send({error:'Sem permissão para programar eventos.'})
+    const {id}=request.params as {id:string},body=secondarySchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({error:'Evento inválido; informe nome, camada, offset inteiro e tipo válido.'})
+    if (body.data.type==='DEVICE_AUTOMATION' && !(await allowed(request,'OUTPUT_CONTROL'))) return reply.code(403).send({error:'Programar equipamento exige permissão de controle de saídas.'})
+    try{
+      const result=editItemAutomation(request,id,'SECONDARY_EVENT_ADDED',(tx,state)=>{
+        if(body.data.type==='DEVICE_AUTOMATION'&&!can(access.role(request),'OUTPUT_CONTROL'))throw new CollaborativeEditError(403,{error:'Programar equipamento exige permissão atual de controle de saídas.'})
+        if(body.data.type==='GRAPHICS_OVERLAY'&&body.data.templateId){
+          const template=tx.select().from(graphicTemplates).where(eq(graphicTemplates.id,body.data.templateId)).get()
+          if(!template||template.channelId&&template.channelId!==state.channel.id)throw new CollaborativeEditError(400,{error:'Template não pertence a este canal.'})
+        }
+        const definition={...body.data,id:randomUUID(),channelId:state.channel.id,rundownItemId:id}
+        if(definition.type==='DEVICE_AUTOMATION'){
+          try{freezeDeviceAutomation(tx,definition)}catch(error){throw new CollaborativeEditError(400,{error:error instanceof Error?error.message:'Equipamento inválido.'})}
+          const {configurationHash:_hash,...editorialDevice}=definition.deviceConfig!;definition.deviceConfig=editorialDevice
+        }
+        const now=new Date().toISOString()
+        tx.insert(secondaryEvents).values({id:definition.id,channelId:state.channel.id,itemId:id,definition,createdAt:now,updatedAt:now}).run()
+        return {event:definition}
+      })
+      await app.runtimes.get(result.channelId)?.refresh();onChange();return result
+    }catch(error){return automationError(reply,error)}
+  })
+  server.delete('/api/items/:id/secondary-events/:eventId',async (request,reply)=>{
+    if (!(await allowed(request,'PLAYLIST_EDIT'))) return reply.code(403).send({error:'Sem permissão para remover eventos.'})
+    const {id,eventId}=request.params as {id:string;eventId:string}
+    try{
+      const result=editItemAutomation(request,id,'SECONDARY_EVENT_REMOVED',(tx)=>{
+        const stored=tx.select().from(secondaryEvents).where(and(eq(secondaryEvents.id,eventId),eq(secondaryEvents.itemId,id))).get()
+        if(!stored)throw new CollaborativeEditError(404,{error:'Evento não pertence ao item.'})
+        if((stored.definition.type==='DEVICE_AUTOMATION'||stored.definition.deviceConfig)&&!can(access.role(request),'OUTPUT_CONTROL'))throw new CollaborativeEditError(403,{error:'Remover automação de equipamento exige permissão atual de controle de saídas.'})
+        tx.delete(secondaryEvents).where(eq(secondaryEvents.id,eventId)).run();return {ok:true,eventId}
+      })
+      await app.runtimes.get(result.channelId)?.refresh();onChange();return result
+    }catch(error){return automationError(reply,error)}
+  })
+  server.get('/api/channels/:id/secondary-event-runs',async (request,reply)=>{
+    if (!(await allowed(request,'REPORT_EXPORT'))) return reply.code(403).send({error:'Sem permissão para consultar execução.'})
+    const {id}=request.params as {id:string}
+    return {runs:await app.db.select().from(secondaryEventRuns).where(eq(secondaryEventRuns.channelId,id)).orderBy(desc(secondaryEventRuns.createdAt)).limit(100),
+      uncertainState:'FIRING indica processo interrompido ou comando em andamento; não há reenvio automático nem garantia física de execução.'}
+  })
+  server.post('/api/channels/:id/secondary-events/:eventId/fire',async (request,reply)=>{
+    if (!(await allowed(request,'OUTPUT_CONTROL'))) return reply.code(403).send({error:'Sem permissão para disparar eventos.'})
+    const {id,eventId}=request.params as {id:string;eventId:string}
+    const runtime=app.runtimes.get(id),onAir=runtime?.transport.state().onAir
+    const event=runtime?.graphics.scheduler.getEvents().find(event=>event.id===eventId)
+    if (!runtime || !onAir || !event?.enabled || event.rundownItemId!==onAir.itemId) return reply.code(409).send({error:'Evento não pertence ao item publicado e confirmado no PGM.'})
+    try {
+      const run=await runtime.fireSecondaryEvent(eventId)
+      if (run.state!=='EXECUTED') return reply.code(409).send({error:run.state==='FIRING' ? 'Execução em andamento ou incerta após interrupção; confirme no destino antes de repetir.' : run.error ?? 'Evento falhou e não será repetido automaticamente.',run,physicalExecutionConfirmed:false})
+      return {ok:true,status:'EXECUTED',run,physicalExecutionConfirmed:false}
+    } catch {return reply.code(409).send({error:'Comando não executado; consulte o registro de eventos e o estado do canal.'})}
+  })
+
   server.post('/api/items/:id/graphics', async (request, reply) => {
     const { id } = request.params as { id: string }
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode programar grafismos.' })
     const body = cueSchema.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
-    const runtime = await runtimeForItem(app, id)
-    if (!runtime) return reply.code(404).send({ error: 'Item não encontrado.' })
-
-    await app.db.insert(itemGraphics).values({
-      id: randomUUID(),
-      itemId: id,
-      templateId: body.data.templateId,
-      values: body.data.values ?? {},
-      atSeconds: body.data.atSeconds,
-      createdAt: new Date().toISOString(),
-    })
-    await runtime.refresh()
-    onChange()
-    return { cues: runtime.cuesOf(id) }
+    try{
+      const result=editItemAutomation(request,id,'ITEM_GRAPHIC_ADDED',(tx,state)=>{
+        const template=tx.select().from(graphicTemplates).where(eq(graphicTemplates.id,body.data.templateId)).get()
+        if(!template||template.channelId&&template.channelId!==state.channel.id)throw new CollaborativeEditError(400,{error:'Template não pertence a este canal.'})
+        const cueId=randomUUID()
+        tx.insert(itemGraphics).values({id:cueId,itemId:id,templateId:template.id,values:body.data.values??{},atSeconds:body.data.atSeconds,createdAt:new Date().toISOString()}).run()
+        return {cueId}
+      })
+      await app.runtimes.get(result.channelId)?.refresh();onChange();return result
+    }catch(error){return automationError(reply,error)}
   })
 
   server.delete('/api/item-graphics/:id', async (request, reply) => {
@@ -3229,11 +4190,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const [cue] = await app.db.select().from(itemGraphics).where(eq(itemGraphics.id, id))
     if (!cue) return reply.code(404).send({ error: 'Deixa não existe.' })
 
-    await app.db.delete(itemGraphics).where(eq(itemGraphics.id, id))
-    const runtime = await runtimeForItem(app, cue.itemId)
-    if (runtime) await runtime.refresh()
-    onChange()
-    return { cues: runtime?.cuesOf(cue.itemId) ?? [] }
+    try{
+      const result=editItemAutomation(request,cue.itemId,'ITEM_GRAPHIC_REMOVED',(tx)=>{
+        const current=tx.select().from(itemGraphics).where(eq(itemGraphics.id,id)).get()
+        if(!current||current.itemId!==cue.itemId)throw new CollaborativeEditError(404,{error:'Deixa não pertence mais ao item.'})
+        tx.delete(itemGraphics).where(eq(itemGraphics.id,id)).run();return {cueId:id}
+      })
+      await app.runtimes.get(result.channelId)?.refresh();onChange();return result
+    }catch(error){return automationError(reply,error)}
   })
 
   /**
@@ -3258,15 +4222,45 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { ok: true, available: runtime.temMonitor(body.data.bus) }
   })
 
+  server.post('/api/channels/:id/qc/inspection', async (request,reply)=>{
+    const {id}=request.params as {id:string}
+    const body=z.object({viewerId:z.string().uuid(),sourceRef:z.string().min(1).max(16_384),watching:z.boolean()}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Pedido de inspeção inválido.'})
+    const runtime=await runtimeFor(app,id)
+    if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    const token=sessionToken(request)
+    const owner=token?sessionDigest(token):`${await usernameOf(request) ?? '@local'}:${request.ip}`
+    const originalUser=access.identity(request)?.id??null
+    const authorize=()=>{
+      const current=access.identity(request)
+      if(access.required()&&!current || (current?.id??null)!==originalUser || !access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão do QC mudou. Entre novamente antes de inspecionar.'})
+    }
+    try {
+      await runtime.qcInspection.watch(`${owner}:${body.data.viewerId}`,body.data.sourceRef,body.data.watching,authorize)
+      return {ok:true,rendition:'qc-encoded',profileFromSource:true,maxWidth:3840,maxHeight:2160,maxFps:60,maxBitrateKbps:50000}
+    } catch(error){
+      if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload)
+      return reply.code(409).send({error:error instanceof Error?error.message:'Inspeção em qualidade indisponível.'})
+    }
+  })
+
   // ---- perfis de saída ---------------------------------------------------
 
-  server.get('/api/channels/:id/outputs', async (request) => {
+  server.get('/api/channels/:id/outputs', async (request,reply) => {
     const { id } = request.params as { id: string }
     const host = lanAddress()
     const path = app.paths.find((entry) => entry.channelId === id)
-    const rows = await listOutputs(app.db, id)
-    const canal = await getChannel(app.db, id)
+    const snapshot=app.db.transaction(tx=>{
+      const row=tx.select().from(channels).where(eq(channels.id,id)).get()
+      if(!row)return null
+      return {rows:tx.select().from(outputProfiles).where(eq(outputProfiles.channelId,id)).orderBy(asc(outputProfiles.createdAt)).all(),canal:toChannel(row),configurationRevision:configurationRevision(tx,id)}
+    })
+    if(!snapshot)return reply.code(404).send({error:'Canal não encontrado.'})
+    const {rows,canal}=snapshot
+    reply.header('ETag',channelConfigurationETag(id,snapshot.configurationRevision)).header('Cache-Control','private, no-store')
     return {
+      configurationRevision:snapshot.configurationRevision,
+      configurationOperation:app.configurationChanges.status(id),
       outputs: rows.map((row) => {
         const streamPath =
           row.role === 'PROGRAM'
@@ -3282,6 +4276,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
           (row.target ? row.target : targetOf(row, path))
         return {
           ...row,
+          configurationRevision:snapshot.configurationRevision,
           // Destino efetivo: derivado nos gerenciados, guardado nos demais.
           streamUrls,
           // Saídas externas podem conter a passphrase SRT ou a stream key
@@ -3306,24 +4301,96 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
+  server.get('/api/channels/:id/configuration-operation',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    if(!app.db.select({id:channels.id}).from(channels).where(eq(channels.id,id)).get())return reply.code(404).send({error:'Canal não encontrado.'})
+    reply.header('Cache-Control','private, no-store')
+    return app.configurationChanges.status(id)
+  })
+  server.post('/api/channels/:id/configuration-operation/reconcile',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    const body=z.object({runId:z.string().uuid(),confirm:z.literal(true)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Confira a operação inconclusiva e confirme sua identificação antes de reconciliar.'})
+    if(!(await allowed(request,'OUTPUT_CONTROL')))return reply.code(403).send({error:'Seu papel não pode reconciliar configurações.'})
+    const previous=app.runtimes.get(id)
+    const authorize=(tx:EditorialTransaction)=>{
+      assertConfigurationAccess(request,id)
+      const channel=tx.select().from(channels).where(eq(channels.id,id)).get()
+      if(!channel || channel.archivedAt)throw new CollaborativeEditError(409,{error:'Canal ativo não encontrado.'})
+      requireChannelConfiguration(tx,id,request.headers['if-match'])
+      const runtimeReason=previous?.reconfigurationStatus(false).reason
+      if(runtimeReason)throw new CollaborativeEditError(409,{error:runtimeReason})
+      const state=previous?.transport.state()
+      if(app.runtimes.get(id)!==previous || state?.playing || state?.onAir || state?.preview || previous?.contingencyPending)throw new CollaborativeEditError(409,{error:'Pare o PGM e limpe o CUE antes de reconciliar. Nenhum TAKE será automático.'})
+    }
+    const work=()=>app.configurationChanges.execute(id,previous?.transport instanceof EngineTransport?previous.transport.processId():null,access.identity(request)?.username??null,'EXPLICIT_RECONCILIATION',async lease=>{
+      try{
+        previous?.checkpoint(true);previous?.close();app.runtimes.delete(id)
+        const current=await runtimeFor(app,id)
+        if(!current)throw new Error('Não foi possível reconstruir o canal.')
+        // No checkpoint recovery here: opening the canonical profiles is an
+        // explicitly authorized STOP operation, never a replay of TAKE.
+        await current.transport.stop()
+        if(previous?.view)await current.load(previous.view.rundown.id)
+        current.checkpoint(true)
+        app.db.transaction(tx=>{assertConfigurationAccess(request,id);lease.record(tx,'RECONCILED',{automaticTake:false,physicalOutputValidated:false})},{behavior:'immediate'})
+        onChange();return {ok:true,reconciled:true,automaticTake:false,physicalOutputValidated:false}
+      }catch(error){lease.markUncertain('Reconciliação não confirmada: '+(error instanceof Error?error.message:'falha no engine'));throw error}
+    },{runId:body.data.runId,authorize})
+    try{return await (previous?.transport instanceof EngineTransport?previous.transport.mutateConfiguration(work):work())}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:'Reconciliação não confirmada.'),configurationUncertain:true})}
+  })
+
+  const outputTransaction=(request:FastifyRequest,id:string,lease:ConfigurationLease,work:(tx:EditorialTransaction)=>Record<string,unknown>)=>app.db.transaction(tx=>{
+    lease.assertOwned(tx);assertConfigurationAccess(request,id)
+    const channel=tx.select().from(channels).where(eq(channels.id,id)).get()
+    if(!channel || channel.archivedAt)throw new CollaborativeEditError(404,{error:'Canal ativo não encontrado.'})
+    const revisionBefore=requireChannelConfiguration(tx,id,request.headers['if-match'])
+    const changed=work(tx)
+    return {...changed,configurationRevision:configurationRevision(tx,id),revisionBefore}
+  },{behavior:'immediate'})
+  const auditOutput=(tx:EditorialTransaction,request:FastifyRequest,channelId:string,kind:string,details:Record<string,unknown>)=>{
+    auditChannels.set(request,[channelId])
+    tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@security',kind,payload:{channelId,...details},actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString()}).run()
+  }
+
   // ---- presets de transmissão ------------------------------------------
 
   const presetBody = z.object({
     name: z.string().trim().min(1).max(120),
     kind: z.enum(['SRT', 'RTMP']),
     target: z.string().trim().min(1).max(2048),
-  })
+  }).strict().refine(value=>{
+    try{const url=new URL(value.target);return Boolean(url.hostname) && (value.kind==='SRT'?url.protocol==='srt:':['rtmp:','rtmps:'].includes(url.protocol))}catch{return false}
+  },{message:'O destino precisa ser uma URL válida do protocolo selecionado.'})
+
+  const mutatePresets=(request:FastifyRequest,id:string,kind:string,work:(tx:EditorialTransaction)=>{value:Record<string,unknown>;details:Record<string,unknown>})=>app.db.transaction(tx=>{
+    assertConfigurationAccess(request,id)
+    const channel=tx.select().from(channels).where(eq(channels.id,id)).get()
+    if(!channel)throw new CollaborativeEditError(404,{error:'Canal não encontrado.'})
+    if(channel.archivedAt)throw new CollaborativeEditError(409,{error:'Reative o canal antes de alterar seus presets.'})
+    const revisionBefore=requireChannelConfiguration(tx,id,request.headers['if-match'])
+    const result=work(tx),revisionAfter=configurationRevision(tx,id)
+    tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@configuration',kind,payload:{channelId:id,...result.details,revisionBefore,revisionAfter},actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString()}).run()
+    auditChannels.set(request,[id])
+    return {...result.value,configurationRevision:revisionAfter,applied:true}
+  },{behavior:'immediate'})
 
   const presentPreset = (row: { id: string; channelId: string; name: string; kind: 'SRT' | 'RTMP'; target: string; createdAt: string }) => ({
     ...row,
     target: redactUrl(row.target),
   })
 
-  server.get('/api/channels/:id/transmission-presets', async (request) => {
+  server.get('/api/channels/:id/transmission-presets', async (request,reply) => {
     const { id } = request.params as { id: string }
-    const rows = await app.db.select().from(transmissionPresets)
-      .where(eq(transmissionPresets.channelId, id)).orderBy(asc(transmissionPresets.createdAt))
-    return { presets: rows.map(presentPreset) }
+    const snapshot=app.db.transaction(tx=>{
+      if(!tx.select({id:channels.id}).from(channels).where(eq(channels.id,id)).get())return null
+      const rows=tx.select().from(transmissionPresets).where(eq(transmissionPresets.channelId,id)).orderBy(asc(transmissionPresets.createdAt)).all()
+      return {presets:rows.map(presentPreset),configurationRevision:configurationRevision(tx,id)}
+    })
+    if(!snapshot)return reply.code(404).send({error:'Canal não encontrado.'})
+    reply.header('ETag',channelConfigurationETag(id,snapshot.configurationRevision)).header('Cache-Control','private, no-store')
+    return snapshot
   })
 
   server.post('/api/channels/:id/transmission-presets', async (request, reply) => {
@@ -3331,49 +4398,61 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const body = presetBody.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe nome, protocolo SRT/RTMP e destino do preset.' })
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode salvar presets de transmissão.' })
-    const [channel] = await app.db.select({ id: channels.id }).from(channels).where(eq(channels.id, id))
-    if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
-    const row = { id: randomUUID(), channelId: id, ...body.data, createdAt: new Date().toISOString() }
-    await app.db.insert(transmissionPresets).values(row)
-    return reply.code(201).send({ preset: presentPreset(row) })
+    let target: string
+    try { target = credentialAddress(body.data.target) }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Conexão do preset inválida.' }) }
+    const row = { id: randomUUID(), channelId: id, ...body.data, target, createdAt: new Date().toISOString() }
+    return configureChannel(id,reply,async()=>reply.code(201).send(mutatePresets(request,id,'TRANSMISSION_PRESET_CREATED',tx=>{
+      tx.insert(transmissionPresets).values(row).run()
+      return {value:{preset:presentPreset(row)},details:{presetId:row.id,name:row.name,kind:row.kind}}
+    })))
   })
 
   server.post('/api/channels/:id/transmission-presets/:presetId/apply', async (request, reply) => {
     const { id, presetId } = request.params as { id: string; presetId: string }
-    const body = z.object({ name: z.string().trim().min(1).max(120).optional() }).safeParse(request.body)
+    const body = z.object({ name: z.string().trim().min(1).max(120).optional() }).strict().safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Nome de saída inválido.' })
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode aplicar presets de transmissão.' })
-    const [preset] = await app.db.select().from(transmissionPresets).where(and(eq(transmissionPresets.id, presetId), eq(transmissionPresets.channelId, id)))
-    if (!preset) return reply.code(404).send({ error: 'Preset não encontrado neste canal.' })
-    const output = await createOutput(app.db, id, { name: body.data.name ?? preset.name, kind: preset.kind, target: preset.target })
-    const runtime = app.runtimes.get(id)
-    if (runtime) {
-      const rundownId = runtime.view?.rundown.id ?? null
-      runtime.transport.close()
-      app.runtimes.delete(id)
-      const renewed = await runtimeFor(app, id)
-      if (renewed && rundownId) await renewed.load(rundownId)
-    }
-    await syncDistribution(app)
-    return reply.code(201).send({ output: { ...output, target: redactUrl(output.target) }, restartRequired: true })
+    return configureChannel(id, reply, async () => {
+      const changed=mutatePresets(request,id,'TRANSMISSION_PRESET_APPLIED',tx=>{
+        const preset=tx.select().from(transmissionPresets).where(and(eq(transmissionPresets.id,presetId),eq(transmissionPresets.channelId,id))).get()
+        if(!preset)throw new CollaborativeEditError(404,{error:'Preset não encontrado neste canal.'})
+        if(!presetBody.safeParse(preset && {name:preset.name,kind:preset.kind,target:preset.target}).success)throw new CollaborativeEditError(422,{error:'O preset antigo tem nome ou destino incompatível com o protocolo. Remova-o e cadastre a conexão completa.'})
+        const output=newOutputProfile(id,{name:body.data.name??preset.name,kind:preset.kind,target:preset.target})
+        tx.insert(outputProfiles).values(output).run()
+        return {value:{output:{...output,target:redactUrl(output.target)}},details:{presetId,outputId:output.id,kind:output.kind,recovery:'CONTROLLED_RESTART_REQUESTED'}}
+      })
+      // Configuration is committed already. Never imply rollback if rebuilding
+      // or restoration fails after the commit, nor claim physical delivery.
+      try{
+        const recovery=await rebuildChannel(id)
+        await syncDistribution(app)
+        return reply.code(201).send({...changed,restartRequired:true,engineError:recovery.recoveryError,...recovery})
+      }catch(error){onChange();return reply.code(201).send({...changed,restartRequired:true,engineError:sanitizeDiagnostic(error instanceof Error?error.message:'Engine não reconstruído. Confira o diagnóstico.')})}
+    })
   })
 
   server.delete('/api/channels/:id/transmission-presets/:presetId', async (request, reply) => {
     const { id, presetId } = request.params as { id: string; presetId: string }
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Seu papel não pode remover presets de transmissão.' })
-    const deleted = await app.db.delete(transmissionPresets).where(and(eq(transmissionPresets.id, presetId), eq(transmissionPresets.channelId, id))).returning({ id: transmissionPresets.id })
-    if (deleted.length === 0) return reply.code(404).send({ error: 'Preset não encontrado neste canal.' })
-    return { ok: true }
+    return configureChannel(id,reply,async()=>mutatePresets(request,id,'TRANSMISSION_PRESET_REMOVED',tx=>{
+      const preset=tx.select().from(transmissionPresets).where(and(eq(transmissionPresets.id,presetId),eq(transmissionPresets.channelId,id))).get()
+      if(!preset)throw new CollaborativeEditError(404,{error:'Preset não encontrado neste canal.'})
+      tx.delete(transmissionPresets).where(and(eq(transmissionPresets.id,presetId),eq(transmissionPresets.channelId,id))).run()
+      return {value:{ok:true},details:{presetId,name:preset.name,kind:preset.kind}}
+    }))
   })
 
   server.post('/api/channels/:id/outputs', async (request, reply) => {
     const { id } = request.params as { id: string }
     const body = z
       .object({
-        name: z.string().min(1),
+        name: z.string().trim().min(1).max(120),
         kind: z.enum(['RTMP', 'SRT', 'FILE', 'SDI', 'NDI', 'OMT']),
-        target: z.string().min(1),
-      })
+        target: z.string().trim().min(1).max(2048),
+        enabled:z.boolean().optional(),
+        bitrateKbps:z.number().int().min(50).max(80000).nullable().optional(),
+      }).strict()
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Dê um nome e um destino.' })
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
@@ -3386,34 +4465,35 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return reply.code(400).send({ error: 'Na SDI o destino é o número do conector: 0, 1, 2…' })
     }
 
-    const row = await createOutput(app.db, id, body.data)
-    const runtime = app.runtimes.get(id)
-    if (runtime) {
-      const rundownId = runtime.view?.rundown.id ?? null
-      runtime.transport.close()
-      app.runtimes.delete(id)
-      const novo = await runtimeFor(app, id)
-      if (novo && rundownId) await novo.load(rundownId)
-    }
-    await syncDistribution(app)
-    return { output: { ...row, target: redactUrl(row.target) }, restartRequired: true }
+    if (!(await getChannel(app.db, id))) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    let row:OutputProfileRow
+    try{row=newOutputProfile(id,body.data);validateOutputProfile(row)}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Endereço inválido.'})}
+    return configureChannel(id, reply, async (_apply,lease) => {
+      const changed=outputTransaction(request,id,lease!,tx=>{
+        tx.insert(outputProfiles).values(row).run()
+        auditOutput(tx,request,id,'OUTPUT_CREATED',{outputId:row.id,kind:row.kind})
+        return {output:{...row,target:redactUrl(row.target)},applied:true}
+      })
+      try{const recovery=await rebuildChannel(id);await syncDistribution(app);return {...changed,restartRequired:true,engineError:recovery.recoveryError,...recovery}}
+      catch(error){return {...changed,restartRequired:true,engineError:sanitizeDiagnostic(error instanceof Error?error.message:'Engine não reconstruído.')}}
+    })
   })
 
   server.patch('/api/outputs/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
     const body = z
       .object({
-        name: z.string().min(1).optional(),
-        target: z.string().min(1).optional(),
+        name: z.string().trim().min(1).max(120).optional(),
+        target: z.string().trim().min(1).max(2048).optional(),
         kind: z.enum(['RTMP', 'SRT', 'FILE', 'SDI', 'NDI', 'OMT']).optional(),
-        width: z.number().int().positive().nullable().optional(),
-        height: z.number().int().positive().nullable().optional(),
-        rateNum: z.number().int().positive().nullable().optional(),
-        rateDen: z.number().int().positive().nullable().optional(),
+        width: z.number().int().positive().max(8192).nullable().optional(),
+        height: z.number().int().positive().max(8192).nullable().optional(),
+        rateNum: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
+        rateDen: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
         scan: z.enum(['PROGRESSIVE', 'INTERLACED']).nullable().optional(),
-        bitrateKbps: z.number().int().positive().nullable().optional(),
+        bitrateKbps: z.number().int().min(50).max(80000).nullable().optional(),
         enabled: z.boolean().optional(),
-      })
+      }).strict().refine(value=>Object.keys(value).length>0,{message:'Informe pelo menos um campo para alterar.'})
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) {
@@ -3425,37 +4505,74 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
 
     const [profile] = await app.db.select().from(outputProfiles).where(eq(outputProfiles.id, id))
-    await updateOutput(app.db, id, body.data)
-    const [updated] = await app.db.select().from(outputProfiles).where(eq(outputProfiles.id, id))
-    const hotKinds = new Set(['RTMP', 'SRT', 'FILE'])
-    const runtime = profile ? app.runtimes.get(profile.channelId) : undefined
-    const canHotReplace = Boolean(
-      runtime && updated && updated.role === 'EXTRA' && updated.enabled &&
-      hotKinds.has(updated.kind) && body.data.enabled !== false,
-    )
-    if (canHotReplace && runtime && updated) {
-      const target = toEngineProfile(updated as any, app.paths.find((entry) => entry.channelId === updated.channelId))
-      const transport = runtime.transport as unknown as { reconfigureOutput?: (output: Record<string, unknown>) => Promise<void> }
-      if (typeof target !== 'string' && target && transport.reconfigureOutput) {
-        await transport.reconfigureOutput(target as unknown as Record<string, unknown>)
-        await syncDistribution(app)
-        return { ok: true, restartRequired: false, applied: 'hot' as const }
+    if (!profile) return reply.code(404).send({ error: 'Saída não encontrada.' })
+    return configureChannel(profile.channelId, reply, async (applyOutput,lease) => {
+      let current:OutputProfileRow,patch:Partial<OutputProfileRow>
+      const prepared=outputTransaction(request,profile.channelId,lease!,tx=>{
+        const row=tx.select().from(outputProfiles).where(eq(outputProfiles.id,id)).get()
+        if(!row || row.channelId!==profile.channelId)throw new CollaborativeEditError(409,{error:'A saída mudou de canal ou foi removida. Reabra a lista.'})
+        if(row.role!=='EXTRA' && (body.data.target!==undefined || body.data.kind!==undefined))throw new CollaborativeEditError(422,{error:'Destino e protocolo das saídas gerenciadas são definidos pelo servidor.'})
+        current=row as OutputProfileRow
+        try{patch=outputUpdatePatch(current,body.data);const channel=tx.select().from(channels).where(eq(channels.id,profile.channelId)).get()!;validateOutputProfile({...current,...patch},channel)}catch(error){throw new CollaborativeEditError(400,{error:error instanceof Error?error.message:'Endereço inválido.'})}
+        return {}
+      })
+      current=current!;patch=patch!
+      const updated = { ...current, ...patch } as OutputProfileRow
+      const hotKinds = new Set(['RTMP', 'SRT', 'FILE'])
+      const canHotReplace = applyOutput && current.enabled && current.role === 'EXTRA' &&
+        hotKinds.has(current.kind) && updated.enabled && hotKinds.has(updated.kind)
+      if (canHotReplace) {
+        const target = toEngineProfile(updated, app.paths.find(entry => entry.channelId === updated.channelId))
+        const previousTarget=toEngineProfile(current,app.paths.find(entry=>entry.channelId===current.channelId))
+        if (target && typeof target !== 'string' && previousTarget && typeof previousTarget!=='string') {
+          outputTransaction(request,profile.channelId,lease!,tx=>{lease!.record(tx,'HOT_DISPATCHED',{outputId:id,revisionBefore:prepared.revisionBefore,before:current,after:updated});return {}})
+          let changed:Record<string,unknown>
+          try{
+            await applyOutput!(target as HotOutputProfile)
+            changed=outputTransaction(request,profile.channelId,lease!,tx=>{
+              const row=tx.select().from(outputProfiles).where(eq(outputProfiles.id,id)).get()
+              if(JSON.stringify(row)!==JSON.stringify(current))throw new CollaborativeEditError(409,{error:'O perfil mudou durante a troca.'})
+              tx.update(outputProfiles).set(patch).where(eq(outputProfiles.id,id)).run()
+              auditOutput(tx,request,profile.channelId,'OUTPUT_UPDATED',{outputId:id,fields:Object.keys(patch),applied:'PUBLISHER_ACK',physicalOutputValidated:false})
+              lease!.record(tx,'COMMITTED',{revisionAfter:configurationRevision(tx,profile.channelId)})
+              return {ok:true,applied:'hot',restartRequired:false}
+            })
+          }catch(error){
+            // Only restore the exact prior profile if no uncooperative writer
+            // changed this channel. Do not guess an engine/database pairing.
+            try{
+              const intact=()=>app.db.transaction(tx=>{lease!.assertOwned(tx);return configurationRevision(tx,profile.channelId)===prepared.revisionBefore && JSON.stringify(tx.select().from(outputProfiles).where(eq(outputProfiles.id,id)).get())===JSON.stringify(current)})
+              if(!intact())throw new Error('A configuração mudou durante a troca; retorno automático recusado.')
+              await applyOutput!(previousTarget as HotOutputProfile)
+              if(!intact())throw new Error('A configuração mudou durante o retorno; resultado incerto.')
+              app.db.transaction(tx=>lease!.record(tx,'RESTORED',{softwareRestorationAcknowledged:true,physicalOutputValidated:false}),{behavior:'immediate'})
+            }catch(restorationError){
+              lease!.markUncertain('Troca/retorno de saída sem confirmação: '+(restorationError instanceof Error?restorationError.message:'falha no engine'))
+              throw new CollaborativeEditError(409,{error:'A saída ficou com resultado incerto. PGM não foi trocado. Pare o canal, limpe o CUE e reconcilie a configuração antes de outra mudança.',configurationUncertain:true,configurationRunId:lease!.runId})
+            }
+            if(error instanceof CollaborativeEditError)throw new CollaborativeEditError(error.status,{...error.payload,previousProfileRestored:true,physicalOutputValidated:false})
+            throw new CollaborativeEditError(409,{error:sanitizeDiagnostic(error instanceof Error?error.message:'Troca não gravada.'),previousProfileRestored:true,physicalOutputValidated:false})
+          }
+          try{
+            const runtime=app.runtimes.get(profile.channelId)
+            if(!(runtime?.transport instanceof EngineTransport))throw new Error('O runtime mudou após o commit da saída.')
+            runtime.transport.commitOutputProfile(target as HotOutputProfile)
+            await syncDistribution(app)
+            return {...changed,physicalOutputValidated:false}
+          }catch(error){
+            lease!.markUncertain('Configuração gravada, mas perfil de recuperação não confirmado: '+(error instanceof Error?error.message:'falha'))
+            return {...changed,configurationUncertain:true,configurationRunId:lease!.runId,engineError:'Configuração gravada; reconcilie o canal antes de outra troca.',physicalOutputValidated:false}
+          }
+        }
       }
-    }
-    // SDI e operações que removem/adicionam ramificações ainda exigem rebuild:
-    // são explicitamente reportadas como janela operacional controlada.
-    if (profile) {
-      const anterior = runtime
-      const rundownId = anterior?.view?.rundown.id ?? null
-      if (anterior) {
-        anterior.transport.close()
-        app.runtimes.delete(profile.channelId)
-      }
-      const renewedRuntime = await runtimeFor(app, profile.channelId)
-      if (renewedRuntime && rundownId) await renewedRuntime.load(rundownId)
-    }
-    await syncDistribution(app)
-    return { ok: true, restartRequired: true, applied: 'restart' as const }
+      const changed=outputTransaction(request,profile.channelId,lease!,tx=>{
+        tx.update(outputProfiles).set(patch).where(and(eq(outputProfiles.id,id),eq(outputProfiles.channelId,profile.channelId))).run()
+        auditOutput(tx,request,profile.channelId,'OUTPUT_UPDATED',{outputId:id,fields:Object.keys(patch),applied:'CONTROLLED_RESTART_REQUESTED'})
+        return {ok:true,restartRequired:true,applied:'restart'}
+      })
+      try{const recovery=await rebuildChannel(profile.channelId);await syncDistribution(app);return {...changed,engineError:recovery.recoveryError,...recovery}}
+      catch(error){return {...changed,engineError:sanitizeDiagnostic(error instanceof Error?error.message:'Engine não reconstruído.')}}
+    })
   })
 
   server.delete('/api/outputs/:id', async (request, reply) => {
@@ -3464,21 +4581,19 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return reply.code(403).send({ error: 'Seu papel não pode remover saídas.' })
     }
     const [profile] = await app.db.select({ channelId: outputProfiles.channelId }).from(outputProfiles).where(eq(outputProfiles.id, id))
-    if (!(await deleteOutput(app.db, id))) {
-      return reply.code(409).send({ error: 'Programa e preview não podem ser removidos.' })
-    }
-    if (profile) {
-      const anterior = app.runtimes.get(profile.channelId)
-      const rundownId = anterior?.view?.rundown.id ?? null
-      if (anterior) {
-        anterior.transport.close()
-        app.runtimes.delete(profile.channelId)
-      }
-      const runtime = await runtimeFor(app, profile.channelId)
-      if (runtime && rundownId) await runtime.load(rundownId)
-    }
-    await syncDistribution(app)
-    return { ok: true, restartRequired: true }
+    if (!profile) return reply.code(404).send({ error: 'Saída não encontrada.' })
+    return configureChannel(profile.channelId, reply, async (_apply,lease) => {
+      const changed=outputTransaction(request,profile.channelId,lease!,tx=>{
+        const row=tx.select().from(outputProfiles).where(eq(outputProfiles.id,id)).get()
+        if(!row || row.channelId!==profile.channelId)throw new CollaborativeEditError(409,{error:'A saída mudou de canal ou foi removida. Reabra a lista.'})
+        if(row.role!=='EXTRA')throw new CollaborativeEditError(409,{error:'Programa, preview e monitor não podem ser removidos.'})
+        tx.delete(outputProfiles).where(and(eq(outputProfiles.id,id),eq(outputProfiles.channelId,profile.channelId))).run()
+        auditOutput(tx,request,profile.channelId,'OUTPUT_REMOVED',{outputId:id})
+        return {ok:true,restartRequired:true,applied:true}
+      })
+      try{const recovery=await rebuildChannel(profile.channelId);await syncDistribution(app);return {...changed,engineError:recovery.recoveryError,...recovery}}
+      catch(error){return {...changed,engineError:sanitizeDiagnostic(error instanceof Error?error.message:'Engine não reconstruído.')}}
+    })
   })
 
   server.post('/api/channels/:id/guests', async (request, reply) => {
@@ -3521,6 +4636,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .object({ name: z.string().min(1), url: z.string().min(1) })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe nome e endereço.' })
+    try { body.data.url = credentialAddress(body.data.url) }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Endereço de destino inválido.' }) }
 
     await app.db.insert(destinations).values({
       id: randomUUID(),
@@ -3546,7 +4663,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-
+    const [existing] = await app.db.select().from(destinations).where(eq(destinations.id, id))
+    if (!existing) return reply.code(404).send({ error: 'Destino não encontrado.' })
+    if (body.data.url !== undefined) {
+      try { body.data.url = credentialAddress(body.data.url, existing.url) }
+      catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : 'Endereço de destino inválido.' }) }
+    }
     await app.db.update(destinations).set(body.data).where(eq(destinations.id, id))
     await syncDistribution(app)
     return { ok: true }
@@ -3563,15 +4685,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   // ---- desfazer e refazer ----------------------------------------------
 
   const step = (kind: 'undo' | 'redo') =>
-    async (request: { params: unknown }, reply: { code: (n: number) => { send: (b: unknown) => unknown } }) => {
+    async (request: FastifyRequest, reply: { code: (n: number) => { send: (b: unknown) => unknown } }) => {
       const { id } = request.params as { id: string }
       if (!(await allowed(request as never, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode desfazer esta alteração.' })
       const runtime = await runtimeForRundown(app, id)
       if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
 
-      const label = await (kind === 'undo'
-        ? app.history.undo(app.db, id)
-        : app.history.redo(app.db, id))
+      let label
+      try{label=await(kind==='undo'?app.history.undo(app.db,id,historyGuard(request)):app.history.redo(app.db,id,historyGuard(request)))}
+      catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
       if (!label) {
         return reply
           .code(400)
@@ -3599,34 +4721,22 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeForRundown(app, id)
     if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
 
-    const ids = runtime.view.items.map((entry) => entry.item.id)
-    const chosen = body.data.itemIds.filter((candidate) => ids.includes(candidate))
-    if (chosen.length < 2) {
-      return reply.code(400).send({ error: 'Os itens não são todos desta grade.' })
-    }
-
-    await app.history.capture(app.db, id, 'agrupar em bloco', { wholeRundown: true })
-
-    // O bloco fica contíguo na posição do primeiro escolhido: um bloco com
-    // buracos no meio não é um bloco.
-    const chosenSet = new Set(chosen)
-    const ordered = chosen.slice().sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
-    const rest = ids.filter((candidate) => !chosenSet.has(candidate))
-    const at = Math.min(...ordered.map((candidate) => ids.indexOf(candidate)))
-    const before = ids.slice(0, at).filter((candidate) => !chosenSet.has(candidate))
-    rest.splice(0, rest.length, ...before, ...rest.slice(before.length))
-    rest.splice(before.length, 0, ...ordered)
-
-    const blockId = randomUUID()
-    for (const [position, itemId] of rest.entries()) {
-      await app.db
-        .update(rundownItems)
-        .set({
-          sortOrder: (position + 1) * 10,
-          ...(chosenSet.has(itemId) ? { blockId } : {}),
-        })
-        .where(eq(rundownItems.id, itemId))
-    }
+    const blockId=randomUUID()
+    let ordered:string[]
+    try {
+      ordered=mutateEditorial(app.db,app.concurrency,id,request.headers['if-match'],(tx,state)=>{
+        assertEditorialAccess(request,state.channel.id)
+        const ids=state.items.map(item=>item.id),chosen=[...new Set(body.data.itemIds)]
+        if(chosen.length<2 || chosen.some(candidate=>!ids.includes(candidate)))throw new CollaborativeEditError(400,{error:'Selecione pelo menos dois itens distintos desta grade. Nenhum bloco foi alterado.'})
+        const chosenSet=new Set(chosen),ordered=ids.filter(candidate=>chosenSet.has(candidate))
+        const rest=ids.filter(candidate=>!chosenSet.has(candidate)),at=ids.indexOf(ordered[0]!)
+        const before=ids.slice(0,at).filter(candidate=>!chosenSet.has(candidate))
+        rest.splice(before.length,0,...ordered)
+        const remember=app.history.prepareCapture(tx,id,'agrupar em bloco',{itemIds:ids})
+        for(const [position,itemId] of rest.entries())tx.update(rundownItems).set({sortOrder:(position+1)*10,...(chosenSet.has(itemId)?{blockId}:{})}).where(eq(rundownItems.id,itemId)).run()
+        return {value:ordered,remember}
+      })
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
 
     await logDecision(app, id, null, 'BLOCK_CREATED', { blockId, itemIds: ordered })
     await runtime.refresh()
@@ -3637,20 +4747,28 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.post('/api/blocks/:blockId/ungroup', async (request, reply) => {
     const { blockId } = request.params as { blockId: string }
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode desfazer blocos.' })
-    const [row] = await app.db
+    const rows = await app.db
       .select({ rundownId: rundownItems.rundownId })
       .from(rundownItems)
       .where(eq(rundownItems.blockId, blockId))
+    const row = rows[0]
     if (!row) return reply.code(404).send({ error: 'Bloco não encontrado.' })
+    if (rows.some(other => other.rundownId !== row.rundownId)) return reply.code(409).send({error:'Este bloco aparece em mais de uma grade. Corrija os vínculos antes de desagrupar.'})
 
     const runtime = await runtimeForRundown(app, row.rundownId)
     if (!runtime?.view) return reply.code(404).send({ error: 'Rundown não encontrado.' })
 
-    await app.history.capture(app.db, row.rundownId, 'desfazer bloco', { wholeRundown: true })
-    await app.db
-      .update(rundownItems)
-      .set({ blockId: null })
-      .where(eq(rundownItems.blockId, blockId))
+    try {
+      mutateEditorial(app.db,app.concurrency,row.rundownId,request.headers['if-match'],(tx,state)=>{
+        assertEditorialAccess(request,state.channel.id)
+        const members=tx.select().from(rundownItems).where(eq(rundownItems.blockId,blockId)).all()
+        if(!members.length)throw new CollaborativeEditError(404,{error:'Bloco não encontrado.'})
+        if(members.some(item=>item.rundownId!==state.rundown.id))throw new CollaborativeEditError(409,{error:'Este bloco aparece em mais de uma grade. Nenhum vínculo foi alterado.'})
+        const remember=app.history.prepareCapture(tx,state.rundown.id,'desfazer bloco',{itemIds:members.map(item=>item.id)})
+        tx.update(rundownItems).set({blockId:null}).where(and(eq(rundownItems.blockId,blockId),eq(rundownItems.rundownId,state.rundown.id))).run()
+        return {value:true,remember}
+      })
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
 
     await logDecision(app, row.rundownId, null, 'BLOCK_REMOVED', { blockId })
     await runtime.refresh()
@@ -3662,8 +4780,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   server.post('/api/external/control', async (request, reply) => {
     if (!EXTERNAL_CONTROL_TOKEN) return reply.code(503).send({ error: 'Controle externo não configurado.' })
-    const token = request.headers['x-rplayout-control-token']
-    if (token !== EXTERNAL_CONTROL_TOKEN) return reply.code(401).send({ error: 'Token de controle externo inválido.' })
+    const token = request.headers['x-rplayout-control-token'] ?? request.headers.authorization?.replace(/^Bearer /i, '')
+    if (typeof token !== 'string' || !secretEquals(token, EXTERNAL_CONTROL_TOKEN)) return reply.code(401).send({ error: 'Token de controle externo inválido.' })
     const body = z.object({
       channelId: z.string().min(1),
       action: z.enum(['take', 'cue', 'stop', 'park']),
@@ -3674,13 +4792,24 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = await runtimeFor(app, body.data.channelId)
     if (!runtime?.view) return reply.code(404).send({ error: 'Canal sem grade carregada.' })
     try {
-      if (body.data.action === 'take') await runtime.transport.take(runtime.view.rundown.id, body.data.itemId ?? '')
+      const execution = runtime.executionView
+      if(!execution && (['take','park'].includes(body.data.action) || body.data.action==='cue' && body.data.itemId))throw new Error('A grade convertida exige revisão e nova publicação antes de operar.')
+      let requestedItemId = body.data.itemId ?? null
+      if(['take','park'].includes(body.data.action) && app.interruptionCommands.blockedReason(runtime.channel.id))throw new Error(app.interruptionCommands.blockedReason(runtime.channel.id)!)
+      if (body.data.action === 'take') {
+        requestedItemId = resolveTakeTarget(execution!, runtime.transport.state(), body.data.itemId).itemId
+        await runtime.transport.take(execution!.rundown.id, requestedItemId)
+      }
       else if (body.data.action === 'cue') await runtime.transport.cue(body.data.itemId ? { kind: 'ITEM', id: body.data.itemId } : body.data.assetId ? { kind: 'ASSET', id: body.data.assetId } : null)
-      else if (body.data.action === 'stop') await runtime.transport.stop()
+      else if (body.data.action === 'stop') {app.publishedContinuity.suspend(runtime.channel.id,'@external-control','STOP explícito; continuidade recorrente suspensa.');app.schedulePublication.suspend(runtime.channel.id,'@external-control','STOP explícito; publicação automática suspensa.');runtime.cancelQueuedBoundaryOnStop('@external-control');await runtime.transport.stop()}
       else if (body.data.itemId) await runtime.transport.park(body.data.itemId)
-      await logDecision(app, runtime.view.rundown.id, body.data.itemId ?? null, `EXTERNAL_${body.data.action.toUpperCase()}`, { ...body.data, source: 'external-control' })
-      await emitIntegrationEvent(app.db, `external.${body.data.action}`, body.data, body.data.channelId)
-      return { ok: true, action: body.data.action, channelId: body.data.channelId }
+      else throw new Error('Informe o item publicado para armar a grade.')
+      const state = runtime.transport.state()
+      const nativeProgramConfirmed = runtime.transport instanceof EngineTransport && body.data.action === 'take' && state.onAir?.itemId === requestedItemId
+      const evidence = { ...body.data, itemId: requestedItemId, source: 'external-control', transport: runtime.transport instanceof EngineTransport ? 'NATIVE' : 'SIMULATED', nativeProgramConfirmed, awaitingSignal: body.data.action === 'take' && state.onAir?.itemId !== requestedItemId, physicalOutputValidated: false }
+      await logDecision(app, runtime.view.rundown.id, requestedItemId, `EXTERNAL_${body.data.action.toUpperCase()}`, evidence)
+      await emitIntegrationEvent(app.db, `external.${body.data.action}`, evidence, body.data.channelId)
+      return { ok: true, accepted: true, ...evidence }
     } catch (error) {
       return reply.code(409).send({ error: error instanceof Error ? error.message : 'Comando recusado pelo transporte.' })
     }
@@ -3706,34 +4835,47 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, actionPermission))) return reply.code(403).send({ error: 'Seu papel não pode executar esta ação.' })
 
     const runtime = await runtimeFor(app, id)
+    // Editorial authority doesn't require a loaded PGM playlist. STOP must
+    // still suspend that policy; no view is not permission to keep publishing.
+    if(runtime && !runtime.view && body.data.action==='stop'){
+      if(access.required()&&!access.identity(request)||!can(access.role(request),'CHANNEL_STOP')||!access.channelAllowed(request,id))return reply.code(403).send({error:'Sessão/permissão mudou; STOP não autorizado.'})
+      const actor=await usernameOf(request)
+      app.publishedContinuity.suspend(id,actor,'STOP explícito; continuidade recorrente suspensa.')
+      app.schedulePublication.suspend(id,actor,'STOP explícito; publicação automática suspensa.')
+      runtime.cancelQueuedBoundaryOnStop(actor)
+      await runtime.transport.stop();onChange()
+      return {accepted:true,action:'stop',channelId:id,transport:runtime.transport.state()}
+    }
     if (!runtime?.view) return reply.code(404).send({ error: 'Canal sem grade carregada.' })
 
+    const execution = runtime.executionView
+    const interruptedReturnBlock=app.interruptionCommands.blockedReason(id)
+    if(interruptedReturnBlock && (['take','park'].includes(body.data.action) || body.data.action==='seek' && body.data.bus!=='pvw'))return reply.code(409).send({error:interruptedReturnBlock})
+    if(!execution && (['take','park'].includes(body.data.action) || body.data.action==='cue' && body.data.itemId || body.data.action==='seek' && body.data.bus==='pgm'))return reply.code(409).send({error:'A grade convertida exige revisão e nova publicação antes do CUE/TAKE de itens.'})
     switch (body.data.action) {
       case 'take': {
         const state = runtime.transport.state()
-        let resolvedItemId = body.data.itemId ?? (state.preview?.kind === 'ITEM' ? state.preview.id : null) ?? state.preparedItemId
-        // Uma fonte aberta diretamente na biblioteca não tem itemId no alvo de
-        // preview. Quando ela já existe na grade, TAKE precisa achar aquele
-        // item — nunca cair silenciosamente no próximo VT da lista.
-        if (!resolvedItemId && state.preview?.kind === 'SOURCE') {
-          // Guarda a referência antes do callback: o TypeScript não conserva
-          // o estreitamento discriminado de `state.preview` dentro do find.
-          const previewSource = state.preview.source
-          resolvedItemId = runtime.view.items.find((entry) => entry.item.sourceRef === previewSource)?.item.id ?? null
-          if (!resolvedItemId) {
-            return reply.code(400).send({ error: 'A fonte está aberta no PVW, mas ainda não foi adicionada à grade. Adicione-a antes de usar TAKE.' })
+        const interruptedItemId = state.onAir?.itemId ?? null
+        let target
+        try { target = resolveTakeTarget(execution!, state, body.data.itemId) }
+        catch (error) { return reply.code(error instanceof TakeTargetError ? error.statusCode : 409).send({ error: error instanceof Error ? error.message : 'TAKE recusado.' }) }
+        const { itemId: resolvedItemId, item: targetItem } = target
+        await runtime.transport.take(execution!.rundown.id, resolvedItemId)
+        // Live é prioridade editorial, mas não pode virar uma troca invisível
+        // no histórico. O TAKE pode permanecer pendente até o primeiro quadro;
+        // este registro representa a solicitação, e o as-run registra a troca
+        // real quando o engine a confirmar.
+        if ((targetItem?.type === 'LIVE' || targetItem?.sourceRef) && interruptedItemId !== resolvedItemId) {
+          const payload = {
+            requestedItemId: resolvedItemId,
+            interruptedItemId,
+            sourceRef: targetItem?.sourceRef ?? null,
+            title: targetItem?.title ?? 'Entrada ao vivo',
+            awaitingSignal: runtime.transport.state().onAir?.itemId !== resolvedItemId,
           }
+          await logDecision(app, runtime.view.rundown.id, resolvedItemId, 'LIVE_PRIORITY_TAKE_REQUESTED', payload, await usernameOf(request))
+          void emitIntegrationEvent(app.db, 'live.take.requested', payload, runtime.channel.id)
         }
-        if (!resolvedItemId && runtime.view.items.length > 0) {
-          const currentOnAirId = state.onAir?.itemId
-          const onAirIdx = currentOnAirId ? runtime.view.items.findIndex((i) => i.item.id === currentOnAirId) : -1
-          const nextItem = onAirIdx >= 0 && onAirIdx + 1 < runtime.view.items.length
-            ? runtime.view.items[onAirIdx + 1]?.item.id
-            : runtime.view.items[0]?.item.id
-          resolvedItemId = nextItem ?? null
-        }
-        if (!resolvedItemId) return reply.code(400).send({ error: 'Nada armado para entrar no ar.' })
-        await runtime.transport.take(runtime.view.rundown.id, resolvedItemId)
         break
       }
       case 'cue': {
@@ -3748,7 +4890,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         break
       }
       case 'park': {
-        const first = runtime.view.items[0]
+        const first = execution!.items[0]
         if (!first) return reply.code(400).send({ error: 'Grade vazia.' })
         await runtime.transport.park(first.item.id)
         break
@@ -3757,6 +4899,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         if (!(await allowed(request, 'CHANNEL_STOP'))) {
           return reply.code(403).send({ error: 'Seu papel não pode parar o canal.' })
         }
+        app.publishedContinuity.suspend(id,await usernameOf(request),'STOP explícito; continuidade recorrente suspensa.')
+        app.schedulePublication.suspend(id,await usernameOf(request),'STOP explícito; publicação automática suspensa.')
+        runtime.cancelQueuedBoundaryOnStop(await usernameOf(request))
         await runtime.transport.stop()
         await logDecision(app, runtime.view.rundown.id, null, 'CHANNEL_STOPPED', {}, await usernameOf(request))
         void emitIntegrationEvent(app.db, 'channel.stopped', { rundownId: runtime.view.rundown.id }, runtime.channel.id)
@@ -3768,6 +4913,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         break
     }
 
+    runtime.checkpoint(true)
     await runtime.refresh()
     onChange()
     return snapshot(app, runtime)
@@ -3778,30 +4924,52 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   // ==========================================
 
   // 1. Telemetria e Cobertura de Cache de Continuidade (48h/7d)
+  const cacheContext = async (channelId?: string) => {
+    if (!channelId) return null // Legacy endpoint is explicitly library-only.
+    return channelCachePlan(app,channelId)
+  }
+  const cacheStatus = async (context: Awaited<ReturnType<typeof cacheContext>>) => {
+    if (!context) return app.continuityCache.getStatus(await listAssets(app.db))
+    const status = await app.continuityCache.getStatus(context.assets48h, context.assets7d, context.sequence)
+    const prepared = async (assets: typeof context.assets48h) => { let count=0; for (const asset of assets) if (await app.continuityCache.verified(asset)) count++; return count }
+    return { ...status, channelId: context.channelId, revisionId: context.runtime?.operationalRevision?.id ?? null,
+      prefetch:{ from:context.from, criticalUntil:context.criticalUntil,extendedUntil:context.extendedUntil,
+        publishedRevisions:context.revisions.length, plannedFiles48h:context.assets48h.length,preparedFiles48h:await prepared(context.assets48h),
+        plannedFiles7d:context.assets7d.length,preparedFiles7d:await prepared(context.assets7d),blockedItems:context.blockedItems,unversionedItems:context.unversionedItems },
+      plannedHours: context.sequence.reduce((sum, entry) => sum + entry.durationSeconds, 0) / 3600,
+      proofMessage: context.runtime?.operationalRevision ? 'Autonomia da playlist publicada carregada: interrompida em live, lacuna ou parada manual. Pré-cópia futura de 48h/7d não autoriza troca entre dias nem comprova transmissão contínua.' : 'Nenhuma playlist publicada carregada. Pré-cópia futura não comprova autonomia temporal.' }
+  }
   const getCacheStatusHandler = async (
-    request: { headers: Record<string, string | string[] | undefined> },
+    request: { headers: Record<string, string | string[] | undefined>; query: unknown },
     reply: { code: (code: number) => { send: (body: unknown) => unknown } },
   ) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) {
       return reply.code(403).send({ error: 'Sem permissão para consultar cache de continuidade.' })
     }
-    const assets = await listAssets(app.db)
-    return app.continuityCache.getStatus(assets)
+    const query = z.object({ channelId: z.string().min(1).optional() }).safeParse(request.query)
+    if (!query.success) return reply.code(400).send({ error: 'Canal inválido.' })
+    try { return await cacheStatus(await cacheContext(query.data.channelId)) }
+    catch (error) { return reply.code(404).send({ error: error instanceof Error ? error.message : 'Cache indisponível.' }) }
   }
   server.get('/api/v1/continuity/cache/status', getCacheStatusHandler)
   server.get('/api/v1/cache/status', getCacheStatusHandler)
 
   // 2. Pré-aquecimento de Cache de Continuidade
   const warmCacheHandler = async (
-    request: { headers: Record<string, string | string[] | undefined> },
+    request: { headers: Record<string, string | string[] | undefined>; query: unknown },
     reply: { code: (code: number) => { send: (body: unknown) => unknown } },
   ) => {
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
       return reply.code(403).send({ error: 'Sem permissão para pré-aquecer cache.' })
     }
-    const assets = await listAssets(app.db)
-    const result = await app.continuityCache.warmSchedule(assets, assets)
-    const status = await app.continuityCache.getStatus(assets)
+    const query = z.object({ channelId: z.string().min(1).optional() }).safeParse(request.query)
+    if (!query.success) return reply.code(400).send({ error: 'Canal inválido.' })
+    let context: Awaited<ReturnType<typeof cacheContext>>
+    try { context = await cacheContext(query.data.channelId) }
+    catch (error) { return reply.code(404).send({ error: error instanceof Error ? error.message : 'Cache indisponível.' }) }
+    const result = context ? (await warmChannelCache(app,context.channelId)).result
+      : await app.continuityCache.warmSchedule(await listAssets(app.db))
+    const status = await cacheStatus(context ? await cacheContext(query.data.channelId) : null)
     return {
       ok: true,
       cached48h: result.cached48h,
@@ -3824,10 +4992,96 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
     const channelId = (request.query as { channelId?: string } | undefined)?.channelId
     if (!channelId) return reply.code(400).send({ error: 'Informe o canal da sonda PGM.' })
-    return pgmProbeFor(app, channelId).getStatus()
+    return { ...pgmProbeFor(app, channelId).getStatus(), contingency: app.runtimes.get(channelId)?.contingencyState ?? null }
   }
   server.get('/api/v1/engineering/pgm-probe/status', getPgmProbeStatusHandler)
   server.get('/api/v1/probe/pgm/status', getPgmProbeStatusHandler)
+  server.post('/api/v1/engineering/pgm-probe/policy', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para mudar a política de contingência.' })
+    const body = z.object({ channelId: z.string().min(1), automaticActions: z.boolean(), thresholds: z.object({
+      blackThresholdMs: z.number().int().min(100).max(60_000).optional(),
+      freezeThresholdMs: z.number().int().min(100).max(60_000).optional(),
+      silenceThresholdMs: z.number().int().min(100).max(60_000).optional(),
+      silenceDbfs: z.number().min(-100).max(0).optional(),
+      defaultAutoAction: z.enum(['SLATE_INJECTED', 'CONTINGENCY_LOOP', 'FAILOVER_HOST_B']).optional(),
+    }).optional() }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    const runtime = await runtimeFor(app, body.data.channelId)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    const probe = pgmProbeFor(app, body.data.channelId)
+    const thresholds = { ...probe.getThresholds(), ...body.data.thresholds }
+    const policyRow = app.sqlite.prepare('SELECT payload FROM channel_operational_policies WHERE channel_id=?').get(body.data.channelId) as { payload: string } | undefined
+    const savedPolicy = policyRow ? JSON.parse(policyRow.payload) as { loopRevisionId?: string | null } : {}
+    if (body.data.automaticActions) {
+      if (runtime.contingencyPending) return reply.code(409).send({ error: 'Aguarde a intervenção pendente antes de armar a sonda.' })
+      if (thresholds.defaultAutoAction === 'FAILOVER_HOST_B') return reply.code(409).send({ error: 'O host standby ainda não possui destino configurado/homologado. Não é seguro armar a ação automática.' })
+      if (!(runtime.transport instanceof EngineTransport)) return reply.code(409).send({ error: 'Não é possível armar intervenção automática em modo simulado.' })
+      if (thresholds.defaultAutoAction === 'SLATE_INJECTED' && !runtime.channel.slateTemplateId) return reply.code(409).send({ error: 'Configure a arte de apresentação técnica antes de armar intervenção automática.' })
+      if (thresholds.defaultAutoAction === 'CONTINGENCY_LOOP') {
+        if (!savedPolicy.loopRevisionId) return reply.code(409).send({ error: 'Selecione uma revisão publicada para o loop de contingência.' })
+        if (runtime.transport.state().onAir && !runtime.operationalRevision) return reply.code(409).send({ error: 'Publique a grade em execução para preservar um retorno versionado.' })
+        try { await runtime.prepareContingency(savedPolicy.loopRevisionId) }
+        catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
+      }
+    }
+    const payload = { automaticActions: body.data.automaticActions, thresholds, loopRevisionId: savedPolicy.loopRevisionId ?? null }
+    app.sqlite.prepare(`INSERT INTO channel_operational_policies VALUES (?, ?, ?)
+      ON CONFLICT(channel_id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at`)
+      .run(body.data.channelId, JSON.stringify(payload), new Date().toISOString())
+    probe.setThresholds(thresholds); probe.setAutomaticActions(body.data.automaticActions)
+    if (runtime.view) await logDecision(app, runtime.view.rundown.id, null, 'PGM_PROBE_POLICY_CHANGED', payload, await usernameOf(request))
+    return { ok: true, status: probe.getStatus() }
+  })
+
+  server.get('/api/v1/engineering/pgm-probe/contingency-loop', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar contingência.' })
+    const channelId = (request.query as { channelId?: string }).channelId
+    if (!channelId) return reply.code(400).send({ error: 'Informe o canal.' })
+    const runtime = await runtimeFor(app, channelId)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    const policy = app.sqlite.prepare('SELECT payload FROM channel_operational_policies WHERE channel_id=?').get(channelId) as { payload: string } | undefined
+    const saved = policy ? JSON.parse(policy.payload) as { loopRevisionId?: string | null } : {}
+    const options = await app.db.select({ revisionId: operationalPlaylistRevisions.id, revision: operationalPlaylistRevisions.revision,
+      rundownId: rundowns.id, name: rundowns.name, date: rundowns.date }).from(operationalPlaylistRevisions)
+      .innerJoin(rundowns, eq(rundowns.id, operationalPlaylistRevisions.rundownId))
+      .where(and(eq(rundowns.channelId, channelId), eq(operationalPlaylistRevisions.active, true))).orderBy(desc(operationalPlaylistRevisions.publishedAt))
+    return { loopRevisionId: saved.loopRevisionId ?? null, origin: runtime.contingencyState,
+      nativeEngine: runtime.transport instanceof EngineTransport, options }
+  })
+  server.post('/api/v1/engineering/pgm-probe/contingency-loop', async (request, reply) => {
+    const body = z.object({ channelId: z.string().min(1), action: z.enum(['CONFIGURE', 'ENTER', 'RETURN']), revisionId: z.string().min(1).nullable().optional() }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+    const { channelId, action } = body.data
+    if (!(await allowed(request, action === 'CONFIGURE' ? 'OUTPUT_CONTROL' : 'TRANSPORT'))) return reply.code(403).send({ error: 'Sem permissão para esta ação de contingência.' })
+    const runtime = await runtimeFor(app, channelId)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    const probe = pgmProbeFor(app, channelId)
+    try {
+      if (action === 'CONFIGURE') {
+        if (body.data.revisionId === undefined) return reply.code(400).send({ error: 'Informe a revisão ou null para remover a configuração.' })
+        if (probe.getStatus().automaticActionsEnabled || runtime.contingencyState || runtime.contingencyPending) return reply.code(409).send({ error: 'Desligue a ação automática e conclua o retorno/intervenção antes de substituir a configuração.' })
+        if (body.data.revisionId) {
+          const prepared = await runtime.prepareContingency(body.data.revisionId)
+          app.continuityCache.replaceProtection(`contingency:${channelId}`, [...prepared.assets.values()])
+        } else app.continuityCache.replaceProtection(`contingency:${channelId}`, [])
+        const policy = { automaticActions: false, thresholds: probe.getThresholds(), loopRevisionId: body.data.revisionId }
+        app.sqlite.prepare(`INSERT INTO channel_operational_policies VALUES (?, ?, ?)
+          ON CONFLICT(channel_id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at`)
+          .run(channelId, JSON.stringify(policy), new Date().toISOString())
+        if (runtime.view) await logDecision(app, runtime.view.rundown.id, null, 'CONTINGENCY_CONFIGURED', policy, await usernameOf(request))
+        return { ok: true, loopRevisionId: body.data.revisionId }
+      }
+      if (action === 'RETURN') {
+        if (probe.getStatus().automaticActionsEnabled) return reply.code(409).send({ error: 'Desligue a ação automática antes de retornar à grade.' })
+        await runtime.returnFromContingency()
+      } else {
+        const alert = await probe.triggerAction('CONTINGENCY_LOOP', 'MANUAL_CONTINGENCY')
+        if (alert.actionStatus !== 'SUCCEEDED') return reply.code(409).send({ error: alert.actionMessage, alert })
+      }
+      if (runtime.view) await logDecision(app, runtime.view.rundown.id, null, `CONTINGENCY_${action}_CONFIRMED`, { origin: runtime.contingencyState }, await usernameOf(request))
+      return { ok: true, origin: runtime.contingencyState }
+    } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
+  })
 
   // 4. Disparo Manual / Reset de Slate de Emergência
   server.post('/api/v1/engineering/pgm-probe/emergency-slate', async (request, reply) => {
@@ -3838,10 +5092,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!body.channelId) return reply.code(400).send({ error: 'Informe o canal da sonda PGM.' })
     const probe = pgmProbeFor(app, body.channelId)
     if (body.action === 'RESET') {
+      const runtime = await runtimeFor(app, body.channelId)
+      if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+      try { await runtime.setEmergencySlate(false) } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
       probe.resetEmergencySlate()
       return { ok: true, emergencySlateActive: false, status: probe.getStatus() }
     }
-    const alert = probe.triggerEmergencySlate(body.reason ?? 'MANUAL_EMERGENCY_DISPATCH')
+    const alert = await probe.triggerEmergencySlate(body.reason ?? 'MANUAL_EMERGENCY_DISPATCH')
+    if (alert.actionStatus !== 'SUCCEEDED') return reply.code(409).send({ error: alert.actionMessage ?? 'Slate não confirmado pelo engine.', alert, status: probe.getStatus() })
     const runtime = app.runtimes.get(body.channelId)
     if (runtime) void emitIntegrationEvent(app.db, 'pgm_probe.emergency_slate', { alert }, runtime.channel.id)
     return {
@@ -3852,7 +5110,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
-  // 5. Exportação de As-Run em BXF XML (SMPTE-2021)
+  // 5. XML legado: não homologado por schema SMPTE/BXF.
   const getAsRunBxfHandler = async (
     request: {
       headers: Record<string, string | string[] | undefined>
@@ -3872,7 +5130,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const query = request.query
     const limit = Math.min(2000, Math.max(1, Number(query.limit ?? 1000) || 1000))
     const entries = await listAsRun(app.db, query.channelId, query.since, limit, query.until)
-    const channel = query.channelId ? await getChannel(app.db, query.channelId) : null
+    const channel = query.channelId ? await getChannel(app.db, query.channelId, true) : null
     const bxfXml = exportAsRunBxf(entries, {
       channelName: query.channelName ?? channel?.name ?? 'RPlayout Master',
       channelId: query.channelId ?? channel?.id ?? 'CH-01',
@@ -3880,7 +5138,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     })
     return reply
       .header('content-type', 'application/xml; charset=utf-8')
-      .header('content-disposition', 'attachment; filename="asrun.bxf.xml"')
+      .header('content-disposition', 'attachment; filename="asrun-draft.bxf.xml"')
       .send(bxfXml)
   }
   server.get('/api/v1/compliance/asrun/bxf', getAsRunBxfHandler as any)
@@ -3898,7 +5156,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return reply.code(403).send({ error: 'Sem permissão para consultar conformidade regulatória.' })
     }
     const query = request.query
-    const channel = query.channelId ? await getChannel(app.db, query.channelId) : null
+    const channel = query.channelId ? await getChannel(app.db, query.channelId, true) : null
     const summary = await getAncineComplianceSummary(
       app.db,
       query.channelId,
@@ -3918,7 +5176,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const query = request.query as { channelId?: string; since?: string; until?: string; limit?: string }
     const limit = Math.min(2000, Math.max(1, Number(query.limit ?? 1000) || 1000))
     const entries = await listAsRun(app.db, query.channelId, query.since, limit, query.until)
-    const channel = query.channelId ? await getChannel(app.db, query.channelId) : null
+    const channel = query.channelId ? await getChannel(app.db, query.channelId, true) : null
     const csv = exportAsRunCsv(entries, channel?.rate ?? RATE_PADRAO)
     return reply
       .header('content-type', 'text/csv; charset=utf-8')
@@ -3943,6 +5201,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
     return {
       channelId,
+      channelName: runtime.channel.name,
+      rate: runtime.channel.rate,
+      nowFrames: framesSinceMidnight(new Date(), runtime.channel.rate),
+      simulated: !(runtime.transport instanceof EngineTransport),
+      secondaryEvents: runtime.graphics.scheduler.getEvents().filter(event=>event.enabled && event.rundownItemId===runtime.transport.state().onAir?.itemId && event.triggerMode==='MANUAL'),
       layers: runtime.graphics.getLayers(),
     }
   })
@@ -4045,6 +5308,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       commandType: 'SPLICE_INSERT',
     }
     const result = globalScteDispatcher.dispatchSpliceInsert(scteMessage)
+    const occurredAt = new Date().toISOString()
+    await app.db.insert(healthEvents).values({id:randomUUID(),channelId:channelId ?? null,component:'SCTE',state:'generated',severity:'INFO',message:`Evento ${scteMessage.spliceEventId} gerado e colocado na fila dos gateways configurados. Inserção física não confirmada.`,occurredAt})
+    await emitIntegrationEvent(app.db,'scte.cue',{...scteMessage,scte35Hex:result.scte35.toString('hex'),scte104Hex:result.scte104.payload.toString('hex')},channelId)
     return {
       success: true,
       spliceEventId: scteMessage.spliceEventId,
@@ -4055,6 +5321,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       vancLine: result.scte104.line,
       latencyMs: result.latencyMs,
       status: result.status,
+      physicalInsertionConfirmed: false,
     }
   })
 
@@ -4085,21 +5352,26 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   server.post('/api/channels/:id/projects/:projectId/restore', async (request, reply) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode restaurar projetos.' })
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Restaurar um projeto substitui entradas, formato e saídas; exige Supervisor ou Administrador.' })
     const { id: channelId, projectId } = request.params as { id: string; projectId: string }
-    try {
-      const restored = await restoreChannelProject(app.db, channelId, projectId)
-      const runtime = await runtimeFor(app, channelId)
+    if (!(await getChannel(app.db,channelId))) return reply.code(404).send({error:'Canal não encontrado.'})
+    return configureChannel(channelId, reply, async () => {
+      const currentRuntime = app.runtimes.get(channelId), state = currentRuntime?.transport.state()
+      if (state?.playing || state?.onAir || state?.preview) return reply.code(409).send({error:'Pare o PGM e limpe o CUE antes de restaurar o projeto. Entradas, formato e saídas serão substituídos com interrupção controlada.'})
+      let restored: Awaited<ReturnType<typeof restoreChannelProject>>
+      try { restored = await restoreChannelProject(app.db,channelId,projectId) }
+      catch (error) { return reply.code(400).send({error:error instanceof Error ? error.message : 'Não foi possível restaurar o projeto.'}) }
+      await configurationAudit(request,channelId,'CHANNEL_PROJECT_RESTORED',{projectId,editorialRestore:true,operationalHistoryPreserved:true})
+      const recovery = await rebuildChannel(channelId,() => syncDistribution(app))
+      const runtime = app.runtimes.get(channelId)
       if (runtime) {
         const first = (await listRundowns(app.db)).find((row) => row.channelId === channelId)
         if (first) await runtime.load(first.id)
         await runtime.refresh()
       }
       onChange()
-      return { ok: true, restored }
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : 'Não foi possível restaurar o projeto.' })
-    }
+      return { ok: true, restored, ...recovery }
+    })
   })
   server.get('/api/external/devices', async (request, reply) => {
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para consultar automação externa.' })
@@ -4117,12 +5389,56 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para configurar automação externa.' })
     const body = externalDeviceSchema.partial().safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-    await app.db.update(externalDevices).set(body.data).where(eq(externalDevices.id, (request.params as { id: string }).id))
+    if (!Object.keys(body.data).length) return reply.code(400).send({ error: 'Informe uma alteração do equipamento.' })
+    const deviceId = (request.params as { id: string }).id
+    if (!app.db.select().from(externalDevices).where(eq(externalDevices.id, deviceId)).get()) return reply.code(404).send({ error: 'Equipamento não encontrado.' })
+    await app.db.update(externalDevices).set(body.data).where(eq(externalDevices.id, deviceId))
+    globalStudioAutomationGateway.configureDevices(app.db.select().from(externalDevices).all())
+    await logDecision(app, '@devices', null, 'DEVICE_CONFIG_UPDATED', { deviceId, changes: body.data, physicalCommandSent: false }, await usernameOf(request))
     return { ok: true }
   })
   server.get('/api/external/audit', async (request, reply) => {
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para consultar automação externa.' })
     return { entries: globalStudioAutomationGateway.getAuditEntries(100) }
+  })
+
+  // Browser station uses its authenticated role, never learns the service
+  // control token. Request IDs survive restart via the operator audit ledger.
+  const deviceCommands = new ExternalCommandLedger(app.db)
+  server.get('/api/external/commands', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para consultar comandos externos.' })
+    return { runs: deviceCommands.list(), uncertainState: 'FIRING significa pedido em andamento ou incerto após queda. Confira o equipamento; não há reenvio automático.' }
+  })
+  server.post('/api/external/commands/:id/acknowledge', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para reconhecer a incerteza de comandos externos.' })
+    const body = z.object({ note: z.string().trim().min(10).max(1000) }).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Registre o que foi conferido no equipamento (mínimo de 10 caracteres).' })
+    try {
+      if (!deviceCommands.acknowledge((request.params as { id: string }).id, await usernameOf(request), body.data.note)) return reply.code(409).send({ error: 'Pedido não encontrado ou não está incerto.' })
+      return { ok: true, physicalExecutionConfirmed: false, message: 'Incerteza reconhecida pelo operador. O pedido original continua sem confirmação física; nenhum comando foi reenviado.' }
+    } catch { return reply.code(409).send({ error: 'Pedido ainda em andamento. Aguarde a resposta antes de reconhecer a incerteza.' }) }
+  })
+  server.post('/api/external/devices/:id/control', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para operar equipamentos externos.' })
+    const body = z.object({ requestId: z.string().uuid(), action: z.enum(['PING', 'ROUTE_CROSSPOINT']),
+      source: z.number().int().min(0).max(65_535).optional(), destination: z.number().int().min(0).max(65_535).optional() })
+      .refine(value => value.action === 'PING' || value.source !== undefined && value.destination !== undefined).safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe identificador do pedido, ação e portas inteiras a partir de zero para roteamento.' })
+    const deviceId = (request.params as { id: string }).id
+    const rows = await app.db.select().from(externalDevices)
+    const device = rows.find(row => row.id === deviceId)
+    if (!device) return reply.code(404).send({ error: 'Equipamento não encontrado.' })
+    if (!device.enabled || device.kind !== 'VIDEOHUB_ROUTER') return reply.code(409).send({ error: 'Comando não enviado. Somente o driver Videohub está disponível; ATEM/GPIO exigem integração física própria.' })
+    globalStudioAutomationGateway.configureDevices(rows)
+    const { requestId, ...command } = body.data
+    try {
+      const outcome = await deviceCommands.execute(requestId, { deviceId, ...command }, await usernameOf(request), () =>
+        globalStudioAutomationGateway.execute({ deviceId, targetDevice: device.kind, action: command.action, params: { source: command.source, destination: command.destination } }, EXTERNAL_CONTROL_TOKEN))
+      if (outcome.run.state !== 'EXECUTED') return reply.code(409).send({ ...outcome, error: outcome.run.state === 'FIRING' ? 'Pedido em andamento ou incerto. Confira o equipamento antes de enviar um novo comando.' : outcome.run.result?.error ?? 'Equipamento não confirmou o pedido.' })
+      return { ...outcome, physicalOutputValidated: false }
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof DeviceCommandConflict ? error.message : 'Pedido incerto. Confira o equipamento e o registro antes de repetir; não há reenvio automático.' })
+    }
   })
 
   server.post('/api/v1/external/control', async (request, reply) => {
@@ -4131,6 +5447,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     const body = z.object({
       targetDevice: z.enum(['ATEM_SWITCHER', 'VIDEOHUB_ROUTER', 'GPIO_RELAY', 'BLACKMAGIC_ATEM', 'LEITCH_ROUTER']),
+      deviceId: z.string().min(1).max(200),
+      requestId: z.string().uuid(),
       action: z.string().min(1),
       parameters: z.record(z.unknown()).optional(),
       params: z.record(z.unknown()).optional(),
@@ -4140,12 +5458,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }).safeParse(request.body)
 
     if (!body.success) {
-      return reply.code(400).send({ error: 'Parâmetros de comando externo inválidos.', details: body.error.format() })
+      return reply.code(400).send({ error: 'Informe equipamento explícito, requestId UUID estável e parâmetros válidos. A rota de serviço não deduz equipamento nem repete pedidos sem identidade.' })
     }
 
-    const token = body.data.token ?? headerToken
+    const token = body.data.token ?? headerToken ?? request.headers.authorization?.replace(/^Bearer /i, '')
     if (EXTERNAL_CONTROL_TOKEN && EXTERNAL_CONTROL_TOKEN.trim() !== '') {
-      if (!token || token.trim() !== EXTERNAL_CONTROL_TOKEN.trim()) {
+      if (!token || !secretEquals(token, EXTERNAL_CONTROL_TOKEN)) {
         return reply.code(401).send({ error: 'Chave de controle externo inválida ou ausente (X-RPlayout-Control-Token).' })
       }
     } else {
@@ -4154,26 +5472,23 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       }
     }
 
-    const command: ExternalDeviceCommand = {
-      targetDevice: (body.data.targetDevice === 'BLACKMAGIC_ATEM' ? 'ATEM_SWITCHER' : body.data.targetDevice as any),
-      action: body.data.action,
-      params: body.data.parameters ?? body.data.params ?? {},
-      token,
+    const rows = await app.db.select().from(externalDevices)
+    const device = rows.find(row => row.id === body.data.deviceId)
+    if (!device) return reply.code(404).send({ error: 'Equipamento não encontrado.' })
+    if (!device.enabled || device.kind !== 'VIDEOHUB_ROUTER' || body.data.targetDevice !== device.kind) return reply.code(409).send({ error: 'Comando não enviado: equipamento desativado, tipo diferente ou driver físico indisponível. Somente Videohub está implementado.' })
+    if (body.data.parameters && body.data.params) return reply.code(400).send({ error: 'Use somente parameters ou params, sem configuração ambígua.' })
+    const parsed = z.object({ source: z.number().int().min(0).max(65_535).optional(), destination: z.number().int().min(0).max(65_535).optional() }).strict().safeParse(body.data.parameters ?? body.data.params ?? {})
+    if (!parsed.success || !['PING', 'ROUTE_CROSSPOINT'].includes(body.data.action) || body.data.action === 'ROUTE_CROSSPOINT' && (parsed.data.source === undefined || parsed.data.destination === undefined)) return reply.code(400).send({ error: 'Use PING ou ROUTE_CROSSPOINT com source/destination inteiros explícitos a partir de zero.' })
+    globalStudioAutomationGateway.configureDevices(rows)
+    const command = { deviceId: device.id, action: body.data.action as 'PING' | 'ROUTE_CROSSPOINT', ...parsed.data }
+    const actor = EXTERNAL_CONTROL_TOKEN ? 'service:external-control' : await usernameOf(request)
+    try {
+      const outcome = await deviceCommands.execute(body.data.requestId, command, actor, () => globalStudioAutomationGateway.execute({ deviceId: device.id, targetDevice: device.kind, action: command.action, params: parsed.data }, EXTERNAL_CONTROL_TOKEN))
+      if (outcome.run.state !== 'EXECUTED') return reply.code(409).send({ ...outcome, success: false, error: 'Pedido falhou ou ficou incerto. Consulte o registro e confira o equipamento; não há reenvio automático.' })
+      return { ...outcome.run.result, ...outcome, physicalOutputValidated: false }
+    } catch (error) {
+      return reply.code(409).send({ success: false, error: error instanceof DeviceCommandConflict ? error.message : 'Pedido incerto. Confira o equipamento e o histórico antes de emitir novo comando.' })
     }
-
-    const channelId = body.data.channelId ?? (await listChannels(app.db))[0]?.id
-    const channel = channelId ? await getChannel(app.db, channelId) : null
-    const rate = channel?.rate ?? RATE_PADRAO
-    const nowFrames = framesSinceMidnight(new Date(), rate)
-    const pgmTimecode = formatTimecode(nowFrames, rate)
-
-    globalStudioAutomationGateway.configureDevices(await app.db.select().from(externalDevices))
-    const execution = await globalStudioAutomationGateway.execute(command, token, pgmTimecode)
-    if (!execution.success && execution.status === 'FAILED' && execution.error?.includes('inválida')) {
-      return reply.code(401).send(execution)
-    }
-
-    return execution
   })
 
   // ==========================================
@@ -4250,6 +5565,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   // 2. Controle de presença e bloqueio otimista de linha
   server.post('/api/v1/rundowns/:id/acquire-lock', async (request, reply) => {
+    if (!(await allowed(request,'PLAYLIST_EDIT'))) return reply.code(403).send({error:'Sem permissão para editar a grade.'})
     const { id } = request.params as { id: string }
     const body = z.object({
       itemId: z.string().optional(),
@@ -4261,8 +5577,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return reply.code(400).send({ error: 'Parâmetros de lock inválidos.', details: body.error.format() })
     }
 
-    const userId = body.data.userId ?? (await usernameOf(request)) ?? 'operador_mcr'
-    const userName = body.data.userName ?? userId
+    if (!await getRundown(app.db,id)) return reply.code(404).send({error:'Grade não encontrada.'})
+    if (body.data.itemId && (await getItem(app.db,body.data.itemId))?.rundownId !== id) return reply.code(404).send({error:'Item não pertence a esta grade.'})
+    const identity = access.identity(request)
+    const userId = identity?.id ?? 'local-operator'
+    const userName = identity?.username ?? 'Operador local'
 
     const result = globalConcurrencyManager.acquireLock({
       rundownId: id,
@@ -4279,6 +5598,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   server.post('/api/v1/rundowns/:id/release-lock', async (request, reply) => {
+    if (!(await allowed(request,'PLAYLIST_EDIT'))) return reply.code(403).send({error:'Sem permissão para editar a grade.'})
     const { id } = request.params as { id: string }
     const body = z.object({
       itemId: z.string().optional(),
@@ -4289,58 +5609,45 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return reply.code(400).send({ error: 'Parâmetros de release inválidos.', details: body.error.format() })
     }
 
-    const userId = body.data.userId ?? (await usernameOf(request)) ?? 'operador_mcr'
+    if (!await getRundown(app.db,id)) return reply.code(404).send({error:'Grade não encontrada.'})
+    if (body.data.itemId && (await getItem(app.db,body.data.itemId))?.rundownId !== id) return reply.code(404).send({error:'Item não pertence a esta grade.'})
+    const userId = access.identity(request)?.id ?? 'local-operator'
     const result = globalConcurrencyManager.releaseLock({
       rundownId: id,
       itemId: body.data.itemId,
       userId,
     })
 
+    if (!result.success) return reply.code(409).send({error:'Este bloqueio pertence a outro operador.',lockState:result.lockState})
     return { success: true, lockState: result.lockState }
   })
 
   // 3. Resolução e merge assistido de conflitos concorrentes
   server.post('/api/v1/rundowns/:id/resolve-conflict', async (request, reply) => {
+    if (!(await allowed(request,'PLAYLIST_EDIT'))) return reply.code(403).send({error:'Sem permissão para editar a grade.'})
     const { id } = request.params as { id: string }
     const body = z.object({
       conflictId: z.string().optional(),
       itemId: z.string().min(1),
-      clientRundownVersion: z.number().int().default(1),
+      clientRundownVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
       resolutionStrategy: z.enum(['OVERWRITE_FORCE', 'DISCARD_MINE', 'APPLY_MERGED_FIELDS']),
-      mergedData: z.record(z.unknown()).optional(),
-      patch: z.record(z.unknown()).optional(),
+      mergedData: collaborativePatchSchema.optional(),
+      patch: collaborativePatchSchema.optional(),
     }).safeParse(request.body)
 
     if (!body.success) {
       return reply.code(400).send({ error: 'Parâmetros de resolução de conflito inválidos.', details: body.error.format() })
     }
 
-    const item = await getItem(app.db, body.data.itemId)
-    if (!item) {
-      return reply.code(404).send({ error: `Item não encontrado: ${body.data.itemId}` })
-    }
-
-    const result = globalConcurrencyManager.resolveConflict({
-      rundownId: id,
-      itemId: body.data.itemId,
-      decision: body.data as ConflictResolutionDecision,
-      currentItemState: item as any,
-      clientPatch: body.data.patch ?? body.data.mergedData,
-    })
-
-    // Aplica alterações permitidas no banco de dados
-    const patch = result.resolvedData
-    const updates: Record<string, unknown> = {}
-    if (typeof patch.title === 'string') updates.title = patch.title
-    if (typeof patch.durationOverride === 'number') updates.durationOverride = patch.durationOverride
-    if (typeof patch.minDuration === 'number') updates.minDuration = patch.minDuration
-    if (typeof patch.trimmable === 'boolean') updates.trimmable = patch.trimmable
-    if (typeof patch.optional === 'boolean') updates.optional = patch.optional
-    if (typeof patch.protected === 'boolean') updates.protected = patch.protected
-    if (typeof patch.notes === 'string') updates.notes = patch.notes
-
-    if (Object.keys(updates).length > 0) {
-      await app.db.update(rundownItems).set(updates).where(eq(rundownItems.id, body.data.itemId))
+    const selectedPatch = body.data.resolutionStrategy === 'DISCARD_MINE' ? {} :
+      body.data.resolutionStrategy === 'APPLY_MERGED_FIELDS' ? body.data.mergedData ?? body.data.patch ?? {} : body.data.patch ?? body.data.mergedData ?? {}
+    let result
+    try{
+      result=applyCollaborativeEdit(app.db,globalConcurrencyManager,id,body.data.itemId,selectedPatch,
+        {expectedRundownVersion:body.data.clientRundownVersion},item=>collaborativePatchSchema.safeParse({title:item.title,durationOverride:item.durationOverride,minDuration:item.minDuration}).success,body.data.resolutionStrategy==='DISCARD_MINE')
+    }catch(error){
+      if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload)
+      throw error
     }
 
     for (const runtime of app.runtimes.values()) {
@@ -4354,64 +5661,51 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       success: true,
       newRundownVersion: result.newRundownVersion,
       newLineVersion: result.newLineVersion,
-      resolvedData: result.resolvedData,
+      resolvedData: result.item,
     }
   })
 
   // 4. Atualização de item com validação de versão otimista e detecção de 409 Conflict
+  server.get('/api/v1/rundowns/:id/revisions',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    const result=app.db.transaction(tx=>{
+      const grade=tx.select().from(rundowns).where(eq(rundowns.id,id)).get()
+      if(!grade)return null
+      const items=tx.select().from(rundownItems).where(eq(rundownItems.rundownId,id)).orderBy(asc(rundownItems.sortOrder)).all()
+      return {rundownId:id,rundownVersion:globalConcurrencyManager.getRundownVersion(id),
+        items:items.map(row=>({item:toItem(row),lineVersion:globalConcurrencyManager.getLineVersion(id,row.id)})),eTag:globalConcurrencyManager.generateETag(id)}
+    })
+    if(!result)return reply.code(404).send({error:'Grade não encontrada.'})
+    void reply.header('ETag',result.eTag)
+    return result
+  })
+
   server.put('/api/v1/rundowns/:id/items/:itemId', async (request, reply) => {
+    if (!(await allowed(request,'PLAYLIST_EDIT'))) return reply.code(403).send({error:'Sem permissão para editar a grade.'})
     const { id, itemId } = request.params as { id: string; itemId: string }
     const rawIfMatch = request.headers['if-match']
     const ifMatchHeader = Array.isArray(rawIfMatch) ? rawIfMatch[0] : rawIfMatch
 
     const body = z.object({
-      expectedRundownVersion: z.number().int().optional(),
-      expectedLineVersion: z.number().int().optional(),
-      patch: z.record(z.unknown()),
+      expectedRundownVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+      expectedLineVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+      patch: collaborativePatchSchema,
     }).safeParse(request.body)
 
     if (!body.success) {
       return reply.code(400).send({ error: 'Payload de atualização de item inválido.', details: body.error.format() })
     }
 
-    const item = await getItem(app.db, itemId)
-    if (!item) {
-      return reply.code(404).send({ error: `Item não encontrado: ${itemId}` })
+    let result
+    try{
+      result=applyCollaborativeEdit(app.db,globalConcurrencyManager,id,itemId,body.data.patch,
+        {expectedRundownVersion:body.data.expectedRundownVersion,expectedLineVersion:body.data.expectedLineVersion,ifMatchHeader},item=>collaborativePatchSchema.safeParse({title:item.title,durationOverride:item.durationOverride,minDuration:item.minDuration}).success)
+    }catch(error){
+      if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload)
+      throw error
     }
-
-    const validation = globalConcurrencyManager.validateOptimisticLock({
-      rundownId: id,
-      itemId,
-      expectedRundownVersion: body.data.expectedRundownVersion,
-      expectedLineVersion: body.data.expectedLineVersion,
-      ifMatchHeader,
-      serverItemState: item as any,
-      clientPatch: body.data.patch,
-    })
-
-    if (!validation.valid && validation.errorPayload) {
-      return reply.code(409).send(validation.errorPayload)
-    }
-
-    // Aplica alterações na linha
-    const patch = body.data.patch
-    const updates: Record<string, unknown> = {}
-    if (typeof patch.title === 'string') updates.title = patch.title
-    if (typeof patch.durationOverride === 'number') updates.durationOverride = patch.durationOverride
-    if (typeof patch.minDuration === 'number') updates.minDuration = patch.minDuration
-    if (typeof patch.trimmable === 'boolean') updates.trimmable = patch.trimmable
-    if (typeof patch.optional === 'boolean') updates.optional = patch.optional
-    if (typeof patch.protected === 'boolean') updates.protected = patch.protected
-    if (typeof patch.notes === 'string') updates.notes = patch.notes
-
-    if (Object.keys(updates).length > 0) {
-      await app.db.update(rundownItems).set(updates).where(eq(rundownItems.id, itemId))
-    }
-
-    const newRundownVersion = globalConcurrencyManager.incrementRundownVersion(id)
-    const newLineVersion = globalConcurrencyManager.incrementLineVersion(id, itemId)
-    const eTag = globalConcurrencyManager.generateETag(id, itemId)
-    void reply.header('ETag', eTag)
+    const {newRundownVersion,newLineVersion}=result
+    void reply.header('ETag',result.eTag)
 
     for (const runtime of app.runtimes.values()) {
       if (runtime.view?.rundown.id === id) {
@@ -4424,16 +5718,18 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       success: true,
       newRundownVersion,
       newLineVersion,
-      item: { ...item, ...updates },
+      item: result.item,
     }
   })
 
-  // 5. Autofill inteligente de gap em 1-clique
+  // Compatibility route is planning only. Applying the reviewed proposal uses
+  // the canonical autofill workflow, never a fabricated tail/slate item.
   server.post('/api/v1/rundowns/:id/autofill-gap', async (request, reply) => {
+    if (!(await allowed(request,'PLAYLIST_EDIT'))) return reply.code(403).send({error:'Sem permissão para planejar preenchimento.'})
     const { id } = request.params as { id: string }
     const body = z.object({
-      gapStartMs: z.number().optional(),
-      gapDurationMs: z.number().positive().default(30000),
+      gapStartMs: z.number().min(0).max(86_400_000).optional(),
+      gapDurationMs: z.number().positive().max(86_400_000).default(30000),
       preferredCategory: z.string().optional().default('FILLER'),
       allowExtendPrevious: z.boolean().optional().default(true),
     }).safeParse(request.body ?? {})
@@ -4442,68 +5738,19 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return reply.code(400).send({ error: 'Parâmetros de autofill inválidos.', details: body.error.format() })
     }
 
-    const rundown = await getRundown(app.db, id)
-    if (!rundown) {
-      return reply.code(404).send({ error: `Rundown não encontrado: ${id}` })
-    }
-
-    const channel = await getChannel(app.db, rundown.channelId)
-    const rate = channel?.rate ?? RATE_PADRAO
-    const gapFrames = Math.round((body.data.gapDurationMs * rate.num) / (1000 * rate.den))
-
-    // Localiza asset compatível no acervo
-    const assets = await listAssets(app.db)
-    const fillerAsset = assets.find((a) => !a.ignored && (a.categoryId === 'FILLER' || a.title.toLowerCase().includes('filler') || a.title.toLowerCase().includes('promo')))
-
-    const existingItems = await listItems(app.db, id)
-    const nextOrder = existingItems.length > 0 ? Math.max(...existingItems.map((i) => i.order)) + 1 : 0
-
-    const insertedId = randomUUID()
-    await app.db.insert(rundownItems).values({
-      id: insertedId,
-      rundownId: id,
-      sortOrder: nextOrder,
-      type: 'FILLER',
-      eventType: 'FILLER',
-      title: fillerAsset ? `[AUTOFILL] ${fillerAsset.title}` : `[AUTOFILL] Contingência (${Math.round(body.data.gapDurationMs / 1000)}s)`,
-      mediaId: fillerAsset?.id ?? null,
-      sourceRef: null,
-      trimmable: true,
-      optional: true,
-      protected: false,
-      durationOverride: gapFrames,
-      minDuration: 1,
-      anchor: { kind: 'FLOW' },
-      onOverrun: 'TRIM_PREV',
-      elastic: null,
-      blockId: null,
-      fit: 'PILLARBOX',
-      audioTrack: null,
-      locked: false,
-      autoNext: true,
-      loop: false,
-      notes: 'Inserido automaticamente pelo Autofill Inteligente de Gap',
-    })
-
-    const newRundownVersion = globalConcurrencyManager.incrementRundownVersion(id)
-
-    let activeSnapshot: any = null
-    for (const runtime of app.runtimes.values()) {
-      if (runtime.view?.rundown.id === id) {
-        await runtime.refresh()
-        activeSnapshot = snapshot(app, runtime)
-      }
-    }
-    onChange()
-
-    return {
-      success: true,
-      strategyApplied: 'INSERT_OPTIMAL_FILLER',
-      insertedItemId: insertedId,
-      newRundownVersion,
-      remainingGapMs: 0,
-      ...(activeSnapshot ?? {}),
-    }
+    try {
+      return app.db.transaction(tx=>{
+        const state=readEditorialState(app.db,id)
+        if(!state)throw new CollaborativeEditError(404,{error:'Grade ativa não encontrada.'})
+        assertEditorialAccess(request,state.channel.id)
+        if(request.headers['if-match'])requireEditorialRevision(app.concurrency,id,request.headers['if-match'],state.editorialRevision)
+        const result=proposeFill(tx,state,'WINDOW',{minutes:body.data.gapDurationMs/60000,categories:[body.data.preferredCategory],
+          ...(body.data.gapStartMs===undefined?{}:{insertAtMinute:body.data.gapStartMs/60000})},access.identity(request)?.username??null)
+        return {...result,success:true,strategyApplied:'REVIEW_FILL_PROPOSAL',requiresReview:true,applied:false,
+          remainingGapMs:body.data.gapDurationMs,applyEndpoint:`/api/rundowns/${id}/autofill`,
+          applyParameters:{proposalId:result.proposal.id},applyRevision:result.proposal.editorialRevision}
+      },{behavior:'immediate'})
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
   })
 }
 
@@ -4520,3 +5767,4 @@ function lanAddress(): string {
   }
   return '127.0.0.1'
 }
+import {previewCadenceConversion,applyCadenceConversion} from './domain/cadence-conversion.js'

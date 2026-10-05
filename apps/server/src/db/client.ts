@@ -1,6 +1,14 @@
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import * as schema from './schema.js'
+import { createHash } from 'node:crypto'
+import { migrateSecretVault } from './vault-migration.js'
+import {migrateEditorialRevisions} from './editorial-revisions.js'
+import {migrateTrimCadence} from './trim-cadence.js'
+import {migrateAudioBus} from './audio-bus.js'
+import {migrateChannelConfiguration} from './channel-configuration.js'
+import {migratePresetConfiguration} from './preset-configuration.js'
+import {migrateQcRevisions} from './qc-revisions.js'
 
 /**
  * DDL idempotente. O banco de um playout tem que sobreviver a queda de energia,
@@ -73,6 +81,9 @@ CREATE TABLE IF NOT EXISTS media_assets (
   default_audio TEXT,
   loudness_file TEXT,
   suggested_trim TEXT,
+  qc_status TEXT NOT NULL DEFAULT 'APPROVED',
+  qc_notes TEXT,
+  qc_checked_at TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS media_assets_hash ON media_assets (content_hash);
@@ -135,6 +146,22 @@ CREATE TABLE IF NOT EXISTS playlist_versions (
   published_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS playlist_versions_rundown ON playlist_versions (rundown_id, published_at);
+
+-- A grade editável e a lista operacional publicada são coisas diferentes.
+-- Cada publicação preserva itens e resultado de timing para auditoria/rollback.
+CREATE TABLE IF NOT EXISTS operational_playlist_revisions (
+  id TEXT PRIMARY KEY,
+  rundown_id TEXT NOT NULL REFERENCES rundowns (id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 0,
+  payload TEXT NOT NULL,
+  published_by TEXT,
+  published_at TEXT NOT NULL,
+  activated_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS operational_playlist_revision ON operational_playlist_revisions (rundown_id, revision);
+CREATE INDEX IF NOT EXISTS operational_playlist_active ON operational_playlist_revisions (rundown_id, active);
 
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -308,6 +335,11 @@ CREATE TABLE IF NOT EXISTS multiview_configs (
   cells TEXT,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS channel_checkpoints (
+  channel_id TEXT PRIMARY KEY REFERENCES channels (id) ON DELETE CASCADE,
+  payload TEXT NOT NULL,
+  saved_at TEXT NOT NULL
+);
 `
 
 export type Db = ReturnType<typeof openDatabase>['db']
@@ -326,13 +358,12 @@ function abrirSqlite(file: string): Database.Database {
     return new Database(file)
   } catch (falha) {
     const texto = falha instanceof Error ? falha.message : String(falha)
-    if (!texto.includes('bindings file')) throw falha
+    if (!texto.includes('bindings file') && !texto.includes('NODE_MODULE_VERSION')) throw falha
     throw new Error(
-      `O SQLite não abriu: não há binário do better-sqlite3 para o Node ${process.version}.\n` +
-        'Este projeto roda em Node 22 ou 24. Rodando noutra versão (23, por exemplo),\n' +
-        'o pacote não acha binário pronto e tentaria compilar, o que exige as ferramentas\n' +
-        'de compilação do Visual Studio.\n' +
-        'Conserto: instale o Node 22 LTS ou o 24, apague node_modules e rode `pnpm install`.',
+      `O SQLite nativo não é compatível com o runtime Node ${process.version} desta instalação.\n` +
+        'O pacote portátil deve incluir o Node e o SQLite testados juntos.\n' +
+        'Execute pelo iniciador do pacote completo e use o verificador de integridade; não é necessário instalar tsx, tsc ou módulos manualmente.\n' +
+        `Detalhe: ${texto}`,
     )
   }
 }
@@ -341,6 +372,10 @@ export function openDatabase(file: string) {
   const sqlite = abrirSqlite(file)
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
+  sqlite.pragma('synchronous = FULL')
+  sqlite.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)')
+  const migrateBaseline = sqlite.transaction(() => {
+  if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version = 1').get()) return
   sqlite.exec(DDL)
   // Colunas acrescentadas depois. Um banco de playout não pode ser recriado do
   // zero a cada versão, então a adição é tentada e ignorada se já existir.
@@ -375,17 +410,135 @@ export function openDatabase(file: string) {
     'ALTER TABLE rundown_items ADD COLUMN live_fallback_media_id TEXT',
     'ALTER TABLE media_assets ADD COLUMN audio_tracks TEXT',
     'ALTER TABLE media_assets ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0',
+    "ALTER TABLE media_assets ADD COLUMN qc_status TEXT NOT NULL DEFAULT 'APPROVED'",
+    'ALTER TABLE media_assets ADD COLUMN qc_notes TEXT',
+    'ALTER TABLE media_assets ADD COLUMN qc_checked_at TEXT',
     'ALTER TABLE operator_decisions ADD COLUMN actor_username TEXT',
     'ALTER TABLE health_events ADD COLUMN acknowledged_at TEXT',
     "ALTER TABLE health_events ADD COLUMN severity TEXT NOT NULL DEFAULT 'INFO'",
     'ALTER TABLE playlist_versions ADD COLUMN scheduled_date TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS media_assets_path ON media_assets (path)',
   ]) {
-    try {
-      sqlite.exec(alter)
-    } catch {
-      // Coluna já existe.
+    const column = /^ALTER TABLE (\w+) ADD COLUMN (\w+) /i.exec(alter)
+    if (column) {
+      const columns = sqlite.pragma(`table_info(${column[1]})`) as Array<{ name: string }>
+      if (columns.some((entry) => entry.name === column[2])) continue
     }
+    // Ignore only a column confirmed present; disk/corruption/constraint errors
+    // must abort and roll back the migration instead of leaving half a schema.
+    sqlite.exec(alter)
   }
+  sqlite.prepare('INSERT INTO schema_migrations VALUES (1, ?, ?)').run('legacy-baseline-and-checkpoints', new Date().toISOString())
+  })
+  const migratePolicies = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=2').get()) return
+    sqlite.exec(`CREATE TABLE channel_operational_policies (
+      channel_id TEXT PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`)
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (2, ?, ?)').run('durable-probe-policies', new Date().toISOString())
+  })
+  const migrateMediaWorkflow = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=3').get()) return
+    sqlite.exec(`
+      CREATE TABLE ingest_batches (id TEXT PRIMARY KEY, roots TEXT NOT NULL, measure INTEGER NOT NULL,
+        state TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE media_versions (id TEXT PRIMARY KEY, asset_id TEXT NOT NULL REFERENCES media_assets(id),
+        revision INTEGER NOT NULL, content_hash TEXT NOT NULL, metadata TEXT NOT NULL, archive_path TEXT,
+        created_at TEXT NOT NULL, UNIQUE(asset_id,revision), UNIQUE(asset_id,content_hash));
+      CREATE TABLE media_jobs (id TEXT PRIMARY KEY, version_id TEXT NOT NULL REFERENCES media_versions(id),
+        kind TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        output_path TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(version_id,kind));
+      CREATE INDEX media_jobs_pending ON media_jobs(state,created_at);
+    `)
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (3, ?, ?)').run('durable-ingest-versions-and-proxies', new Date().toISOString())
+  })
+  const migrateSessions = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=4').get()) return
+    for (const row of sqlite.prepare('SELECT token FROM sessions').all() as Array<{ token: string }>) {
+      sqlite.prepare('UPDATE sessions SET token=? WHERE token=?').run(createHash('sha256').update(row.token).digest('hex'), row.token)
+    }
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (4, ?, ?)').run('hashed-session-tokens', new Date().toISOString())
+  })
+  const migrateAccess = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=5').get()) return
+    sqlite.exec(`CREATE TABLE user_access (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      channel_ids TEXT, station_ips TEXT, updated_at TEXT NOT NULL)`)
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (5, ?, ?)').run('channel-and-station-access', new Date().toISOString())
+  })
+  const migrateExecutionAudit = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=6').get()) return
+    sqlite.exec(`ALTER TABLE as_run ADD COLUMN revision_id TEXT;
+      ALTER TABLE as_run ADD COLUMN media_hash TEXT;
+      ALTER TABLE as_run ADD COLUMN start_position_frames INTEGER;
+      ALTER TABLE as_run ADD COLUMN end_position_frames INTEGER;
+      CREATE TABLE interrupted_items (id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES channels(id),
+        rundown_id TEXT NOT NULL, item_id TEXT NOT NULL, revision_id TEXT, title TEXT NOT NULL,
+        frames INTEGER NOT NULL, specification TEXT NOT NULL, state TEXT NOT NULL,
+        created_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT);
+      CREATE INDEX interrupted_items_pending ON interrupted_items(channel_id,state);`)
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (6, ?, ?)').run('execution-provenance-and-interrupted-items', new Date().toISOString())
+  })
+  const migrateQc = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=7').get()) return
+    sqlite.exec(`ALTER TABLE channels ADD COLUMN qc_profile TEXT;
+      ALTER TABLE media_assets ADD COLUMN video_codec TEXT;
+      CREATE TABLE qc_decisions (id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+        channel_id TEXT NOT NULL, status TEXT NOT NULL, notes TEXT, checks TEXT NOT NULL, actor TEXT, created_at TEXT NOT NULL);
+      CREATE INDEX qc_decisions_version ON qc_decisions(asset_id,content_hash,channel_id,created_at);`)
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (7, ?, ?)').run('qc-profiles-and-version-decisions', new Date().toISOString())
+  })
+  const migrateHostMetrics = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=8').get()) return
+    sqlite.exec('CREATE TABLE host_metric_samples (sampled_at TEXT PRIMARY KEY,payload TEXT NOT NULL)')
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (8, ?, ?)').run('host-resource-history', new Date().toISOString())
+  })
+  const migrateIntegrationOutbox = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=10').get()) return
+    sqlite.exec(`CREATE TABLE integration_deliveries (id TEXT PRIMARY KEY,integration_id TEXT NOT NULL,channel_id TEXT,
+      event TEXT NOT NULL,target TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL,
+      next_attempt_at TEXT NOT NULL,last_error TEXT,created_at TEXT NOT NULL,delivered_at TEXT);
+      CREATE INDEX integration_deliveries_due ON integration_deliveries(state,next_attempt_at);`)
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (10,?,?)').run('durable-external-alert-deliveries', new Date().toISOString())
+  })
+  const migrateSecondaryEvents = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=11').get()) return
+    sqlite.exec(`CREATE TABLE secondary_events (id TEXT PRIMARY KEY,channel_id TEXT NOT NULL REFERENCES channels(id),
+      item_id TEXT NOT NULL REFERENCES rundown_items(id) ON DELETE CASCADE,definition TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+      CREATE INDEX secondary_events_item ON secondary_events(item_id);
+      CREATE TABLE secondary_event_runs (id TEXT PRIMARY KEY,channel_id TEXT NOT NULL,execution_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,revision_id TEXT,event_id TEXT NOT NULL,mode TEXT NOT NULL,state TEXT NOT NULL,
+      frames INTEGER NOT NULL,created_at TEXT NOT NULL,completed_at TEXT,error TEXT);
+      CREATE UNIQUE INDEX secondary_event_runs_pass ON secondary_event_runs(execution_id,event_id,mode);
+      CREATE INDEX secondary_event_runs_channel ON secondary_event_runs(channel_id,created_at);`)
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (11,?,?)').run('published-secondary-events-and-durable-dispatch-ledger',new Date().toISOString())
+  })
+  const migrateTimingZones = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=13').get()) return
+    sqlite.exec("ALTER TABLE rundowns ADD COLUMN protected_zones TEXT NOT NULL DEFAULT '[]'")
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (13,?,?)').run('published-protected-timing-zones', new Date().toISOString())
+  })
+  const migrateAsRunEvidence = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=14').get()) return
+    sqlite.exec("ALTER TABLE as_run ADD COLUMN rate_num INTEGER; ALTER TABLE as_run ADD COLUMN rate_den INTEGER; ALTER TABLE as_run ADD COLUMN execution_kind TEXT NOT NULL DEFAULT 'UNKNOWN'; ALTER TABLE as_run ADD COLUMN duration_evidence TEXT NOT NULL DEFAULT 'UNKNOWN'")
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (14,?,?)').run('asrun-historical-rate-and-execution-evidence', new Date().toISOString())
+  })
+  const migrateChannelArchive = sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version=15').get()) return
+    sqlite.exec('ALTER TABLE channels ADD COLUMN archived_at TEXT')
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (15,?,?)').run('non-destructive-channel-archive',new Date().toISOString())
+  })
+  const migrateCadence=sqlite.transaction(()=>{
+    if(sqlite.prepare('SELECT version FROM schema_migrations WHERE version=16').get())return
+    sqlite.exec(`ALTER TABLE rundowns ADD COLUMN publication_required INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE channel_cadence_conversions(id TEXT PRIMARY KEY,channel_id TEXT NOT NULL REFERENCES channels(id),
+      fingerprint TEXT NOT NULL,from_num INTEGER NOT NULL,from_den INTEGER NOT NULL,to_num INTEGER NOT NULL,to_den INTEGER NOT NULL,
+      snapshot TEXT NOT NULL,created_at TEXT NOT NULL,actor TEXT);
+      CREATE INDEX cadence_conversions_channel ON channel_cadence_conversions(channel_id,created_at);`)
+    sqlite.prepare('INSERT INTO schema_migrations VALUES (16,?,?)').run('reviewed-editorial-cadence-conversion',new Date().toISOString())
+  })
+  try { migrateBaseline(); migratePolicies(); migrateMediaWorkflow(); migrateSessions(); migrateAccess(); migrateExecutionAudit(); migrateQc(); migrateHostMetrics(); migrateIntegrationOutbox(); migrateSecondaryEvents(); migrateTimingZones(); migrateAsRunEvidence(); migrateChannelArchive(); migrateCadence(); migrateEditorialRevisions(sqlite); migrateTrimCadence(sqlite); migrateAudioBus(sqlite); migrateChannelConfiguration(sqlite); migratePresetConfiguration(sqlite); migrateQcRevisions(sqlite); migrateSecretVault(sqlite) } catch (error) { sqlite.close(); throw error }
   return { sqlite, db: drizzle(sqlite, { schema }) }
 }

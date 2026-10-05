@@ -23,6 +23,18 @@ export interface ContinuityCacheStatus {
   maxQuotaBytes: number
   /** Horas consecutivas de autonomia garantida sem dependência do storage central */
   offlineAutonomyHours: number
+  /** Contagem de acervo não representa uma janela temporal publicada. */
+  coverageBasis?: 'LIBRARY' | 'ORDERED_PLAYLIST'
+  channelId?: string
+  revisionId?: string | null
+  plannedHours?: number
+  proofMessage?: string
+  /** Future storage preparation is distinct from loaded-playlist autonomy. */
+  prefetch?: {
+    from:string; criticalUntil:string; extendedUntil:string; publishedRevisions:number
+    plannedFiles48h:number; preparedFiles48h:number; plannedFiles7d:number; preparedFiles7d:number
+    blockedItems:number; unversionedItems:number
+  }
   /** Estado de saúde operacional do cache local */
   status: ContinuityCacheHealth
 }
@@ -38,10 +50,15 @@ export interface PgmProbeAlert {
   thresholdMs: number
   active: boolean
   autoActionTriggered?: PgmProbeAutoAction
+  requestedAction?: PgmProbeAutoAction
+  actionStatus?: 'DISABLED' | 'PENDING' | 'SUCCEEDED' | 'FAILED'
+  actionMessage?: string
   timestamp: string
 }
 
 export type AsRunExtendedStatus =
+  | 'RUNNING'
+  | 'UNKNOWN'
   | 'PLAYED_FULL'
   | 'INTERRUPTED'
   | 'DROPPED'
@@ -54,12 +71,18 @@ export interface AsRunRecordExtended {
   eventType: string
   scheduledStart: string
   actualStart: string
-  durationFrames: number
+  durationFrames: number | null
+  rate?: { num: number; den: number } | null
+  durationSeconds?: number | null
+  endedBy?: string | null
+  executionKind?: 'NATIVE' | 'SIMULATED' | 'UNKNOWN'
+  durationEvidence?: 'ENGINE_POSITION' | 'CLOCK_ESTIMATE' | 'UNKNOWN'
   deltaFrames: number
   status: AsRunExtendedStatus
-  audioLufs: number
-  audioTruePeakDb: number
-  ancineQuotaEligible: boolean
+  audioLufs: number | null
+  audioTruePeakDb: number | null
+  /** Null means eligibility has not been documented; VT is not proof of origin. */
+  ancineQuotaEligible: boolean | null
   commercialContractId?: string
 }
 
@@ -69,11 +92,18 @@ export interface AncineComplianceSummary {
   /** Limite máximo regulatório permitido por hora (25.0%) */
   maxAllowedCommercialPercent: 25.0
   /** Minutagem de conteúdo nacional exibido no período */
-  nationalContentMinutes: number
+  nationalContentMinutes: number | null
   /** Minutagem mínima de cota nacional de referência */
-  nationalContentQuotaMin: number
-  /** Indica se a programação cumpre estritamente o teto dos 25% de comerciais */
-  compliant: boolean
+  nationalContentQuotaMin: number | null
+  evidence?: 'AS_RUN_EVENT_CLASSIFICATION_ONLY'
+  nationalMetadataComplete?: boolean
+  durationMetadataComplete?: boolean
+  missingDurationCount?: number
+  /** Null: classification alone cannot certify legal/physical compliance. */
+  compliant: boolean | null
+  regulatoryValidated?: false
+  commercialThresholdExceeded?: boolean
+  aggregationBasis?: 'CLASSIFIED_DURATION_PER_3600_SECONDS_NOT_LEGAL_WINDOW'
 }
 
 /** Configuração e limiares operacionais da Sonda de Qualidade de PGM */

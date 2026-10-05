@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api.js'
+import { ContingencyLoopPanel } from './ContingencyLoopPanel.js'
 
 type ProbeStatus = Awaited<ReturnType<typeof api.pgmProbeStatus>>
 
@@ -28,18 +29,23 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
   const [status, setStatus] = useState<ProbeStatus | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  const currentChannel = useRef(channelId)
+  currentChannel.current = channelId
 
   const refresh = useCallback(async () => {
     try {
       const next = await api.pgmProbeStatus(channelId)
+      if (currentChannel.current !== channelId) return
       setStatus(next)
       setFailure(null)
     } catch (error) {
+      if (currentChannel.current !== channelId) return
       setFailure(error instanceof Error ? error.message : 'Não foi possível ler a sonda PGM.')
     }
   }, [channelId])
 
   useEffect(() => {
+    setStatus(null); setFailure(null); setPending(false)
     void refresh()
     const timer = window.setInterval(() => void refresh(), 2_000)
     return () => window.clearInterval(timer)
@@ -49,23 +55,35 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
     setPending(true)
     try {
       const result = await api.setPgmEmergencySlate(channelId, status?.emergencySlateActive ? 'RESET' : 'TRIGGER')
+      if (currentChannel.current !== channelId) return
       onSlateTriggered?.(result.emergencySlateActive)
       await refresh()
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : 'Não foi possível alterar o slate de emergência.')
+      if (currentChannel.current === channelId) setFailure(error instanceof Error ? error.message : 'Não foi possível alterar o slate de emergência.')
     } finally {
-      setPending(false)
+      if (currentChannel.current === channelId) setPending(false)
     }
   }
 
   const active = status?.activeAlerts ?? []
+  const toggleAutomation = async () => {
+    if (!status) return
+    const enabled = !status.automaticActionsEnabled
+    if (enabled && !window.confirm('Autorizar a sonda a intervir no PGM conforme a política selecionada? A ação exige engine real e configuração verificada. O retorno da contingência é manual.')) return
+    setPending(true)
+    try { await api.setPgmProbePolicy(channelId, enabled); await refresh() }
+    catch (error) { if (currentChannel.current === channelId) setFailure(error instanceof Error ? error.message : String(error)) }
+    finally { if (currentChannel.current === channelId) setPending(false) }
+  }
   const alert = active[0]
   const telemetryAvailable = Boolean(status?.lastSampleAt)
-  const healthy = telemetryAvailable && !alert && !status?.emergencySlateActive
+  const healthy = telemetryAvailable && !alert && !status?.emergencySlateActive && !status?.contingency?.active
   const stateLabel = failure
     ? 'INDISPONÍVEL'
     : status?.emergencySlateActive
       ? 'SLATE ATIVO'
+      : status?.contingency?.active
+        ? 'LOOP NO PGM'
       : alert
         ? alertName[alert.type]
         : telemetryAvailable
@@ -93,8 +111,8 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
             {failure
               ? `Sonda PGM indisponível: ${failure}`
               : status?.emergencySlateActive
-                ? 'Slate de emergência marcado como ativo pela sonda.'
-                : `${alertName[alert!.type]} acima do limiar: ${seconds(alert!.durationMs)} / ${seconds(alert!.thresholdMs)}.`}
+                ? 'Slate de emergência confirmado pelo engine.'
+                : `${alertName[alert!.type]} acima do limiar: ${seconds(alert!.durationMs)} / ${seconds(alert!.thresholdMs)}. ${alert!.actionMessage ?? ''}`}
           </div>
           {status && (
             <button disabled={pending} onClick={() => void toggleSlate()} className="px-2.5 py-1 rounded border border-border-subtle bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[9.5px] font-bold">
@@ -117,8 +135,14 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
             <span>Freeze: <strong className="text-on-surface">{metrics && thresholds ? `${seconds(metrics.freezeDurationMs)} / ${seconds(thresholds.freezeThresholdMs)}` : 'N/D'}</strong></span>
           </div>
         </div>
-        <span className="font-label-mono text-[9px] text-outline">{telemetryAvailable ? `Amostra: ${new Date(status!.lastSampleAt!).toLocaleTimeString('pt-BR')}` : 'Aguardando medição real do engine'}</span>
+        <div className="flex items-center gap-2">
+          <span className="font-label-mono text-[9px] text-outline">{telemetryAvailable ? `Amostra: ${new Date(status!.lastSampleAt!).toLocaleTimeString('pt-BR')}` : 'Aguardando medição real do engine'}</span>
+          {!compact && status && <button type="button" disabled={pending} onClick={() => void toggleAutomation()} className="text-[9px] px-2 py-1 rounded border border-border-subtle">
+            {status.automaticActionsEnabled ? 'AUTO: LIGADA' : 'AUTO: DESLIGADA'}
+          </button>}
+        </div>
       </div>
+      {status && <ContingencyLoopPanel channelId={channelId} status={status} onChanged={refresh} />}
     </section>
   )
 }

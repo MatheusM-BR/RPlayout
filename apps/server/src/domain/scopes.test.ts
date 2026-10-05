@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach,beforeEach, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
-import type { AudioLevel, Trim } from '@rplayout/protocol'
+import { resolveTrim, type AudioLevel, type Trim } from '@rplayout/protocol'
+import { toAsset } from '../db/repo.js'
 import { openDatabase, type Db } from '../db/client.js'
 import { mediaAssets, rundownItems, rundowns, channels } from '../db/schema.js'
 import { applyAudio, applyTrim } from './scopes.js'
@@ -18,6 +19,7 @@ let itemA1: string
 let itemA2: string
 let itemB1: string
 let itemOutro: string
+afterEach(()=>db?.$client.close())
 
 async function addItem(rundownId: string, mediaId: string): Promise<string> {
   const id = randomUUID()
@@ -122,7 +124,50 @@ const audioOf = async (id: string): Promise<AudioLevel | null> => {
 const trim: Trim = { in: 100, out: 5000 }
 const audio: AudioLevel = { mode: 'MANUAL', gainDb: -3.5, measured: null }
 
+function otherChannel(num:number,den=1) {
+  const id=randomUUID()
+  db.insert(channels).values({id,name:'Outro FPS',rateNum:num,rateDen:den,width:1920,height:1080,targetLufs:-23,ceilingDbtp:-1,limiterLookaheadMs:5,createdAt:now}).run()
+  db.update(rundowns).set({channelId:id}).where(eq(rundowns.id,rundownB)).run()
+}
+
 describe('escopo do corte', () => {
+  it('corte amplo converte 50 → 25 e mantém mesmo instante de entrada/saída',async()=>{
+    otherChannel(25)
+    await applyTrim(db,itemA1,{in:100,out:5000},'ALL_RUNDOWNS')
+    expect(await trimOf(itemA1)).toEqual({in:100,out:5000})
+    expect(await trimOf(itemA2)).toEqual({in:100,out:5000})
+    expect(await trimOf(itemB1)).toEqual({in:50,out:2500})
+  })
+  it('padrão declara 50fps e é resolvido a 30000/1001 sem mudar overrides',async()=>{
+    otherChannel(30000,1001)
+    db.update(rundownItems).set({trim:{in:3,out:7}}).where(eq(rundownItems.id,itemB1)).run()
+    await applyTrim(db,itemA1,{in:500,out:1000},'ASSET_DEFAULT')
+    const asset=toAsset(db.select().from(mediaAssets).where(eq(mediaAssets.id,assetId)).get()!)
+    expect(asset.defaultTrimRate).toEqual({num:50,den:1})
+    expect(resolveTrim(null,asset,{num:30000,den:1001}).value).toEqual({in:300,out:599})
+    expect(await trimOf(itemB1)).toEqual({in:3,out:7})
+  })
+  it.each(['ALL_RUNDOWNS','ASSET_DEFAULT'] as const)('recusa trecho vazio em outro FPS e não deixa alterações parciais: %s',async scope=>{
+    otherChannel(1)
+    const before=db.select().from(rundownItems).all(),assets=db.select().from(mediaAssets).all()
+    const versions=db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()
+    await expect(applyTrim(db,itemA1,{in:0,out:1},scope)).rejects.toThrow('ficaria vazio')
+    expect(db.select().from(rundownItems).all()).toEqual(before);expect(db.select().from(mediaAssets).all()).toEqual(assets)
+    expect(db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()).toEqual(versions)
+  })
+  it('falha ao limpar override não deixa padrão ou revisão parcialmente gravados',async()=>{
+    const version=db.$client.prepare('SELECT version FROM editorial_revision_counters WHERE scope=\'RUNDOWN\' AND rundown_id=?').get(rundownA)
+    db.$client.exec(`CREATE TRIGGER fail_trim BEFORE UPDATE OF trim ON rundown_items WHEN NEW.id='${itemA1}' BEGIN SELECT RAISE(ABORT,'falha após padrão'); END`)
+    await expect(applyTrim(db,itemA1,trim,'ASSET_DEFAULT')).rejects.toThrow('falha após padrão')
+    expect(db.select().from(mediaAssets).where(eq(mediaAssets.id,assetId)).get()?.defaultTrim).toBeNull()
+    expect(db.select().from(mediaAssets).where(eq(mediaAssets.id,assetId)).get()?.defaultTrimRateNum).toBeNull()
+    expect(db.$client.prepare('SELECT version FROM editorial_revision_counters WHERE scope=\'RUNDOWN\' AND rundown_id=?').get(rundownA)).toEqual(version)
+  })
+  it('guard vê alvos atuais dentro da transação e aborta sem escrita',async()=>{
+    const guard=(_db:Pick<Db,'select'>,targets:{ids:string[]})=>{expect(targets.ids.sort()).toEqual([itemA1,itemA2,itemB1].sort());throw new Error('canal não autorizado')}
+    await expect(applyTrim(db,itemA1,trim,'ALL_RUNDOWNS',guard)).rejects.toThrow('canal não autorizado')
+    expect(await trimOf(itemA1)).toBeNull();expect(await trimOf(itemB1)).toBeNull()
+  })
   it('ITEM não encosta em mais ninguém', async () => {
     const result = await applyTrim(db, itemA1, trim, 'ITEM')
     expect(result.itemsAffected).toBe(1)
@@ -186,6 +231,20 @@ describe('escopo do corte', () => {
 })
 
 describe('escopo do nivelamento', () => {
+  it.each(['RUNDOWN','ALL_RUNDOWNS','ASSET_DEFAULT'] as const)('trilha é só do item selecionado mesmo com nível amplo: %s',async scope=>{
+    const before=db.select({id:rundownItems.id,track:rundownItems.audioTrack}).from(rundownItems).all().filter(row=>row.id!==itemA1)
+    await applyAudio(db,itemA1,audio,scope,undefined,1)
+    const tracks=db.select({id:rundownItems.id,track:rundownItems.audioTrack}).from(rundownItems).all()
+    expect(tracks.find(row=>row.id===itemA1)?.track).toBe(1)
+    expect(tracks.filter(row=>row.id!==itemA1)).toEqual(before)
+  })
+  it('falha no override reverte padrão de áudio e contadores',async()=>{
+    const versions=db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()
+    db.$client.exec(`CREATE TRIGGER fail_audio BEFORE UPDATE OF audio ON rundown_items WHEN NEW.id='${itemA1}' BEGIN SELECT RAISE(ABORT,'falha de áudio'); END`)
+    await expect(applyAudio(db,itemA1,audio,'ASSET_DEFAULT')).rejects.toThrow('falha de áudio')
+    expect(db.select().from(mediaAssets).where(eq(mediaAssets.id,assetId)).get()?.defaultAudio).toBeNull()
+    expect(db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()).toEqual(versions)
+  })
   it('segue exatamente a mesma mecânica do corte', async () => {
     const result = await applyAudio(db, itemA1, audio, 'RUNDOWN')
     expect(result.itemsAffected).toBe(2)
@@ -198,5 +257,20 @@ describe('escopo do nivelamento', () => {
     const [asset] = await db.select().from(mediaAssets).where(eq(mediaAssets.id, assetId))
     expect(asset?.defaultAudio).toEqual(audio)
     expect(await audioOf(itemA1)).toBeNull()
+  })
+  it('grava matriz/nível/trilha atomicamente e preserva a seleção ao ler',async()=>{
+    const routed:AudioLevel={mode:'MANUAL',gainDb:-3,measured:null,routing:{mode:'MATRIX',matrix:[[0,0,1,0],[0,0,0,1]]}}
+    await applyAudio(db,itemA1,routed,'ITEM',undefined,1)
+    expect(await audioOf(itemA1)).toEqual(routed);expect(db.select().from(rundownItems).where(eq(rundownItems.id,itemA1)).get()?.audioTrack).toBe(1)
+  })
+  it('matriz incompatível e ganho automático sem medição do mix não gravam nada',async()=>{
+    db.update(mediaAssets).set({hasAudio:true,audioChannels:2,audioTracks:[{index:0,channels:2,rate:48000}]}).where(eq(mediaAssets.id,assetId)).run()
+    expect(db.select().from(mediaAssets).where(eq(mediaAssets.id,assetId)).get()?.audioChannels).toBe(2)
+    const before=db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()
+    const routed:AudioLevel={mode:'MANUAL',gainDb:0,measured:null,routing:{mode:'STEREO_3_4'}}
+    await expect(applyAudio(db,itemA1,routed,'ALL_RUNDOWNS',undefined,0)).rejects.toMatchObject({status:409,payload:{error:'AUDIO_ROUTING_INVALID',message:expect.stringContaining('exige 4')}})
+    await expect(applyAudio(db,itemA1,{...routed,mode:'AUTO',routing:{mode:'LEFT_ONLY'}},'ITEM')).rejects.toMatchObject({status:409,payload:{message:expect.stringContaining('medição')}})
+    expect(await audioOf(itemA1)).toBeNull();expect(await audioOf(itemA2)).toBeNull();expect(await audioOf(itemB1)).toBeNull()
+    expect(db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()).toEqual(before)
   })
 })

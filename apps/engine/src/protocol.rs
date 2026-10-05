@@ -7,6 +7,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::output::Report;
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSignalReport {
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub rate_num: Option<i32>,
+    pub rate_den: Option<i32>,
+    pub interlace_mode: Option<String>,
+    pub audio_channels: Option<i32>,
+    pub sample_rate: Option<i32>,
+    pub video_age_ms: Option<u64>,
+    pub audio_age_ms: Option<u64>,
+    pub video_present: bool,
+    pub audio_present: bool,
+    pub received_frames: u64,
+    /// Variation at the decoded input pad, not network RTT or packet jitter.
+    pub arrival_jitter_ms: Option<f64>,
+}
+
 /// Item que o engine coloca no ar. Tempos em frames, como no resto do sistema.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +46,9 @@ pub struct ItemSpec {
     pub fallback_path: Option<String>,
     pub trim_in: i64,
     pub trim_out: i64,
+    /// Recovery cursor relative to Mark In. Seek before TAKE, never flash frame zero.
+    #[serde(default)]
+    pub start_offset_frames: i64,
     /// Ganho de nivelamento já resolvido pelo servidor.
     pub gain_db: f64,
     /// O que fazer quando a proporção do material não é a do canal.
@@ -38,6 +60,11 @@ pub struct ItemSpec {
     /// pegar sempre a primeira é escolha, não padrão neutro.
     #[serde(default)]
     pub audio_track: usize,
+    #[serde(default)]
+    pub audio_routing:crate::audio_routing::AudioRouting,
+    /// Additional real signals from the selected track, not copies of PGM.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auxiliary_pairs: Vec<crate::audio_bus::AuxiliaryPair>,
     #[serde(default)]
     pub auto_follow_on_end: bool,
     #[serde(default)]
@@ -56,8 +83,28 @@ pub enum Fit {
 }
 
 impl ItemSpec {
+    pub fn start_frame(&self) -> i64 {
+        if self.is_live() { return 0; }
+        self.trim_in + self.start_offset_frames.clamp(0, (self.trim_out - self.trim_in - 1).max(0))
+    }
     pub fn is_live(&self) -> bool {
         self.source.is_some()
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::ItemSpec;
+    #[test]
+    fn recovery_cursor_keeps_marks_and_clamps_before_eos() {
+        let mut spec: ItemSpec = serde_json::from_str(r#"{"itemId":"vt","trimIn":100,"trimOut":350,"gainDb":0,"startOffsetFrames":125}"#).unwrap();
+        assert_eq!(spec.start_frame(), 225);
+        spec.start_offset_frames = 999;
+        assert_eq!(spec.start_frame(), 349);
+        spec.start_offset_frames = -10;
+        assert_eq!(spec.start_frame(), 100);
+        spec.source = Some("ndi:STUDIO".into());
+        assert_eq!(spec.start_frame(), 0);
     }
 }
 
@@ -70,6 +117,10 @@ fn default_fade() -> u64 {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Command {
+    /// Bound to the current preview, never a CUE, LOAD or TAKE.
+    QcMonitor { item_id: String, on: bool },
+    /// Private owning server only, before or during pipeline construction.
+    FenceGrant { owner_id: String, nonce: u64, term: u64, ttl_ms: u64 },
     /// Arma um item: abre, decodifica e para no primeiro frame do corte.
     Load { item: ItemSpec },
     /// Grafismo: SVG já preenchido, ou nada para tirar do ar.
@@ -81,6 +132,9 @@ pub enum Command {
     },
     /// Coloca no ar o que estiver armado.
     Take,
+    /// Cancela um TAKE ao vivo que ainda aguarda o primeiro quadro. O PGM
+    /// continua intacto; só a fonte pendente é liberada.
+    CancelTake,
     /// Abre um arquivo no preview, ou fecha o que estiver aberto.
     Preview { item: Option<ItemSpec> },
     /// Tira do ar e volta para o preto.
@@ -115,6 +169,8 @@ pub struct Envelope {
 #[derive(Debug, Serialize)]
 #[serde(tag = "event", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Event {
+    FenceRequest { owner_id: String, nonce: u64 },
+    FenceApplied { nonce: u64, term: u64 },
     Ready {
         channel_id: String,
         width: i32,
@@ -162,6 +218,16 @@ pub enum Event {
     SourceLost {
         item_id: String,
         reason: String,
+    },
+    /// Primeiro quadro de uma entrada viva recebido pelo barramento indicado.
+    SourceReady {
+        item_id: String,
+        bus: &'static str,
+    },
+    SourceTelemetry {
+        item_id: String,
+        bus: &'static str,
+        signal: SourceSignalReport,
     },
     /// Medição pela BS.1770-4. Pico em dBFS, loudness em LUFS, faixa em LU.
     /// Não é RMS: tem ponderação K e gate.

@@ -15,6 +15,8 @@ use anyhow::{Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use serde::Serialize;
+#[path = "../omt_runtime.rs"]
+mod omt_runtime;
 
 /// Quanto esperar o monitor listar. Descoberta de placa é instantânea; a de
 /// NDI varre a rede e merece mais tempo.
@@ -41,10 +43,9 @@ struct Family {
 #[serde(rename_all = "camelCase")]
 struct Devices {
     decklink: Family,
+    decklink_outputs: Family,
     ndi: Family,
-    /// Serviços SMPTE-2110/NMOS anunciados na rede. OMT não tem um único
-    /// protocolo de descoberta proprietário como o NDI; por isso procuramos
-    /// os serviços NMOS padronizados publicados via mDNS.
+    /// Fontes Open Media Transport anunciadas por DNS-SD (_omt._tcp).
     omt: Family,
     /// O que o canal precisa e não está nesta instalação do GStreamer.
     plugins: Plugins,
@@ -108,7 +109,8 @@ const OPTIONAL: &[(&str, &str, &str)] = &[
     ("srtsink", "bad (srt)", "saída SRT"),
     ("mpegtsmux", "bad (mpegtsmux)", "saída SRT"),
     ("interlace", "bad", "saída entrelaçada, como 1080i5994"),
-    ("decklinkvideosrc", "bad (decklink)", "entrada e saída por placa"),
+    ("decklinkvideosrc", "bad (decklink)", "entrada por placa"),
+    ("decklinkvideosink", "bad (decklink)", "saída por placa"),
     ("ndisrc", "plugin NDI, instalado à parte", "entrada NDI"),
 ];
 
@@ -143,8 +145,16 @@ fn survey(list: &[(&str, &str, &str)]) -> Vec<Missing> {
 ///
 /// Provedor ausente não é lista vazia: é plugin que falta, e o operador precisa
 /// saber a diferença entre "não tem placa" e "não tem driver".
-fn enumerate(provider: &str, prefix: &str, missing: &str) -> Family {
+fn enumerate(provider: &str, prefix: &str, missing: &str, direction: &str) -> Family {
     let Some(factory) = gst::DeviceProviderFactory::find(provider) else {
+        let element = if direction == "Sink" { "decklinkvideosink" } else { "decklinkvideosrc" };
+        if prefix == "sdi" && gst::ElementFactory::find(element).is_some() {
+            return Family {
+                available: true,
+                reason: Some("o plugin DeckLink existe, mas o provedor de descoberta não está disponível; isso não confirma ausência da placa nem presença do driver Desktop Video".to_string()),
+                sources: Vec::new(),
+            };
+        }
         return Family {
             available: false,
             reason: Some(missing.to_string()),
@@ -159,28 +169,24 @@ fn enumerate(provider: &str, prefix: &str, missing: &str) -> Family {
         };
     };
 
-    if device_provider.start().is_err() {
+    if let Err(error) = device_provider.start() {
         return Family {
             available: false,
             reason: Some(format!(
-                "o driver respondeu, mas não consegui iniciar a busca de {prefix}"
+                "não foi possível iniciar o provedor de {prefix}: {error}; verifique o runtime e o driver no servidor"
             )),
             sources: Vec::new(),
         };
     }
     std::thread::sleep(std::time::Duration::from_millis(SETTLE_MS));
 
-    let sources: Vec<Source> = device_provider
+    let mut sources: Vec<Source> = device_provider
         .devices()
         .into_iter()
-        .filter(|device| device.device_class().contains("Source"))
+        .filter(|device| accepts_device_class(device.device_class().as_str(), prefix, direction))
         .filter_map(|device| {
             let properties = device.properties()?;
-            // A Decklink numera sub-dispositivos; o NDI identifica por nome.
-            let reference = match properties.get::<i32>("device-number") {
-                Ok(number) => format!("{prefix}:{number}"),
-                Err(_) => format!("{prefix}:{}", properties.get::<String>("ndi-name").ok()?),
-            };
+            let reference = device_reference(&properties, prefix)?;
             Some(Source {
                 reference,
                 label: device.display_name().to_string(),
@@ -189,8 +195,8 @@ fn enumerate(provider: &str, prefix: &str, missing: &str) -> Family {
         .collect();
 
     device_provider.stop();
-
-    let mut sources = sources;
+    sources.sort_by(|a, b| a.reference.cmp(&b.reference));
+    sources.dedup_by(|a, b| a.reference == b.reference);
     if prefix == "ndi" && sources.is_empty() {
         sources = discover_mdns_services(&["_ndi._tcp.local"], "ndi");
     }
@@ -199,11 +205,30 @@ fn enumerate(provider: &str, prefix: &str, missing: &str) -> Family {
         available: true,
         reason: if sources.is_empty() && prefix == "ndi" {
             Some("nenhuma fonte foi anunciada pelo NDI Runtime ou mDNS; confirme o NDI Runtime/Discovery Server, a mesma sub-rede e que multicast UDP 5353 não esteja bloqueado".to_string())
+        } else if sources.is_empty() && prefix == "sdi" {
+            Some(format!("o plugin DeckLink foi carregado, mas nenhuma porta de vídeo {direction} foi enumerada; confirme o Desktop Video compatível, conexão PCI/Thunderbolt e perfil dos conectores no servidor. Isso é distinto de uma entrada detectada sem sinal"))
         } else {
             None
         },
         sources,
     }
+}
+
+fn accepts_device_class(class: &str, prefix: &str, direction: &str) -> bool {
+    class.split('/').any(|part| part == direction)
+        && (prefix != "sdi" || class.split('/').any(|part| part == "Video"))
+}
+
+fn device_reference(properties: &gst::StructureRef, prefix: &str) -> Option<String> {
+    // GStreamer DeckLink exports G_TYPE_UINT, not G_TYPE_INT. Reading only
+    // i32 silently discarded every physical port on modern installations.
+    if let Ok(number) = properties.get::<u32>("device-number") {
+        return Some(format!("{prefix}:{number}"));
+    }
+    if let Ok(number) = properties.get::<i32>("device-number") {
+        if number >= 0 { return Some(format!("{prefix}:{number}")); }
+    }
+    properties.get::<String>("ndi-name").ok().map(|name| format!("{prefix}:{name}"))
 }
 
 /// Faz consultas mDNS com a flag QU (unicast-response). A versão anterior
@@ -323,26 +348,30 @@ fn main() -> Result<()> {
             "decklinkdeviceprovider",
             "sdi",
             "o plugin da Decklink não está nesta instalação do GStreamer",
+            "Source",
+        ),
+        decklink_outputs: enumerate(
+            "decklinkdeviceprovider",
+            "sdi",
+            "o plugin de saída DeckLink não está nesta instalação do GStreamer",
+            "Sink",
         ),
         ndi: enumerate(
             "ndideviceprovider",
             "ndi",
             "o plugin NDI (`ndisrc`) não está nesta instalação do GStreamer",
+            "Source",
         ),
         omt: {
-            let sources = discover_mdns_services(
-                &["_nmos-query._tcp.local", "_nmos-registration._tcp.local", "_smpte2110._udp.local"],
-                // É um anúncio de controle NMOS, não uma URI RTP pronta para
-                // o playout. O prefixo impede que a interface o tome por uma
-                // fonte reproduzível sem SDP/endereço configurado.
-                "omt-discovery",
-            );
-            Family {
-                available: true,
-                reason: if sources.is_empty() {
-                    Some("nenhum serviço NMOS/OMT foi anunciado por mDNS; confirme o registro NMOS, a VLAN multicast e UDP 5353".to_string())
-                } else { None },
-                sources,
+            match omt_runtime::discover() {
+                Ok(names) => Family {
+                    available: true,
+                    reason: if names.is_empty() {
+                        Some("o runtime OMT está disponível, mas nenhuma fonte foi anunciada; confirme o emissor, DNS-SD ou Discovery Server".to_string())
+                    } else { None },
+                    sources: names.into_iter().map(|name| Source { reference: format!("omt:{name}"), label: name }).collect(),
+                },
+                Err(error) => Family { available: false, reason: Some(format!("{error:#}")), sources: Vec::new() },
             }
         },
         plugins: Plugins {
@@ -362,6 +391,30 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decklink_uint_port_is_not_discarded() {
+        gst::init().unwrap();
+        let properties = gst::Structure::builder("properties").field("device-number", 3u32).build();
+        assert_eq!(device_reference(&properties, "sdi"), Some("sdi:3".to_string()));
+    }
+
+    #[test]
+    fn decklink_only_lists_video_in_the_requested_direction() {
+        assert!(accepts_device_class("Video/Source/Hardware", "sdi", "Source"));
+        assert!(!accepts_device_class("Audio/Source/Hardware", "sdi", "Source"));
+        assert!(!accepts_device_class("Video/Sink/Hardware", "sdi", "Source"));
+        assert!(accepts_device_class("Video/Sink/Hardware", "sdi", "Sink"));
+    }
+
+    #[test]
+    fn supports_legacy_signed_ports_and_unicode_ndi_names() {
+        gst::init().unwrap();
+        let signed = gst::Structure::builder("properties").field("device-number", 0i32).build();
+        assert_eq!(device_reference(&signed, "sdi"), Some("sdi:0".to_string()));
+        let ndi = gst::Structure::builder("properties").field("ndi-name", "Câmera São João").build();
+        assert_eq!(device_reference(&ndi, "ndi"), Some("ndi:Câmera São João".to_string()));
+    }
 
     #[test]
     fn basta_uma_das_alternativas_existir() {

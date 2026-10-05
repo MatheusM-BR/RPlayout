@@ -1,5 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm'
-import { durationIn, resolveTrim, secondsToFrames, trimDuration } from '@rplayout/protocol'
+import { durationIn, resolveTrim, secondsToFrames, trimDuration, qcApproved, assessQc } from '@rplayout/protocol'
 import type { Channel, Frames, MediaAsset } from '@rplayout/protocol'
 import { autoFill, preferences, type Candidate, type FillResult } from '@rplayout/scheduler'
 import type { Db } from '../db/client.js'
@@ -19,15 +19,24 @@ export async function buildCandidates(
   channel: Channel,
   assets: readonly MediaAsset[],
 ): Promise<Candidate[]> {
-  const [inserted, dropped, aired] = await Promise.all([
+  return buildCandidatesNow(db,channel,assets)
+}
+
+/** Read preferences, as-run and media inside the caller's SQL snapshot. */
+export function buildCandidatesNow(
+  db: Pick<Db,'select'>,
+  channel: Channel,
+  assets: readonly MediaAsset[],
+): Candidate[] {
+  const [inserted, dropped, aired] = [
     countByMedia(db, 'ITEM_ADDED'),
     countByMedia(db, 'ITEM_REMOVED'),
     db
       .select({ mediaId: asRun.mediaId, last: sql<string>`max(started_at)` })
       .from(asRun)
       .where(and(eq(asRun.channelId, channel.id), sql`media_id is not null`))
-      .groupBy(asRun.mediaId),
-  ])
+      .groupBy(asRun.mediaId).all(),
+  ] as const
 
   // O log guarda item, não arquivo: o que interessa para o aprendizado é o
   // arquivo, porque é ele que volta a ser oferecido na próxima montagem.
@@ -45,7 +54,7 @@ export async function buildCandidates(
   )
 
   return assets
-    .filter((asset) => asset.probeError === null && !asset.ignored)
+    .filter((asset) => asset.probeError === null && !asset.ignored && qcApproved(asset.qcStatus) && (!channel.qcProfile || assessQc(asset, channel.qcProfile).playable))
     .map((asset) => ({
       id: asset.id,
       durationFrames: assetDuration(asset, channel),
@@ -62,18 +71,15 @@ export async function buildCandidates(
  * O log guarda o item, que morre com a grade; o arquivo é o que sobrevive e é
  * sobre ele que se aprende -- por isso ele vai no corpo da decisão.
  */
-async function countByMedia(db: Db, kind: string): Promise<Map<string, number>> {
-  const rows = await db
-    .select({
-      mediaId: sql<string | null>`json_extract(payload, '$.mediaId')`,
-      count: sql<number>`count(*)`,
-    })
-    .from(operatorDecisions)
-    .where(eq(operatorDecisions.kind, kind))
-    .groupBy(sql`json_extract(payload, '$.mediaId')`)
-
+function countByMedia(db: Pick<Db,'select'>, kind: string): Map<string, number> {
+  // Drizzle authenticates/decrypts the protected payload. SQLite JSON functions
+  // cannot inspect the encrypted envelope and must never see plaintext copies.
+  const rows = db.select({payload:operatorDecisions.payload}).from(operatorDecisions).where(eq(operatorDecisions.kind,kind)).all()
   const counts = new Map<string, number>()
-  for (const row of rows) if (row.mediaId) counts.set(row.mediaId, Number(row.count))
+  for (const row of rows) {
+    const mediaId=row.payload.mediaId
+    if(typeof mediaId==='string')counts.set(mediaId,(counts.get(mediaId)??0)+1)
+  }
   return counts
 }
 
@@ -102,7 +108,9 @@ export function planFill(
     avoidWithinMs: avoidWithinMinutes * 60_000,
     nowMs: Date.now(),
     // Um item a menos e a grade fica curta; a folga é o que o filler cobre.
-    slackFrames: secondsToFrames(15, channel.rate),
+    // A fixed 15-second slack swallowed short gaps entirely. Keep the existing
+    // long-window limit but cap tolerance at 5% of the requested short window.
+    slackFrames: Math.min(secondsToFrames(15, channel.rate),Math.floor(windowFrames/20)),
   })
   return { ...result, window: windowFrames }
 }

@@ -3,6 +3,7 @@ import type { MediaAsset, Rate } from '@rplayout/protocol'
 import { dur, formatStandardRate } from '../../format.js'
 import type { LibraryAsset } from '../../types.js'
 import { Whep } from '../Whep.js'
+import {lightweightPreviewUrl} from '../../domain/media-preview.js'
 
 export interface BroadcastMonitorProps {
   bus: 'pgm' | 'pvw'
@@ -59,6 +60,7 @@ export function BroadcastMonitor({
   const [hasMediaError, setHasMediaError] = useState(false)
   const [isScrubbing, setIsScrubbing] = useState(false)
   const [webrtcFailed, setWebrtcFailed] = useState(false)
+  const failedMonitor=useCallback(()=>setWebrtcFailed(true),[])
 
   // O áudio é desmutado se isAudioMonitored for explicitamente verdadeiro
   const effectiveMuted = isAudioMonitored !== undefined ? !isAudioMonitored : isMuted
@@ -73,7 +75,7 @@ export function BroadcastMonitor({
       videoRef.current.currentTime = 0
       videoRef.current.pause()
     }
-  }, [asset?.id, webrtcPath])
+  }, [asset?.id, asset?.contentHash, webrtcPath])
 
   // Sync PGM playback position with live engine
   useEffect(() => {
@@ -188,10 +190,10 @@ export function BroadcastMonitor({
           />
           <div className="flex flex-col leading-tight">
             <span className="font-headline-md text-[10px] uppercase text-on-surface font-bold tracking-wider">
-              {isPgm ? 'PGM • MONITOR' : 'PVW • PRÓXIMO'}
+              {title}
             </span>
             <span className="font-label-caps text-[8.5px] uppercase text-outline font-semibold tracking-wider">
-              {isPgm ? 'PRINCIPAL' : 'EVENTO'}
+              {isPgm ? 'PRINCIPAL' : 'CUE MANUAL'}
             </span>
           </div>
         </div>
@@ -238,6 +240,7 @@ export function BroadcastMonitor({
             onSeek={onSeek}
             hideControls={true}
             muted={effectiveMuted}
+            onErrorFallback={failedMonitor}
             onWatching={
               onWatching
                 ? () => {
@@ -251,8 +254,11 @@ export function BroadcastMonitor({
             }
           />
         ) : asset ? (
-          /* Caso 2: Fallback direto de Vídeo / Mídia Local */
+          /* Consulta leve de arquivo: não confirma sinal/saída do engine. */
           <div className="relative w-full h-full flex items-center justify-center bg-black">
+            <span className="absolute bottom-1 left-1 right-1 z-30 rounded bg-black/80 px-2 py-1 text-[9px] text-amber-300 pointer-events-none">
+              {hasMediaError ? 'Proxy indisponível — confira a fila de mídia' : 'Proxy de consulta — não confirma PGM/PVW'}
+            </span>
             {webrtcFailed && webrtcPath && (
               <button
                 onClick={() => setWebrtcFailed(false)}
@@ -260,7 +266,7 @@ export function BroadcastMonitor({
                 title="Tentar reconectar stream WebRTC"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-armed-amber animate-pulse"></span>
-                <span>Fallback Local (Reconectar WHEP)</span>
+                <span>Reconectar monitor do engine</span>
               </button>
             )}
             {isStillImage || hasMediaError ? (
@@ -272,9 +278,9 @@ export function BroadcastMonitor({
             ) : (
               <video
                 ref={videoRef}
-                src={`/api/assets/${asset.id}/media`}
+                src={lightweightPreviewUrl(asset)}
                 poster={`/api/assets/${asset.id}/thumbnail.svg`}
-                preload="auto"
+                preload="metadata"
                 muted={effectiveMuted}
                 playsInline
                 className="w-full h-full object-contain cursor-pointer"

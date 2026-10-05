@@ -4,6 +4,7 @@ import type { PlaylistEntryView, PlaylistFile, Snapshot } from '../types.js'
 
 interface Props {
   rundownId: string
+  revision:number|undefined
   onCancel: () => void
   onLoaded: (snapshot: Snapshot, message: string) => void
   onMessage: (text: string) => void
@@ -17,12 +18,13 @@ interface Props {
  * para dentro do sistema, então editar a lista no programa de sempre e
  * recarregar continua funcionando.
  */
-export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Props) {
+export function PlaylistsDialog({ rundownId,revision, onCancel, onLoaded, onMessage }: Props) {
   const [listas, setListas] = useState<PlaylistFile[]>([])
   const [hoje, setHoje] = useState<string | null>(null)
   const [escolhida, setEscolhida] = useState<string | null>(null)
   const [entradas, setEntradas] = useState<PlaylistEntryView[] | null>(null)
   const [busy, setBusy] = useState(false)
+  const [operationError,setOperationError]=useState<string|null>(null)
   const [versoes, setVersoes] = useState<Array<{ id: string; sourceName: string; mode: 'APPEND' | 'PUBLISH_NEXT'; loaded: number; skipped: number; scheduledDate: string | null; publishedAt: string }>>([])
   const [importada, setImportada] = useState<{ name: string; text: string } | null>(null)
   const [importEntries, setImportEntries] = useState<PlaylistEntryView[] | null>(null)
@@ -72,11 +74,13 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
   }, [rundownId, busy])
 
   const carregar = (replace: boolean): void => {
+    if(busy)return
+    setOperationError(null)
     if (escolhida === null && !importada) return
     setBusy(true)
-    const request = importada
-      ? api.loadPlaylistText(rundownId, textoRevisado, replace, dataProgramacao)
-      : api.loadPlaylist(rundownId, escolhida as string, replace, dataProgramacao)
+    const request = Promise.resolve().then(()=>importada
+      ? api.loadPlaylistText(rundownId, textoRevisado, replace, dataProgramacao,revision)
+      : api.loadPlaylist(rundownId, escolhida as string, replace, dataProgramacao,revision))
     void request
       .then((resposta) => {
         const pulou =
@@ -86,7 +90,7 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
           `${resposta.loaded} item(ns) na grade${pulou} — Ctrl+Z desfaz.`,
         )
       })
-      .catch((falha: Error) => onMessage(falha.message))
+      .catch((falha: Error) => {setOperationError(falha.message);onMessage(falha.message)})
       .finally(() => setBusy(false))
   }
 
@@ -120,7 +124,7 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
         </header>
 
         <div className="body">
-          <div className="workflow-steps" aria-label="Etapas da programação"><span className="done">1 ESCOLHER DIA</span><span className={arquivoEntries ? 'done' : 'active'}>2 IMPORTAR E REVISAR</span><span className={arquivoEntries ? 'active' : ''}>3 PUBLICAR</span></div>
+          <div className="workflow-steps" aria-label="Etapas da importação editorial"><span className="done">1 ESCOLHER LISTA</span><span className={arquivoEntries ? 'done' : 'active'}>2 REVISAR</span><span className={arquivoEntries ? 'active' : ''}>3 INSERIR NA GRADE</span></div>
           <div className="field">
               <label>Listas encontradas</label>
             <div className="playlist-date-filter"><label>Filtrar por data</label><input type="date" value={filtroData} onChange={(event) => setFiltroData(event.target.value)} /></div>
@@ -196,7 +200,7 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
                     {importEntries && <span className="playlist-entry-actions">
                       <button className="btn small" title="mover para cima" disabled={i === 0} onClick={() => setImportEntries((current) => { if (!current || i === 0 || !current[i] || !current[i - 1]) return current; const next = [...current]; [next[i - 1]!, next[i]!] = [next[i]!, next[i - 1]!]; return next })}>↑</button>
                       <button className="btn small" title="mover para baixo" disabled={i === arquivoEntries.length - 1} onClick={() => setImportEntries((current) => { if (!current || i >= current.length - 1 || !current[i] || !current[i + 1]) return current; const next = [...current]; [next[i]!, next[i + 1]!] = [next[i + 1]!, next[i]!]; return next })}>↓</button>
-                      <button className="btn small" title="remover da publicação" onClick={() => setImportEntries((current) => current?.filter((_, index) => index !== i) ?? null)}>remover</button>
+                      <button className="btn small" title="remover da importação" onClick={() => setImportEntries((current) => current?.filter((_, index) => index !== i) ?? null)}>remover</button>
                     </span>}
                   </li>
                 ))}
@@ -208,8 +212,8 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
                 </div>
               )}
               <div className="note">
-                Publicar a lista substitui somente o futuro da grade. O item que já está no ar
-                permanece protegido; a alteração pode ser desfeita pelo histórico.
+                Substituir altera a grade editorial, mantendo o item no ar. Não troca a
+                playlist operacional publicada nem executa TAKE; revise e publique a nova programação separadamente.
               </div>
               <div className={`publication-review${semArquivo ? ' warn' : ''}`}>
                 <div><span>DATA</span><strong>{new Date(`${dataProgramacao}T12:00:00`).toLocaleDateString('pt-BR')}</strong></div>
@@ -220,14 +224,14 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
             </div>
           )}
           <div className="field">
-            <label>Histórico de publicação</label>
-            {datasPublicadas.length > 0 && <div className="week-days" aria-label="dias com programação publicada">{datasPublicadas.map((date) => <button type="button" className={`btn small ${date === dataProgramacao ? 'take' : ''}`} key={date} onClick={() => { setDataProgramacao(date); setFiltrarHistorico(true) }}>{date}</button>)}</div>}
+            <label>Histórico de importação editorial</label>
+            {datasPublicadas.length > 0 && <div className="week-days" aria-label="dias com importação editorial">{datasPublicadas.map((date) => <button type="button" className={`btn small ${date === dataProgramacao ? 'take' : ''}`} key={date} onClick={() => { setDataProgramacao(date); setFiltrarHistorico(true) }}>{date}</button>)}</div>}
             <label className="check"><input type="checkbox" checked={filtrarHistorico} onChange={(event) => setFiltrarHistorico(event.target.checked)} /> mostrar somente {dataProgramacao}</label>
-            {versoes.length === 0 ? <div className="note">nenhuma playlist publicada nesta grade</div> : (
+            {versoes.length === 0 ? <div className="note">nenhuma lista importada nesta grade</div> : (
               <ol className="entradas">
                 {versoes.filter((versao) => !filtrarHistorico || versao.scheduledDate === dataProgramacao).slice(0, 8).map((versao) => <li key={versao.id}>
                   <span className="t">{versao.scheduledDate ? `${versao.scheduledDate} · ` : ''}{new Date(versao.publishedAt).toLocaleString()}</span>
-                  <span className="pill">{versao.mode === 'PUBLISH_NEXT' ? 'PRÓXIMO' : 'FIM'}</span>
+                  <span className="pill">{versao.mode === 'PUBLISH_NEXT' ? 'SUBSTITUIÇÃO' : 'FIM'}</span>
                   <span className="conta">{versao.sourceName} · {versao.loaded} carregados · {versao.skipped} pulados</span>
                 </li>)}
               </ol>
@@ -235,6 +239,7 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
           </div>
         </div>
 
+        {operationError && <div role="alert" className="note warn">{operationError} Sua seleção foi mantida; confira a grade antes de importar novamente.</div>}
         <footer>
           <button className="btn" onClick={onCancel}>
             voltar ao Master
@@ -248,7 +253,7 @@ export function PlaylistsDialog({ rundownId, onCancel, onLoaded, onMessage }: Pr
             disabled={busy || (escolhida === null && !importada)}
             onClick={() => carregar(true)}
           >
-            publicar no próximo item
+            substituir grade editorial
           </button>
         </footer>
       </div>

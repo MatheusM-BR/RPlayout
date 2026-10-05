@@ -35,6 +35,20 @@ const RETRY_CAP: Duration = Duration::from_secs(15);
 /// simplesmente descarta o que chegar atrasado.
 const MUX_LATENCY: u64 = 500_000_000;
 
+/// Atomically claim a new recording name. A restart/reconfiguration must not
+/// silently truncate yesterday's recording, even when the browser is bypassed.
+fn reserve_recording(path: &str) -> Result<()> {
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+        .map(drop)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                anyhow!("Gravação não iniciada: o destino já existe. Escolha um novo nome; o arquivo anterior foi preservado: {path}")
+            } else {
+                anyhow!("Não foi possível reservar um novo arquivo de gravação em {path}: {error}")
+            }
+        })
+}
+
 /// Janela em que um `intervideosrc` conserva o último quadro válido antes de
 /// fabricar preto. O valor anterior (200 ms) era menor que um GOP e uma
 /// reconexão normal do decoder/encoder, causando flashes pretos no PGM.
@@ -55,6 +69,8 @@ pub enum Health {
     OnAir,
     /// Caiu e está esperando a próxima tentativa.
     Retrying,
+    /// Falha sem nova tentativa automática; exige intervenção do operador.
+    Failed,
     /// Parada de propósito, esperando alguém pedir.
     ///
     /// Diferente de `Retrying`: não é falha, não conta tentativa e não vira
@@ -89,6 +105,8 @@ pub enum Kind {
     /// Publicação NDI pelo plugin gst-plugin-ndi. Não passa por H.264: NDI
     /// recebe os quadros e áudio crus do programa, preservando a cadência.
     Ndi,
+    /// Open Media Transport, through the bundled official native runtime.
+    Omt,
     /// Gravação as-run. Vive aqui pelo mesmo motivo das outras: um erro de
     /// multiplexação dela derrubava o canal inteiro -- foi o que aconteceu na
     /// primeira vez que a gravação foi exercitada de verdade.
@@ -115,7 +133,7 @@ impl Kind {
             Kind::Rtmp | Kind::File => "avc",
             Kind::Srt => "byte-stream",
             // NDI não usa cadeia de encoder/mux; veja `build_ndi`.
-            Kind::Ndi => unreachable!("NDI não possui stream-format H.264"),
+            Kind::Ndi | Kind::Omt => unreachable!("NDI/OMT não possuem stream-format H.264"),
         }
     }
 }
@@ -198,6 +216,16 @@ impl Publisher {
 
     pub fn output_id(&self) -> &str {
         &self.spec.output_id
+    }
+
+    /// QC is not a broadcast destination: follow the actual source raster,
+    /// keep Opus/on-demand, and restart only this independent consumer.
+    pub fn inspection_profile(&mut self, width:i32, height:i32, fps_n:i32, fps_d:i32, bitrate_kbps:u32) -> Result<bool> {
+        if self.spec.role != "qc" || self.spec.kind != Kind::Srt { return Err(anyhow!("não é um publicador de inspeção")); }
+        if (self.spec.width,self.spec.height,self.spec.fps_n,self.spec.fps_d,self.spec.bitrate_kbps)==(width,height,fps_n,fps_d,bitrate_kbps) { return Ok(false); }
+        self.set_wanted(false);
+        self.spec.width=width;self.spec.height=height;self.spec.fps_n=fps_n;self.spec.fps_d=fps_d;self.spec.bitrate_kbps=bitrate_kbps;
+        Ok(true)
     }
 
     /// Substitui o pipeline consumidor sem tocar nos canais `inter` do PGM.
@@ -345,6 +373,7 @@ impl Publisher {
         self.health = Health::Retrying;
         self.error = Some(reason);
         if !self.spec.kind.retries() {
+            self.health = Health::Failed;
             self.retry_at = None;
             return;
         }
@@ -385,6 +414,7 @@ impl Publisher {
     fn open(&mut self) -> Result<()> {
         self.close();
         let pipeline = self.build()?;
+        crate::fencing::guard_pipeline(&pipeline)?;
 
         // Latência dita, não negociada.
         //
@@ -408,6 +438,9 @@ impl Publisher {
     fn build(&self) -> Result<gst::Pipeline> {
         if self.spec.kind == Kind::Ndi {
             return self.build_ndi();
+        }
+        if self.spec.kind == Kind::Omt {
+            return crate::omt::publisher(&self.spec, Arc::clone(&self.delivered));
         }
         let spec = &self.spec;
         let pipeline = gst::Pipeline::new();
@@ -466,6 +499,7 @@ impl Publisher {
         // de volta os 100 ms que o canal acabou de tirar.
         crate::channel::aplicar_latencia_de_audio(&asrc);
         let aconv = make("audioconvert")?;
+        crate::audio_bus::numbered_channels(&aconv, 2)?;
         let ares = make("audioresample")?;
         let acapsf = make("capsfilter")?;
         acapsf.set_property("caps", &audio_caps);
@@ -501,10 +535,15 @@ impl Publisher {
             Kind::File => {
                 let mux = make("matroskamux")?;
                 let sink = make("filesink")?;
+                reserve_recording(&spec.url)?;
                 sink.set_property("location", &spec.url);
+                // The reservation owns this empty file. Opening in append mode
+                // also avoids truncation if another process races the sink open.
+                // Failed starts leave the reserved name visible, never erase it.
+                sink.set_property("append", true);
                 (mux, sink)
             }
-            Kind::Ndi => unreachable!("NDI é montado antes da cadeia codificada"),
+            Kind::Ndi | Kind::Omt => unreachable!("NDI/OMT são montados antes da cadeia codificada"),
         };
         sink.set_property("async", false);
 
@@ -598,6 +637,7 @@ impl Publisher {
         asrc.set_property("channel", &spec.audio_channel);
         crate::channel::aplicar_latencia_de_audio(&asrc);
         let aconv = make("audioconvert")?;
+        crate::audio_bus::numbered_channels(&aconv, 2)?;
         let ares = make("audioresample")?;
         let acaps = make("capsfilter")?;
         acaps.set_property(
@@ -1173,6 +1213,53 @@ mod testes_monitor {
         let mut p = Publisher::new(spec(false));
         p.set_wanted(false);
         assert_eq!(p.report().health, Health::Retrying);
+    }
+
+    #[test]
+    fn falha_de_arquivo_exige_intervencao_sem_falsa_reconexao() {
+        let mut p = Publisher::new(spec(false));
+        p.fall("Arquivo já existe".to_string());
+        assert_eq!(p.report().health, Health::Failed);
+        assert!(p.retry_at.is_none());
+        assert!(p.service().is_none());
+        let mut network_spec = spec(false);
+        network_spec.kind = Kind::Srt;
+        let mut network = Publisher::new(network_spec);
+        network.fall("Destino indisponível".to_string());
+        assert_eq!(network.report().health, Health::Retrying);
+        assert!(network.retry_at.is_some());
+    }
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+
+    #[test]
+    fn restart_and_concurrent_recorders_cannot_replace_a_recording() {
+        let directory = std::env::temp_dir().join(format!("rplayout-recording-{}-{}",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&directory).unwrap();
+        let target = directory.join("GRAVAÇÃO — ação.mkv");
+        let name = target.to_str().unwrap();
+        reserve_recording(name).unwrap();
+        std::fs::write(&target, b"original recording - must remain intact").unwrap();
+        let error = reserve_recording(name).unwrap_err().to_string();
+        assert!(error.contains("arquivo anterior foi preservado"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"original recording - must remain intact");
+
+        let race = directory.join("simultânea.mkv");
+        let results = std::thread::scope(|scope| {
+            let attempts: Vec<_> = (0..8).map(|_| {
+                let race = &race;
+                scope.spawn(move || reserve_recording(race.to_str().unwrap()).is_ok())
+            }).collect();
+            attempts.into_iter().map(|attempt| attempt.join().unwrap()).filter(|success| *success).count()
+        });
+        assert_eq!(results, 1, "only one recorder can claim the name");
+        assert_eq!(std::fs::metadata(&race).unwrap().len(), 0);
+        // Only this test's freshly created directory is removed.
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
 

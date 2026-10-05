@@ -70,6 +70,8 @@ export const RELAY_BINARY = process.env.RPLAYOUT_RELAY ?? findBinary('rplayout-r
 
 /** Binário da sonda de mídia. Vazio desliga a varredura do acervo. */
 export const PROBE_BINARY = process.env.RPLAYOUT_PROBE ?? findBinary('rplayout-probe')
+export const PROXY_BINARY = process.env.RPLAYOUT_PROXY ?? findBinary('rplayout-proxy')
+export const AUDIO_ANALYSIS_BINARY=process.env.RPLAYOUT_AUDIO_ANALYSIS??findBinary('rplayout-audio-analysis')
 
 /** Pasta que a varredura percorre. */
 export const MEDIA_ROOT = process.env.RPLAYOUT_MEDIA ?? resolve(process.cwd(), 'midia')

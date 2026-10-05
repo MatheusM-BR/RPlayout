@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState,useRef } from 'react'
 import { api } from '../api.js'
+import { ServerFileTargetDialog } from './ServerFileTargetDialog.js'
+import {captureConfigurationRevision} from '../domain/channel-configuration.js'
 import type {
   Distribution as Payload,
   OutputProfile,
+  ConfigurationOperation,
   PublisherStatus,
   RelayStatus,
 } from '../types.js'
@@ -31,6 +34,7 @@ const PUBLISHER_LABEL: Record<PublisherStatus['health'], string> = {
   onAir: 'NO AR',
   connecting: 'CONECTANDO',
   retrying: 'RECONECTANDO',
+  failed: 'FALHA · AÇÃO NECESSÁRIA',
   idle: 'EM ESPERA',
 }
 
@@ -65,6 +69,9 @@ function profileSummary(output: OutputProfile): string {
 type TabKey = 'resumo' | 'saidas' | 'destinos' | 'processos' | 'saude' | 'convidados'
 
 export function Distribution({ channelId, onClose, onMessage }: Props) {
+  return <DistributionContent key={channelId} channelId={channelId} onClose={onClose} onMessage={onMessage}/>
+}
+function DistributionContent({channelId,onClose,onMessage}:Props){
   const [activeTab, setActiveTab] = useState<TabKey>('resumo')
   const [data, setData] = useState<Payload | null>(null)
   const [processes, setProcesses] = useState<Awaited<ReturnType<typeof api.processes>>['processes']>([])
@@ -77,8 +84,10 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [processChannel, setProcessChannel] = useState<'ALL' | 'CURRENT'>('CURRENT')
   const [outputs, setOutputs] = useState<OutputProfile[]>([])
   const [decklinkSources, setDecklinkSources] = useState<{ reference: string; label: string }[]>([])
+  const [decklinkReason, setDecklinkReason] = useState('Consultando saídas DeckLink no servidor…')
   const [outName, setOutName] = useState('')
   const [outTarget, setOutTarget] = useState('')
+  const [choosingFile, setChoosingFile] = useState(false)
   const [outKind, setOutKind] = useState<'RTMP' | 'SRT' | 'FILE' | 'SDI'>('RTMP')
   const [guestLabel, setGuestLabel] = useState('')
   const [destName, setDestName] = useState('')
@@ -88,14 +97,26 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
   const [srtStreamId, setSrtStreamId] = useState('')
   const [srtPassphrase, setSrtPassphrase] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [rascunho, setRascunho] = useState<Record<string, string>>({})
+  const [rascunho, setRascunho] = useState<Record<string, {value:string;revision:number|undefined}>>({})
+  const [operation,setOperation]=useState<ConfigurationOperation|null>(null)
+  const [outputRevision,setOutputRevision]=useState<number|undefined>()
+  const draftRevision=useRef<number|undefined>()
+  const [busy,setBusy]=useState(false),busyRef=useRef(false),mounted=useRef(true),sequence=useRef(0)
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sequence.current++}},[])
 
   useEffect(() => {
     if (outKind !== 'SDI') return
-    void api.sources().then((sources) => setDecklinkSources(sources.sdi.sources)).catch(() => setDecklinkSources([]))
+    void api.sources().then((sources) => {
+      setDecklinkSources(sources.sdiOutputs.sources)
+      setDecklinkReason(sources.sdiOutputs.reason || 'Nenhuma porta de saída de vídeo foi enumerada. Confira o perfil da placa no Desktop Video do servidor.')
+    }).catch(() => {
+      setDecklinkSources([])
+      setDecklinkReason('Não foi possível consultar as saídas DeckLink no servidor.')
+    })
   }, [outKind])
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (reopen=false) => {
+    const generation=++sequence.current
     try {
       const [payload, profiles, processReport, healthReport, schedulerReport, n1Report, timelineReport] = await Promise.all([
         api.distribution(),
@@ -106,8 +127,12 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
         api.n1Status(),
         api.timeline(channelId),
       ])
+      if(!mounted.current || generation!==sequence.current)return
+      const captured=captureConfigurationRevision(channelId,draftRevision.current,profiles.configurationRevision,reopen)
       setData(payload)
       setOutputs(profiles.outputs)
+      setOperation(profiles.configurationOperation);setOutputRevision(profiles.configurationRevision);draftRevision.current=captured
+      if(reopen){setRascunho({});setOutName('');setOutTarget('')}
       setProcesses(processReport.processes)
       setHealthEvents(healthReport.events)
       setScheduler(schedulerReport.channels.find((entry) => entry.channelId === channelId) ?? null)
@@ -115,7 +140,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
       setTimeline(timelineReport.items)
       setError(null)
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Falha ao ler a distribuição.')
+      if(mounted.current && generation===sequence.current)setError(failure instanceof Error ? failure.message : 'Falha ao ler a distribuição.')
     }
   }, [channelId])
 
@@ -142,23 +167,27 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
     }
   }, [refresh])
 
-  const guard = async (action: () => Promise<void>): Promise<void> => {
+  const guard = async (action: () => Promise<void>,reconcile=false): Promise<void> => {
+    if(busyRef.current)return
+    if(operation && operation.state!=='IDLE' && !reconcile){setError(operation.reason);return}
+    busyRef.current=true;setBusy(true)
     try {
       await action()
       await refresh()
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Não consegui aplicar a configuração.')
-    }
+      if(mounted.current)setError(failure instanceof Error ? failure.message : 'Não consegui aplicar a configuração.')
+    }finally{busyRef.current=false;if(mounted.current)setBusy(false)}
   }
 
   const salvarBitrate = (output: OutputProfile): void => {
     const digitado = rascunho[output.id]
     if (digitado === undefined) return
 
-    const limpo = digitado.trim()
+    const limpo = digitado.value.trim()
     const valor = limpo === '' ? null : Number(limpo)
-    if (valor !== null && (!Number.isFinite(valor) || valor < 500)) {
-      setError('Qualidade em kbps deve ser a partir de 500.')
+    const lightweight=output.role==='PREVIEW' || output.role==='MONITOR'
+    if (valor !== null && (!Number.isInteger(valor) || valor < 50 || valor > (lightweight?450:80000)) || lightweight && valor===null) {
+      setError(lightweight?'Preview e monitor usam de 50 a 450 kbps; não herdam o bitrate do PGM.':'Bitrate deve ser um inteiro de 50 a 80000 kbps.')
       return
     }
     if (valor === output.bitrateKbps) {
@@ -171,17 +200,17 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
     }
 
     void guard(async () => {
-      await api.patchOutput(output.id, { bitrateKbps: valor === null ? null : Math.round(valor) })
+      const result=await api.patchOutput(output.id, { bitrateKbps: valor === null ? null : Math.round(valor) },channelId,digitado.revision)
       setRascunho((atual) => {
         const proximo = { ...atual }
         delete proximo[output.id]
         return proximo
       })
-      onMessage('Qualidade guardada. O canal foi reaplicado com a nova taxa de bits.')
+      if(mounted.current)onMessage(result.engineError?`Configuração gravada; atenção no engine: ${result.engineError}`:result.restartRequired?'Qualidade gravada. Reinício controlado solicitado; confira o destino.':'Troca do publisher aceita pelo engine. Confira a entrega no destino; ACK não homologa sinal físico.')
     })
   }
 
-  const channel = data?.channels.find((entry) => entry.channelId === channelId) ?? data?.channels[0]
+  const channel = data?.channels.find((entry) => entry.channelId === channelId)
   const criticalPending = healthEvents.filter((event) => event.severity === 'CRITICAL' && !event.acknowledgedAt).length
   const warnPending = healthEvents.filter((event) => event.severity === 'WARN' && !event.acknowledgedAt).length
   const visibleProcesses = processes.filter((process) =>
@@ -263,6 +292,15 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
             <button onClick={() => setError(null)} className="hover:underline cursor-pointer">fechar</button>
           </div>
         )}
+
+        {operation && operation.state!=='IDLE' && <div role="alert" className="px-6 py-3 border-b border-armed-amber text-armed-amber text-xs">
+          <p>{operation.reason} Pare o PGM e limpe o CUE antes de reconciliar. Não haverá TAKE automático.</p>
+          <button type="button" disabled={busy || !operation.reconcilable || outputRevision===undefined} className="mt-2 text-primary disabled:opacity-40" onClick={()=>void guard(async()=>{
+            if(!operation.runId || !window.confirm('Reabrir as saídas gravadas com PGM parado e CUE limpo? Não haverá TAKE automático.'))return
+            await api.reconcileConfiguration(channelId,operation.runId,outputRevision)
+            if(mounted.current)onMessage('Configuração reconciliada com o canal parado. Confira o sinal antes de CUE/TAKE.')
+          },true)}>RECONCILIAR CONFIGURAÇÃO PARADA</button>
+        </div>}
 
         {/* NAVEGAÇÃO DE ABAS */}
         <div className="px-6 pt-3 pb-0 bg-surface-base border-b border-border-subtle/70 flex items-center gap-2 shrink-0 overflow-x-auto broadcast-scroll">
@@ -478,10 +516,15 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                     CONFIGURAÇÃO DE SAÍDAS (SDI, SRT, RTMP, ARQUIVO)
                   </span>
                   <p className="text-[11px] text-outline mt-0.5">
-                    Alterações nas taxas de bits ou ativação são aplicadas dinamicamente ao pipeline.
+                    Trocar um publisher pode interromper brevemente a saída. Habilitar ou remover solicita reinício controlado; confira o sinal no destino.
                   </p>
                 </div>
+                <button type="button" disabled={busy} className="text-xs text-primary disabled:opacity-40" onClick={()=>{
+                  if(window.confirm('Reabrir a configuração atual e descartar os rascunhos de saída/bitrate?'))void refresh(true)
+                }}>REABRIR CONFIGURAÇÃO</button>
               </div>
+
+              <fieldset disabled={busy || outputRevision===undefined || Boolean(operation && operation.state!=='IDLE')} className="flex flex-col gap-3 disabled:opacity-60">
 
               {/* Lista de Saídas */}
               <div className="flex flex-col gap-3">
@@ -523,7 +566,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                                   ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                                   : saude.health === 'connecting'
                                   ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                  : saude.health === 'retrying'
+                                  : saude.health === 'retrying' || saude.health === 'failed'
                                   ? 'bg-red-500/20 text-red-400 border border-red-500/30'
                                   : 'bg-surface-base text-outline border border-border-subtle'
                               }`}
@@ -580,17 +623,17 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                           <input
                             id={`br-${output.id}`}
                             type="number"
-                            min={500}
-                            max={80000}
-                            step={250}
-                            value={rascunho[output.id] ?? output.bitrateKbps ?? ''}
+                            min={50}
+                            max={output.role==='PREVIEW'||output.role==='MONITOR'?450:80000}
+                            step={50}
+                            value={rascunho[output.id]?.value ?? output.bitrateKbps ?? ''}
                             placeholder={
                               output.suggestedBitrateKbps === null
                                 ? 'automático'
                                 : `auto (${output.suggestedBitrateKbps})`
                             }
                             onChange={(event) =>
-                              setRascunho((atual) => ({ ...atual, [output.id]: event.target.value }))
+                              setRascunho((atual) => ({ ...atual, [output.id]: {value:event.target.value,revision:atual[output.id]?.revision??output.configurationRevision} }))
                             }
                             onBlur={() => salvarBitrate(output)}
                             onKeyDown={(event) => {
@@ -606,19 +649,19 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                             className="bg-transparent border-0 text-on-surface text-xs font-label-mono w-20 focus:outline-none"
                           />
                           <span className="text-[10px] font-label-mono text-outline">kbps</span>
-                          {output.bitrateKbps !== null && (
+                          {output.bitrateKbps !== null && output.role!=='PREVIEW' && output.role!=='MONITOR' && (
                             <button
                               type="button"
                               className="px-1.5 py-0.5 text-[9px] font-label-mono font-bold rounded bg-surface-panel hover:bg-surface-panel/80 text-primary border border-border-subtle cursor-pointer"
                               onClick={() =>
                                 void guard(async () => {
+                                  const result=await api.patchOutput(output.id, { bitrateKbps: null },channelId,output.configurationRevision)
                                   setRascunho((atual) => {
                                     const proximo = { ...atual }
                                     delete proximo[output.id]
                                     return proximo
                                   })
-                                  await api.patchOutput(output.id, { bitrateKbps: null })
-                                  onMessage('Taxa de bits redefinida para automático.')
+                                  onMessage(result.engineError?`Configuração gravada; atenção no engine: ${result.engineError}`:'Modo automático gravado; confira o publisher e a entrega.')
                                 })
                               }
                               title="Restaurar modo automático sincronizado ao formato"
@@ -632,8 +675,8 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                           type="button"
                           onClick={() =>
                             void guard(async () => {
-                              await api.patchOutput(output.id, { enabled: !output.enabled })
-                              onMessage(output.enabled ? 'Saída desligada com sucesso.' : 'Saída ligada com sucesso.')
+                              const result=await api.patchOutput(output.id, { enabled: !output.enabled },channelId,output.configurationRevision)
+                              onMessage(result.engineError?`Configuração gravada; atenção no engine: ${result.engineError}`:'Habilitação gravada. Reinício solicitado; confira o sinal no destino.')
                             })
                           }
                           className={`px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border ${
@@ -650,8 +693,8 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                             type="button"
                             onClick={() =>
                               void guard(async () => {
-                                await api.removeOutput(output.id)
-                                onMessage('Saída removida.')
+                                const result=await api.removeOutput(output.id,channelId,output.configurationRevision)
+                                onMessage(result.engineError?`Saída removida do cadastro; atenção no engine: ${result.engineError}`:'Saída removida do cadastro. Reinício controlado solicitado.')
                               })
                             }
                             className="px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border bg-red-500/10 hover:bg-red-500/20 border-red-500/30 text-red-400"
@@ -717,9 +760,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                         <button
                           type="button"
                           className="px-3 py-2 rounded-lg bg-surface-panel hover:bg-surface-base border border-border-subtle text-xs font-label-caps text-on-surface cursor-pointer shrink-0"
-                          onClick={() =>
-                            void api.pickFile().then((path) => path && setOutTarget(path)).catch((f: Error) => onMessage(f.message))
-                          }
+                          onClick={() => setChoosingFile(true)}
                         >
                           EXPLORAR…
                         </button>
@@ -739,14 +780,16 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                       disabled={!outName.trim() || !outTarget.trim()}
                       onClick={() =>
                         void guard(async () => {
-                          await api.addOutput(channelId, {
+                          const result=await api.addOutput(channelId, {
                             name: outName.trim(),
                             kind: outKind,
                             target: outTarget.trim(),
-                          })
+                          },draftRevision.current)
+                          if(!mounted.current)return
+                          draftRevision.current=result.configurationRevision
                           setOutName('')
                           setOutTarget('')
-                          onMessage('Saída criada e adicionada com sucesso.')
+                          onMessage(result.engineError?`Saída gravada; atenção no engine: ${result.engineError}`:'Saída gravada. Reinício controlado solicitado; confira a imagem e o destino.')
                         })
                       }
                       className="px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-on-primary font-label-caps text-xs font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
@@ -758,10 +801,11 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
 
                 {outKind === 'SDI' && decklinkSources.length === 0 && (
                   <p className="text-[11px] text-amber-400 font-label-mono mt-1">
-                    Nenhuma placa DeckLink detectada no sistema operacional.
+                    {decklinkReason}
                   </p>
                 )}
               </div>
+              </fieldset>
             </div>
           )}
 
@@ -1080,8 +1124,13 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                       {scheduler.activeRule?.name ?? 'Modo Direto / Manual'}
                     </span>
                     <span className="text-[11px] font-label-mono text-outline">
-                      {scheduler.minutesRemaining} min restantes · Cobertura {scheduler.coverageHours}h
+                      {scheduler.minutesRemaining === null ? scheduler.reason : `${scheduler.minutesRemaining} min restantes · Projeção ${scheduler.coverageHours}h`}
                     </span>
+                    <span className="text-[10px] text-outline">
+                      {scheduler.source === 'PUBLISHED' ? 'Playlist publicada em execução' : scheduler.source === 'LEGACY' ? 'Execução legada — sem revisão publicada' : 'Sem playlist em execução'}
+                      {scheduler.rundownDate ? ` · ${scheduler.rundownDate}` : ''}
+                    </span>
+                    <span className="text-[10px] text-outline">Confira e enfileire a passagem para a próxima revisão publicada no Master.</span>
                   </div>
                 )}
 
@@ -1192,7 +1241,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
                               <button
                                 type="button"
                                 className="px-2.5 py-1 rounded bg-primary/20 hover:bg-primary/30 text-primary text-[10px] font-label-caps font-bold cursor-pointer transition-colors shrink-0"
-                                onClick={() => void api.acknowledgeHealth(event.id).then(refresh)}
+                                onClick={() => void api.acknowledgeHealth(event.id).then(()=>refresh())}
                               >
                                 RECONHECER
                               </button>
@@ -1329,6 +1378,7 @@ export function Distribution({ channelId, onClose, onMessage }: Props) {
           </button>
         </footer>
       </div>
+      {choosingFile && <ServerFileTargetDialog onClose={() => setChoosingFile(false)} onChoose={path => { setOutTarget(path); setChoosingFile(false) }} />}
     </div>
   )
 }

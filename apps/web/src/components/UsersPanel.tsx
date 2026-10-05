@@ -20,6 +20,12 @@ export function UsersPanel({ onMessage }: { onMessage: (text: string) => void })
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('OPERATOR')
+  const [accessUser, setAccessUser] = useState<(typeof users)[number] | null>(null)
+  const [channels, setChannels] = useState<Awaited<ReturnType<typeof api.state>>['channels']>([])
+  const [allowedChannels, setAllowedChannels] = useState<string[] | null>(null)
+  const [restrictedStations, setRestrictedStations] = useState(false)
+  const [stationIps, setStationIps] = useState('')
+  const [accessBusy, setAccessBusy] = useState(false)
 
   const reload = () => {
     void api
@@ -29,13 +35,28 @@ export function UsersPanel({ onMessage }: { onMessage: (text: string) => void })
   }
 
   useEffect(reload, [])
+  useEffect(() => { void api.state().then(state => setChannels(state.channels)).catch((error: Error) => onMessage(error.message)) }, [])
+
+  const editAccess = (user: (typeof users)[number]) => {
+    setAccessUser(user); setAllowedChannels(user.channelIds); setRestrictedStations(user.stationIps !== null); setStationIps(user.stationIps?.join(', ') ?? '')
+  }
+  const saveAccess = async () => {
+    if (!accessUser || accessBusy) return
+    setAccessBusy(true)
+    try {
+      await api.userAccess(accessUser.id, { channelIds: allowedChannels, stationIps: restrictedStations ? stationIps.split(/[\s,;]+/).map(value => value.trim()).filter(Boolean) : null })
+      setAccessUser(null); reload(); onMessage('Canais e estações atualizados. As sessões antigas foram encerradas.')
+    } catch (error) { onMessage(error instanceof Error ? error.message : 'Não foi possível salvar o acesso.') }
+    finally { setAccessBusy(false) }
+  }
 
   const add = () => {
     void api
-      .addUser({ username, password, role })
-      .then(() => {
+      .addUser({ username, password, role: users.length === 0 ? 'ADMIN' : role })
+      .then(response => {
         setUsername('')
         setPassword('')
+        if (response.requiresLogin) { window.dispatchEvent(new Event('rplayout-session-ended')); onMessage('Administrador criado. Entre com essa conta para continuar.'); return }
         reload()
         onMessage('Usuário criado com sucesso.')
       })
@@ -82,6 +103,7 @@ export function UsersPanel({ onMessage }: { onMessage: (text: string) => void })
                       </div>
                       {user.username}
                     </div>
+                    <div className="text-xs text-outline mt-1">{user.channelIds === null ? 'Todos os canais' : `${user.channelIds.length} canal(is)`} · {user.stationIps === null ? 'Todas as estações' : `${user.stationIps.length} estação(ões)`}</div>
                   </td>
                   <td className="py-2.5 px-space-md">
                     <span
@@ -139,6 +161,11 @@ export function UsersPanel({ onMessage }: { onMessage: (text: string) => void })
                     >
                       {user.enabled ? 'DESATIVAR' : 'ATIVAR'}
                     </button>
+                    <button className="ml-2 px-2 py-1 border border-border-subtle rounded text-xs text-armed-amber" onClick={() => {
+                      if (!window.confirm(`Encerrar todas as sessões de ${user.username}? A conta será preservada, mas precisará entrar novamente.`)) return
+                      void api.revokeUserSessions(user.id).then(() => onMessage(`Sessões de ${user.username} encerradas.`)).catch((error: Error) => onMessage(error.message))
+                    }}>Encerrar sessões</button>
+                    <button onClick={() => editAccess(user)} className="ml-2 px-2 py-1 border border-border-subtle rounded text-xs text-accent-ice">Canais / estações</button>
                   </td>
                 </tr>
               ))}
@@ -152,6 +179,18 @@ export function UsersPanel({ onMessage }: { onMessage: (text: string) => void })
           </div>
         )}
       </section>
+
+      {accessUser && <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
+        <section role="dialog" aria-modal="true" aria-labelledby="user-access-title" className="bg-surface-card border border-border-subtle rounded-lg w-full max-w-lg p-4 flex flex-col gap-3">
+          <h2 id="user-access-title" className="font-bold">Acesso de {accessUser.username}</h2>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={allowedChannels === null} disabled={accessUser.role === 'ADMIN'} onChange={event => setAllowedChannels(event.target.checked ? null : [])} /> Todos os canais</label>
+          {allowedChannels !== null && <div className="flex flex-col gap-2">{channels.map(channel => <label key={channel.id} className="flex gap-2"><input type="checkbox" checked={allowedChannels.includes(channel.id)} onChange={event => setAllowedChannels(old => event.target.checked ? [...(old ?? []), channel.id] : (old ?? []).filter(id => id !== channel.id))} />{channel.name}</label>)}</div>}
+          <label className="flex items-center gap-2"><input type="checkbox" checked={restrictedStations} onChange={event => setRestrictedStations(event.target.checked)} /> Permitir somente estas estações</label>
+          {restrictedStations && <label className="flex flex-col gap-1">Endereços IP, separados por vírgula<input value={stationIps} onChange={event => setStationIps(event.target.value)} placeholder="192.168.42.10, 192.168.42.11" className="bg-surface-panel border border-border-subtle p-2 rounded" /></label>}
+          <p className="text-xs text-armed-amber">Uma lista restrita vazia bloqueia o acesso. Salvar encerra as sessões da conta e exige novo login. O IP é o observado pelo servidor, não um cabeçalho informado pela estação.</p>
+          <div className="flex justify-end gap-2"><button disabled={accessBusy} onClick={() => setAccessUser(null)} className="px-3 py-2 border border-border-subtle rounded">Cancelar</button><button disabled={accessBusy} onClick={() => void saveAccess()} className="px-3 py-2 bg-primary text-surface-base rounded">{accessBusy ? 'Salvando…' : 'Salvar acesso'}</button></div>
+        </section>
+      </div>}
 
       {/* Novo Usuário & Matriz de Papéis */}
       <div className="xl:col-span-4 flex flex-col gap-gutter">
@@ -191,7 +230,7 @@ export function UsersPanel({ onMessage }: { onMessage: (text: string) => void })
             <div className="flex flex-col gap-1">
               <label className="font-label-caps text-label-caps text-outline uppercase">Papel Operacional</label>
               <select
-                value={role}
+                value={users.length === 0 ? 'ADMIN' : role}
                 onChange={(event) => setRole(event.target.value)}
                 className="bg-surface-container-lowest text-on-surface p-2 rounded border border-border-subtle font-body-sm text-body-sm outline-none focus:border-primary cursor-pointer"
               >
@@ -204,7 +243,7 @@ export function UsersPanel({ onMessage }: { onMessage: (text: string) => void })
             </div>
 
             <p className="font-body-sm text-[11px] text-outline bg-surface-panel p-space-sm rounded border border-border-subtle">
-              {ROLE_HELP[role]}
+              {ROLE_HELP[users.length === 0 ? 'ADMIN' : role]}
             </p>
 
             <button

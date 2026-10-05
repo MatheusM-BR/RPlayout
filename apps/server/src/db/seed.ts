@@ -5,6 +5,7 @@ import type { Anchor, AudioLevel, LoudnessMeasurement, Trim } from '@rplayout/pr
 import { openDatabase } from './client.js'
 import { channels, mediaAssets, rundownItems, rundowns } from './schema.js'
 import { DB_FILE } from '../config.js'
+import { localDate } from '../domain/rundown-clock.js'
 
 const FPS = 50
 const s = (n: number): number => Math.round(n * FPS)
@@ -279,7 +280,7 @@ async function seed(): Promise<void> {
       name: 'Grade',
       plannedStart: START,
       loop: true,
-      date: new Date().toISOString().slice(0, 10),
+      date: localDate(new Date()),
       createdAt: now,
       updatedAt: now,
     })
@@ -306,6 +307,8 @@ async function seed(): Promise<void> {
       durationFrames: s(asset.seconds),
       categoryId: asset.category,
       defaultTrim: asset.defaultTrim ?? null,
+      defaultTrimRateNum: asset.defaultTrim ? FPS : null,
+      defaultTrimRateDen: asset.defaultTrim ? 1 : null,
       defaultAudio: asset.defaultAudio ?? null,
       loudnessFile: asset.loudness,
       suggestedTrim: asset.suggestedTrim ?? null,
@@ -320,7 +323,7 @@ async function seed(): Promise<void> {
     name: 'Grade — noite',
     plannedStart: START,
     loop: true,
-    date: new Date().toISOString().slice(0, 10),
+    date: localDate(new Date()),
     createdAt: now,
     updatedAt: now,
   })

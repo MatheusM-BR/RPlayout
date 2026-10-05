@@ -2,10 +2,11 @@ import { useEffect, useState, useMemo, useRef } from 'react'
 import type { Rate } from '@rplayout/protocol'
 import { api } from '../api.js'
 import { dur } from '../format.js'
-import type { FillPlan, ScheduleRule, Snapshot } from '../types.js'
+import type { FillPlan, FillProposal, ScheduleRule, Snapshot } from '../types.js'
 
 interface Props {
   rundownId: string
+  revision:number|undefined
   channelId: string
   /** Categorias que existem no acervo, para a faixa escolher entre elas. */
   categories: string[]
@@ -32,8 +33,10 @@ const parseHhmm = (text: string): number | null => {
   return minutes >= 0 && minutes <= 1440 ? minutes : null
 }
 
-export function AutoFillDialog({
+export function AutoFillDialog(props:Props) {
+  const [{
   rundownId,
+  revision,
   channelId,
   categories,
   rate,
@@ -45,7 +48,7 @@ export function AutoFillDialog({
   onCancel,
   onApplied,
   onMessage,
-}: Props) {
+  }]=useState(()=>props)
   // Modo de preenchimento: 'duration' (horas + minutos), 'range' (De... Até...), ou 'rules' (Pauta diária)
   const [mode, setMode] = useState<'duration' | 'range' | 'rules'>('duration')
 
@@ -74,7 +77,11 @@ export function AutoFillDialog({
 
   // Estado do plano
   const [plan, setPlan] = useState<FillPlan | null>(null)
+  const [proposal,setProposal]=useState<(FillProposal&{criteriaKey:string})|null>(null)
+  const [bands,setBands]=useState<{rule:string;items:number;leftover:number}[]>([])
+  const busyRef=useRef(false)
   const [busy, setBusy] = useState(false)
+  const [operationError,setOperationError]=useState<string|null>(null)
 
   // Regras de Pauta Diária
   const [rules, setRules] = useState<ScheduleRule[] | null>(null)
@@ -142,70 +149,54 @@ export function AutoFillDialog({
     }
   }, [autoPreview, calculatedMinutes])
 
+  // Compare every editable criterion, not just the visible duration. A changed
+  // draft keeps the old review visible, but cannot apply it as a new request.
+  const criteriaKey=JSON.stringify({mode,hours,minutesInput,timeFrom,timeTo,avoidHours,insertTarget,customInsertTime,initialStart,rules:mode==='rules'?rules:null})
+  const proposalCurrent=proposal?.criteriaKey===criteriaKey && proposal.kind===(mode==='rules'?'DAY':'WINDOW')
+
   const run = (preview: boolean): void => {
-    const janela = calculatedMinutes
-    if (janela <= 0) {
-      onMessage('Defina um tempo válido maior que 0 minutos para preencher.')
+    if(busyRef.current)return
+    if(!preview){
+      if(!proposal || !proposalCurrent)return
+      busyRef.current=true;setBusy(true);setOperationError(null)
+      const request=proposal.kind==='DAY'
+        ? ()=>api.autoFillDay(rundownId,proposal.editorialRevision,{proposalId:proposal.id})
+        : ()=>api.autoFill(rundownId,{proposalId:proposal.id},proposal.editorialRevision)
+      Promise.resolve().then(request).then(result=>{
+        if(!result.view)throw new Error('A montagem não retornou a grade confirmada. Atualize antes de tentar novamente.')
+        onApplied(result as Snapshot,`${result.plan.items.length} itens da proposta conferida foram inseridos. Revise e publique para operação.`)
+      }).catch((failure:Error)=>{setOperationError(failure.message);onMessage(failure.message)})
+        .finally(()=>{busyRef.current=false;setBusy(false)})
       return
     }
-    setBusy(true)
-
-    // Calcula se os itens devem ser encaixados no GAP/horário ou anexados ao fim
-    let insertAtMinute: number | undefined = undefined
-    if (mode === 'range') {
-      const from = parseHhmm(timeFrom)
-      if (from !== null) insertAtMinute = from
-    } else if (mode === 'duration') {
-      if (insertTarget === 'gap' && initialStart) {
-        insertAtMinute = parseHhmm(initialStart) ?? undefined
-      } else if (insertTarget === 'time') {
-        insertAtMinute = parseHhmm(customInsertTime) ?? undefined
-      }
+    const janela=calculatedMinutes
+    let insertAtMinute:number|undefined
+    if(mode==='range'){
+      const from=parseHhmm(timeFrom),to=parseHhmm(timeTo)
+      if(from===null || to===null || from===to){setOperationError('Informe um intervalo horário válido.');return}
+      insertAtMinute=from
+    }else if(insertTarget==='gap'&&initialStart)insertAtMinute=parseHhmm(initialStart)??undefined
+    else if(insertTarget==='time'){
+      const minute=parseHhmm(customInsertTime)
+      if(minute===null){setOperationError('Informe um horário de inserção válido.');return}
+      insertAtMinute=minute
     }
-
-    api
-      .autoFill(rundownId, {
-        minutes: janela,
-        avoidHours,
-        preview,
-        insertAtMinute,
-      })
-      .then((result) => {
-        setPlan(result.plan)
-        if (!preview && result.view) {
-          const locStr =
-            insertAtMinute !== undefined
-              ? `inseridos na grade a partir das ${hhmm(insertAtMinute)}`
-              : 'montados no fim da grade'
-          onApplied(
-            result as Snapshot,
-            `${result.plan.items.length} itens ${locStr} com sucesso.`,
-          )
-        } else if (preview) {
-          const locStr =
-            insertAtMinute !== undefined
-              ? ` no ponto ${hhmm(insertAtMinute)}`
-              : ' no fim da grade'
-          onMessage(
-            `Proposta calculada: ${result.plan.items.length} itens encontrados para preencher ${durationSummary}${locStr}.`,
-          )
-        }
-      })
-      .catch((failure: Error) => onMessage(failure.message))
-      .finally(() => setBusy(false))
+    busyRef.current=true;setBusy(true);setOperationError(null)
+    const capturedKey=criteriaKey
+    const request=mode==='rules'
+      ? ()=>api.autoFillDay(rundownId,revision,{preview:true})
+      : ()=>api.autoFill(rundownId,{minutes:janela,avoidHours,preview:true,insertAtMinute},revision)
+    Promise.resolve().then(request).then(result=>{
+      if(result.proposal.rundownId!==rundownId || result.proposal.channelId!==channelId)
+        throw new Error('A proposta não corresponde à grade aberta. Feche e confira a seleção.')
+      setPlan(result.plan);setBands(result.bands??[])
+      setProposal({...result.proposal,criteriaKey:capturedKey})
+      onMessage(`Proposta conferida: ${result.plan.items.length} itens. A aplicação não recalculará a seleção.`)
+    }).catch((failure:Error)=>{setOperationError(failure.message);onMessage(failure.message)})
+      .finally(()=>{busyRef.current=false;setBusy(false)})
   }
 
-  const fillDay = (): void => {
-    setBusy(true)
-    api
-      .autoFillDay(rundownId)
-      .then((result) => {
-        const filled = result.bands.reduce((total, band) => total + band.items, 0)
-        onApplied(result, `Dia montado pela pauta: ${filled} itens em ${result.bands.length} faixas.`)
-      })
-      .catch((failure: Error) => onMessage(failure.message))
-      .finally(() => setBusy(false))
-  }
+  const fillDay = (): void => run(false)
 
   const addRule = (): void => {
     const from = parseHhmm(draft.from)
@@ -352,7 +343,7 @@ export function AutoFillDialog({
         </div>
 
         {/* CORPO SCROLLÁVEL */}
-        <div className="p-5 flex-1 min-h-0 overflow-y-auto broadcast-scroll flex flex-col gap-4">
+        <fieldset disabled={busy} className="p-5 flex-1 min-h-0 overflow-y-auto broadcast-scroll flex flex-col gap-4">
           {mode === 'duration' && (
             <div className="bg-surface-panel p-4 rounded-lg border border-border-subtle flex flex-col gap-3">
               <div className="flex items-center justify-between">
@@ -627,7 +618,7 @@ export function AutoFillDialog({
           )}
 
           {/* PLANO DE PREENCHIMENTO PROPOSTO (PREVIEW) */}
-          {mode !== 'rules' && plan && (
+          {plan && (
             <div className="bg-surface-panel rounded-lg border border-border-subtle overflow-hidden flex flex-col">
               <div
                 className={`p-3 border-b flex items-center justify-between ${
@@ -641,14 +632,12 @@ export function AutoFillDialog({
                     {plan.reason === 'FILLED' ? 'check_circle' : 'warning'}
                   </span>
                   <span className="font-label-caps text-[11px] font-bold">
-                    {plan.reason === 'FILLED'
-                      ? `Janela 100% Preenchida (${plan.items.length} itens)`
-                      : `Acervo Insuficiente (${plan.items.length} itens)`}
+                    {`${plan.items.length} itens na proposta · ${dur(plan.window,rate)} solicitados`}
                   </span>
                 </div>
                 <span className="font-label-mono text-[11px]">
                   {plan.reason === 'FILLED'
-                    ? `Sobra: ${dur(plan.leftover, rate)}`
+                    ? `Saldo: ${dur(plan.leftover, rate)}`
                     : `Faltaram: ${dur(plan.leftover, rate)}`}
                 </span>
               </div>
@@ -863,9 +852,16 @@ export function AutoFillDialog({
               )}
             </div>
           )}
-        </div>
+          {proposal && <div className="text-xs text-outline" role="status">
+            Revisão {proposal.editorialRevision} · válida até {new Date(proposal.expiresAt).toLocaleTimeString('pt-BR')}.
+            {!proposalCurrent && <p className="text-armed-amber">Os critérios mudaram. Proponha novamente antes de aplicar; a conferência anterior foi mantida.</p>}
+            {bands.map((band,index)=><p key={index}>{band.rule}: {band.items} itens · saldo {dur(band.leftover,rate)}</p>)}
+            <p>Montagem editorial. Não altera o PGM nem publica automaticamente.</p>
+          </div>}
+        </fieldset>
 
         {/* RODAPÉ DE AÇÕES */}
+        {operationError && <div role="alert" className="px-5 py-3 bg-error-container/20 text-on-error-container text-sm">{operationError} Os campos foram mantidos; confira a grade antes de repetir a montagem.</div>}
         <footer className="px-5 py-3.5 bg-surface-container-high border-t border-border-subtle flex items-center justify-between shrink-0">
           <button
             type="button"
@@ -892,7 +888,7 @@ export function AutoFillDialog({
 
                 <button
                   type="button"
-                  disabled={busy || plan === null || plan.items.length === 0}
+                  disabled={busy || !proposalCurrent || plan === null || plan.items.length === 0}
                   onClick={() => run(false)}
                   className="px-4 py-1.5 rounded bg-status-ok hover:brightness-110 text-surface-base text-xs font-label-caps font-bold flex items-center gap-1.5 shadow-[0_0_12px_rgba(0,255,102,0.4)] transition-all cursor-pointer disabled:opacity-50 disabled:shadow-none"
                 >
@@ -903,15 +899,18 @@ export function AutoFillDialog({
             )}
 
             {mode === 'rules' && (
+              <>
+              <button type="button" disabled={busy || !rules?.length} onClick={()=>run(true)} className="px-4 py-1.5 rounded border border-border-subtle text-xs cursor-pointer disabled:opacity-50">Conferir o Dia Inteiro</button>
               <button
                 type="button"
-                disabled={busy || !rules?.length}
+                disabled={busy || !proposalCurrent || !plan?.items.length}
                 onClick={fillDay}
                 className="px-4 py-1.5 rounded bg-primary hover:bg-primary-fixed text-surface-base text-xs font-label-caps font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
-                <span>Montar o Dia Inteiro</span>
+                <span>Aplicar Dia Conferido</span>
               </button>
+              </>
             )}
           </div>
         </footer>

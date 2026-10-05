@@ -1,9 +1,9 @@
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase, type Db } from '../db/client.js'
-import { addRoot, contem, dentroDasPastas, labelFor, listRoots, removeRoot } from './roots.js'
+import { addRoot, browseServerFolders, contem, dentroDasPastas, labelFor, listRoots, recordingTarget, removeRoot } from './roots.js'
 
 let db: Db
 let base: string
@@ -23,6 +23,27 @@ function pasta(...partes: string[]): string {
   mkdirSync(caminho, { recursive: true })
   return caminho
 }
+
+describe('destino remoto de gravação', () => {
+  it('preserva Unicode e apenas resolve o caminho, sem criar arquivo', () => {
+    const folder = pasta('Ação — Prévia')
+    const path = join(folder, 'Ópera — edição.mkv')
+    expect(recordingTarget(folder, 'Ópera — edição.mkv')).toEqual({ ok: true, path })
+    expect(existsSync(path)).toBe(false)
+  })
+  it.each(['../fora.mkv', '..\\fora.mkv', 'C:fora.mkv', 'CON.mkv', 'LPT1.mkv', 'teste.mp4', 'nome?.mkv', 'nome.mkv ', ' nome.mkv', 'a\u0000.mkv'])('recusa nome inválido %j', filename => {
+    expect(recordingTarget(base, filename)).toMatchObject({ ok: false, status: 400 })
+  })
+  it('recusa arquivo existente sem modificar seu conteúdo', () => {
+    writeFileSync(join(base, 'original.mkv'), 'original')
+    expect(recordingTarget(base, 'original.mkv')).toMatchObject({ ok: false, status: 409 })
+  })
+  it('recusa pasta inexistente e arquivo usado como pasta', () => {
+    expect(recordingTarget(join(base, 'sumiu'), 'novo.mkv')).toMatchObject({ ok: false, status: 400 })
+    writeFileSync(join(base, 'arquivo'), '')
+    expect(recordingTarget(join(base, 'arquivo'), 'novo.mkv')).toMatchObject({ ok: false, status: 400 })
+  })
+})
 
 describe('estar dentro de uma pasta', () => {
   it('a própria pasta conta', () => {
@@ -57,6 +78,15 @@ describe('nome curto da pasta', () => {
 })
 
 describe('pastas do acervo', () => {
+  it('navega as subpastas pelo servidor sem abrir interface nativa', async () => {
+    const raiz = pasta('servidor')
+    pasta('servidor', 'Comerciais')
+    pasta('servidor', 'Programação')
+    const browser = await browseServerFolders(raiz)
+    expect(browser.path).toBe(resolve(raiz))
+    expect(browser.directories.map((folder) => folder.name)).toEqual(['Comerciais', 'Programação'])
+  })
+
   it('banco vazio nasce com a pasta da variável de ambiente', async () => {
     // Quem já usava o sistema não pode perder o acervo por causa desta tabela.
     const raiz = pasta('midia')
@@ -69,6 +99,13 @@ describe('pastas do acervo', () => {
     const resultado = await addRoot(db, pasta('comerciais'))
     expect(resultado.ok).toBe(true)
     expect(await listRoots(db, '')).toHaveLength(2)
+  })
+
+  it('preserva letras acentuadas no caminho que será validado pelo servidor', async () => {
+    const raiz = pasta('Programação', 'Ação & Ópera')
+    const resultado = await addRoot(db, raiz)
+    expect(resultado).toMatchObject({ ok: true })
+    if (resultado.ok) expect(resultado.root.path).toBe(resolve(raiz))
   })
 
   it('recusa pasta que não existe', async () => {

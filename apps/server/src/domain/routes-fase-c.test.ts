@@ -138,7 +138,7 @@ describe('Rotas e Endpoints da Fase C (Continuidade, Compliance e Sonda PGM)', (
     expect(body.thresholds.freezeThresholdMs).toBe(2000)
   })
 
-  it('POST /api/v1/engineering/pgm-probe/emergency-slate dispara e reseta Slate manual', async () => {
+  it('não confirma slate sem engine real nem altera o estado para ativo', async () => {
     // 1. Dispara emergência manual
     const triggerRes = await server.inject({
       method: 'POST',
@@ -149,11 +149,10 @@ describe('Rotas e Endpoints da Fase C (Continuidade, Compliance e Sonda PGM)', (
       },
     })
 
-    expect(triggerRes.statusCode).toBe(200)
+    expect(triggerRes.statusCode).toBe(409)
     const triggerData = JSON.parse(triggerRes.body)
-    expect(triggerData.ok).toBe(true)
-    expect(triggerData.emergencySlateActive).toBe(true)
-    expect(triggerData.alert.autoActionTriggered).toBe('SLATE_INJECTED')
+    expect(triggerData.error).toBeTruthy()
+    expect(app.pgmProbes.get('ch-fase-c')?.getStatus().emergencySlateActive).toBe(false)
 
     // 2. Reseta emergência manual
     const resetRes = await server.inject({
@@ -165,13 +164,13 @@ describe('Rotas e Endpoints da Fase C (Continuidade, Compliance e Sonda PGM)', (
       },
     })
 
-    expect(resetRes.statusCode).toBe(200)
+    expect(resetRes.statusCode).toBe(409)
     const resetData = JSON.parse(resetRes.body)
-    expect(resetData.ok).toBe(true)
-    expect(resetData.emergencySlateActive).toBe(false)
+    expect(resetData.error).toBeTruthy()
+    expect(app.pgmProbes.get('ch-fase-c')?.getStatus().emergencySlateActive).toBe(false)
   })
 
-  it('GET /api/v1/compliance/asrun/bxf exporta As-Run formal em XML SMPTE-2021 BXF', async () => {
+  it('GET /api/v1/compliance/asrun/bxf exporta XML legado sem prometer homologação SMPTE/BXF', async () => {
     const res = await server.inject({
       method: 'GET',
       url: '/api/v1/compliance/asrun/bxf?channelId=ch-fase-c',
@@ -179,13 +178,14 @@ describe('Rotas e Endpoints da Fase C (Continuidade, Compliance e Sonda PGM)', (
 
     expect(res.statusCode).toBe(200)
     expect(res.headers['content-type']).toContain('application/xml')
-    expect(res.headers['content-disposition']).toContain('attachment; filename="asrun.bxf.xml"')
+    expect(res.headers['content-disposition']).toContain('attachment; filename="asrun-draft.bxf.xml"')
+    expect(res.body).toContain('schemaValidated="false"')
     expect(res.body).toContain('<?xml version="1.0" encoding="UTF-8"?>')
     expect(res.body).toContain('<BxfMessage')
     expect(res.body).toContain('messageType="AsRun"')
     expect(res.body).toContain('TV Continuidade 24/7')
     expect(res.body).toContain('Spot Comercial Banco')
-    expect(res.body).toContain('ExecutionResult status="PLAYED_FULL"')
+    expect(res.body).toContain('ExecutionResult status="INTERRUPTED" endedBy="NEXT"')
   })
 
   it('GET /api/v1/compliance/ancine/summary calcula conformidade de 25% de comerciais', async () => {
@@ -198,8 +198,11 @@ describe('Rotas e Endpoints da Fase C (Continuidade, Compliance e Sonda PGM)', (
     const body = JSON.parse(res.body)
     expect(body.hourlyCommercialPercent).toBeDefined()
     expect(body.maxAllowedCommercialPercent).toBe(25.0)
-    expect(body.compliant).toBe(true)
-    expect(body.nationalContentMinutes).toBeGreaterThan(0)
+    expect(body.compliant).toBeNull()
+    expect(body.regulatoryValidated).toBe(false)
+    expect(body.nationalContentMinutes).toBeNull()
+    expect(body.nationalMetadataComplete).toBe(false)
+    expect(body.evidence).toBe('AS_RUN_EVENT_CLASSIFICATION_ONLY')
   })
 
   it('GET /api/v1/compliance/asrun/csv exporta As-Run formal estruturado em CSV', async () => {

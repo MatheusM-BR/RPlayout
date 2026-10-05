@@ -6,15 +6,19 @@ import { constants, setPriority } from 'node:os'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
-import type { AudioTrack } from '@rplayout/protocol'
+import { hasVideoFileSuffix, type AudioTrack } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
+import type Database from 'better-sqlite3'
+import type { MediaWorkflow } from './media-workflow.js'
 import { mediaAssets } from '../db/schema.js'
+import { mediaProcessEnvironment } from './media-process-environment.js'
 
 /** O que a sonda devolve. Uma linha de JSON, sucesso ou motivo da falha. */
 type ProbeResult =
   | {
       ok: true
       durationNs: number
+      videoCodec?: string
       video?: {
         width: number
         height: number
@@ -140,6 +144,9 @@ export class Ingest {
    */
   measure = true
   private measuring = true
+  private batchId: string | null = null
+  private closed = false
+  close(): void { this.closed = true }
 
   constructor(
     private readonly db: Db,
@@ -147,6 +154,8 @@ export class Ingest {
     private readonly probeBinary: string,
     /** Onde as miniaturas ficam. */
     private readonly thumbnailDir: string,
+    private readonly workflow?: MediaWorkflow,
+    private readonly sqlite?: Database.Database,
   ) {}
 
   status(): IngestStatus {
@@ -162,11 +171,15 @@ export class Ingest {
    * medir loudness custa decodificar o áudio de cada arquivo -- e segurar a
    * resposta HTTP por isso deixaria a interface pendurada.
    */
-  start(roots: string | readonly string[], measure = this.measure): boolean {
-    if (this.state.running || !this.available) return false
+  start(roots: string | readonly string[], measure = this.measure, resumedBatchId?: string): boolean {
+    if (this.closed || this.state.running || !this.available) return false
     const pastas = (typeof roots === 'string' ? [roots] : roots).map((entry) => resolve(entry))
     if (pastas.length === 0) return false
     this.measuring = measure
+    this.batchId = resumedBatchId ?? randomUUID()
+    const now = new Date().toISOString()
+    if (resumedBatchId) this.sqlite?.prepare("UPDATE ingest_batches SET state='RUNNING',error=NULL,updated_at=? WHERE id=?").run(now, resumedBatchId)
+    else this.sqlite?.prepare('INSERT INTO ingest_batches (id,roots,measure,state,created_at,updated_at) VALUES (?,?,?,?,?,?)').run(this.batchId, JSON.stringify(pastas), measure ? 1 : 0, 'RUNNING', now, now)
     this.state = {
       running: true,
       root: pastas[0] ?? null,
@@ -184,6 +197,12 @@ export class Ingest {
     }
     void this.run(pastas)
     return true
+  }
+
+  resumePending(): boolean {
+    const batch = this.sqlite?.prepare("SELECT id,roots,measure FROM ingest_batches WHERE state IN ('RUNNING','PENDING') ORDER BY created_at LIMIT 1").get() as { id: string; roots: string; measure: number } | undefined
+    if (!batch) return false
+    return this.start(JSON.parse(batch.roots) as string[], Boolean(batch.measure), batch.id)
   }
 
   /** Confere também referências antigas que ficaram fora das raízes atuais. */
@@ -225,15 +244,18 @@ export class Ingest {
       }
       // A mesma pasta apontada duas vezes não faz o arquivo entrar duas vezes.
       const unicos = [...new Set(files)].sort()
+      if (this.closed) return
       this.patch({ total: unicos.length })
       await mkdir(this.thumbnailDir, { recursive: true })
 
       const mudando: string[] = []
       for (const file of unicos) {
+        if (this.closed) return
         this.patch({ current: file, seen: this.state.seen + 1 })
         if (!(await this.absorbSafely(file))) mudando.push(file)
       }
       await this.esperarOsQueMudavam(mudando)
+      if (this.closed) return
       await this.markVanished(roots, unicos)
       await this.tirarListas()
       this.patch({ running: false, current: null, finishedAt: new Date().toISOString() })
@@ -247,6 +269,9 @@ export class Ingest {
       })
       // Mesmo tendo falhado no meio, o que já entrou tem que chegar à grade.
       this.onFinished?.()
+    } finally {
+      if (!this.closed && this.batchId) this.sqlite?.prepare('UPDATE ingest_batches SET state=?,error=?,updated_at=? WHERE id=?').run(this.state.error ? 'FAILED' : 'COMPLETED', this.state.error, new Date().toISOString(), this.batchId)
+      this.batchId = null
     }
   }
 
@@ -266,7 +291,7 @@ export class Ingest {
     const limite = Date.now() + SETTLE_WAIT_MS
     let pendentes = [...arquivos]
 
-    while (pendentes.length > 0 && Date.now() < limite) {
+    while (!this.closed && pendentes.length > 0 && Date.now() < limite) {
       this.patch({ current: `${pendentes[0]} (esperando a cópia terminar)` })
       await new Promise((pronto) => setTimeout(pronto, 2_000))
       const restam: string[] = []
@@ -293,6 +318,7 @@ export class Ingest {
     const present = new Set(seen)
     const rows = await this.db.select().from(mediaAssets)
     for (const row of rows) {
+      if (this.closed) return
       // Só o que está sob alguma pasta varrida: acervo de pasta que ficou de
       // fora desta varredura não é assunto dela. Varrer uma pasta só e marcar
       // o resto do acervo como sumido seria apagar o que ninguém olhou.
@@ -322,6 +348,7 @@ export class Ingest {
   }
 
   private async absorb(path: string, ultimaChance = false): Promise<boolean> {
+    if (this.closed) return true
     const info = await stat(path)
     // Data no futuro é relógio fora de hora -- uma pasta de rede com o relógio
     // adiantado, por exemplo. Sem esta guarda o arquivo nunca "para de mudar"
@@ -357,6 +384,7 @@ export class Ingest {
       !existing.probeError &&
       !faltaMedir
     ) {
+      this.workflow?.record(existing.id, existing as unknown as Record<string, unknown>)
       this.patch({ skipped: this.state.skipped + 1 })
       return true
     }
@@ -364,6 +392,7 @@ export class Ingest {
     const contentHash = await hashFile(path)
     const thumbnail = join(this.thumbnailDir, `${contentHash}.jpg`)
     const probe = await this.probe(path, thumbnail)
+    if (this.closed) return true
     const after = await stat(path)
     if (after.size !== info.size || after.mtimeMs !== info.mtimeMs) {
       if (!ultimaChance) return false
@@ -380,11 +409,19 @@ export class Ingest {
     }
 
     if (!probe.ok) {
+      // Failed probing is not evidence of video. Don't create new VIDEO rows
+      // for PDFs, documents or unknown files. Existing records remain intact
+      // for historical references; the client also filters legacy mislabels.
+      if (!hasVideoFileSuffix(path) && !existing) {
+        this.patch({ skipped: this.state.skipped + 1 })
+        return true
+      }
       // O arquivo entra mesmo assim, com o motivo. Duração zero é honesta:
       // não sabemos, e fingir um número poria lixo na grade.
       const row = {
         ...base,
         kind: 'VIDEO' as const,
+        videoCodec: null,
         durationFrames: 0,
         durationNs: null,
         width: null,
@@ -397,6 +434,9 @@ export class Ingest {
         audioTracks: null,
         loudnessFile: null,
         probeError: probe.reason,
+        qcStatus: 'FAILED' as const,
+        qcNotes: probe.reason,
+        qcCheckedAt: null,
         ignored: existing?.ignored ?? true,
       }
       await this.upsert(existing?.id ?? null, row)
@@ -441,7 +481,13 @@ export class Ingest {
       audioChannels: probe.audio?.channels ?? 0,
       audioTracks: probe.audioTracks ?? [],
       probeError: null,
+      videoCodec: probe.videoCodec ?? null,
       loudnessFile: measuredLoudness,
+      // Conteúdo efetivamente novo precisa passar pelo QC. Uma atualização de
+      // metadados do mesmo hash não apaga uma homologação já registrada.
+      qcStatus: sameContent && existing?.qcStatus !== 'FAILED' ? (existing?.qcStatus ?? 'APPROVED') : 'PENDING' as const,
+      qcNotes: sameContent && existing?.qcStatus !== 'FAILED' ? (existing?.qcNotes ?? null) : null,
+      qcCheckedAt: sameContent && existing?.qcStatus !== 'FAILED' ? (existing?.qcCheckedAt ?? null) : null,
       // Material sem imagem, sem áudio ou vertical 9:16 entra no acervo
       // ignorado. O operador pode aceitar manualmente; a decisão é preservada
       // em novas varreduras e reinicializações.
@@ -461,23 +507,28 @@ export class Ingest {
     try {
       return await this.absorb(path, ultimaChance)
     } catch (failure) {
+      if (this.closed) return true
       const reason = failure instanceof Error ? failure.message : 'Falha ao ler o arquivo'
-      await this.db.update(mediaAssets).set({ probeError: reason }).where(eq(mediaAssets.path, path))
+      await this.db.update(mediaAssets).set({ probeError: reason, qcStatus: 'FAILED', qcNotes: reason, qcCheckedAt: null }).where(eq(mediaAssets.path, path))
       this.patch({ failed: this.state.failed + 1, error: `${path}: ${reason}` })
       return true
     }
   }
 
   private async upsert(id: string | null, values: Record<string, unknown>): Promise<void> {
+    if (this.closed) return
     if (id) {
       await this.db.update(mediaAssets).set(values).where(eq(mediaAssets.id, id))
+      this.workflow?.record(id, values)
       return
     }
+    const newId = randomUUID()
     await this.db.insert(mediaAssets).values({
-      id: randomUUID(),
+      id: newId,
       createdAt: new Date().toISOString(),
       ...values,
     } as typeof mediaAssets.$inferInsert)
+    this.workflow?.record(newId, values)
   }
 
   /** Onde as miniaturas moram. A rota de quadros guarda os dela no mesmo lugar. */
@@ -532,7 +583,7 @@ export class Ingest {
         '--largura',
         String(largura),
         '--no-loudness',
-      ], { windowsHide: true })
+      ], { windowsHide: true, env: mediaProcessEnvironment() })
       let settled = false
       const finish = (count: number): void => {
         if (settled) return
@@ -577,7 +628,7 @@ export class Ingest {
       // acervo grande isso são horas de CPU -- e o canal está no ar ao lado.
       if (!this.measuring) args.push('--no-loudness')
 
-      const child = spawn(this.probeBinary, args, { windowsHide: true })
+      const child = spawn(this.probeBinary, args, { windowsHide: true, env: mediaProcessEnvironment() })
       let settled = false
       const finish = (result: ProbeResult): void => {
         if (settled) return

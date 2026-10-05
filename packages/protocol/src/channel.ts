@@ -1,6 +1,7 @@
 import { fps, type Rate } from './rate.js'
+import type { QcProfile } from './qc.js'
 
-export type SourceKind = 'SDI' | 'NDI' | 'SRT' | 'RTMP' | 'FILE' | 'SLATE'
+export type SourceKind = 'SDI' | 'NDI' | 'OMT' | 'SRT' | 'RTMP' | 'FILE' | 'SLATE'
 
 export interface SourceRef {
   readonly kind: SourceKind
@@ -15,7 +16,7 @@ export function parseSourceRef(value: string): { kind: SourceKind; ref: string }
   if (idx <= 0) return null
   const kind = value.slice(0, idx).toUpperCase()
   const ref = value.slice(idx + 1)
-  const known: readonly string[] = ['SDI', 'NDI', 'SRT', 'RTMP', 'FILE', 'SLATE']
+  const known: readonly string[] = ['SDI', 'NDI', 'OMT', 'SRT', 'RTMP', 'FILE', 'SLATE']
   if (!known.includes(kind)) return null
   return { kind: kind as SourceKind, ref }
 }
@@ -52,6 +53,11 @@ export interface OutputProfile {
 }
 
 export interface Channel {
+  /** Durable configuration revision from the same snapshot as these fields. */
+  readonly configurationRevision?:number
+  /** Archived channels remain available to history, never native startup. */
+  readonly archivedAt?: string | null
+  readonly qcProfile?: QcProfile | null
   readonly id: string
   readonly name: string
   readonly rate: Rate
@@ -73,12 +79,19 @@ export interface Channel {
   readonly ceilingDbtp: number
   /** Look-ahead do limiter, compensado por delay igual no vídeo. */
   readonly limiterLookaheadMs: number
+  /** Numbered embedded PGM channels. Legacy channels use stereo. */
+  readonly audioChannels?: 2 | 8 | 16
 
   /** Sub-dispositivo Decklink de saída, quando existe. Define o clock mestre. */
   readonly programSdiDeviceId: string | null
   /** Arte de apresentação técnica, quando nada está no ar. Nulo deixa no preto. */
   readonly slateTemplateId: string | null
   readonly createdAt: string
+}
+
+export function channelConfigurationETag(channelId:string,revision:number):string {
+  if(!Number.isSafeInteger(revision)||revision<1)throw new Error('Revisão de configuração inválida.')
+  return `"channel:${encodeURIComponent(channelId)}:${revision}"`
 }
 
 /**
@@ -144,7 +157,7 @@ export function suggestedBitrateKbps(
 }
 
 /**
- * Tamanho de um monitor: o do canal reduzido até caber em 480 de altura.
+ * Tamanho de um monitor: o do canal reduzido até caber em 240 de altura.
  *
  * Monitor é janela de navegador, não saída. A proporção do canal importa --
  * monitor esticado engana quem confere enquadramento --, mas a resolução não:
@@ -154,12 +167,12 @@ export function suggestedBitrateKbps(
  * Sai em números pares porque a subamostragem de croma do H.264 exige.
  */
 export function monitorSize(width: number, height: number): [number, number] {
-  const TETO = 480
+  const TETO = 240
   if (height <= TETO || height <= 0 || width <= 0) {
     return [width - (width % 2), height - (height % 2)]
   }
-  // Arredonda para cima até o par seguinte: 1920x1080 em 480 de altura dá
-  // 853,33, e o valor consagrado é 854. Arredondar para baixo daria 852, que
+  // Arredonda para cima até o par seguinte: 1920x1080 em 240 de altura dá
+  // 426,66, e o valor consagrado é 428. Arredondar para baixo daria 426, que
   // não está errado mas foge do número que todo mundo reconhece.
   const escalada = Math.ceil((width * TETO) / height)
   return [escalada + (escalada % 2), TETO]

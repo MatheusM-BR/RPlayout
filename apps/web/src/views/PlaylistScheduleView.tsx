@@ -1,12 +1,19 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import type { Channel, ManagedLiveSource, Rundown } from '@rplayout/protocol'
+import { durationIn, qcApproved } from '@rplayout/protocol'
 import { clock, dur } from '../format.js'
 import type { RundownView, ItemView, LibraryAsset, LibraryFolder, Categoria, Snapshot } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
-import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
-import { api } from '../api.js'
+import { CanonicalProtocolSelector, type ProtocolResult } from '../components/broadcast/CanonicalProtocolSelector.js'
+import { inputName } from '../components/broadcast/protocol-config.js'
+import { api, type OperationalRevisionSummary, type OperationalSimulation } from '../api.js'
+import {operationalReviewReady} from '../domain/operational-review.js'
+import {OperationalRollbackDialog} from '../components/OperationalRollbackDialog.js'
 import { canonicalLiveSourceRef } from '../liveSource.js'
+import { ProtectedTimingZonesDialog } from '../components/ProtectedTimingZonesDialog.js'
+import { editorialContext, editorialSelection } from '../domain/editorial-context.js'
+import { SchedulePublicationPanel } from '../components/broadcast/SchedulePublicationPanel.js'
 
 interface Props {
   channel: Channel
@@ -41,16 +48,17 @@ interface Props {
       initialStart?: string
       initialEnd?: string
       autoPreview?: boolean
+      editorialRevision?:number
     },
   ) => void
   sessionRole?: string
   authRequired?: boolean
-  onAddItem?: (rundownId?: string, onApplied?: (snapshot: any) => void) => void
+  onAddItem?: (rundownId?: string, onApplied?: (snapshot: any) => void,revision?:number) => void
   onExportCsv?: () => void
   onOpenTrim?: (item: ItemView) => void
   onOpenAudio?: (item: ItemView) => void
-  onRemoveItem?: (itemId: string, rundownId?: string, onRemoved?: () => void) => void
-  onBulkRemoveItems?: (ids: string[], rundownId?: string, onRemoved?: () => void) => void
+  onRemoveItem?: (itemId: string, rundownId?: string, onRemoved?: () => void,revision?:number) => void
+  onBulkRemoveItems?: (ids: string[], rundownId?: string, onRemoved?: () => void,revision?:number) => void
   onOpenSettings?: () => void
 }
 
@@ -103,6 +111,11 @@ export function PlaylistScheduleView({
   const [availableRundowns, setAvailableRundowns] = useState<Rundown[]>([])
   const [dateRundownView, setDateRundownView] = useState<RundownView | null>(null)
   const [isLoadingDate, setIsLoadingDate] = useState(false)
+  const dateLoadId = useRef(0)
+  const editorialRequestKey = JSON.stringify([channel.id,selectedDate])
+  const editorialRequestKeyRef = useRef(editorialRequestKey)
+  editorialRequestKeyRef.current = editorialRequestKey
+  const pendingEditorialCreation = useRef<{key:string;promise:Promise<RundownView>} | null>(null)
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null)
 
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
@@ -122,8 +135,17 @@ export function PlaylistScheduleView({
   const [zoomMode, setZoomMode] = useState<'24h' | '12h' | '6h' | '1h'>('24h')
   /** Janela deslizável da timeline quando o zoom mostra menos de 24 horas. */
   const [timelineStartHour, setTimelineStartHour] = useState(0)
-  const [diffCount, setDiffCount] = useState(1)
   const [publishedSuccess, setPublishedSuccess] = useState(false)
+  const [operationalRevision, setOperationalRevision] = useState<number | null>(null)
+  const [isPublishingOperational, setIsPublishingOperational] = useState(false)
+  const [showOperationalReview, setShowOperationalReview] = useState(false)
+  const [showProtectedZones, setShowProtectedZones] = useState(false)
+  const [operationalSimulation, setOperationalSimulation] = useState<OperationalSimulation | null>(null)
+  const [operationalRevisions, setOperationalRevisions] = useState<OperationalRevisionSummary[]>([])
+  const [operationalReviewError, setOperationalReviewError] = useState<string | null>(null)
+  const [isLoadingOperational, setIsLoadingOperational] = useState(false)
+  const [operationalRefresh, setOperationalRefresh] = useState(0)
+  const [rollbackReview,setRollbackReview]=useState<{inspection:OperationalSimulation & {sourceRevision:number};origin:{id:string;version:number;key:string};revisionId:string}|null>(null)
 
   const rate = channel.rate
 
@@ -174,12 +196,30 @@ export function PlaylistScheduleView({
 
   // Diálogo para Novo Programa Ao Vivo
   const [showLiveProgramModal, setShowLiveProgramModal] = useState(false)
-  const [liveProgramTitle, setLiveProgramTitle] = useState('Transmissão Externa - Ao Vivo')
+  const [liveProgramTitle, setLiveProgramTitle] = useState('')
+  const [liveProgramNameEdited, setLiveProgramNameEdited] = useState(false)
+  const [liveProgramInputValid, setLiveProgramInputValid] = useState(false)
   const [liveProgramTimeHms, setLiveProgramTimeHms] = useState('20:00:00')
   const [liveProgramDurationMin, setLiveProgramDurationMin] = useState(60)
-  const [liveProgramSourceRef, setLiveProgramSourceRef] = useState('decklink://0')
+  const [liveProgramSourceRef, setLiveProgramSourceRef] = useState('')
   const [liveSourceOption, setLiveSourceOption] = useState('decklink://0')
   const [isCreatingLive, setIsCreatingLive] = useState(false)
+  const liveProgramTarget=useRef<{view:RundownView;key:string}|null>(null)
+  const selectLiveProgramInput = useCallback((result: ProtocolResult) => {
+    setLiveProgramSourceRef(result.targetUri)
+    setLiveProgramInputValid(result.isHardwareValid)
+    setLiveProgramTitle((current) => inputName(current, result.nameRecommendation, liveProgramNameEdited))
+  }, [liveProgramNameEdited])
+  const openLiveProgram = async () => {
+    let target:RundownView
+    try{target=await ensureEditorialView()}catch(error){setFeedbackMessage(error instanceof Error?error.message:'Não consegui abrir a grade.');return}
+    liveProgramTarget.current={view:target,key:editorialRequestKey}
+    setLiveProgramTitle('')
+    setLiveProgramNameEdited(false)
+    setLiveProgramSourceRef('')
+    setLiveProgramInputValid(false)
+    setShowLiveProgramModal(true)
+  }
 
   const allMamAssets = useMemo<LibraryAsset[]>(() => {
     if (!folders || folders.length === 0) return []
@@ -210,6 +250,9 @@ export function PlaylistScheduleView({
       defaultAudio: null,
       loudnessFile: null,
       suggestedTrim: null,
+      qcStatus: 'APPROVED' as const,
+      qcNotes: null,
+      qcCheckedAt: null,
       thumbnailUrl: '',
       createdAt: new Date().toISOString(),
       isLiveSource: true,
@@ -280,15 +323,15 @@ export function PlaylistScheduleView({
   const toggleMamIgnored = async (asset: LibraryAsset) => {
     const nextIgnored = !asset.ignored
     try {
-      await api.patchAsset(asset.id, { ignored: nextIgnored })
+      const result=await api.patchAsset(asset.id, { ignored: nextIgnored },asset.qcRevision)
       setIgnoredOverrides((previous) => new Map(previous).set(asset.id, nextIgnored))
-      setFeedbackMessage(
+      setFeedbackMessage(result.refreshError??(
         nextIgnored
           ? `✓ Vídeo "${asset.title}" marcado como IGNORADO (oculto da grade ativa)`
           : `✓ Vídeo "${asset.title}" reativado no catálogo MAM`
-      )
-    } catch {
-      setFeedbackMessage('Não foi possível alterar o status de ignorado do ativo.')
+      ))
+    } catch(error) {
+      setFeedbackMessage(error instanceof Error?error.message:'Não foi possível alterar o status de ignorado do ativo.')
     } finally {
       setMamContextMenu(null)
     }
@@ -341,13 +384,16 @@ export function PlaylistScheduleView({
   // Carrega os itens específicos da data selecionada
   const loadDateRundown = useCallback(
     async (dateIso: string) => {
-      if (dateIso === todayDateIso) {
+      const requestId=++dateLoadId.current
+      if (dateIso === view.rundown.date && view.rundown.channelId===channel.id) {
         setDateRundownView(null)
+        setIsLoadingDate(false)
         return
       }
       setIsLoadingDate(true)
       try {
         const res = await api.channelRundowns(channel.id, dateIso)
+        if(requestId!==dateLoadId.current)return
         if (res.view) {
           setDateRundownView(res.view)
         } else {
@@ -355,30 +401,95 @@ export function PlaylistScheduleView({
         }
       } catch (err) {
         console.error('Falha ao carregar grade da data', dateIso, err)
-        setDateRundownView(null)
+        if(requestId===dateLoadId.current)setDateRundownView(null)
       } finally {
-        setIsLoadingDate(false)
+        if(requestId===dateLoadId.current)setIsLoadingDate(false)
       }
     },
-    [channel.id, todayDateIso],
+    [channel.id, view.rundown.date, view.rundown.channelId],
   )
 
   useEffect(() => {
     void loadDateRundown(selectedDate)
   }, [selectedDate, loadDateRundown])
 
-  // View ativa no momento: usa a do dia carregada ou o fallback de hoje
-  const activeView: RundownView | null = selectedDate === todayDateIso ? view : dateRundownView
+  // Identidade editorial é data + canal, nunca um fallback para o Master.
+  const activeView = editorialContext(view,dateRundownView,selectedDate,channel.id)
+  const isLoadedEditorial = activeView?.rundown.id === view.rundown.id
+  useEffect(() => {
+    setSelectedItemIds(new Set())
+    lastClickedIndexRef.current = null
+  }, [selectedDate, channel.id, activeView?.rundown.id])
+  const ensureEditorialView = async (): Promise<RundownView> => {
+    if(activeView)return activeView
+    const key=editorialRequestKey
+    let pending=pendingEditorialCreation.current
+    if (!pending || pending.key!==key) {
+      const promise=(async()=>{
+        const existing=await api.channelRundowns(channel.id,selectedDate)
+        if(editorialRequestKeyRef.current!==key)throw new Error('A data ou o canal mudou. Repita a ação na grade selecionada.')
+        if(existing.view)return existing.view
+        const created=await api.createChannelRundown(channel.id,{date:selectedDate})
+        if(!created.view || created.view.rundown.date!==selectedDate || created.view.rundown.channelId!==channel.id)throw new Error('Não consegui abrir a grade da data selecionada.')
+        return created.view
+      })()
+      pending={key,promise}
+      pendingEditorialCreation.current=pending
+      void promise.finally(()=>{if(pendingEditorialCreation.current?.promise===promise)pendingEditorialCreation.current=null}).catch(()=>{})
+    }
+    const createdView=await pending.promise
+    if(editorialRequestKeyRef.current!==key)throw new Error('A data ou o canal mudou. Repita a ação na grade selecionada.')
+    setDateRundownView(createdView)
+    void refreshAvailableRundowns()
+    return createdView
+  }
+  const ensureEditorialRundown=async()=> (await ensureEditorialView()).rundown.id
+  const reviewRundownId = activeView?.rundown.id
+  const editorialFingerprint = JSON.stringify([activeView?.editorialRevision,activeView?.items.map(entry => entry.item) ?? [],activeView?.rundown.protectedZones ?? []])
+  const publicationReady=operationalReviewReady(operationalSimulation?.review,reviewRundownId,channel.id,activeView?.editorialRevision)
+  useEffect(() => {
+    let current = true
+    setOperationalSimulation(null)
+    setOperationalRevisions([])
+    setOperationalRevision(null)
+    setOperationalReviewError(null)
+    if (!reviewRundownId) return
+    setIsLoadingOperational(true)
+    void Promise.all([api.simulateOperationalPlaylist(reviewRundownId), api.operationalRevisions(reviewRundownId)])
+      .then(([simulation, history]) => {
+        if (!current) return
+        setOperationalSimulation(simulation)
+        setOperationalRevisions(history.revisions)
+        setOperationalRevision(simulation.activeRevision)
+      })
+      .catch(error => { if (current) setOperationalReviewError(error instanceof Error ? error.message : 'Não foi possível comparar as revisões.') })
+      .finally(() => { if (current) setIsLoadingOperational(false) })
+    return () => { current = false }
+  }, [reviewRundownId, editorialFingerprint, operationalRefresh])
+
+  const openOperationalReview = () => { setShowOperationalReview(true); setOperationalRefresh(value => value + 1) }
+  const refreshOperationalReview=async()=>{
+    if(!reviewRundownId || isPublishingOperational || isLoadingOperational)return
+    const origin={id:reviewRundownId,key:editorialRequestKey}
+    setOperationalSimulation(null);setIsLoadingOperational(true);setOperationalReviewError(null)
+    try{
+      const fresh=await api.rundown(origin.id)
+      if(editorialRequestKeyRef.current!==origin.key)throw new Error('A seleção mudou. Confira a grade selecionada novamente.')
+      if(isLoadedEditorial)onPublishToMaster(fresh);else setDateRundownView(fresh.view)
+      setOperationalRefresh(value=>value+1)
+    }catch(error){setOperationalReviewError(error instanceof Error?error.message:'Não foi possível atualizar a grade.')}
+    finally{setIsLoadingOperational(false)}
+  }
 
   // Conjunto de datas que já possuem grade cadastrada
   const availableDatesSet = useMemo(() => {
     const s = new Set<string>()
-    s.add(todayDateIso)
+    if(view.rundown.channelId===channel.id)s.add(view.rundown.date)
     for (const r of availableRundowns) {
       if (r.date) s.add(r.date)
     }
     return s
-  }, [availableRundowns, todayDateIso])
+  }, [availableRundowns, view.rundown.date, view.rundown.channelId, channel.id])
 
   // Navegação de dias
   const shiftSelectedDate = (days: number) => {
@@ -415,12 +526,10 @@ export function PlaylistScheduleView({
 
   // Criar grade em branco para a data selecionada
   const handleCreateBlankGrid = async () => {
+    if(isLoadingDate)return
     setIsLoadingDate(true)
     try {
-      const res = await api.createChannelRundown(channel.id, {
-        date: selectedDate,
-      })
-      setDateRundownView(res.view)
+      await ensureEditorialRundown()
       await refreshAvailableRundowns()
       setFeedbackMessage(`✓ Grade em branco criada para ${selectedDate}!`)
       setTimeout(() => setFeedbackMessage(null), 4000)
@@ -433,37 +542,86 @@ export function PlaylistScheduleView({
 
   // Publicar / Sincronizar com o Master
   const handlePublish = async () => {
-    if (selectedDate === todayDateIso) {
-      onPublishToMaster()
-      setDiffCount(0)
+    const target = activeView?.rundown
+    if (!target || isPublishingOperational) return
+    if(!showOperationalReview){openOperationalReview();return}
+    if(!publicationReady || !operationalSimulation){setOperationalReviewError('A conferência não corresponde à grade exibida. Atualize a grade e revise a publicação novamente.');return}
+    const reviewed=operationalSimulation.review
+    const originKey=editorialRequestKey
+    setIsPublishingOperational(true)
+    try {
+      // Freeze first. Loading another date is a separate, protected operation;
+      // a rejected load cannot overwrite the program or show a stale snapshot.
+      const published = await api.publishOperationalPlaylist(target.id,reviewed.editorialRevision,reviewed.token)
+      if(editorialRequestKeyRef.current!==originKey)throw new Error(`Revisão ${published.revision} salva para ${target.date}, mas a seleção mudou. Não foi solicitado carregar outra grade no Master.`)
+      setOperationalRevision(published.revision)
+      setOperationalRefresh(value => value + 1)
       setPublishedSuccess(true)
-      setTimeout(() => setPublishedSuccess(false), 4000)
-    } else if (activeView?.rundown.id) {
-      try {
-        await api.loadChannelRundown(channel.id, activeView.rundown.id)
-        onPublishToMaster()
-        setDiffCount(0)
-        setPublishedSuccess(true)
-        setFeedbackMessage(`✓ Grade de ${selectedDate} carregada no Master Playout!`)
-        setTimeout(() => {
-          setPublishedSuccess(false)
-          setFeedbackMessage(null)
-        }, 4000)
-      } catch (err: any) {
-        alert(`Erro ao carregar no Master: ${err.message}`)
-      }
+      const snapshot = target.id === view.rundown.id
+        ? await api.rundown(target.id)
+        : await api.loadChannelRundown(channel.id, target.id).catch(error => {
+          throw new Error(`Revisão ${published.revision} salva, mas não carregada no Master: ${error instanceof Error ? error.message : 'carga recusada'}`)
+        })
+      onPublishToMaster(snapshot)
+      setShowOperationalReview(false)
+      setFeedbackMessage(
+        published.conflicts.length > 0
+          ? `Revisão operacional ${published.revision} publicada com ${published.conflicts.length} alerta(s) de timing.`
+          : `Revisão operacional ${published.revision} publicada e sincronizada com o Master.`,
+      )
+      setTimeout(() => {
+        setPublishedSuccess(false)
+        setFeedbackMessage(null)
+      }, 4000)
+    } catch (err: any) {
+      setOperationalReviewError(err.message)
+      setFeedbackMessage(err.message)
+    } finally {
+      setIsPublishingOperational(false)
     }
   }
 
-  const handleAddItem = () => {
+  const handleOperationalRollback = async (revision: OperationalRevisionSummary) => {
+    if (!reviewRundownId || !activeView || isPublishingOperational) return
+    const version=activeView.editorialRevision
+    if(version===undefined){setOperationalReviewError('Atualize a grade antes de conferir o rollback.');return}
+    const origin={id:reviewRundownId,version,key:editorialRequestKey}
+    setIsPublishingOperational(true)
+    setOperationalReviewError(null)
+    try {
+      const inspected=await api.reviewOperationalRollback(origin.id,revision.id,origin.version)
+      if(editorialRequestKeyRef.current!==origin.key)throw new Error('A data ou o canal mudou. Reabra a conferência na grade selecionada.')
+      setRollbackReview({inspection:inspected,origin,revisionId:revision.id})
+    } catch (error) {
+      setOperationalReviewError(error instanceof Error ? error.message : 'Restauração recusada.')
+    } finally { setIsPublishingOperational(false) }
+  }
+
+  const applyOperationalRollback=async()=>{
+    if(!rollbackReview || isPublishingOperational)return
+    const {origin,inspection,revisionId}=rollbackReview
+    if(editorialRequestKeyRef.current!==origin.key)throw new Error('A data ou o canal mudou. Feche e confira a grade selecionada novamente.')
+    setIsPublishingOperational(true)
+    try{
+      const restored=await api.rollbackOperationalPlaylist(origin.id,revisionId,origin.version,inspection.review.token)
+      setRollbackReview(null)
+      if(editorialRequestKeyRef.current!==origin.key){setFeedbackMessage(`Restauração salva como revisão ${restored.revision} na grade original. A seleção atual não foi alterada.`);return}
+      setOperationalRevision(restored.revision);setOperationalRefresh(value=>value+1)
+      if(origin.id===view.rundown.id)onPublishToMaster(restored)
+      setFeedbackMessage(`Revisão ${inspection.sourceRevision} restaurada como revisão ${restored.revision}. A grade editorial foi preservada.`)
+    }finally{setIsPublishingOperational(false)}
+  }
+
+  const handleAddItem = async () => {
     if (!onAddItem) return
-    const targetRundownId = activeView?.rundown.id
-    onAddItem(targetRundownId, (snapshot) => {
-      if (selectedDate !== todayDateIso && snapshot?.view) {
+    let target:RundownView
+    try { target=await ensureEditorialView() } catch(error){setFeedbackMessage(error instanceof Error?error.message:'Não consegui abrir a data.');return}
+    onAddItem(target.rundown.id, (snapshot) => {
+      if (!isLoadedEditorial && snapshot?.view) {
         setDateRundownView(snapshot.view)
         void refreshAvailableRundowns()
       }
-    })
+    },target.editorialRevision)
   }
 
   const handleOpenAutoFill = async (options?: {
@@ -474,32 +632,13 @@ export function PlaylistScheduleView({
     autoPreview?: boolean
   }) => {
     if (!onOpenAutoFill) return
-    let targetRundownId = activeView?.rundown?.id
-
-    if (!targetRundownId && selectedDate !== todayDateIso) {
-      setIsLoadingDate(true)
-      try {
-        const created = await api.createChannelRundown(channel.id, {
-          date: selectedDate,
-        })
-        setDateRundownView(created.view)
-        targetRundownId = created.view?.rundown?.id
-        await refreshAvailableRundowns()
-      } catch (err) {
-        console.error('Falha ao instanciar grade da data para autofill', err)
-      } finally {
-        setIsLoadingDate(false)
-      }
-    }
-
-    if (!targetRundownId) {
-      targetRundownId = view.rundown.id
-    }
+    let target:RundownView
+    try{target=await ensureEditorialView()}catch(error){setFeedbackMessage(error instanceof Error?error.message:'Não consegui abrir a grade; nada foi inserido.');return}
 
     onOpenAutoFill(
-      targetRundownId,
+      target.rundown.id,
       (snapshot) => {
-        if (selectedDate !== todayDateIso) {
+        if (!isLoadedEditorial) {
           if (snapshot?.view) {
             setDateRundownView(snapshot.view)
           }
@@ -514,7 +653,7 @@ export function PlaylistScheduleView({
           void loadDateRundown(todayDateIso)
         }
       },
-      options,
+      {...options,editorialRevision:target.editorialRevision},
     )
   }
 
@@ -556,14 +695,14 @@ export function PlaylistScheduleView({
   }
 
   const handleRemoveItem = (itemId: string) => {
-    if (!onRemoveItem) return
+    if (!onRemoveItem || !activeView || !editorialSelection(activeView,[itemId]).length) return
     const targetRundownId = activeView?.rundown.id
     onRemoveItem(itemId, targetRundownId, () => {
-      if (selectedDate !== todayDateIso) {
+      if (!isLoadedEditorial) {
         void loadDateRundown(selectedDate)
         void refreshAvailableRundowns()
       }
-    })
+    },activeView.editorialRevision)
     setSelectedItemIds((prev) => {
       const next = new Set(prev)
       next.delete(itemId)
@@ -572,29 +711,25 @@ export function PlaylistScheduleView({
   }
 
   const handleBulkRemove = async () => {
-    if (selectedItemIds.size === 0) return
-    const count = selectedItemIds.size
+    const ids = editorialSelection(activeView,selectedItemIds)
+    if (!activeView || ids.length === 0 || isBulkDeleting) return
+    const count = ids.length
     if (!window.confirm(`Deseja remover os ${count} itens selecionados da grade linear?`)) return
     setIsBulkDeleting(true)
     try {
-      const ids = Array.from(selectedItemIds)
-      const targetRundownId = activeView?.rundown.id
-      if (onBulkRemoveItems && targetRundownId) {
+      const targetRundownId = activeView.rundown.id
+      if (onBulkRemoveItems) {
         onBulkRemoveItems(ids, targetRundownId, () => {
-          if (selectedDate !== todayDateIso) {
+          if (!isLoadedEditorial) {
             void loadDateRundown(selectedDate)
             void refreshAvailableRundowns()
           }
-        })
-      } else if (targetRundownId) {
-        await api.bulkDeleteItems(targetRundownId, ids)
+        },activeView.editorialRevision)
       } else {
-        for (const id of ids) {
-          await api.removeItem(id)
-        }
+        await api.bulkDeleteItems(targetRundownId, ids,activeView.editorialRevision)
       }
       setSelectedItemIds(new Set())
-      if (selectedDate !== todayDateIso) {
+      if (!isLoadedEditorial) {
         await loadDateRundown(selectedDate)
         await refreshAvailableRundowns()
       } else {
@@ -640,30 +775,25 @@ export function PlaylistScheduleView({
       // Antes a Playlist apenas coloria a linha; fontes ao vivo pareciam
       // selecionadas, mas nunca chegavam ao Preview. Em grades históricas não
       // se toca no transporte do canal atual.
-      if (selectedDate === todayDateIso) onCueItem?.(itemId)
+      if (isLoadedEditorial) onCueItem?.(itemId)
     }
   }
 
   // Inserir item da Biblioteca MAM na Grade
   const handleInsertFromMam = async (asset: LibraryAsset & { isLiveSource?: boolean; sourceRef?: string }) => {
-    const rId = activeView?.rundown.id ?? view.rundown.id
     try {
+      const target=await ensureEditorialView(),rId=target.rundown.id
       if (asset.isLiveSource) {
         if (!asset.sourceRef) throw new Error('A fonte ao vivo não possui endereço configurado.')
-        if (selectedDate === todayDateIso && onInsertAsset) {
-          onInsertAsset(null, undefined, {
-            sourceRef: asset.sourceRef,
-            title: asset.title,
-            durationOverride: asset.durationFrames,
-          })
-        } else {
-          await api.addItem(rId, {
+        const accepted=await api.addItem(rId, {
             sourceRef: asset.sourceRef,
             type: 'LIVE',
             title: asset.title,
             durationOverride: asset.durationFrames,
             anchor: { kind: 'FLOW' },
-          })
+          },target.editorialRevision)
+        if(isLoadedEditorial)onPublishToMaster(accepted)
+        else {
           await loadDateRundown(selectedDate)
           void refreshAvailableRundowns()
         }
@@ -671,15 +801,14 @@ export function PlaylistScheduleView({
         setTimeout(() => setFeedbackMessage(null), 3000)
         return
       }
-      if (selectedDate === todayDateIso && onInsertAsset) {
-        onInsertAsset(asset.id)
-      } else {
-        await api.addItem(rId, {
+      const accepted=await api.addItem(rId, {
           mediaId: asset.id,
           type: 'VT',
           title: asset.title,
           anchor: { kind: 'FLOW' },
-        })
+        },target.editorialRevision)
+      if(isLoadedEditorial)onPublishToMaster(accepted)
+      else {
         await loadDateRundown(selectedDate)
         void refreshAvailableRundowns()
       }
@@ -692,9 +821,11 @@ export function PlaylistScheduleView({
 
   // Agendar Programa Ao Vivo com Horário Marcado
   const handleCreateLiveProgram = async () => {
-    const rId = activeView?.rundown.id ?? view.rundown.id
     setIsCreatingLive(true)
     try {
+      const target=liveProgramTarget.current
+      if(!target || target.key!==editorialRequestKeyRef.current)throw new Error('A data ou o canal mudou. Feche e reabra o formulário na grade selecionada; seus campos não foram gravados.')
+      const rId=target.view.rundown.id
       const parts = liveProgramTimeHms.split(':').map((p) => Number(p) || 0)
       const h = parts[0] ?? 0
       const m = parts[1] ?? 0
@@ -704,16 +835,19 @@ export function PlaylistScheduleView({
       const atFrames = Math.round(totalSeconds * fps)
       const durationFrames = Math.round(liveProgramDurationMin * 60 * fps)
 
-      await api.addItem(rId, {
+      const snapshot = await api.addItem(rId, {
         sourceRef: liveProgramSourceRef,
         type: 'LIVE',
         title: liveProgramTitle,
         anchor: { kind: 'FIXED', at: atFrames },
         durationOverride: durationFrames,
-      })
+      },target.view.editorialRevision)
 
-      if (selectedDate === todayDateIso) {
-        onPublishToMaster()
+      if (isLoadedEditorial) {
+        // Usa a grade que acabou de ser resolvida no servidor. Uma nova
+        // leitura concorrente podia reexibir a ordem antiga e aparentar que
+        // a transmissão ao vivo havia sido acrescentada ao fim da fila.
+        onPublishToMaster(snapshot)
       } else {
         await loadDateRundown(selectedDate)
         void refreshAvailableRundowns()
@@ -792,12 +926,12 @@ export function PlaylistScheduleView({
       // PATCH já devolve a programação resolvida pelo scheduler. Aplicá-la
       // diretamente é essencial: esperar somente o WebSocket deixava a
       // timeline com o horário anterior até uma troca de página.
-      const snapshot = await api.patchItem(editingTimeItem.item.id, patchBody)
+      const snapshot = await api.patchItem(editingTimeItem.item.id, patchBody,editingTimeItem.editorialRevision)
       setFeedbackMessage(`✓ Horário de "${editingTimeItem.asset?.title || editingTimeItem.item.title || 'Item'}" atualizado!`)
       setTimeout(() => setFeedbackMessage(null), 3500)
       setEditingTimeItem(null)
 
-      if (selectedDate === todayDateIso) {
+      if (isLoadedEditorial) {
         onPublishToMaster(snapshot)
       } else {
         // Para uma data fora do ar, o snapshot retornado é a fonte de
@@ -1002,10 +1136,10 @@ export function PlaylistScheduleView({
 
   const dateBadgeStatus =
     selectedDate === todayDateIso
-      ? 'NO AR (HOJE)'
+      ? 'HOJE (GRADE EDITORIAL)'
       : selectedDate > todayDateIso
       ? 'FUTURO (PLANEJADO)'
-      : 'PASSADO (AS-RUN)'
+      : 'DATA ANTERIOR (GRADE)'
 
   return (
     <div className="flex flex-col h-screen w-screen bg-surface-base text-on-surface select-none overflow-hidden font-sans">
@@ -1031,6 +1165,7 @@ export function PlaylistScheduleView({
 
       {/* 2. ÁREA OPERACIONAL PRINCIPAL (FLEX-1) */}
       <main className="flex-1 flex flex-col min-h-0 bg-surface-base overflow-hidden">
+        <div className="shrink-0 px-3 pt-2 max-h-[45vh] overflow-y-auto"><SchedulePublicationPanel channelId={channel.id}/></div>
         {/* SUB-HEADER TÁTICO: Programação & Automação Linear */}
         <div className="bg-surface-container px-margin py-2 border-b border-border-subtle flex items-center justify-between shadow-sm">
           <div className="flex items-center gap-space-sm">
@@ -1110,7 +1245,7 @@ export function PlaylistScheduleView({
                       ACERVO &amp; PROGRAMAÇÃO
                     </span>
                     <button
-                      onClick={() => setShowLiveProgramModal(true)}
+                      onClick={openLiveProgram}
                       className="px-2 py-0.5 rounded bg-on-air-crimson/20 hover:bg-on-air-crimson text-on-air-crimson hover:text-white font-label-caps text-[9px] font-bold border border-on-air-crimson/40 transition-colors flex items-center gap-1 cursor-pointer shadow-sm"
                       title="Agendar programa ao vivo com horário cravado"
                     >
@@ -1238,7 +1373,7 @@ export function PlaylistScheduleView({
 
                           <div className="flex items-center gap-2 shrink-0 font-label-mono text-[9px] text-outline">
                             <span className="text-on-surface font-semibold tabular-nums">
-                              {dur(asset.durationFrames, rate)}
+                              {dur(durationIn(asset, rate), rate)}
                             </span>
                             <button
                               onClick={(e) => {
@@ -1401,7 +1536,7 @@ export function PlaylistScheduleView({
                         className={`py-1 rounded flex flex-col items-center leading-none transition-all cursor-pointer ${btnClass}`}
                         title={
                           isToday
-                            ? `Dia ${d} - HOJE (No Ar)`
+                            ? `Dia ${d} - HOJE (${hasRundown ? 'Grade Programada' : 'Sem Grade'})`
                             : hasRundown
                             ? `Dia ${d} - Grade Programada`
                             : `Dia ${d} - Sem Grade Carregada`
@@ -1486,19 +1621,14 @@ export function PlaylistScheduleView({
                 </span>
               </div>
 
-              {/* Indicador 2: Cota Ancine */}
+              {/* Não inferir cumprimento regulatório pela quantidade de itens. */}
               <div className="bg-surface-panel p-1.5 rounded border border-border-subtle flex flex-col gap-1">
                 <div className="flex items-center justify-between text-[9px] font-label-caps">
-                  <span className="text-outline">COTA ANCINE NACIONAL:</span>
-                  <span className="text-status-ok-bright font-bold font-label-mono">
-                    {displayItems.length > 0 ? '3h 45m / 3h 30m' : '0h 00m / 3h 30m'}
-                  </span>
+                  <span className="text-outline">CONFERÊNCIA REGULATÓRIA:</span>
+                  <span className="text-armed-amber font-bold font-label-mono">NÃO HOMOLOGADA</span>
                 </div>
-                <div className="w-full bg-surface-base h-1 rounded overflow-hidden">
-                  <div className="bg-status-ok h-full" style={{ width: displayItems.length > 0 ? '100%' : '0%' }}></div>
-                </div>
-                <span className="text-[8px] font-label-mono text-status-ok-bright">
-                  {displayItems.length > 0 ? '✓ Meta regulatória cumprida (+15 min)' : 'Pendente de preenchimento'}
+                <span className="text-[8px] font-label-mono text-outline">
+                  Consulte a classificação da mídia e o relatório as-run. A quantidade de itens não comprova cota.
                 </span>
               </div>
 
@@ -1526,9 +1656,14 @@ export function PlaylistScheduleView({
 
               {/* Indicador 4: Comerciais & Breaks */}
               <div className="bg-surface-panel p-1.5 rounded border border-border-subtle flex items-center justify-between font-label-mono text-[9px]">
-                <span className="text-outline">Comerciais 24h:</span>
+                <span className="text-outline">Comerciais na grade:</span>
                 <span className="text-on-surface font-semibold">
-                  {displayItems.length > 0 ? '18.4% (Max 25%)' : '0%'} <span className="text-status-ok-bright">✓</span>
+                  {(() => {
+                    const durations = displayItems.map((entry) => ({ entry, duration: Math.max(0, scheduleMap.get(entry.item.id)?.duration ?? entry.item.durationOverride ?? (entry.trim.out - entry.trim.in)) }))
+                    const total = durations.reduce((sum, value) => sum + value.duration, 0)
+                    const commercial = durations.filter(({ entry }) => /^(comerciais|commercials|break)$/i.test(entry.asset?.categoryId ?? '')).reduce((sum, value) => sum + value.duration, 0)
+                    return total ? `${(commercial / total * 100).toFixed(1)}% da grade` : 'Sem duração calculada'
+                  })()}
                 </span>
               </div>
             </div>
@@ -1539,13 +1674,13 @@ export function PlaylistScheduleView({
                 onClick={() => handleCopyGrid()}
                 disabled={isLoadingDate}
                 className="w-full flex items-center justify-center gap-1.5 bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle py-1.5 rounded font-body-sm text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-50"
-                title="Copiar programação ativa para este dia"
+                title="Copiar a grade carregada ou selecionada para este dia"
               >
                 <span className="material-symbols-outlined text-[15px] text-tertiary">content_copy</span>
                 <span>Copiar Grade do Dia Anterior</span>
               </button>
               <button
-                onClick={handlePublish}
+                onClick={openOperationalReview}
                 className="w-full flex items-center justify-center gap-1.5 bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle py-1.5 rounded font-body-sm text-[11px] font-medium transition-colors cursor-pointer"
                 title="Publicar ou carregar grade no Master Playout"
               >
@@ -1782,6 +1917,7 @@ export function PlaylistScheduleView({
             {/* 2. BARRA DE AÇÕES (INTERCÂMBIO & PUBLICAR NO MASTER) */}
             <div className="bg-surface-card rounded border border-border-subtle px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2 shadow-sm">
               <div className="flex flex-wrap items-center gap-1.5">
+                <button type="button" disabled={!activeView} className="btn small" onClick={()=>setShowProtectedZones(true)}>ZONAS PROTEGIDAS ({activeView?.rundown.protectedZones?.length ?? 0})</button>
                 <button
                   onClick={handleAddItem}
                   className="flex items-center gap-1 bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle hover:border-border-strong px-2 py-1 rounded font-body-sm text-[11px] transition-colors cursor-pointer"
@@ -1843,7 +1979,7 @@ export function PlaylistScheduleView({
                 </button>
 
                 <button
-                  onClick={() => setShowLiveProgramModal(true)}
+                  onClick={openLiveProgram}
                   className="flex items-center gap-1 bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle hover:border-error/50 px-2 py-1 rounded font-body-sm text-[11px] transition-colors cursor-pointer"
                   title="Agendar transmissão ao vivo com horário marcado"
                 >
@@ -1855,7 +1991,8 @@ export function PlaylistScheduleView({
               {/* Botão de Publicação no Master Playout */}
               <div className="flex items-center gap-2">
                 <button
-                  onClick={handlePublish}
+                  onClick={openOperationalReview}
+                  disabled={isPublishingOperational || !activeView?.rundown.id}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded font-label-caps text-[11px] font-bold shadow-md transition-all cursor-pointer ${
                     publishedSuccess
                       ? 'bg-status-ok text-surface-base shadow-[0_0_12px_#00FF66]'
@@ -1868,11 +2005,19 @@ export function PlaylistScheduleView({
                   <span>
                     {publishedSuccess
                       ? 'PUBLICADO NO MASTER!'
-                      : selectedDate === todayDateIso
-                      ? 'SINCRONIZAR MASTER'
+                      : isPublishingOperational
+                      ? 'PUBLICANDO REVISÃO…'
+                      : isLoadedEditorial
+                      ? 'PUBLICAR REVISÃO'
                       : `CARREGAR ${selectedDate} NO MASTER`}
                   </span>
                 </button>
+                {operationalRevision !== null && (
+                  <span className="font-label-mono text-[9px] text-status-ok-bright" title="Fotografia imutável da grade e do timing publicada para auditoria">
+                    REV. {operationalRevision}
+                  </span>
+                )}
+                <button onClick={openOperationalReview} className="px-2 py-1.5 rounded border border-border-subtle text-[11px] text-on-surface hover:bg-surface-panel" title="Comparar a grade editorial, consultar histórico e restaurar revisões">Revisões</button>
               </div>
             </div>
 
@@ -1896,7 +2041,7 @@ export function PlaylistScheduleView({
                   <span>#</span>
                 </div>
                 <div className="col-span-2">Regra / Tipo</div>
-                <div className="col-span-2">Horário NTP</div>
+                <div className="col-span-2">Horário previsto</div>
                 <div className="col-span-2">Duração</div>
                 <div className="col-span-4">MAM ID &amp; Título da Mídia</div>
                 <div className="col-span-1 text-right">Status / QC</div>
@@ -1930,7 +2075,7 @@ export function PlaylistScheduleView({
                         <span className="material-symbols-outlined text-primary text-[22px] group-hover:scale-110 transition-transform">content_copy</span>
                         <div className="flex flex-col">
                           <span className="font-bold text-xs text-on-surface">Copiar Grade Anterior</span>
-                          <span className="text-[10px] text-outline">Duplica todos os eventos de hoje</span>
+                          <span className="text-[10px] text-outline">Duplica a grade carregada no Master</span>
                         </div>
                       </button>
 
@@ -2031,8 +2176,8 @@ export function PlaylistScheduleView({
                           {item.asset?.title || item.item.title || item.item.id}
                         </div>
                         <div className="col-span-1 text-right">
-                          <span className="font-label-mono text-[8.5px] text-status-ok-bright font-bold">
-                            QC OK
+                          <span title={item.asset?.probeError ?? item.asset?.qcNotes ?? (item.asset ? 'Estado de QC do arquivo' : 'O cadastro não comprova sinal da fonte')} className={`font-label-mono text-[8.5px] font-bold ${item.asset?.probeError || item.asset?.qcStatus === 'REJECTED' || item.asset?.ignored ? 'text-error' : qcApproved(item.asset?.qcStatus) ? 'text-status-ok-bright' : 'text-armed-amber'}`}>
+                            {item.asset?.probeError || item.asset?.ignored ? 'INDISP.' : !item.asset ? 'SINAL N/D' : item.asset.qcStatus === 'APPROVED_WITH_NOTES' ? 'QC RESSALVA' : qcApproved(item.asset.qcStatus) ? 'QC OK' : item.asset.qcStatus === 'REJECTED' ? 'REJEITADO' : item.asset.qcStatus === 'BLOCKED' ? 'BLOQUEADO' : item.asset.qcStatus === 'ANALYSIS' ? 'EM ANÁLISE' : 'QC PEND.'}
                           </span>
                         </div>
                       </div>
@@ -2169,6 +2314,46 @@ export function PlaylistScheduleView({
         </div>
       </main>
 
+      {showOperationalReview && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <section role="dialog" aria-modal="true" aria-labelledby="operational-review-title" className="bg-surface-card border border-border-subtle rounded-lg shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+            <header className="p-4 border-b border-border-subtle flex shrink-0 items-center justify-between">
+              <h2 id="operational-review-title" className="font-bold text-on-surface">Publicação e revisões operacionais</h2>
+              <button aria-label="Fechar revisões" disabled={isPublishingOperational} onClick={() => setShowOperationalReview(false)} className="px-3 py-1 text-outline">✕</button>
+            </header>
+            <div className="p-4 min-h-0 overflow-auto space-y-4 text-sm text-on-surface">
+              <p>A edição da grade não muda a execução publicada. Confira as diferenças antes de criar uma revisão. Outra data só pode ser carregada com o PGM parado.</p>
+              {isLoadingOperational && <p role="status">Calculando timing e comparando versões…</p>}
+              {operationalReviewError && <p role="alert" className="text-error bg-error-container/20 p-3 rounded">{operationalReviewError}</p>}
+              {operationalSimulation && <>
+                <p>{operationalSimulation.activeRevision === null ? 'Ainda não há revisão publicada.' : `Revisão publicada: ${operationalSimulation.activeRevision}.`} {operationalSimulation.differences.added.length} inclusão(ões), {operationalSimulation.differences.removed.length} remoção(ões), {operationalSimulation.differences.changed.length} alteração(ões).</p>
+                <ul className="max-h-48 overflow-auto space-y-1 text-xs">
+                  {operationalSimulation.differences.added.map(id => <li key={`add-${id}`} className="text-status-ok-bright">+ {operationalSimulation.simulated.items.find(item => item.id === id)?.title ?? id}</li>)}
+                  {operationalSimulation.differences.removed.map(id => <li key={`remove-${id}`} className="text-error">− Item removido: {id}</li>)}
+                  {operationalSimulation.differences.changed.map(change => <li key={change.itemId}>{operationalSimulation.simulated.items.find(item => item.id === change.itemId)?.title ?? change.itemId}: {change.fields.join(', ')}</li>)}
+                  {operationalSimulation.differences.graphicsChanged?.map(id => <li key={`graphics-${id}`}>{operationalSimulation.simulated.items.find(item => item.id === id)?.title ?? id}: grafismo/deixa alterado — só passa à execução após publicar.</li>)}
+                  {operationalSimulation.differences.timingPolicyChanged && <li className="text-armed-amber">Zonas protegidas alteradas — só passam à execução após publicar.</li>}
+                </ul>
+                <p className={operationalSimulation.simulated.schedule.conflicts.length ? 'text-armed-amber' : 'text-status-ok-bright'}>{operationalSimulation.simulated.schedule.conflicts.length} conflito(s) de timing na simulação. A publicação não elimina esses conflitos.</p>
+                <ul className="space-y-1 text-xs text-armed-amber">{operationalSimulation.simulated.schedule.conflicts.map((conflict, index) => <li key={index}>{conflict.message}</li>)}</ul>
+              </>}
+              <h3 className="font-bold">Histórico preservado</h3>
+              <div className="flex flex-col gap-2">
+                {!isLoadingOperational && !operationalRevisions.length && <p className="text-outline">Nenhuma publicação registrada.</p>}
+                {operationalRevisions.map(revision => <div key={revision.id} className="flex items-center justify-between gap-3 p-2 border border-border-subtle rounded">
+                  <div><strong>Rev. {revision.revision}{revision.active ? ' · Publicada' : ''}</strong><p className="text-xs text-outline">{new Date(revision.publishedAt).toLocaleString('pt-BR')} · {revision.publishedBy ?? 'Operação local'}</p></div>
+                  {!revision.active && <button disabled={isPublishingOperational} onClick={() => void handleOperationalRollback(revision)} className="px-3 py-1 rounded border border-armed-amber text-armed-amber disabled:opacity-40">Restaurar</button>}
+                </div>)}
+              </div>
+            </div>
+            <footer className="p-4 border-t border-border-subtle flex shrink-0 justify-end gap-3">
+              <button disabled={isPublishingOperational || isLoadingOperational} onClick={() => void refreshOperationalReview()} className="px-3 py-2 border border-border-subtle rounded text-on-surface">Atualizar e conferir</button>
+              <button disabled={isPublishingOperational || isLoadingOperational || !publicationReady || Boolean(operationalReviewError)} onClick={() => void handlePublish()} className="px-3 py-2 bg-primary text-surface-base rounded font-bold disabled:opacity-40">{isPublishingOperational ? 'Publicando…' : 'Publicar e sincronizar Master'}</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
       {/* MODAL: AJUSTAR HORÁRIO DE ENTRADA & DURAÇÃO */}
       {editingTimeItem && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
@@ -2300,6 +2485,8 @@ export function PlaylistScheduleView({
       )}
 
       {/* MODAL: NOVO PROGRAMA AO VIVO COM ENTRADA MARCADA */}
+      {rollbackReview&&<OperationalRollbackDialog inspection={rollbackReview.inspection} onClose={()=>setRollbackReview(null)} onApply={applyOperationalRollback}/>}
+      {showProtectedZones && activeView && <ProtectedTimingZonesDialog key={activeView.rundown.id} rundown={activeView.rundown} rate={rate} editorialRevision={activeView.editorialRevision} onClose={()=>setShowProtectedZones(false)} onSaved={snapshot=>{if (isLoadedEditorial) onPublishToMaster(snapshot); else setDateRundownView(snapshot.view); setOperationalRefresh(value=>value+1);setShowProtectedZones(false)}} />}
       {showLiveProgramModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-surface-card border border-border-subtle rounded-lg shadow-2xl max-w-lg w-full overflow-hidden flex flex-col">
@@ -2319,6 +2506,7 @@ export function PlaylistScheduleView({
             </div>
 
             <div className="p-4 flex flex-col gap-3.5 text-body-sm max-h-[80vh] overflow-y-auto broadcast-scroll">
+              <CanonicalProtocolSelector mode="INPUT" defaultKind="NDI" onChange={selectLiveProgramInput} />
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
                   Título do Programa / Evento
@@ -2326,8 +2514,8 @@ export function PlaylistScheduleView({
                 <input
                   type="text"
                   value={liveProgramTitle}
-                  onChange={(e) => setLiveProgramTitle(e.target.value)}
-                  placeholder="Ex: Jornal da Noite - Ao Vivo"
+                  onChange={(e) => { setLiveProgramTitle(e.target.value); setLiveProgramNameEdited(Boolean(e.target.value.trim())) }}
+                  placeholder="Nome da entrada selecionada acima"
                   className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:border-primary"
                 />
               </div>
@@ -2362,18 +2550,6 @@ export function PlaylistScheduleView({
                 </div>
               </div>
 
-              {/* Seletor Modular de Protocolos Canônicos (NDI, SDI, SRT, RTMP) */}
-              <CanonicalProtocolSelector
-                mode="INPUT"
-                defaultKind="SDI"
-                initialUri={liveProgramSourceRef}
-                onChange={(res) => {
-                  setLiveProgramSourceRef(res.targetUri)
-                  if (!liveProgramTitle || liveProgramTitle === 'Transmissão Externa - Ao Vivo') {
-                    if (res.nameRecommendation) setLiveProgramTitle(res.nameRecommendation)
-                  }
-                }}
-              />
             </div>
 
             <div className="px-4 py-3 bg-surface-container-high border-t border-border-subtle flex items-center justify-end gap-2">
@@ -2386,7 +2562,7 @@ export function PlaylistScheduleView({
               </button>
               <button
                 type="button"
-                disabled={isCreatingLive || !liveProgramTitle.trim() || !liveProgramSourceRef.trim()}
+                disabled={isCreatingLive || !liveProgramInputValid || !liveProgramTitle.trim() || !liveProgramSourceRef.trim()}
                 onClick={handleCreateLiveProgram}
                 className="px-3 py-1.5 rounded bg-error hover:bg-error/90 text-white font-label-caps text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50"
               >

@@ -6,6 +6,7 @@ import type {
   OverrunPolicy,
   ScheduleEventType,
   TimingFlags,
+  ProtectedTimingZone,
 } from './rundown.js'
 
 /**
@@ -51,6 +52,9 @@ export interface OnAirState {
 }
 
 export interface ResolveInput {
+  readonly protectedZones?: readonly ProtectedTimingZone[]
+  readonly rundownId?: string
+  readonly generatedAt?: string
   readonly rate: Rate
   readonly items: readonly PlanItem[]
   /** Agora, em frames desde a meia-noite. Nulo é planejamento offline. */
@@ -112,6 +116,7 @@ export type ConflictKind =
   | 'ANCHOR_MISSED'
   /** Âncora com horário já passado. */
   | 'ANCHOR_PAST'
+  | 'PROTECTED_ZONE_OVERRIDDEN'
 
 export interface Conflict {
   readonly kind: ConflictKind
@@ -182,6 +187,7 @@ export interface ScheduleCompensationReport {
 }
 
 export interface ResolveResult {
+  readonly protections?: readonly { itemId: string; zoneId: string; label: string; priority: number; status: 'PRESERVED' | 'OVERRIDDEN'; changedFrames: Frames }[]
   readonly items: readonly ResolvedItem[]
   readonly conflicts: readonly Conflict[]
   readonly suggestions: readonly Suggestion[]

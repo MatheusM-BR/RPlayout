@@ -4,6 +4,16 @@ import type { AudioLevel, Trim } from './media.js'
 /** 1 é o que se sacrifica primeiro; 5 é o que não se sacrifica. */
 export type Priority = 1 | 2 | 3 | 4 | 5
 
+/** Janela editorial [from,to) em frames desde meia-noite da data da grade.
+ * Prioridade maior vence menor; FIXED/HARD_TIME continuam mandatórios. */
+export interface ProtectedTimingZone {
+  readonly id: string
+  readonly label: string
+  readonly from: Frames
+  readonly to: Frames
+  readonly priority: Priority
+}
+
 /**
  * O compromisso que o item tem com o relógio. É daqui que sai todo o
  * remanejamento automático.
@@ -85,7 +95,16 @@ export interface TimingFlags {
   readonly protected: boolean
 }
 
-export type LiveSourceType = 'SDI' | 'NDI' | 'SRT' | 'RTMP' | 'WEBRTC'
+export type LiveSourceType = 'SDI' | 'NDI' | 'OMT' | 'SRT' | 'RTMP' | 'WEBRTC'
+
+export function inferLiveSourceType(reference: string): LiveSourceType {
+  if (/^ndi:/i.test(reference)) return 'NDI'
+  if (/^omt:/i.test(reference)) return 'OMT'
+  if (/^(sdi:|decklink:)/i.test(reference)) return 'SDI'
+  if (/^rtmps?:/i.test(reference)) return 'RTMP'
+  if (/^webrtc:/i.test(reference)) return 'WEBRTC'
+  return 'SRT'
+}
 
 export interface LiveSourceConfig {
   readonly sourceType: LiveSourceType
@@ -188,11 +207,14 @@ export interface RundownItem {
 }
 
 export interface Rundown {
+  /** A cadence-converted editorial edition cannot execute before publication. */
+  readonly publicationRequired?: boolean
   readonly id: string
   readonly channelId: string
   readonly name: string
   /** Início planejado da grade, em frames desde a meia-noite. */
   readonly plannedStart: Frames
+  readonly protectedZones?: readonly ProtectedTimingZone[]
   /**
    * Programação não acaba: ao terminar o último item, volta para o primeiro.
    * Desligue só para uma grade de evento, que tem fim de verdade.

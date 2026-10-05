@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type {EditorialVersions} from '../db/editorial-revisions.js'
 import type {
   ConflictItem,
   ConflictResolutionData,
@@ -26,10 +27,12 @@ export type ConcurrencyListener = (event: unknown) => void
 
 /**
  * Gerenciador de concorrência e bloqueio otimista de Rundowns broadcast.
- * Mantém contadores monotônicos de versão de grade e versão por linha,
- * além de gerenciar soft locks para edição colaborativa e detecção de colisões (409 Conflict).
+ * A aplicação lê revisões duráveis do SQLite; os mapas são apenas fallback
+ * para instâncias isoladas sem banco. Soft locks são avisos locais ao processo,
+ * não locks distribuídos nem uma condição de segurança da escrita.
  */
 export class ConcurrencyManager {
+  constructor(private readonly versions?:EditorialVersions){}
   private readonly rundownVersions = new Map<string, number>()
   private readonly lineVersions = new Map<string, Map<string, number>>()
   private readonly lineLocks = new Map<string, Map<string, LineLock>>()
@@ -54,21 +57,25 @@ export class ConcurrencyManager {
   }
 
   getRundownVersion(rundownId: string): number {
+    if(this.versions)return this.versions.read(rundownId)
     return this.rundownVersions.get(rundownId) ?? 1
   }
 
   incrementRundownVersion(rundownId: string): number {
+    if(this.versions)throw new Error('Revisões persistentes são incrementadas pela escrita no banco, não em memória.')
     const next = (this.rundownVersions.get(rundownId) ?? 1) + 1
     this.rundownVersions.set(rundownId, next)
     return next
   }
 
   getLineVersion(rundownId: string, itemId: string): number {
+    if(this.versions)return this.versions.read(rundownId,itemId)
     const map = this.lineVersions.get(rundownId)
     return map?.get(itemId) ?? 1
   }
 
   incrementLineVersion(rundownId: string, itemId: string): number {
+    if(this.versions)throw new Error('Revisões persistentes são incrementadas pela escrita no banco, não em memória.')
     let map = this.lineVersions.get(rundownId)
     if (!map) {
       map = new Map<string, number>()
@@ -89,15 +96,16 @@ export class ConcurrencyManager {
   }
 
   parseETag(eTag: string): { rundownVersion?: number; lineVersion?: number } | null {
-    const clean = eTag.replace(/^w\//i, '').replace(/["']/g, '')
-    const parts = clean.split('-')
+    const match = /^(?:w\/)?"([1-9]\d*)(?:-([1-9]\d*))?"$/i.exec(eTag.trim())
+    if (!match) return null
+    const parts = match[2] ? [match[1]!,match[2]] : [match[1]!]
     if (parts.length === 2) {
       const r = Number.parseInt(parts[0]!, 10)
       const l = Number.parseInt(parts[1]!, 10)
-      if (!Number.isNaN(r) && !Number.isNaN(l)) return { rundownVersion: r, lineVersion: l }
+      if (Number.isSafeInteger(r) && Number.isSafeInteger(l)) return { rundownVersion: r, lineVersion: l }
     } else if (parts.length === 1) {
       const r = Number.parseInt(parts[0]!, 10)
-      if (!Number.isNaN(r)) return { rundownVersion: r }
+      if (Number.isSafeInteger(r)) return { rundownVersion: r }
     }
     return null
   }
@@ -213,17 +221,20 @@ export class ConcurrencyManager {
     itemId?: string
     userId: string
   }): { success: boolean; lockState: RundownLockState } {
+    this.cleanExpiredLocks(params.rundownId)
     const { rundownId, itemId, userId } = params
     if (itemId) {
       const locks = this.lineLocks.get(rundownId)
       if (locks) {
         const existing = locks.get(itemId)
+        if (existing && existing.userId !== userId) return {success:false,lockState:this.getLockState(rundownId)}
         if (existing && existing.userId === userId) {
           locks.delete(itemId)
         }
       }
     } else {
       const existing = this.rundownLocks.get(rundownId)
+      if (existing && existing.userId !== userId) return {success:false,lockState:this.getLockState(rundownId)}
       if (existing && existing.userId === userId) {
         this.rundownLocks.delete(rundownId)
       }
@@ -281,11 +292,15 @@ export class ConcurrencyManager {
     }
 
     const hasRundownMismatch =
-      requestedRundownVersion !== undefined && requestedRundownVersion < currentRundownVersion
+      requestedRundownVersion !== undefined && requestedRundownVersion !== currentRundownVersion
     const hasLineMismatch =
-      requestedLineVersion !== undefined && requestedLineVersion < currentLineVersion
+      requestedLineVersion !== undefined && requestedLineVersion !== currentLineVersion
+    const headerVersion=ifMatchHeader ? this.parseETag(ifMatchHeader) : null
+    const headerMismatch=Boolean(headerVersion && (
+      headerVersion.rundownVersion!==undefined && headerVersion.rundownVersion!==currentRundownVersion ||
+      headerVersion.lineVersion!==undefined && headerVersion.lineVersion!==currentLineVersion))
 
-    if (hasRundownMismatch || hasLineMismatch) {
+    if (hasRundownMismatch || hasLineMismatch || headerMismatch) {
       const conflictId = `conf-${randomUUID()}`
       const conflicts: ConflictItem[] = []
 
@@ -376,8 +391,8 @@ export class ConcurrencyManager {
         resolvedData = { ...currentItemState, ...clientPatch }
     }
 
-    const newRundownVersion = this.incrementRundownVersion(rundownId)
-    const newLineVersion = this.incrementLineVersion(rundownId, itemId)
+    const newRundownVersion = this.versions ? this.getRundownVersion(rundownId) : this.incrementRundownVersion(rundownId)
+    const newLineVersion = this.versions ? this.getLineVersion(rundownId, itemId) : this.incrementLineVersion(rundownId, itemId)
 
     return {
       success: true,
@@ -387,5 +402,3 @@ export class ConcurrencyManager {
     }
   }
 }
-
-export const globalConcurrencyManager = new ConcurrencyManager()

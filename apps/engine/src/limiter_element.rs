@@ -42,14 +42,16 @@ const DEFAULT_RELEASE_MS: f64 = 50.0;
 
 /// Estado que depende das caps, então só existe depois da negociação.
 struct Running {
-    limiter: Limiter,
+    limiters: Vec<Limiter>,
     channels: usize,
+    link_channels: usize,
 }
 
 #[derive(Default)]
 pub struct LimiterImpl {
     running: Mutex<Option<Running>>,
     ceiling: Mutex<f64>,
+    pair_linked: Mutex<bool>,
     /// Maior redução desde a última leitura, em milésimos de dB.
     ///
     /// Atômico porque quem lê é o laço principal e quem escreve é a thread de
@@ -80,6 +82,11 @@ impl ObjectImpl for LimiterImpl {
                     .blurb("Maior redução desde a leitura anterior; ler zera")
                     .read_only()
                     .build(),
+                glib::ParamSpecBoolean::builder("pair-linked")
+                    .nick("Limitação independente por par")
+                    .blurb("No barramento multicanal, vincula somente L/R de cada par; configuração antes da negociação")
+                    .default_value(false)
+                    .build(),
             ]
         });
         PROPERTIES.as_ref()
@@ -90,14 +97,17 @@ impl ObjectImpl for LimiterImpl {
             let ceiling = value.get().unwrap_or(DEFAULT_CEILING);
             *self.ceiling.lock().unwrap() = ceiling;
             if let Some(running) = self.running.lock().unwrap().as_mut() {
-                running.limiter.set_ceiling(ceiling);
+                for limiter in &mut running.limiters { limiter.set_ceiling(ceiling); }
             }
+        } else if spec.name() == "pair-linked" {
+            *self.pair_linked.lock().unwrap() = value.get().unwrap_or(false);
         }
     }
 
     fn property(&self, _id: usize, spec: &glib::ParamSpec) -> glib::Value {
         match spec.name() {
             "ceiling-dbtp" => self.ceiling.lock().unwrap().to_value(),
+            "pair-linked" => self.pair_linked.lock().unwrap().to_value(),
             "gain-reduction-db" => {
                 // Ler zera: a interface quer o pico do intervalo que passou,
                 // não o pico de quando o canal subiu.
@@ -133,7 +143,7 @@ impl ElementImpl for LimiterImpl {
                 .field("format", "F32LE")
                 .field("layout", "interleaved")
                 .field("rate", gst::IntRange::new(1, i32::MAX))
-                .field("channels", gst::IntRange::new(1, 8))
+                .field("channels", gst::IntRange::new(1, 16))
                 .build();
 
             vec![
@@ -175,15 +185,19 @@ impl BaseTransformImpl for LimiterImpl {
             .map_err(|_| gst::loggable_error!(gst::CAT_DEFAULT, "caps sem canais"))?;
 
         let ceiling = *self.ceiling.lock().unwrap();
+        let channels = channels as usize;
+        let link_channels = if *self.pair_linked.lock().unwrap() { 2.min(channels) } else { channels };
+        if channels % link_channels != 0 { return Err(gst::loggable_error!(gst::CAT_DEFAULT, "barramento de pares exige canais em número par")); }
         *self.running.lock().unwrap() = Some(Running {
-            limiter: Limiter::new(
+            limiters: (0..channels / link_channels).map(|_| Limiter::new(
                 rate as u32,
-                channels as usize,
+                link_channels,
                 ceiling,
                 DEFAULT_LOOKAHEAD_MS,
                 DEFAULT_RELEASE_MS,
-            ),
-            channels: channels as usize,
+            )).collect(),
+            channels,
+            link_channels,
         });
         Ok(())
     }
@@ -212,12 +226,26 @@ impl BaseTransformImpl for LimiterImpl {
             .chunks_exact(4)
             .map(|raw| f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
             .collect();
-        running.limiter.process(&mut samples);
+        if running.limiters.len() == 1 {
+            running.limiters[0].process(&mut samples);
+        } else {
+            let mut pair = vec![0f32; frames * running.link_channels];
+            for (index, limiter) in running.limiters.iter_mut().enumerate() {
+                for (source, target) in samples.chunks_exact(running.channels).zip(pair.chunks_exact_mut(running.link_channels)) {
+                    target.copy_from_slice(&source[index * running.link_channels..(index + 1) * running.link_channels]);
+                }
+                limiter.process(&mut pair);
+                for (target, source) in samples.chunks_exact_mut(running.channels).zip(pair.chunks_exact(running.link_channels)) {
+                    target[index * running.link_channels..(index + 1) * running.link_channels].copy_from_slice(source);
+                }
+            }
+        }
         for (slot, value) in bytes.chunks_exact_mut(4).zip(samples.iter()) {
             slot.copy_from_slice(&value.to_le_bytes());
         }
 
-        let reduction = running.limiter.take_reduction_db();
+        // Telemetry is the worst protection action across embedded pairs.
+        let reduction = running.limiters.iter_mut().map(Limiter::take_reduction_db).fold(0.0, f64::max);
         if reduction > 0.0 {
             let raw = (reduction * 1000.0) as u64;
             self.reduction.fetch_max(raw, Ordering::Relaxed);

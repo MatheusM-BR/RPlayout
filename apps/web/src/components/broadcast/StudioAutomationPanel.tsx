@@ -1,309 +1,108 @@
-import { useState, useEffect } from 'react'
-import { api } from '../../api.js'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api, type ManualExternalRun } from '../../api.js'
 
-export interface AutomationDeviceStatus {
-  id: string
-  name: string
-  protocol: 'ATEM_SWITCHER' | 'VIDEOHUB_ROUTER' | 'GPIO_RELAY'
-  target: string // IP:Port ou Serial COM
-  port: number | string
-  state: 'CONNECTED' | 'DISCONNECTED' | 'RECONNECTING'
-  lastLatencyMs: number
-  activeCrosspointOrInput?: string
-  lastAckTime: string
-}
-
-export interface AutomationAuditEntry {
-  id: string
-  time: string
-  targetDevice: string
-  action: string
-  parameters: string
-  latencyMs: number
-  status: 'SUCCESS' | 'ACK' | 'TIMEOUT' | 'ERROR'
-}
-
-interface Props {
-  className?: string
-  onMessage?: (msg: string) => void
+type Device = Awaited<ReturnType<typeof api.externalDevices>>['devices'][number]
+interface Props { className?: string; onMessage?: (message: string) => void }
+const formField = 'min-w-0 rounded border border-border-subtle bg-surface-base px-2 py-2 text-[11px] text-on-surface'
+function requestId(): string {
+  // getRandomValues also works on HTTP LAN stations; randomUUID may not.
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6]! & 15) | 64; bytes[8] = (bytes[8]! & 63) | 128
+  const text = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('')
+  return `${text.slice(0, 8)}-${text.slice(8, 12)}-${text.slice(12, 16)}-${text.slice(16, 20)}-${text.slice(20)}`
 }
 
 export function StudioAutomationPanel({ className = '', onMessage }: Props) {
-  // Só são listados equipamentos realmente configurados. O projeto não tem
-  // cadastro de drivers físicos ainda, portanto não inventamos ATEM/Videohub.
-  const [devices, setDevices] = useState<AutomationDeviceStatus[]>([])
-  const [newDevice, setNewDevice] = useState<{ name: string; kind: 'ATEM_SWITCHER' | 'VIDEOHUB_ROUTER' | 'GPIO_RELAY'; host: string; port: string }>({ name: '', kind: 'ATEM_SWITCHER', host: '', port: '9910' })
-  /* Dados antigos de demonstração, mantidos aqui temporariamente só para
-     referência de layout; não participam do estado operacional.
-  const [devices, setDevices] = useState<AutomationDeviceStatus[]>([
-    {
-      id: 'atem-main',
-      name: 'Blackmagic ATEM 2 M/E Constellation HD',
-      protocol: 'BLACKMAGIC_ATEM',
-      target: '192.168.10.50',
-      port: 9910,
-      state: 'CONNECTED',
-      lastLatencyMs: 6.4,
-      activeCrosspointOrInput: 'PGM: In 3 (Estúdio A) • PVW: In 5 (Playout)',
-      lastAckTime: '13:19:42.120',
-    },
-    {
-      id: 'videohub-main',
-      name: 'Blackmagic Smart Videohub 40x40',
-      protocol: 'VIDEOHUB_ROUTER',
-      target: '192.168.10.60',
-      port: 9990,
-      state: 'CONNECTED',
-      lastLatencyMs: 4.1,
-      activeCrosspointOrInput: 'Out 1 -> In 5 (PGM Playout 1)',
-      lastAckTime: '13:19:38.804',
-    },
-    {
-      id: 'gpio-relay-box',
-      name: 'Advantech ADAM-6060 / Tally Relays',
-      protocol: 'GPIO_RELAY',
-      target: 'COM3 (USB/Modbus TCP)',
-      port: '502 / USB',
-      state: 'CONNECTED',
-      lastLatencyMs: 1.2,
-      activeCrosspointOrInput: 'Ch 1: Tally On-Air (LATCH ATIVO)',
-      lastAckTime: '13:19:15.002',
-    },
-  ]) */
-
-  // Log Rápido de Auditoria com Latência de Resposta em ms
-  const [auditLogs, setAuditLogs] = useState<AutomationAuditEntry[]>([])
-  /* Dados antigos de demonstração, não exibidos nem usados.
-  const demoAuditLogs: AutomationAuditEntry[] = [
-    {
-      id: 'log-1',
-      time: '13:19:42.120',
-      targetDevice: 'ATEM Constellation HD',
-      action: 'TAKE M/E 1',
-      parameters: 'Input: 3 (Estúdio A CAM 1), Trans: CUT',
-      latencyMs: 8.2,
-      status: 'SUCCESS',
-    },
-    {
-      id: 'log-2',
-      time: '13:19:35.000',
-      targetDevice: 'SCTE-35 Mux / VANC',
-      action: 'SPLICE_INSERT',
-      parameters: 'Event: 55102, Dur: 30s, Pre-roll: 4000ms',
-      latencyMs: 3.4,
-      status: 'SUCCESS',
-    },
-    {
-      id: 'log-3',
-      time: '13:19:10.450',
-      targetDevice: 'Smart Videohub 40x40',
-      action: 'ROUTE_CROSSPOINT',
-      parameters: 'Dest 4 -> Src 12 (Link Satélite 1)',
-      latencyMs: 4.1,
-      status: 'ACK',
-    },
-    {
-      id: 'log-4',
-      time: '13:18:55.200',
-      targetDevice: 'GPIO ADAM-6060',
-      action: 'PULSE',
-      parameters: 'Relay #2 (Campainha Estúdio) • 150ms',
-      latencyMs: 1.2,
-      status: 'SUCCESS',
-    },
-    {
-      id: 'log-5',
-      time: '13:18:30.010',
-      targetDevice: 'ATEM Constellation HD',
-      action: 'SET_DSK',
-      parameters: 'DSK 1: ON_AIR (Key: CG RGBA Fill+Alpha)',
-      latencyMs: 5.6,
-      status: 'SUCCESS',
-    },
-  ] */
-
-  // Teste manual de ping / pulso
-  useEffect(() => {
-    let alive = true
-    const refresh = () => void Promise.all([api.externalAutomationAudit(), api.externalDevices()])
-      .then(([{ entries }, deviceReport]) => {
-        if (!alive) return
-        setDevices(deviceReport.devices.map((device) => ({
-          id: device.id, name: device.name, protocol: device.kind, target: device.host, port: device.port,
-          state: device.enabled ? 'RECONNECTING' : 'DISCONNECTED', lastLatencyMs: 0, lastAckTime: 'Sem confirmação',
-        })))
-        setAuditLogs(entries.map((entry) => ({
-          id: entry.id,
-          time: new Date(entry.timestamp).toLocaleTimeString('pt-BR'),
-          targetDevice: entry.targetDevice,
-          action: entry.action,
-          parameters: entry.error ?? JSON.stringify(entry.details ?? {}),
-          latencyMs: entry.latencyMs,
-          status: entry.executionStatus === 'SUCCESS' ? 'SUCCESS' : entry.executionStatus === 'ERROR_TIMEOUT' ? 'TIMEOUT' : 'ERROR',
-        })))
-      })
-      .catch(() => { if (alive) { setAuditLogs([]); setDevices([]) } })
-    refresh()
-    const timer = window.setInterval(refresh, 3000)
-    return () => { alive = false; window.clearInterval(timer) }
+  const [devices, setDevices] = useState<Device[]>([]), [runs, setRuns] = useState<ManualExternalRun[]>([])
+  const [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false)
+  const [draft, setDraft] = useState({ name: '', kind: 'VIDEOHUB_ROUTER' as Device['kind'], host: '', port: '9990' })
+  const [selected, setSelected] = useState(''), [source, setSource] = useState(0), [destination, setDestination] = useState(0)
+  const [notes, setNotes] = useState<Record<string, string>>({})
+  const alive = useRef(false), generation = useRef(0), pendingAction = useRef(false)
+  const refresh = useCallback(async () => {
+    const expected = ++generation.current
+    const [report, history] = await Promise.all([api.externalDevices(), api.externalCommandRuns()])
+    if (!alive.current || expected !== generation.current) return
+    setDevices(report.devices); setRuns(history.runs)
   }, [])
+  useEffect(() => {
+    alive.current = true
+    const poll = () => { if (!pendingAction.current) void refresh().catch(error => { if (alive.current) setError(error instanceof Error ? error.message : 'Consulta de automação indisponível.') }) }
+    poll(); const timer = window.setInterval(poll, 5000)
+    return () => { alive.current = false; ++generation.current; window.clearInterval(timer) }
+  }, [refresh])
+  const perform = async (work: () => Promise<unknown>, message: string) => {
+    if (pendingAction.current) return
+    pendingAction.current = true; setBusy(true); setError(null); ++generation.current
+    try { await work(); if (alive.current) onMessage?.(message) }
+    catch (error) { if (alive.current) { const text = error instanceof Error ? error.message : 'Pedido não confirmado. Confira o equipamento.'; setError(text); onMessage?.(text) } }
+    finally {
+      if (alive.current) { try { await refresh() } catch {} setBusy(false) }
+      pendingAction.current = false
+    }
+  }
+  const selectedDevice = devices.find(device => device.id === selected)
+  const uncertain = runs.some(run => run.command.deviceId === selected && run.state === 'FIRING')
+  const canRoute = selectedDevice?.enabled && selectedDevice.kind === 'VIDEOHUB_ROUTER' && !uncertain && Number.isSafeInteger(source) && Number.isSafeInteger(destination) && source >= 0 && destination >= 0 && source <= 65535 && destination <= 65535
+  const control = (device: Device, action: 'PING' | 'ROUTE_CROSSPOINT') => api.controlExternalDevice(device.id, {
+    requestId: requestId(), action, ...(action === 'ROUTE_CROSSPOINT' ? { source, destination } : {}),
+  })
 
-  return (
-    <div
-      className={`bg-surface-card border border-border-subtle p-3.5 rounded-xl flex flex-col gap-3 shadow-sm ${className}`}
-      id="studio-automation-panel"
-    >
-      {/* CABEÇALHO DO CARD */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle pb-2.5">
-        <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-lg bg-accent-ice/15 border border-accent-ice/30 text-accent-ice">
-            <span className="material-symbols-outlined text-[20px]">precision_manufacturing</span>
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="font-headline-md text-[15px] font-bold text-on-surface uppercase tracking-wider">
-                AUTOMAÇÃO DE ESTÚDIO & CONTROLE EXTERNO
-              </h3>
-              <span className="font-label-mono text-[9px] bg-status-ok/15 text-status-ok font-bold px-1.5 py-0.2 rounded border border-status-ok/30">
-                AUDITORIA REAL
-              </span>
-            </div>
-            <p className="font-label-mono text-[10px] text-outline">
-              Comandos e confirmações recebidos pelo gateway de controle externo.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 font-label-mono text-[10px] text-outline">
-          <span className="inline-flex items-center gap-1 text-outline font-bold">
-            <span className="w-2 h-2 rounded-full bg-outline"></span>
-            {devices.length} DISPOSITIVOS CONFIGURADOS
-          </span>
-          <span>•</span>
-          <span>{auditLogs.length} COMANDOS AUDITADOS</span>
-        </div>
+  return <section id="studio-automation-panel" className={`rounded-xl border border-border-subtle bg-surface-card p-4 ${className}`}>
+    <h3 className="font-headline-md text-[15px] font-bold text-on-surface">AUTOMAÇÃO DE ESTÚDIO & CONTROLE EXTERNO</h3>
+    <p className="mt-1 text-[11px] text-outline">Consulta não muda a matriz. Roteamento altera um equipamento externo e pode afetar o sinal. Confirmação de estado não homologa vídeo/áudio físico.</p>
+    {error && <p role="alert" className="mt-2 rounded border border-red-400/30 p-2 text-[11px] text-red-300">{error}</p>}
+    {!devices.length && <p className="my-3 text-[11px] text-outline">Nenhum equipamento cadastrado. Não há drivers fictícios conectados.</p>}
+    <div className="my-3 grid gap-2 md:grid-cols-3">{devices.map(device => {
+      const last = runs.find(run => run.command.deviceId === device.id)
+      const supported = device.enabled && device.kind === 'VIDEOHUB_ROUTER'
+      return <article key={device.id} className="rounded-lg border border-border-subtle bg-surface-panel p-3 text-[11px]">
+        <strong className="block text-on-surface">{device.name}</strong><span className="block truncate text-outline">{device.host}:{device.port} · {device.kind}</span>
+        <p className="my-2 text-outline">{!device.enabled ? 'Desativado' : !supported ? 'Driver físico pendente — nenhum comando enviado' : last?.state === 'FIRING' ? 'Pedido em andamento ou incerto' : last?.state === 'EXECUTED' ? `Pedido iniciado às ${new Date(last.createdAt).toLocaleTimeString('pt-BR')} teve confirmação — não é monitoramento contínuo` : last?.state === 'FAILED' ? 'Último pedido falhou — confira o registro' : last?.state === 'CLOSED_UNCERTAIN' ? 'Incerteza reconhecida pelo operador — operação física não confirmada' : 'Cadastrado, ainda sem confirmação'}</p>
+        <button className="btn small" disabled={busy || !supported} onClick={() => void perform(() => control(device, 'PING'), 'Videohub respondeu à consulta. Nenhum crosspoint foi alterado.')}>CONSULTAR SEM CORTE</button>
+        <button className="btn small ml-2" disabled={busy} onClick={() => void perform(() => api.updateExternalDevice(device.id, { enabled: !device.enabled }), `Cadastro ${device.enabled ? 'desativado' : 'ativado'}. Nenhuma ordem foi enviada ao equipamento; o crosspoint físico não foi alterado.`)}>{device.enabled ? 'DESATIVAR CADASTRO' : 'ATIVAR CADASTRO'}</button>
+      </article>
+    })}</div>
+    <form className="grid gap-2 rounded-lg border border-border-subtle bg-surface-panel p-3 md:grid-cols-[1.2fr_1fr_1fr_90px_auto]" onSubmit={event => {
+      event.preventDefault(); const port = Number(draft.port)
+      if (!draft.name.trim() || !draft.host.trim() || !Number.isSafeInteger(port) || port < 1 || port > 65535) { setError('Informe nome, endereço e porta válida.'); return }
+      void perform(async () => { await api.addExternalDevice({ name: draft.name.trim(), kind: draft.kind, host: draft.host.trim(), port, enabled: true }); if (alive.current) setDraft({ ...draft, name: '', host: '' }) }, 'Equipamento cadastrado; isso não confirma conexão nem sinal.')
+    }}>
+      <input aria-label="Nome do equipamento" className={formField} placeholder="Nome do equipamento" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })}/>
+      <select aria-label="Tipo do equipamento" className={formField} value={draft.kind} onChange={e => setDraft({ ...draft, kind: e.target.value as Device['kind'], port: e.target.value === 'VIDEOHUB_ROUTER' ? '9990' : e.target.value === 'ATEM_SWITCHER' ? '9910' : '502' })}>
+        <option value="VIDEOHUB_ROUTER">Videohub · TCP</option><option value="ATEM_SWITCHER">ATEM · driver pendente</option><option value="GPIO_RELAY">GPIO · driver pendente</option>
+      </select>
+      <input aria-label="Endereço do equipamento" className={formField} placeholder="IP ou host no servidor" value={draft.host} onChange={e => setDraft({ ...draft, host: e.target.value })}/>
+      <input aria-label="Porta do equipamento" className={formField} type="number" min="1" max="65535" value={draft.port} onChange={e => setDraft({ ...draft, port: e.target.value })}/>
+      <button type="submit" className="btn small" disabled={busy}>CADASTRAR</button>
+    </form>
+    <div className="my-3 rounded-lg border border-amber-400/30 p-3">
+      <h4 className="text-[12px] font-bold text-on-surface">Roteamento manual · Videohub</h4>
+      <p className="my-1 text-[11px] text-outline">Portas do protocolo começam em 0: entrada 0 corresponde ao conector 1. Selecione o equipamento explicitamente. Não há tentativa automática após falha.</p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="field text-[11px]">Equipamento<select aria-label="Equipamento para roteamento" value={selected} onChange={e => setSelected(e.target.value)}><option value="">Selecione</option>{devices.filter(device => device.kind === 'VIDEOHUB_ROUTER' && device.enabled).map(device => <option key={device.id} value={device.id}>{device.name} · {device.host}:{device.port}</option>)}</select></label>
+        <label className="field text-[11px]">Entrada (0…N)<input aria-label="Entrada da matriz" type="number" min="0" max="65535" value={source} onChange={e => setSource(Number(e.target.value))}/></label>
+        <label className="field text-[11px]">Saída (0…N)<input aria-label="Saída da matriz" type="number" min="0" max="65535" value={destination} onChange={e => setDestination(Number(e.target.value))}/></label>
+        <button className="btn small" disabled={busy || !canRoute} onClick={() => {
+          if (!selectedDevice || !confirm(`Alterar ${selectedDevice.name}: saída ${destination} receberá entrada ${source}. Isso pode interromper o sinal externo. Confirmar?`)) return
+          void perform(() => control(selectedDevice, 'ROUTE_CROSSPOINT'), 'Videohub confirmou o crosspoint solicitado. Confira vídeo/áudio no destino físico.')
+        }}>CONFIRMAR ROTEAMENTO</button>
       </div>
-
-      {/* GRADE DE STATUS DOS DISPOSITIVOS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-        {devices.length === 0 && (
-          <div className="md:col-span-3 rounded-lg border border-dashed border-border-strong bg-surface-base p-6 text-center font-label-mono text-[10px] text-outline">
-            Nenhum driver físico configurado. Os comandos recebidos continuam disponíveis no log de auditoria abaixo.
-          </div>
-        )}
-        {devices.map((dev) => (
-          <div
-            key={dev.id}
-            className="bg-surface-panel p-3 rounded-lg border border-border-subtle flex flex-col justify-between gap-2.5 relative overflow-hidden group hover:border-border-strong transition-all"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <span className="font-headline-md text-[13px] font-bold text-on-surface block leading-tight">
-                  {dev.name}
-                </span>
-                <span className="font-label-mono text-[9.5px] text-outline block mt-0.5">
-                  {dev.target}:{dev.port}
-                </span>
-              </div>
-              <span className="font-label-caps text-[9px] px-1.5 py-0.5 rounded font-bold bg-armed-amber/15 text-armed-amber border border-armed-amber/30 flex items-center gap-1 shrink-0">
-                <span className="w-1.5 h-1.5 rounded-full bg-armed-amber"></span>
-                CONFIGURADO
-              </span>
-            </div>
-
-            <div className="bg-surface-container-lowest p-2 rounded border border-border-subtle/40 flex flex-col gap-1 font-label-mono text-[10px]">
-              <div className="flex justify-between text-outline">
-                <span>Estado de Barramento:</span>
-                <span className="text-on-surface font-semibold">{dev.protocol.replace('_', ' ')}</span>
-              </div>
-              <div className="text-on-surface-variant font-medium truncate" title={dev.activeCrosspointOrInput}>
-                {dev.activeCrosspointOrInput}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between font-label-mono text-[9.5px] text-outline pt-1 border-t border-border-subtle/40">
-              <span>Handshake: <strong className="text-armed-amber">a confirmar por comando real</strong></span>
-              <button
-                onClick={() => onMessage?.(`O teste de ${dev.name} precisa ser enviado pelo endpoint de controle externo configurado.`)}
-                className="px-2 py-0.5 rounded bg-surface-container hover:bg-surface-card border border-border-subtle text-accent-ice hover:text-white font-bold cursor-pointer transition-colors"
-                title="Enviar comando ping/pulso de teste"
-              >
-                {dev.protocol === 'GPIO_RELAY' ? 'PULSO 150ms' : 'TESTE PING'}
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <form
-        className="grid grid-cols-1 gap-2 rounded-lg border border-border-subtle bg-surface-panel p-2.5 md:grid-cols-[1.3fr_1fr_1fr_90px_auto]"
-        onSubmit={(event) => {
-          event.preventDefault()
-          const port = Number(newDevice.port)
-          if (!newDevice.name.trim() || !newDevice.host.trim() || !Number.isInteger(port) || port < 1 || port > 65535) {
-            onMessage?.('Informe nome, endereço e porta válida para o dispositivo externo.')
-            return
-          }
-          void api.addExternalDevice({ name: newDevice.name.trim(), kind: newDevice.kind, host: newDevice.host.trim(), port, enabled: true })
-            .then(() => { setNewDevice({ name: '', kind: 'ATEM_SWITCHER', host: '', port: '9910' }); onMessage?.('Dispositivo salvo. O próximo comando usará este endereço real.') })
-            .catch((error) => onMessage?.(error instanceof Error ? error.message : 'Não foi possível salvar o dispositivo.'))
-        }}
-      >
-        <input value={newDevice.name} onChange={(event) => setNewDevice({ ...newDevice, name: event.target.value })} placeholder="Nome do dispositivo" className="rounded border border-border-subtle bg-surface-base px-2 py-1 text-[11px]" />
-        <select value={newDevice.kind} onChange={(event) => setNewDevice({ ...newDevice, kind: event.target.value as typeof newDevice.kind })} className="rounded border border-border-subtle bg-surface-base px-2 py-1 text-[11px]">
-          <option value="ATEM_SWITCHER">ATEM</option><option value="VIDEOHUB_ROUTER">Videohub</option><option value="GPIO_RELAY">GPIO</option>
-        </select>
-        <input value={newDevice.host} onChange={(event) => setNewDevice({ ...newDevice, host: event.target.value })} placeholder="IP ou host" className="rounded border border-border-subtle bg-surface-base px-2 py-1 text-[11px]" />
-        <input value={newDevice.port} onChange={(event) => setNewDevice({ ...newDevice, port: event.target.value })} placeholder="Porta" className="rounded border border-border-subtle bg-surface-base px-2 py-1 text-[11px]" />
-        <button className="rounded bg-primary px-3 py-1 font-label-caps text-[10px] font-bold text-on-primary" type="submit">ADICIONAR</button>
-      </form>
-
-      {/* LOG RÁPIDO DE AUDITORIA COM LATÊNCIA EM MILISSEGUNDOS */}
-      <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
-          <span className="font-label-caps text-[10px] font-bold text-outline uppercase flex items-center gap-1">
-            <span className="material-symbols-outlined text-primary text-[14px]">history</span>
-            Log Rápido de Auditoria de Hardware & Disparos (/api/external/control)
-          </span>
-          <span className="font-label-mono text-[9px] text-outline">
-            Últimos comandos efetivamente recebidos
-          </span>
-        </div>
-
-        <div className="max-h-[140px] overflow-y-auto broadcast-scroll flex flex-col gap-1 font-label-mono text-[10px]">
-          {auditLogs.length === 0 && <p className="p-3 text-center text-outline">Nenhum comando externo registrado nesta sessão.</p>}
-          {auditLogs.map((log) => (
-            <div
-              key={log.id}
-              className="bg-surface-container-lowest/90 px-2 py-1.5 rounded border border-border-subtle/30 flex items-center justify-between gap-2 hover:bg-surface-container-lowest transition-colors"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="text-outline tabular-nums shrink-0">{log.time}</span>
-                <span className="px-1 py-0.2 rounded bg-primary/15 text-primary border border-primary/30 font-bold shrink-0 text-[9px]">
-                  {log.targetDevice}
-                </span>
-                <span className="font-bold text-on-surface shrink-0">{log.action}:</span>
-                <span className="text-on-surface-variant truncate">{log.parameters}</span>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-outline text-[9px]">
-                  Latência: <strong className="text-status-ok-bright">{log.latencyMs}ms</strong>
-                </span>
-                <span
-                  className={`px-1.5 py-0.2 rounded font-bold text-[8.5px] ${
-                    log.status === 'SUCCESS' || log.status === 'ACK'
-                      ? 'bg-status-ok/15 text-status-ok border border-status-ok/30'
-                      : 'bg-armed-amber/15 text-armed-amber border border-armed-amber/30'
-                  }`}
-                >
-                  {log.status}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      {uncertain && <p className="mt-2 text-[11px] text-amber-300">Há um pedido em andamento ou incerto. Roteamento bloqueado nesta tela; confira o equipamento e o registro. A consulta sem corte continua disponível.</p>}
     </div>
-  )
+    <h4 className="text-[12px] font-bold text-on-surface">Pedidos recentes e incertos · registro persistente</h4>
+    <p className="mb-2 text-[11px] text-outline">Após queda, FIRING permanece incerto e o mesmo pedido não é reenviado. Aprovação de um pedido não comprova a imagem física.</p>
+    <div className="max-h-52 overflow-auto broadcast-scroll">{!runs.length && <p className="text-[11px] text-outline">Nenhum pedido manual registrado.</p>}{runs.map(run => <div key={run.requestId} className="mb-1 rounded border border-border-subtle bg-surface-panel p-2 text-[11px]">
+      <span className="text-on-surface">{new Date(run.createdAt).toLocaleString('pt-BR')} · {devices.find(device => device.id === run.command.deviceId)?.name ?? run.command.deviceId} · {run.command.action} · {run.state}</span>
+      <span className="block text-outline">{run.command.action === 'ROUTE_CROSSPOINT' ? `saída ${run.command.destination} ← entrada ${run.command.source} · ` : ''}{run.result?.error ?? (run.state === 'FIRING' ? 'Confirmação pendente/incerta; não repetir automaticamente.' : `${run.result?.latencyMs ?? 'N/D'} ms`)} · pedido {run.requestId}</span>
+      {run.acknowledgement && <span className="block text-outline">Conferência do operador: {run.acknowledgement} — não equivale a confirmação do pedido original.</span>}
+      {run.state === 'FIRING' && <div className="mt-2 flex flex-wrap gap-2">
+        <input className={formField + ' flex-1'} aria-label={`Conferência do pedido ${run.requestId}`} placeholder="Descreva o que conferiu no equipamento" value={notes[run.requestId] ?? ''} onChange={e => setNotes({ ...notes, [run.requestId]: e.target.value })}/>
+        <button className="btn small" disabled={busy || (notes[run.requestId]?.trim().length ?? 0) < 10} onClick={() => {
+          if (!confirm('Registrar sua conferência e liberar novos roteamentos? O pedido original continuará sem confirmação; nenhum comando será reenviado.')) return
+          void perform(() => api.acknowledgeExternalCommand(run.requestId, notes[run.requestId]!.trim()), 'Incerteza reconhecida pelo operador, sem reenvio e sem confirmação física do pedido original.')
+        }}>REGISTRAR CONFERÊNCIA</button>
+      </div>}
+    </div>)}</div>
+  </section>
 }

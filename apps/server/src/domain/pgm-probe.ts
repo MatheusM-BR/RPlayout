@@ -20,6 +20,7 @@ export interface PgmProbeTelemetryInput {
 }
 
 export interface PgmProbeStatusResult {
+  automaticActionsEnabled: boolean
   alerts: PgmProbeAlert[]
   activeAlerts: PgmProbeAlert[]
   emergencySlateActive: boolean
@@ -34,7 +35,8 @@ export interface PgmProbeStatusResult {
   thresholds: PgmProbeThresholds
 }
 
-export type AutoActionCallback = (action: PgmProbeAutoAction, alert: PgmProbeAlert) => void
+export type AutoActionCallback = (action: PgmProbeAutoAction, alert: PgmProbeAlert) =>
+  { ok: boolean; message?: string } | Promise<{ ok: boolean; message?: string }>
 
 export class PgmProbe {
   private thresholds: PgmProbeThresholds = {
@@ -59,6 +61,8 @@ export class PgmProbe {
   private emergencySlateActive = false
   private history: PgmProbeAlert[] = []
   private actionCallback: AutoActionCallback | null = null
+  private automaticActions = false
+  private pendingAction: { action: PgmProbeAutoAction; result: Promise<{ ok: boolean; message?: string }> } | null = null
 
   constructor(
     customThresholds?: Partial<PgmProbeThresholds>,
@@ -75,6 +79,47 @@ export class PgmProbe {
   onAction(callback: AutoActionCallback): void {
     this.actionCallback = callback
   }
+  setAutomaticActions(enabled: boolean): void { this.automaticActions = enabled }
+  idle(): void {
+    for (const alert of [this.activeBlackAlert, this.activeFreezeAlert, this.activeSilenceAlert]) if (alert) alert.active = false
+    this.activeBlackAlert = null; this.activeFreezeAlert = null; this.activeSilenceAlert = null
+    this.blackDurationMs = 0; this.freezeDurationMs = 0; this.silenceDurationMs = 0
+    this.lastSampleTimeMs = null
+    this.lastSampleAt = undefined
+    this.lastAudioDbfs = null
+  }
+
+  private async runAction(action: PgmProbeAutoAction, alert: PgmProbeAlert, manual = false): Promise<void> {
+    alert.requestedAction = action
+    if (!manual && !this.automaticActions) { alert.actionStatus = 'DISABLED'; alert.actionMessage = 'Intervenção automática desligada; alerta requer decisão do operador.'; return }
+    if (!this.actionCallback) { alert.actionStatus = 'FAILED'; alert.actionMessage = 'Não há runtime conectado para executar a intervenção.'; return }
+    alert.actionStatus = 'PENDING'
+    try {
+      if (this.pendingAction && this.pendingAction.action !== action) {
+        alert.actionStatus = 'FAILED'
+        alert.actionMessage = 'Há outra intervenção aguardando confirmação. Confira o PGM antes de solicitar uma ação diferente.'
+        return
+      }
+      if (!this.pendingAction) {
+        const callback = this.actionCallback
+        // Trava antes de invocar o runtime: as três métricas podem cruzar seus
+        // limites no mesmo feed. A confirmação é compartilhada, não três TAKEs.
+        const pending = { action, result: Promise.resolve().then(() => callback(action, alert)) }
+        this.pendingAction = pending
+        void pending.result.then(
+          () => { if (this.pendingAction === pending) this.pendingAction = null },
+          () => { if (this.pendingAction === pending) this.pendingAction = null },
+        )
+      }
+      const result = await this.pendingAction.result
+      alert.actionStatus = result.ok ? 'SUCCEEDED' : 'FAILED'
+      alert.actionMessage = result.message
+      if (result.ok) {
+        alert.autoActionTriggered = action
+        if (action === 'SLATE_INJECTED') this.emergencySlateActive = true
+      }
+    } catch (error) { alert.actionStatus = 'FAILED'; alert.actionMessage = error instanceof Error ? error.message : String(error) }
+  }
 
   setThresholds(custom: Partial<PgmProbeThresholds>): void {
     this.thresholds = { ...this.thresholds, ...custom }
@@ -90,10 +135,11 @@ export class PgmProbe {
    */
   feedMetrics(input: PgmProbeTelemetryInput): PgmProbeAlert[] {
     const now = input.timestampMs ?? Date.now()
-    const delta = input.deltaMs ?? (this.lastSampleTimeMs ? Math.max(0, now - this.lastSampleTimeMs) : 100)
+    const proposedDelta = input.deltaMs ?? (this.lastSampleTimeMs !== null ? Math.max(0, now - this.lastSampleTimeMs) : 100)
+    const delta = Number.isFinite(proposedDelta) ? Math.max(0, proposedDelta) : 0
     this.lastSampleTimeMs = now
     this.lastSampleAt = new Date(now).toISOString()
-    if (input.audioDbfs !== undefined) this.lastAudioDbfs = input.audioDbfs
+    this.lastAudioDbfs = input.audioDbfs !== undefined && Number.isFinite(input.audioDbfs) ? input.audioDbfs : null
 
     const triggeredAlerts: PgmProbeAlert[] = []
 
@@ -108,13 +154,11 @@ export class PgmProbe {
             durationMs: this.blackDurationMs,
             thresholdMs: this.thresholds.blackThresholdMs,
             active: true,
-            autoActionTriggered: 'SLATE_INJECTED',
             timestamp: new Date(now).toISOString(),
           }
           this.activeBlackAlert = alert
           this.history.push(alert)
-          this.emergencySlateActive = true
-          this.actionCallback?.('SLATE_INJECTED', alert)
+          void this.runAction(this.thresholds.defaultAutoAction, alert)
           triggeredAlerts.push(alert)
         } else {
           this.activeBlackAlert.durationMs = this.blackDurationMs
@@ -140,12 +184,11 @@ export class PgmProbe {
             durationMs: this.freezeDurationMs,
             thresholdMs: this.thresholds.freezeThresholdMs,
             active: true,
-            autoActionTriggered: 'CONTINGENCY_LOOP',
             timestamp: new Date(now).toISOString(),
           }
           this.activeFreezeAlert = alert
           this.history.push(alert)
-          this.actionCallback?.('CONTINGENCY_LOOP', alert)
+          void this.runAction(this.thresholds.defaultAutoAction, alert)
           triggeredAlerts.push(alert)
         } else {
           this.activeFreezeAlert.durationMs = this.freezeDurationMs
@@ -161,7 +204,7 @@ export class PgmProbe {
     }
 
     // 3. Verificação de Silêncio (< -60 dBFS por > 3.0s)
-    const isSilence = input.audioDbfs !== undefined && input.audioDbfs <= this.thresholds.silenceDbfs
+    const isSilence = this.lastAudioDbfs !== null && this.lastAudioDbfs <= this.thresholds.silenceDbfs
     if (isSilence) {
       this.silenceDurationMs += delta
       if (this.silenceDurationMs >= this.thresholds.silenceThresholdMs) {
@@ -172,12 +215,11 @@ export class PgmProbe {
             durationMs: this.silenceDurationMs,
             thresholdMs: this.thresholds.silenceThresholdMs,
             active: true,
-            autoActionTriggered: 'FAILOVER_HOST_B',
             timestamp: new Date(now).toISOString(),
           }
           this.activeSilenceAlert = alert
           this.history.push(alert)
-          this.actionCallback?.('FAILOVER_HOST_B', alert)
+          void this.runAction(this.thresholds.defaultAutoAction, alert)
           triggeredAlerts.push(alert)
         } else {
           this.activeSilenceAlert.durationMs = this.silenceDurationMs
@@ -196,19 +238,22 @@ export class PgmProbe {
   }
 
   /** Dispara manualmente a injeção do Slate institucional de emergência. */
-  triggerEmergencySlate(reason = 'MANUAL_DISPATCH'): PgmProbeAlert {
-    this.emergencySlateActive = true
+  async triggerEmergencySlate(reason = 'MANUAL_DISPATCH'): Promise<PgmProbeAlert> {
+    return this.triggerAction('SLATE_INJECTED', reason)
+  }
+
+  async triggerAction(action: PgmProbeAutoAction, reason = 'MANUAL_DISPATCH'): Promise<PgmProbeAlert> {
     const alert: PgmProbeAlert = {
       id: randomUUID(),
       type: 'BLACK_FRAME',
       durationMs: 0,
       thresholdMs: 0,
       active: true,
-      autoActionTriggered: 'SLATE_INJECTED',
       timestamp: new Date().toISOString(),
     }
     this.history.push(alert)
-    this.actionCallback?.('SLATE_INJECTED', alert)
+    alert.actionMessage = reason
+    await this.runAction(action, alert, true)
     return alert
   }
 
@@ -232,6 +277,7 @@ export class PgmProbe {
     const lastAlert = this.history[this.history.length - 1]
 
     return {
+      automaticActionsEnabled: this.automaticActions,
       alerts: [...this.history],
       activeAlerts,
       emergencySlateActive: this.emergencySlateActive,

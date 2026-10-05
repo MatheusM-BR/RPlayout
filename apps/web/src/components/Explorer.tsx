@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties, type MouseEvent } from 'react'
-import { durationIn, type Rate } from '@rplayout/protocol'
+import { durationIn, isIgnoredVideo, type Rate } from '@rplayout/protocol'
 import type { LibraryFolder, ScanStatus } from '../types.js'
 import { dur, lufs } from '../format.js'
 
@@ -16,7 +16,7 @@ interface Props {
   /** Põe o arquivo no fim da grade, sem diálogo: é o caminho de todo dia. */
   onInsert: (assetId: string) => void
   onRemove: (assetId: string) => void
-  onAccept: (assetId: string) => void
+  onAccept: (assetId: string) => void | Promise<void>
   onCategorize: (assetId: string, categoryId: string | null) => void
   /** Tira do acervo tudo que não abriu. */
   onPrune: () => void
@@ -109,8 +109,10 @@ export function Explorer({
     [filtered],
   )
   const ignorados = useMemo(
-    () => folders.flatMap((folder) => folder.assets.filter((asset) => asset.ignored)),
-    [folders],
+    // Ignorados é quarentena de material que poderia entrar no playout. Áudio
+    // e stills antigos não devem aparecer nesta lista operacional de vídeo.
+    () => filtered.flatMap((folder) => folder.assets.filter(isIgnoredVideo)),
+    [filtered],
   )
 
   const resultCount = ativos.reduce((total, folder) => total + folder.assets.length, 0)
@@ -438,7 +440,7 @@ export function Explorer({
                 <div className="ignored-row" key={asset.id}>
                   <span className="name">{asset.title}</span>
                   <span className="sub">{asset.probe?.hasAudio === false ? 'mudo' : asset.probe ? `${asset.probe.width}×${asset.probe.height}` : 'sem imagem'}</span>
-                  <button className="btn small" onClick={() => onAccept(asset.id)} title="Aceitar este arquivo no acervo ativo">ACEITAR</button>
+                  <button className="btn small" onClick={() => { void Promise.resolve(onAccept(asset.id)).catch(() => {}) }} title="Aceitar este arquivo no acervo ativo">ACEITAR</button>
                 </div>
               ))}
             </div>

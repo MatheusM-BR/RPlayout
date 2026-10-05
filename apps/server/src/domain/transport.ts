@@ -1,23 +1,49 @@
 import {
   framesSinceMidnight,
+  msToFrames,
+  framesToMs,
   type Frames,
   type OnAirState,
   type PreviewTarget,
 } from '@rplayout/protocol'
 import type { RundownView } from './plan.js'
 import type { MeterReading } from './meters.js'
+import { liveDurationLimit } from './live-timing.js'
 
 /** Situação de uma saída de rede do canal, como o engine reporta. */
 export interface PublisherState {
   readonly url: string
-  readonly health: 'connecting' | 'onAir' | 'retrying' | 'idle'
+  readonly health: 'connecting' | 'onAir' | 'retrying' | 'failed' | 'idle'
   /** Tentativas desde a última entrega. Zera quando volta a entregar. */
   readonly attempts: number
   readonly delivered: number
   readonly error?: string
 }
 
+/** Estado de uma entrada viva que o engine de fato abriu nesta sessão. */
+export type LiveSourceSignalState = 'IDLE' | 'CUEING' | 'PVW_READY' | 'TAKE_PENDING' | 'ON_PGM' | 'LOST' | 'FAILED'
+
+export interface LiveSourceMeasurement {
+  width: number | null; height: number | null; rateNum: number | null; rateDen: number | null
+  interlaceMode: string | null; audioChannels: number | null; sampleRate: number | null
+  videoAgeMs: number | null; audioAgeMs: number | null; videoPresent: boolean; audioPresent: boolean
+  receivedFrames: number; arrivalJitterMs: number | null
+}
+
+export interface LiveSourceSignal {
+  readonly source: string
+  readonly itemId: string
+  readonly state: LiveSourceSignalState
+  readonly message: string | null
+  readonly changedAt: string
+  readonly busStates?: Partial<Record<'pgm' | 'pvw', LiveSourceSignalState>>
+  /** Active item binding per bus; the most recent source event can be from QC. */
+  readonly busItemIds?: Partial<Record<'pgm' | 'pvw', string>>
+  readonly measurements?: Partial<Record<'pgm' | 'pvw', LiveSourceMeasurement & { sampledAt: string }>>
+}
+
 export interface TransportState {
+  readonly mode?: 'NATIVE' | 'SIMULATED'
   readonly channelId: string
   readonly rundownId: string | null
   readonly onAir: OnAirState | null
@@ -31,6 +57,8 @@ export interface TransportState {
   readonly playing: boolean
   /** Grade parada com um item armado, esperando o take. */
   readonly standby: boolean
+  /** Fontes vivas abertas pelo engine; descoberta sozinha não aparece aqui. */
+  readonly liveSources: readonly LiveSourceSignal[]
 }
 
 /**
@@ -40,7 +68,7 @@ export interface TransportState {
  */
 export interface Transport {
   state(): TransportState
-  take(rundownId: string, itemId: string): void | Promise<void>
+  take(rundownId: string, itemId: string, resumeFrames?: Frames): void | Promise<void>
   cue(target: PreviewTarget | null): void | Promise<void>
   stop(): void | Promise<void>
   /** Arma a grade num item, parada, pronta para entrar no ar. */
@@ -106,6 +134,7 @@ export class SimulatedTransport implements Transport {
   private rundownId: string | null = null
   private onAirItemId: string | null = null
   private startedAt: Frames = 0
+  private startedAtMs = 0
   private preview: PreviewTarget | null = null
   private playing = false
 
@@ -117,11 +146,13 @@ export class SimulatedTransport implements Transport {
 
   state(): TransportState {
     const view = this.view()
-    let preview = this.preview
-    let preparedItemId = preview?.kind === 'ITEM' ? preview.id : null
+    const preview = this.preview
+    let preparedItemId: string | null = null
 
-    // Se nenhum item foi explicitamente armado no preview, seleciona automaticamente o próximo evento
-    if (!preparedItemId && view && view.items.length > 0) {
+    // Próximo é uma pré-seleção automática, separada do CUE manual no PVW.
+    // O simulador precisa preservar essa diferença para a interface não
+    // ensinar que um item "próximo" foi confirmado pelo operador.
+    if (view && view.items.length > 0) {
       if (this.onAirItemId) {
         const idx = view.items.findIndex((v) => v.item.id === this.onAirItemId)
         if (idx >= 0 && idx + 1 < view.items.length) {
@@ -132,12 +163,10 @@ export class SimulatedTransport implements Transport {
       } else {
         preparedItemId = view.items[0]?.item.id ?? null
       }
-      if (!preview && preparedItemId) {
-        preview = { kind: 'ITEM', id: preparedItemId }
-      }
     }
 
     return {
+      mode: 'SIMULATED',
       channelId: this.channelId,
       rundownId: this.rundownId,
       onAir: this.onAir(),
@@ -147,6 +176,7 @@ export class SimulatedTransport implements Transport {
       preparingItemId: null,
       playing: this.playing,
       standby: !this.playing && (preview?.kind === 'ITEM' || preparedItemId !== null),
+      liveSources: [],
     }
   }
 
@@ -161,24 +191,32 @@ export class SimulatedTransport implements Transport {
     return {
       itemId: this.onAirItemId,
       startedAt: this.startedAt,
-      elapsed: Math.max(0, this.nowFrames() - this.startedAt),
+      elapsed: this.elapsedFrames(),
     }
   }
 
-  take(rundownId: string, itemId: string): void {
+  private elapsedFrames(): Frames {
+    const rate = this.view()?.channel.rate
+    return rate ? Math.max(0, msToFrames(Date.now() - this.startedAtMs, rate)) : 0
+  }
+
+  take(rundownId: string, itemId: string, resumeFrames = 0): void {
     this.rundownId = rundownId
     this.onAirItemId = itemId
-    this.startedAt = this.nowFrames()
+    this.startedAt = this.nowFrames() - Math.max(0, Math.floor(resumeFrames))
+    const rate = this.view()?.channel.rate
+    this.startedAtMs = Date.now() - (rate ? framesToMs(Math.max(0, Math.floor(resumeFrames)), rate) : 0)
     this.playing = true
 
-    // Ao ir para o ar, já pré-arma o próximo da fila para o preview
+    // O próximo fica preparado internamente; PVW só recebe conteúdo quando
+    // o operador faz CUE. TAKE nunca transforma o próximo automático em CUE.
     const view = this.view()
     if (view && view.items.length > 0) {
       const idx = view.items.findIndex((v) => v.item.id === itemId)
       if (idx >= 0 && idx + 1 < view.items.length) {
-        this.preview = { kind: 'ITEM', id: view.items[idx + 1]!.item.id }
+        this.preview = null
       } else if (view.rundown.loop) {
-        this.preview = { kind: 'ITEM', id: view.items[0]!.item.id }
+        this.preview = null
       } else {
         this.preview = null
       }
@@ -224,8 +262,11 @@ export class SimulatedTransport implements Transport {
     if (!current) return false
 
     const scheduled = view.schedule.items.find((i) => i.id === current.item.id)
-    const duration = scheduled?.duration ?? 0
-    const elapsed = this.nowFrames() - this.startedAt
+    const isLive = current.item.type === 'LIVE' || Boolean(current.item.sourceRef || current.item.liveEndpoint)
+    const liveLimit = isLive ? liveDurationLimit(current.item, scheduled?.duration ?? 0) : null
+    if (isLive && liveLimit === null) return false
+    const duration = liveLimit ?? scheduled?.duration ?? 0
+    const elapsed = this.elapsedFrames()
     if (elapsed < duration) return false
 
     if (!current.item.autoNext) {
@@ -249,13 +290,14 @@ export class SimulatedTransport implements Transport {
 
     this.onAirItemId = next
     this.startedAt = this.startedAt + duration
+    this.startedAtMs += framesToMs(duration, view.channel.rate)
 
-    // Auto-arma o próximo evento no PVW
+    // Mantém o próximo preparado, sem fingir que ele foi posto em CUE.
     const nextIdx = view.items.findIndex((v) => v.item.id === next)
     if (nextIdx >= 0 && nextIdx + 1 < view.items.length) {
-      this.preview = { kind: 'ITEM', id: view.items[nextIdx + 1]!.item.id }
+      this.preview = null
     } else if (view.rundown.loop) {
-      this.preview = { kind: 'ITEM', id: view.items[0]!.item.id }
+      this.preview = null
     } else {
       this.preview = null
     }
@@ -268,7 +310,11 @@ export class SimulatedTransport implements Transport {
   }
 
   seek(bus: 'pgm' | 'pvw', frames: Frames): void {
-    if (bus === 'pgm' && this.onAirItemId && this.playing) this.startedAt = this.nowFrames() - Math.max(0, frames)
+    if (bus === 'pgm' && this.onAirItemId && this.playing) {
+      this.startedAt = this.nowFrames() - Math.max(0, frames)
+      const rate = this.view()?.channel.rate
+      if (rate) this.startedAtMs = Date.now() - framesToMs(Math.max(0, frames), rate)
+    }
   }
 
   processId(): number | null {

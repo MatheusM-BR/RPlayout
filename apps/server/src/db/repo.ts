@@ -1,15 +1,19 @@
-import { asc, eq } from 'drizzle-orm'
+import { asc, eq, isNull } from 'drizzle-orm'
 import { DEFAULT_FIT } from '@rplayout/protocol'
 import type { Channel, MediaAsset, MediaProbe, Rundown, RundownItem } from '@rplayout/protocol'
 import type { Db } from './client.js'
 import { channels, mediaAssets, rundownItems, rundowns } from './schema.js'
+import {configurationRevision} from './channel-configuration.js'
 
 type ChannelRow = typeof channels.$inferSelect
 type AssetRow = typeof mediaAssets.$inferSelect
 type RundownRow = typeof rundowns.$inferSelect
 type ItemRow = typeof rundownItems.$inferSelect
 
-export const toChannel = (row: ChannelRow): Channel => ({
+export const toChannel = (row: ChannelRow,revision?:number): Channel => ({
+  ...(revision===undefined?{}:{configurationRevision:revision}),
+  ...(row.archivedAt ? {archivedAt:row.archivedAt} : {}),
+  qcProfile: row.qcProfile ?? null,
   id: row.id,
   name: row.name,
   rate: { num: row.rateNum, den: row.rateDen },
@@ -20,6 +24,7 @@ export const toChannel = (row: ChannelRow): Channel => ({
   targetLufs: row.targetLufs,
   ceilingDbtp: row.ceilingDbtp,
   limiterLookaheadMs: row.limiterLookaheadMs,
+  audioChannels: row.audioChannels,
   programSdiDeviceId: row.programSdiDeviceId,
   slateTemplateId: row.slateTemplateId ?? null,
   createdAt: row.createdAt,
@@ -33,12 +38,14 @@ export const toAsset = (row: AssetRow): MediaAsset => ({
   kind: row.kind,
   durationFrames: row.durationFrames,
   durationNs: row.durationNs ?? null,
+  audioMetadata:{hasAudio:row.hasAudio,channels:row.audioChannels,tracks:row.audioTracks},
   // Só há sonda quando há geometria: um arquivo que não abriu não tem nada
   // dentro para contar.
   probe:
     row.width !== null && row.height !== null
       ? {
           width: row.width,
+          codec: row.videoCodec ?? null,
           height: row.height,
           rate: { num: row.rateNum ?? 25, den: row.rateDen ?? 1 },
           interlaceMode: (row.interlaceMode ?? 'progressive') as MediaProbe['interlaceMode'],
@@ -50,18 +57,25 @@ export const toAsset = (row: AssetRow): MediaAsset => ({
   probeError: row.probeError ?? null,
   categoryId: row.categoryId,
   defaultTrim: row.defaultTrim ?? null,
+  defaultTrimRate: row.defaultTrimRateNum !== null && row.defaultTrimRateDen !== null
+    ? { num: row.defaultTrimRateNum, den: row.defaultTrimRateDen } : null,
   defaultAudio: row.defaultAudio ?? null,
   loudnessFile: row.loudnessFile ?? null,
   suggestedTrim: row.suggestedTrim ?? null,
+  qcStatus: row.qcStatus ?? 'APPROVED',
+  qcNotes: row.qcNotes ?? null,
+  qcCheckedAt: row.qcCheckedAt ?? null,
   ignored: row.ignored ?? false,
   createdAt: row.createdAt,
 })
 
 export const toRundown = (row: RundownRow): Rundown => ({
+  publicationRequired:row.publicationRequired,
   id: row.id,
   channelId: row.channelId,
   name: row.name,
   plannedStart: row.plannedStart,
+  protectedZones: row.protectedZones ?? [],
   loop: row.loop,
   date: row.date,
   createdAt: row.createdAt,
@@ -135,13 +149,15 @@ export const toItem = (row: ItemRow): RundownItem => {
   }
 }
 
-export async function listChannels(db: Db): Promise<Channel[]> {
-  return (await db.select().from(channels).orderBy(asc(channels.name))).map(toChannel)
+export async function listChannels(db: Db, includeArchived = false): Promise<Channel[]> {
+  return db.transaction(tx=>tx.select().from(channels).where(includeArchived ? undefined : isNull(channels.archivedAt)).orderBy(asc(channels.name)).all().map(row=>toChannel(row,configurationRevision(tx,row.id))))
 }
 
-export async function getChannel(db: Db, id: string): Promise<Channel | null> {
-  const [row] = await db.select().from(channels).where(eq(channels.id, id))
-  return row ? toChannel(row) : null
+export async function getChannel(db: Db, id: string, includeArchived = false): Promise<Channel | null> {
+  return db.transaction(tx=>{
+    const row=tx.select().from(channels).where(eq(channels.id,id)).get()
+    return row && (includeArchived || !row.archivedAt) ? toChannel(row,configurationRevision(tx,id)) : null
+  })
 }
 
 export async function listAssets(db: Db): Promise<MediaAsset[]> {

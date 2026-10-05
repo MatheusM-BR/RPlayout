@@ -5,22 +5,17 @@ import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { AncineComplianceCard } from '../components/broadcast/AncineComplianceCard.js'
 import { api } from '../api.js'
 import { dur } from '../format.js'
+import { asRunCsv, asRunDuration, asRunReport, asRunStatus, asRunXml, summarizeAsRun } from '../domain/asrun-evidence.js'
 import type { AsRunEntry } from '../types.js'
 
 interface Props {
-  channel: Channel
+  channel?: Channel
   channels?: Channel[]
   onNavigate: (workspace: WorkspaceId) => void
   onSelectChannel?: (channelId: string) => void
   sessionRole?: string
   authRequired?: boolean
   onOpenSettings?: () => void
-}
-
-const REASON_LABELS: Record<string, { label: string; color: string }> = {
-  NEXT: { label: 'TAKE (Próximo)', color: 'bg-primary/20 text-primary border-primary/40' },
-  STOP: { label: 'STOP (Manual)', color: 'bg-on-air-crimson/20 text-on-air-crimson border-on-air-crimson/40' },
-  EOF: { label: 'FIM DO ARQUIVO (EOF)', color: 'bg-status-ok/20 text-status-ok-bright border-status-ok/40' },
 }
 
 function formatLocalDate(d: Date): string {
@@ -35,7 +30,7 @@ function formatLocalTime(d: Date): string {
 
 export function AiredView({
   channel,
-  channels = [channel],
+  channels = channel ? [channel] : [],
   onNavigate,
   onSelectChannel = () => {},
   sessionRole = 'Operador Master',
@@ -43,6 +38,17 @@ export function AiredView({
   onOpenSettings,
 }: Props) {
   const [entries, setEntries] = useState<AsRunEntry[] | null>(null)
+  const [loadError,setLoadError]=useState<string|null>(null)
+  const [archivedChannels,setArchivedChannels]=useState<Channel[]>([])
+  const [archivedSelection,setArchivedSelection]=useState<string>('')
+  const [archiveError,setArchiveError]=useState<string|null>(null)
+  const historyChannel=archivedChannels.find(candidate=>candidate.id===archivedSelection) ?? channel ?? archivedChannels[0]
+  useEffect(()=>{
+    let active=true
+    setArchiveError(null)
+    api.archivedChannels().then(result=>{if(active)setArchivedChannels(result.channels)}).catch(error=>{if(active)setArchiveError(error instanceof Error ? error.message : 'Não foi possível consultar os canais arquivados.')})
+    return ()=>{active=false}
+  },[channel?.id])
 
   // Por padrão operacional, filtro inicial cobre exatamente as últimas 24 horas móveis:
   const [startDate, setStartDate] = useState<string>(() => {
@@ -104,18 +110,24 @@ export function AiredView({
   // Polling de dados de As-Run com os limites selecionados
   useEffect(() => {
     let alive = true
+    let inFlight = false
+    setEntries(null);setLoadError(null)
+    if (!historyChannel) return
     const load = () => {
+      if (inFlight) return
+      inFlight = true
       api
-        .asRun(channel.id, {
+        .asRun(historyChannel.id, {
           since: startIso || (quickPreset === 'all' ? '' : undefined),
           until: endIso || undefined,
         })
         .then((result) => {
-          if (alive) setEntries(result.entries)
+          if (alive) {setEntries(result.entries);setLoadError(null)}
         })
         .catch(() => {
-          if (alive && entries === null) setEntries([])
+          if (alive) setLoadError('Consulta indisponível; não foi possível confirmar os registros atuais.')
         })
+        .finally(() => { inFlight = false })
     }
     load()
     const timer = window.setInterval(load, 3000)
@@ -123,7 +135,7 @@ export function AiredView({
       alive = false
       window.clearInterval(timer)
     }
-  }, [channel.id, startIso, endIso, quickPreset])
+  }, [historyChannel?.id, startIso, endIso, quickPreset])
 
   // Filtragem local refinada
   const filteredEntries = useMemo(() => {
@@ -138,12 +150,13 @@ export function AiredView({
       }
       // Filtro de categoria
       if (selectedCategory !== 'TODOS') {
-        const typeMatch = entry.type?.toUpperCase() === selectedCategory.toUpperCase()
+        const type = entry.type?.toUpperCase()
+        const typeMatch = selectedCategory === 'AO VIVO' ? ['LIVE', 'AO VIVO'].includes(type) : selectedCategory === 'COMERCIAL' ? ['COMERCIAL', 'COMMERCIAL', 'SPOT', 'PUB'].includes(type) : type === selectedCategory.toUpperCase()
         if (!typeMatch) return false
       }
       // Filtro de status/motivo
       if (selectedStatus !== 'TODOS') {
-        const status = entry.endedBy ?? (entry.endedAt ? 'EOF' : 'NO AR')
+        const status = !entry.endedAt ? 'RUNNING' : entry.endedBy ?? 'UNKNOWN'
         if (status !== selectedStatus) return false
       }
       // Busca textual
@@ -157,212 +170,30 @@ export function AiredView({
     })
   }, [entries, startIso, endIso, selectedCategory, selectedStatus, searchTerm])
 
-  // Totais e KPIs
-  const totalFrames = filteredEntries.reduce((sum, e) => sum + (e.airedFrames ?? e.plannedFrames ?? 0), 0)
-  const fps = channel.rate ? channel.rate.num / channel.rate.den : 50
-  const totalSeconds = Math.round(totalFrames / (fps || 50))
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = Math.floor(totalSeconds % 60)
-  const formattedTotalTime = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  const summary = summarizeAsRun(filteredEntries)
+  const totalFrames = summary.frames
+  const totalSeconds = Math.round(summary.seconds)
+  const hours = Math.floor(totalSeconds / 3600), minutes = Math.floor(totalSeconds % 3600 / 60), seconds = totalSeconds % 60
+  const formattedTotalTime = [hours, minutes, seconds].map(value => String(value).padStart(2, '0')).join(':')
+  const eofCount = summary.eof, takeCount = summary.takes, stopCount = summary.stops
 
-  const eofCount = filteredEntries.filter((e) => (e.endedBy || 'EOF') === 'EOF').length
-  const takeCount = filteredEntries.filter((e) => e.endedBy === 'NEXT').length
-  const stopCount = filteredEntries.filter((e) => e.endedBy === 'STOP').length
-  const complianceRate = filteredEntries.length > 0 ? Math.round(((eofCount + takeCount) / filteredEntries.length) * 100) : 100
-
-  // Exportação CSV com intervalo de datas
-  const handleExportCsv = () => {
+  const download = (content: string, mime: string, extension: string) => {
+    if (!historyChannel) return
+    if (!entries || loadError) return
     setIsExporting(true)
-    const header = [
-      'Indice',
-      'Data/Hora Inicio (NTP)',
-      'Data/Hora Fim (NTP)',
-      'Duracao (Quadros)',
-      'Duracao (TC)',
-      'Categoria',
-      'Titulo',
-      'ID Item',
-      'Motivo Encerramento',
-      'Certificado ANCINE',
-    ]
-    const rows = filteredEntries.map((e, idx) => {
-      const frames = e.airedFrames ?? e.plannedFrames ?? 0
-      return [
-        idx + 1,
-        e.startedAt,
-        e.endedAt ?? 'NO AR',
-        frames,
-        dur(frames, channel.rate),
-        e.type ?? 'VT',
-        `"${e.title.replace(/"/g, '""')}"`,
-        e.id,
-        e.endedBy ?? 'EOF',
-        'CONFORME-BR',
-      ]
-    })
-    const csvContent = 'data:text/csv;charset=utf-8,' + [header.join(','), ...rows.map((r) => r.join(','))].join('\n')
-    const encodedUri = encodeURI(csvContent)
+    const url = URL.createObjectURL(new Blob([content], { type: mime }))
     const link = document.createElement('a')
-    link.setAttribute('href', encodedUri)
-    const periodLabel =
-      quickPreset === 'all'
-        ? 'completo'
-        : `${startDate || 'inicio'}_${startTime?.replace(':', 'h') || ''}_a_${endDate || 'fim'}_${endTime?.replace(':', 'h') || ''}`
-    link.setAttribute('download', `asrun_${channel.id}_${periodLabel}.csv`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    setTimeout(() => setIsExporting(false), 1000)
+    link.href = url; link.download = `asrun_${historyChannel.id}_${startDate || 'inicio'}_a_${endDate || 'fim'}.${extension}`
+    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url)
+    setIsExporting(false)
   }
-
-  // Exportação BXF formal (SMPTE-2021 XML)
-  const handleExportBxf = () => {
-    setIsExporting(true)
-    const nowIso = new Date().toISOString()
-    const periodLabel = quickPreset === 'all' ? 'completo' : `${startDate || 'inicio'}_a_${endDate || 'fim'}`
-    const bxfXml = `<?xml version="1.0" encoding="UTF-8"?>
-<BxfMessage xmlns="http://smpte-ra.org/schemas/2021/2008/BXF"
-            origin="RPlayout MCR Automation"
-            destination="Traffic and Billing Master"
-            messageId="asrun-${channel.id}-${Date.now()}"
-            dateTime="${nowIso}"
-            status="Complete">
-  <BxfData action="AsRun">
-    <AsRun channelId="${channel.id}" channelName="${channel.name}">
-      ${filteredEntries
-        .map((e, idx) => {
-          const frames = e.airedFrames ?? e.plannedFrames ?? 0
-          const tc = dur(frames, channel.rate)
-          const reasonKey = e.endedBy ?? (e.endedAt ? 'EOF' : 'NO AR')
-          let status = 'INTEGRAL'
-          if (reasonKey === 'STOP') status = 'FALHA'
-          else if (reasonKey === 'NEXT') status = 'TRUNCADO'
-          else if (reasonKey === 'SKIP' || reasonKey === 'DROPPED') status = 'DESCARTADO'
-          return `      <ScheduleItem eventId="${e.id}" eventNumber="${idx + 1}">
-        <BroadcastEvent eventType="${e.type || 'VT'}">
-          <EventTitle>${e.title.replace(/[<>&'"]/g, '')}</EventTitle>
-          <StartDateTime>${e.startedAt}</StartDateTime>
-          <EndDateTime>${e.endedAt || 'NO AR'}</EndDateTime>
-          <Duration frames="${frames}" timecode="${tc}" />
-          <ComplianceStatus>${status}</ComplianceStatus>
-          <RegulatoryAncine certificate="CONFORME-BR" />
-        </BroadcastEvent>
-      </ScheduleItem>`
-        })
-        .join('\n')}
-    </AsRun>
-  </BxfData>
-</BxfMessage>`
-
-    const blob = new Blob([bxfXml], { type: 'application/xml;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.setAttribute('href', url)
-    link.setAttribute('download', `asrun_${channel.id}_${periodLabel}.bxf.xml`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
-    setTimeout(() => setIsExporting(false), 1000)
-  }
-
-  // Comprovante Oficial de Exibição Comercial (CEV) para Faturamento
-  const handleExportCev = () => {
-    setIsExporting(true)
-    const now = new Date()
-    const cevContent = `================================================================================
-                    RPLAYOUT BROADCAST PLAYOUT ENGINE
-             COMPROVANTE OFICIAL DE EXIBIÇÃO COMERCIAL (CEV)
-================================================================================
-Emissora: ${channel.name} (Canal ID: ${channel.id})
-Gerado em: ${now.toLocaleDateString('pt-BR')} às ${now.toLocaleTimeString('pt-BR')}
-Sistema de Auditoria: RPlayout v2.4 (SMPTE-2021 / ANCINE Compliance)
-Assinatura Digital (Hash SHA-256): ${Math.random().toString(16).substring(2).padEnd(64, '0')}
-Status de Integridade: AUDITADO FRAME-ACCURATE (100% VÁLIDO PARA FATURAMENTO)
-
---------------------------------------------------------------------------------
-REGISTROS DE EXIBIÇÃO NO PERÍODO SELECIONADO:
---------------------------------------------------------------------------------
-${filteredEntries
-  .map((e, idx) => {
-    const frames = e.airedFrames ?? e.plannedFrames ?? 0
-    const tc = dur(frames, channel.rate)
-    const reasonKey = e.endedBy ?? (e.endedAt ? 'EOF' : 'NO AR')
-    let status = 'INTEGRAL'
-    if (reasonKey === 'STOP') status = 'FALHA'
-    else if (reasonKey === 'NEXT') status = 'TRUNCADO'
-    else if (reasonKey === 'SKIP' || reasonKey === 'DROPPED') status = 'DESCARTADO'
-    return `[${String(idx + 1).padStart(3, '0')}] ${e.startedAt} | Dur: ${tc} | Tipo: ${(e.type || 'VT').padEnd(10, ' ')} | Status: ${status.padEnd(11, ' ')} | Titulo: ${e.title}`
+  const handleExportCsv = () => download(asRunCsv(filteredEntries), 'text/csv;charset=utf-8', 'csv')
+  const handleExportBxf = () => { if (historyChannel) download(asRunXml(filteredEntries, historyChannel), 'application/xml;charset=utf-8', 'xml') }
+  const handleExportCev = () => { if (historyChannel) download(asRunReport(filteredEntries, historyChannel, new Date()), 'text/plain;charset=utf-8', 'txt') }
+  const getAsRunBadge = (entry: AsRunEntry) => ({
+    label: asRunStatus(entry),
+    style: !entry.endedAt ? 'bg-armed-amber/20 text-armed-amber border-armed-amber/40' : 'bg-surface-panel text-on-surface border-border-subtle',
   })
-  .join('\n')}
-
---------------------------------------------------------------------------------
-TERMO DE RESPONSABILIDADE BROADCAST:
-Certificamos para os devidos fins comerciais e fiscais que os itens constantes
-deste comprovante foram efetivamente veiculados na grade de transmissão linear
-do canal ${channel.name}, atendendo integralmente às normas da Lei nº 4.117/1962,
-Decreto nº 52.795/1963 e regulamentação da ANCINE.
-================================================================================
-`
-    const blob = new Blob([cevContent], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.setAttribute('href', url)
-    link.setAttribute('download', `CEV_${channel.id}_${formatLocalDate(now)}.txt`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
-    setTimeout(() => setIsExporting(false), 1000)
-  }
-
-  // Mapeamento Canônico de Badges As-Run
-  const getAsRunBadge = (entry: AsRunEntry) => {
-    if (!entry.endedAt) {
-      return {
-        label: 'NO AR',
-        style: 'bg-on-air-crimson text-white border-on-air-crimson animate-pulse',
-      }
-    }
-    const reasonKey = entry.endedBy ?? 'EOF'
-    if (reasonKey === 'RESTART') {
-      return {
-        label: 'ENCERRADO NO REINÍCIO',
-        style: 'bg-slate-500/20 text-slate-300 border-slate-500/40',
-      }
-    }
-    if (reasonKey === 'STOP' || reasonKey === 'FAIL' || reasonKey === 'ABORT') {
-      return {
-        label: 'FALHA',
-        style: 'bg-on-air-crimson/20 text-on-air-crimson border-on-air-crimson/40',
-      }
-    }
-    if (reasonKey === 'SKIP' || reasonKey === 'DROPPED') {
-      return {
-        label: 'DESCARTADO',
-        style: 'bg-orange-500/20 text-orange-400 border-orange-500/40',
-      }
-    }
-    if (reasonKey === 'NEXT') {
-      const planned = entry.plannedFrames ?? 0
-      const aired = entry.airedFrames ?? planned
-      if (planned > 0 && aired >= planned * 0.95) {
-        return {
-          label: 'EXIBIDO POR INTEIRO',
-          style: 'bg-status-ok/20 text-status-ok-bright border-status-ok/40',
-        }
-      }
-      return {
-        label: 'INTERROMPIDO',
-        style: 'bg-armed-amber/20 text-armed-amber border-armed-amber/40',
-      }
-    }
-    return {
-      label: 'INTEGRAL',
-      style: 'bg-status-ok/20 text-status-ok-bright border-status-ok/40',
-    }
-  }
 
   // Atalhos rápidos de seleção de período
   const handlePreset = (preset: '24h' | 'today' | 'yesterday' | '7days' | 'all') => {
@@ -402,7 +233,7 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
   return (
     <div className="w-full h-full bg-surface-base text-on-surface antialiased select-none flex flex-col overflow-hidden font-body-md text-body-md">
       {/* 1. CABEÇALHO PADRÃO RPLAYOUT */}
-      <BroadcastHeader
+      {channel ? <BroadcastHeader
         activeWorkspace="aired"
         channel={channel}
         channels={channels}
@@ -411,9 +242,19 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
         sessionRole={sessionRole}
         authRequired={authRequired}
         onOpenSettings={onOpenSettings || (() => onNavigate('settings'))}
-      />
+      /> : <header className="p-4 bg-surface-card border-b border-border-subtle flex items-center justify-between"><span>RPlayout — consulta de histórico, sem canal ativo autorizado</span><button type="button" onClick={()=>onNavigate('master')} className="btn">Voltar</button></header>}
 
       <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto broadcast-scroll">
+        {archiveError && <p role="alert" className="px-margin py-2 text-xs text-armed-amber">Histórico de canais arquivados indisponível: {archiveError}</p>}
+        {archivedChannels.length>0 && <div className="px-margin py-2 border-b border-border-subtle flex items-center gap-3 bg-surface-panel">
+          <label className="text-xs" htmlFor="aired-archived-channel">Histórico de canal</label>
+          <select id="aired-archived-channel" value={historyChannel?.archivedAt ? historyChannel.id : ''} onChange={event=>setArchivedSelection(event.target.value)} className="bg-surface-base border border-border-subtle rounded p-2 text-xs">
+            {channel && <option value="">Canal ativo: {channel.name}</option>}
+            {archivedChannels.map(candidate=><option key={candidate.id} value={candidate.id}>{candidate.name} — arquivado</option>)}
+          </select>
+          {historyChannel?.archivedAt && <span className="text-xs text-armed-amber">Somente histórico. Esta seleção não reativa o canal nem altera PGM/CUE.</span>}
+        </div>}
+        {!historyChannel && !archiveError && <p role="status" className="px-margin py-4 text-outline">Nenhum histórico de canal autorizado disponível.</p>}
         {/* 2. BARRA DE TÍTULO TÁTICA */}
         <div className="w-full bg-surface-card border-b border-border-subtle px-margin py-3 flex flex-wrap items-center justify-between gap-gutter shadow-sm">
           <div className="flex items-center gap-space-md">
@@ -423,14 +264,14 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="font-headline-md text-headline-md tracking-wider text-on-surface uppercase leading-none font-bold">
-                  AIRED // AS-RUN LOG OFICIAL
+                  AIRED // REGISTRO AS-RUN
                 </h1>
                 <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold uppercase">
-                  COMPROVANTE AUDITADO
+                  REGISTRO OPERACIONAL
                 </span>
               </div>
               <span className="font-label-mono text-label-mono text-outline">
-                Relatório oficial de veiculação linear • Timestamps NTP frame-accurate • Conformidade ANCINE
+                Registro operacional • Relógio local do host • Sem homologação regulatória
               </span>
             </div>
           </div>
@@ -440,7 +281,8 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
             <button
               onClick={() => window.print()}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle font-body-sm text-[12px] transition-colors cursor-pointer"
-              title="Imprimir relatório oficial formatado"
+              disabled={!entries || !!loadError}
+              title="Imprimir o registro operacional consultado"
             >
               <span className="material-symbols-outlined text-[16px]">print</span>
               <span>Imprimir</span>
@@ -448,7 +290,7 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
 
             <button
               onClick={handleExportCsv}
-              disabled={isExporting}
+              disabled={isExporting || !entries || !!loadError}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle hover:border-border-strong font-body-sm text-[12px] transition-colors cursor-pointer disabled:opacity-50"
               title="Exportar dados de As-Run em formato CSV estruturado"
             >
@@ -458,61 +300,62 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
 
             <button
               onClick={handleExportBxf}
-              disabled={isExporting}
+              disabled={isExporting || !entries || !!loadError}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary-container hover:bg-accent-ice text-on-primary-container font-headline-md text-headline-md tracking-wide transition-all shadow-sm cursor-pointer disabled:opacity-50"
-              title="Exportar As-Run formal em XML padrão SMPTE-2021 (BXF)"
+              title="Exportar registro operacional no formato XML As-run do RPlayout"
             >
               <span className="material-symbols-outlined text-[16px]">integration_instructions</span>
-              <span>Exportar BXF (SMPTE-2021 XML)</span>
+              <span>Exportar XML As-run</span>
             </button>
 
             <button
               onClick={handleExportCev}
-              disabled={isExporting}
+              disabled={isExporting || !entries || !!loadError}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-container hover:bg-surface-container-high text-on-surface border border-status-ok/40 hover:border-status-ok font-body-sm text-[12px] text-status-ok-bright transition-all shadow-sm cursor-pointer disabled:opacity-50"
-              title="Gerar Comprovante Oficial de Exibição Comercial (CEV) auditado para anunciantes e faturamento"
+              title="Gerar relatório operacional; não substitui comprovante certificado de exibição"
             >
               <span className="material-symbols-outlined text-[16px] text-status-ok">verified</span>
-              <span>Comprovante de Exibição</span>
+              <span>Relatório Operacional</span>
             </button>
           </div>
         </div>
 
+        {loadError && <p role="alert" className="px-margin text-armed-amber">{loadError}</p>}
         {/* 3. KPI CARDS RESUMO DA TRANSMISSÃO */}
         <div className="px-margin pt-space-md grid grid-cols-2 md:grid-cols-4 gap-gutter shrink-0">
           <div className="bg-surface-card rounded-xl border border-border-subtle p-3 flex flex-col justify-between shadow-sm">
             <span className="font-label-caps text-[10px] text-outline uppercase tracking-wider">
-              Tempo Total Transmitido
+              Duração registrada / estimada
             </span>
             <div className="font-timecode-display text-[26px] text-primary font-bold tabular-nums leading-tight mt-1">
               {formattedTotalTime}
             </div>
             <span className="font-label-mono text-[9px] text-outline mt-0.5">
-              {totalFrames.toLocaleString()} quadros executados
+              {totalFrames.toLocaleString()} quadros no log · inclui registros legados
             </span>
           </div>
 
           <div className="bg-surface-card rounded-xl border border-border-subtle p-3 flex flex-col justify-between shadow-sm">
             <span className="font-label-caps text-[10px] text-outline uppercase tracking-wider">
-              Eventos Veiculados
+              Ocorrências registradas
             </span>
             <div className="font-timecode-display text-[26px] text-on-surface font-bold tabular-nums leading-tight mt-1">
               {filteredEntries.length}
             </div>
             <span className="font-label-mono text-[9px] text-status-ok-bright mt-0.5">
-              {eofCount} integrais (EOF) • {takeCount} no corte (TAKE)
+              {eofCount} fins de arquivo • {takeCount} cortes (TAKE/live)
             </span>
           </div>
 
           <div className="bg-surface-card rounded-xl border border-border-subtle p-3 flex flex-col justify-between shadow-sm">
             <span className="font-label-caps text-[10px] text-outline uppercase tracking-wider">
-              Conformidade de Grade
+              Paradas registradas
             </span>
             <div className="font-timecode-display text-[26px] text-status-ok-bright font-bold tabular-nums leading-tight mt-1">
-              {complianceRate}%
+              {stopCount}
             </div>
             <span className="font-label-mono text-[9px] text-outline mt-0.5">
-              {stopCount === 0 ? 'Zero interrupções anômalas' : `${stopCount} paradas manuais`}
+              {summary.missingDurations} durações N/D · {summary.estimates} estimadas
             </span>
           </div>
 
@@ -521,17 +364,17 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
               Aferição Regulatória
             </span>
             <div className="font-timecode-display text-[24px] text-accent-ice-bright font-bold tabular-nums leading-tight mt-1">
-              ANCINE OK
+              NÃO HOMOLOGADA
             </div>
             <span className="font-label-mono text-[9px] text-status-ok-bright mt-0.5">
-              100% Cota Nacional Cumprida
+              Origem/certificados não aferidos
             </span>
           </div>
         </div>
 
         {/* 3.1 RESUMO DE COMPLIANCE ANCINE (FASE C: TETO 25% E COTAS NACIONAIS) */}
         <div className="px-margin pt-space-md shrink-0">
-          <AncineComplianceCard entries={filteredEntries} totalSeconds={totalSeconds} />
+          <AncineComplianceCard entries={filteredEntries} />
         </div>
 
         {/* 4. BARRA DE FILTROS AVANÇADA (DATA, CATEGORIA, STATUS, BUSCA) */}
@@ -602,7 +445,7 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
                       ? 'bg-primary text-surface-base font-bold shadow-sm'
                       : 'bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface'
                   }`}
-                  title="Filtrar as últimas 24 horas (Padrão regulatório)"
+                  title="Filtrar as últimas 24 horas de registros"
                 >
                   24h (Padrão)
                 </button>
@@ -683,6 +526,11 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
                 <option value="EOF">Fim Normal (EOF)</option>
                 <option value="NEXT">Transição Take (NEXT)</option>
                 <option value="STOP">Parada Manual (STOP)</option>
+                <option value="LIVE_PRIORITY">Corte por live prioritária</option>
+                <option value="CONTINGENCY_RETURN">Retorno da contingência</option>
+                <option value="RESTART">Reconciliação após reinício</option>
+                <option value="RUNNING">Ocorrência sem encerramento</option>
+                <option value="UNKNOWN">Motivo não registrado</option>
               </select>
             </div>
 
@@ -707,12 +555,12 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
           <div className="bg-surface-card rounded-xl border border-border-subtle shadow-md overflow-hidden flex flex-col min-h-[360px]">
             <div className="grid grid-cols-12 bg-surface-panel px-4 py-2 font-label-caps text-[9.5px] text-outline uppercase tracking-wider border-b border-border-subtle items-center select-none sticky top-0 z-10">
               <div className="col-span-1">#</div>
-              <div className="col-span-2">Início NTP → Fim</div>
+              <div className="col-span-2">Início UTC → Fim</div>
               <div className="col-span-1">Duração</div>
               <div className="col-span-1">Categoria</div>
               <div className="col-span-4">Título do Evento / Arquivo</div>
-              <div className="col-span-2">Status As-Run (Fase C)</div>
-              <div className="col-span-1 text-right">Compliance ANCINE</div>
+              <div className="col-span-2">Encerramento</div>
+              <div className="col-span-1 text-right">Conferência</div>
             </div>
 
             <div className="flex-1 divide-y divide-border-subtle/40 overflow-y-auto broadcast-scroll">
@@ -720,7 +568,7 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
                 <div className="p-12 text-center text-outline flex flex-col items-center justify-center gap-2">
                   <span className="material-symbols-outlined text-[48px] opacity-30">playlist_remove</span>
                   <span className="font-body-md text-body-md font-medium">
-                    Nenhum registro de veiculação encontrado para a data e filtros selecionados.
+                    {entries === null ? 'Aguardando consulta do registro...' : 'Nenhum registro encontrado para a data e filtros selecionados.'}
                   </span>
                   <span className="font-label-mono text-[11px] text-outline/70">
                     Os itens veiculados pelo motor de playout são registrados automaticamente aqui.
@@ -728,7 +576,8 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
                 </div>
               ) : (
                 filteredEntries.map((entry, idx) => {
-                  const frames = entry.airedFrames ?? entry.plannedFrames ?? 0
+                  const duration = asRunDuration(entry)
+                  const frames = duration.frames
                   const asRunBadge = getAsRunBadge(entry)
                   const startDatePart = entry.startedAt ? `${entry.startedAt.slice(8, 10)}/${entry.startedAt.slice(5, 7)}` : ''
                   const startTimePart = entry.startedAt ? entry.startedAt.slice(11, 19) : '--:--:--'
@@ -755,13 +604,13 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
                               <span className="text-outline">{endTimePart}</span>
                             </>
                           ) : (
-                            <span className="text-on-air-crimson font-bold">NO AR</span>
+                            <span className="text-armed-amber font-bold">SEM ENCERRAMENTO</span>
                           )}
                         </div>
                       </div>
 
                       <div className="col-span-1 font-label-mono text-[11px] font-bold text-on-surface tabular-nums">
-                        {dur(frames, channel.rate)}
+                        {frames !== null && duration.rate ? dur(frames, duration.rate) : duration.seconds !== null ? `≈ ${duration.seconds.toFixed(1)}s` : 'N/D'}
                       </div>
 
                       <div className="col-span-1">
@@ -773,14 +622,14 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
                       <div className="col-span-4 font-body-sm text-body-sm text-on-surface truncate pr-2">
                         <span className="font-semibold">{entry.title}</span>
                         <span className="text-outline font-label-mono text-[9.5px] block truncate">
-                          ID: {entry.id}
+                          ID: {entry.id} · {entry.executionKind ?? 'UNKNOWN'} · {duration.evidence}
                         </span>
                       </div>
 
                       {/* Badges Canônicos Fase C: INTEGRAL, TRUNCADO, DESCARTADO, FALHA */}
                       <div className="col-span-2">
                         <span
-                          className={`px-2.5 py-0.5 rounded font-label-caps text-[9.5px] font-bold border inline-flex items-center gap-1 tracking-wider ${asRunBadge.style}`}
+                          className={`max-w-full px-1.5 py-0.5 rounded font-label-caps text-[9.5px] font-bold border inline-flex items-center gap-1 break-words ${asRunBadge.style}`}
                         >
                           <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
                           <span>{asRunBadge.label}</span>
@@ -788,8 +637,8 @@ Decreto nº 52.795/1963 e regulamentação da ANCINE.
                       </div>
 
                       <div className="col-span-1 text-right">
-                        <span className="font-label-mono text-[9px] text-status-ok-bright font-bold bg-status-ok/10 border border-status-ok/30 px-1.5 py-0.5 rounded">
-                          ANCINE OK
+                        <span className="inline-block max-w-full break-words font-label-mono text-[8px] text-armed-amber font-bold bg-armed-amber/10 border border-armed-amber/30 px-1 py-0.5 rounded">
+                          NÃO HOMOLOGADA
                         </span>
                       </div>
                     </div>

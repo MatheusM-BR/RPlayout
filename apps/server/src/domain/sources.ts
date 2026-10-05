@@ -1,7 +1,10 @@
 import { spawn } from 'node:child_process'
+import { StringDecoder } from 'node:string_decoder'
+import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import { guestKeys, liveSources } from '../db/schema.js'
+import { mediaProcessEnvironment } from './media-process-environment.js'
 
 /** Uma fonte ao vivo que o operador pode pôr na grade. */
 export interface LiveSource {
@@ -9,6 +12,7 @@ export interface LiveSource {
   readonly reference: string
   readonly label: string
   readonly family: 'SDI' | 'NDI' | 'OMT' | 'GUEST'
+  readonly discovery?: 'DISCOVERED' | 'CONFIGURED'
 }
 
 export interface SourceFamily {
@@ -20,6 +24,7 @@ export interface SourceFamily {
 
 export interface SourceList {
   readonly sdi: SourceFamily
+  readonly sdiOutputs: SourceFamily
   readonly ndi: SourceFamily
   readonly omt: SourceFamily
   readonly guests: SourceFamily
@@ -47,6 +52,7 @@ export interface Faltando {
 /** O que o binário de descoberta devolve. */
 interface Descoberta {
   decklink: ProbeFamily
+  decklinkOutputs?: ProbeFamily
   ndi: ProbeFamily
   omt: ProbeFamily
   plugins?: { missing: Faltando[]; optional: Faltando[] }
@@ -59,6 +65,15 @@ interface ProbeFamily {
 }
 
 const EMPTY: SourceFamily = { available: false, reason: null, sources: [] }
+const probeFamilySchema = z.object({
+  available: z.boolean(), reason: z.string().optional(),
+  sources: z.array(z.object({ reference: z.string().min(1), label: z.string() })),
+})
+const discoverySchema = z.object({
+  decklink: probeFamilySchema, decklinkOutputs: probeFamilySchema.optional(),
+  ndi: probeFamilySchema, omt: probeFamilySchema,
+  plugins: z.object({ missing: z.array(z.object({ element: z.string(), plugin: z.string(), breaks: z.string() })), optional: z.array(z.object({ element: z.string(), plugin: z.string(), breaks: z.string() })) }).optional(),
+})
 
 /**
  * Descoberta de fontes ao vivo.
@@ -75,12 +90,14 @@ export class Sources {
   private running: Promise<SourceList> | null = null
   /** O que a descoberta disse que falta na instalação. Nulo é "ainda não sei". */
   private faltandoPlugins: Faltando[] | null = null
+  private probeError: string | null = null
 
   constructor(
     private readonly db: Db,
     /** Binário de descoberta. Vazio deixa só os convidados. */
     private readonly binary: string,
     private readonly ttlMs = 15_000,
+    private readonly probeTimeoutMs = 12_000,
   ) {}
 
   /**
@@ -120,6 +137,7 @@ export class Sources {
     if (hardware) this.faltandoPlugins = hardware.plugins?.missing ?? []
 
     const sdiFamily = toFamily(hardware?.decklink, 'SDI')
+    const sdiOutputs = toFamily(hardware?.decklinkOutputs, 'SDI')
     const ndiFamily = toFamily(hardware?.ndi, 'NDI')
     const omtFamily = toFamily(hardware?.omt, 'OMT')
 
@@ -150,18 +168,23 @@ export class Sources {
 
     const list: SourceList = {
       sdi: {
-        available: sdiFamily.available || mergedSdiSources.length > 0,
-        reason: mergedSdiSources.length > 0 ? null : sdiFamily.reason,
+        available: sdiFamily.available,
+        reason: this.probeError ?? sdiFamily.reason,
         sources: mergedSdiSources,
       },
+      sdiOutputs: {
+        ...sdiOutputs,
+        reason: this.probeError ?? (hardware && !hardware.decklinkOutputs
+          ? 'O binário de descoberta precisa ser atualizado para listar saídas DeckLink separadamente.' : sdiOutputs.reason),
+      },
       ndi: {
-        available: ndiFamily.available || mergedNdiSources.length > 0,
-        reason: mergedNdiSources.length > 0 ? null : ndiFamily.reason,
+        available: ndiFamily.available,
+        reason: this.probeError ?? ndiFamily.reason,
         sources: mergedNdiSources,
       },
       omt: {
-        available: omtFamily.available || mergedOmtSources.length > 0,
-        reason: mergedOmtSources.length > 0 ? null : omtFamily.reason,
+        available: omtFamily.available,
+        reason: this.probeError ?? omtFamily.reason,
         sources: mergedOmtSources,
       },
       guests,
@@ -191,6 +214,7 @@ export class Sources {
                 ? `omt:${row.targetUrl}`
                 : row.targetUrl,
         label: row.name,
+        discovery: 'CONFIGURED' as const,
         family: (row.kind === 'NDI' ? 'NDI' : row.kind === 'OMT' ? 'OMT' : 'SDI') as 'SDI' | 'NDI' | 'OMT',
         }))
     } catch {
@@ -213,20 +237,46 @@ export class Sources {
   }
 
   private probe(): Promise<Descoberta | null> {
-    if (!this.binary) return Promise.resolve(null)
+    this.probeError = null
+    if (!this.binary) {
+      this.probeError = 'A descoberta de dispositivos não está configurada no servidor.'
+      return Promise.resolve(null)
+    }
 
     return new Promise((done) => {
-      const child = spawn(this.binary, [])
+      const child = spawn(this.binary, [], { windowsHide: true, env: mediaProcessEnvironment() })
       let out = ''
+      let err = ''
+      let settled = false
+      const decoder = new StringDecoder('utf8')
+      const finish = (result: Descoberta | null, reason: string | null = null) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        this.probeError = reason
+        done(result)
+      }
+      const timeout = setTimeout(() => {
+        finish(null, 'A descoberta excedeu o tempo limite; o driver ou runtime não respondeu. Tente reescanear no servidor.')
+        child.kill()
+      }, this.probeTimeoutMs)
       child.stdout?.on('data', (chunk: Buffer) => {
-        out += chunk.toString()
+        out += decoder.write(chunk)
+        if (out.length > 1_000_000) {
+          finish(null, 'O binário de descoberta retornou uma resposta excessiva ou inválida.')
+          child.kill()
+        }
       })
-      child.on('error', () => done(null))
-      child.on('close', () => {
+      child.stderr?.on('data', (chunk: Buffer) => { err = (err + chunk.toString()).slice(-1500) })
+      child.on('error', (error) => finish(null, `Não foi possível iniciar a descoberta no servidor: ${error.message}`))
+      child.on('close', (code) => {
+        if (settled) return
+        if (code !== 0) return finish(null, `Descoberta encerrada com erro (${code}): ${err.trim() || 'verifique o GStreamer e os runtimes no servidor'}`)
         try {
-          done(JSON.parse(out.trim().split('\n').pop() ?? '') as never)
+          out += decoder.end()
+          finish(discoverySchema.parse(JSON.parse(out.trim().split('\n').pop() ?? '')))
         } catch {
-          done(null)
+          finish(null, 'O binário de descoberta retornou dados inválidos; atualize o engine e o servidor juntos.')
         }
       })
     })
@@ -243,6 +293,6 @@ function toFamily(probe: ProbeFamily | undefined, family: 'SDI' | 'NDI' | 'OMT')
   return {
     available: probe.available,
     reason: probe.reason ?? null,
-    sources: probe.sources.map((source) => ({ ...source, family })),
+    sources: probe.sources.map((source) => ({ ...source, family, discovery: 'DISCOVERED' })),
   }
 }

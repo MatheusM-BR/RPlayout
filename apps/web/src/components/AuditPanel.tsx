@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import { csvRows } from '../domain/csv.js'
+import { api } from '../api.js'
 
 interface Props {
   onClose: () => void
@@ -19,13 +21,22 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
   const [user, setUser] = useState('')
   const [action, setAction] = useState('')
   const [date, setDate] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [reload, setReload] = useState(0)
 
   useEffect(() => {
-    void fetch('/api/audit?limit=1000')
-      .then((response) => response.json())
-      .then((body: { entries?: typeof entries }) => setEntries(body.entries ?? []))
-      .catch(() => setEntries([]))
-  }, [])
+    const controller = new AbortController()
+    setLoading(true); setError(''); setEntries([])
+    void api.audit(controller.signal)
+      .then(body => {
+        if (!Array.isArray(body.entries)) throw new Error('O servidor retornou uma auditoria inválida.')
+        if (!controller.signal.aborted) setEntries(body.entries)
+      })
+      .catch(cause => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Não foi possível consultar a auditoria.') })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [reload])
 
   const filtered = useMemo(
     () =>
@@ -38,11 +49,10 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
     [entries, user, action, date],
   )
 
-  const csv =
-    'usuário;ação;item;data\n' +
-    filtered
-      .map((entry) => [entry.actorUsername ?? 'sessão local', entry.kind, entry.itemId ?? '', entry.createdAt].join(';'))
-      .join('\n')
+  const csv = '\uFEFF' + csvRows([
+    ['usuário', 'ação', 'item', 'data UTC (relógio local)'],
+    ...filtered.map(entry => [entry.actorUsername ?? 'sessão local', entry.kind, entry.itemId ?? '', entry.createdAt]),
+  ], ';')
 
   const content = (
     <div
@@ -60,7 +70,7 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
                 Trilha de Auditoria &amp; Conformidade
               </h2>
               <p className="font-label-mono text-label-mono text-outline">
-                Registro criptográfico e sequencial de todas as ações de comando executadas no playout
+                Solicitações e decisões registradas, conforme suas permissões de canal. Solicitação não comprova execução física.
               </p>
             </div>
           </div>
@@ -154,7 +164,9 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
             </tbody>
           </table>
 
-          {filtered.length === 0 && (
+          {loading && <div role="status" className="p-space-lg text-center text-outline">Consultando registros autorizados…</div>}
+          {error && <div role="alert" className="p-space-lg text-center text-red-400">{error}</div>}
+          {!loading && !error && filtered.length === 0 && (
             <div className="p-space-lg text-center text-outline font-body-sm text-body-sm">
               Nenhum evento registrado com os filtros selecionados.
             </div>
@@ -164,24 +176,25 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
         {/* Footer Actions */}
         <div className="px-space-lg py-space-sm bg-surface-panel border-t border-border-subtle flex items-center justify-between">
           <span className="font-label-mono text-label-mono text-outline">
-            PADRÃO DE AUDITORIA INTERNA • REGISTROS IMUTÁVEIS
+            AUDITORIA INTERNA • ATÉ 1.000 REGISTROS AUTORIZADOS
           </span>
 
           <div className="flex items-center gap-space-sm">
+            <button type="button" disabled={loading} onClick={() => setReload(value => value + 1)} className="px-space-sm py-2 rounded border border-border-subtle text-on-surface disabled:opacity-50">Atualizar</button>
             <button
               onClick={onClose}
               className="px-space-lg py-2 rounded bg-surface-card hover:bg-surface-container text-on-surface font-label-caps text-label-caps uppercase transition-colors border border-border-subtle"
             >
               Fechar
             </button>
-            <a
+            {!loading && !error && <a
               download="rplayout-auditoria.csv"
               href={`data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`}
               className="px-space-lg py-2 rounded bg-accent-ice text-surface-base hover:brightness-110 font-label-caps text-label-caps uppercase font-bold transition-all shadow-sm flex items-center gap-1.5"
             >
               <span className="material-symbols-outlined text-[16px]">download</span>
               Exportar CSV
-            </a>
+            </a>}
           </div>
         </div>
       </div>

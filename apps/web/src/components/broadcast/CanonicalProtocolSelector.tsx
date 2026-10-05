@@ -1,6 +1,8 @@
 ﻿import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { api } from '../../api.js'
 import type { SourceList, LiveSource } from '../../types.js'
+import { initialProtocolConfig, sourceName } from './protocol-config.js'
+import { ServerFileTargetDialog } from '../ServerFileTargetDialog.js'
 
 export type ProtocolKind = 'NDI' | 'SDI' | 'SRT' | 'RTMP' | 'FILE' | 'OMT'
 
@@ -26,6 +28,7 @@ export function CanonicalProtocolSelector({
   onChange,
   className = '',
 }: Props) {
+  const initial = useMemo(() => initialProtocolConfig(initialUri), [initialUri])
   // Protocolo selecionado
   const [kind, setKind] = useState<ProtocolKind>(() => {
     if (defaultKind) return defaultKind
@@ -40,29 +43,29 @@ export function CanonicalProtocolSelector({
 
   // Campos específicos de cada protocolo
   // SDI (DeckLink)
-  const [selectedSdiDevice, setSelectedSdiDevice] = useState<string>('0')
-  const [manualSdiDevice, setManualSdiDevice] = useState<string>('')
+  const [selectedSdiDevice, setSelectedSdiDevice] = useState<string>(defaultKind === 'SDI' ? initial.name : '')
+  const [manualSdiDevice, setManualSdiDevice] = useState<string>(defaultKind === 'SDI' ? initial.name : '')
   const [useManualSdi, setUseManualSdi] = useState(false)
 
   // NDI
-  const [selectedNdiSource, setSelectedNdiSource] = useState<string>('')
-  const [manualNdiSource, setManualNdiSource] = useState<string>('RPLAYOUT_PGM_MASTER')
+  const [selectedNdiSource, setSelectedNdiSource] = useState<string>(defaultKind === 'NDI' ? initialUri : '')
+  const [manualNdiSource, setManualNdiSource] = useState<string>(defaultKind === 'NDI' && initialUri ? initial.name : mode === 'INPUT' ? '' : 'RPLAYOUT_PGM_MASTER')
   const [useManualNdi, setUseManualNdi] = useState(false)
 
   // SRT
-  const [srtHost, setSrtHost] = useState('127.0.0.1')
-  const [srtPort, setSrtPort] = useState(9000)
+  const [srtHost, setSrtHost] = useState(initial.host)
+  const [srtPort, setSrtPort] = useState(initial.port)
   const [srtMode, setSrtMode] = useState<'caller' | 'listener' | 'rendezvous'>(
-    mode === 'INPUT' ? 'listener' : 'caller',
+    initial.srtMode ?? (mode === 'INPUT' ? 'listener' : 'caller'),
   )
-  const [srtPassphrase, setSrtPassphrase] = useState('')
-  const [srtLatency, setSrtLatency] = useState(800)
-  const [srtStreamId, setSrtStreamId] = useState('')
+  const [srtPassphrase, setSrtPassphrase] = useState(initial.passphrase)
+  const [srtLatency, setSrtLatency] = useState(initial.latency)
+  const [srtStreamId, setSrtStreamId] = useState(initial.streamId)
   const [showSrtPassphrase, setShowSrtPassphrase] = useState(false)
 
   // RTMP
   const [rtmpAddress, setRtmpAddress] = useState(
-    mode === 'INPUT' ? 'rtmp://127.0.0.1/live' : 'rtmp://a.rtmp.youtube.com/live2',
+    defaultKind === 'RTMP' && initialUri ? initialUri : mode === 'INPUT' ? 'rtmp://127.0.0.1/live' : 'rtmp://a.rtmp.youtube.com/live2',
   )
   const [rtmpPort, setRtmpPort] = useState(1935)
   const [rtmpStreamKey, setRtmpStreamKey] = useState('')
@@ -70,11 +73,14 @@ export function CanonicalProtocolSelector({
   const [showRtmpKey, setShowRtmpKey] = useState(false)
 
   // FILE (Apenas Output)
-  const [filePath, setFilePath] = useState('gravações/canal-master.mp4')
+  const [filePath, setFilePath] = useState(defaultKind === 'FILE' && initialUri ? initialUri : '')
+  const [choosingFile, setChoosingFile] = useState(false)
 
-  // OMT/SMPTE-2110: anúncios NMOS identificam o serviço, mas o fluxo precisa
-  // de URI RTP/SDP explícita para ser aberto.
-  const [omtAddress, setOmtAddress] = useState('omt://239.255.0.1:5004')
+  // OMT descobre fontes por DNS-SD. Para saída, o operador escolhe apenas o
+  // nome publicado, como NDI — nunca um IP de multicast.
+  const [selectedOmtSource, setSelectedOmtSource] = useState(defaultKind === 'OMT' ? initialUri : '')
+  const [omtOutputName, setOmtOutputName] = useState(defaultKind === 'OMT' && initialUri ? initial.name : 'RPLAYOUT_PGM')
+  const sdiFamily = mode === 'INPUT' ? sources?.sdi : sources?.sdiOutputs
 
   // Busca fontes físicas e de rede
   const fetchSources = useCallback(async (refresh = false) => {
@@ -85,20 +91,17 @@ export function CanonicalProtocolSelector({
       setSources(data)
 
       // Atualiza seleção inicial se houver dispositivos detectados
-      if (data.sdi.sources.length > 0 && !selectedSdiDevice) {
-        const first = data.sdi.sources[0]?.reference.replace(/^sdi:/, '') ?? '0'
-        setSelectedSdiDevice(first)
-      }
-      if (data.ndi.sources.length > 0 && !selectedNdiSource) {
-        setSelectedNdiSource(data.ndi.sources[0]?.reference ?? '')
-      }
+      const sdi = mode === 'INPUT' ? data.sdi : data.sdiOutputs
+      setSelectedSdiDevice((current) => current || sdi?.sources[0]?.reference.replace(/^sdi:/, '') || '')
+      setSelectedNdiSource((current) => current || data.ndi.sources[0]?.reference || '')
+      setSelectedOmtSource((current) => current || data.omt.sources[0]?.reference || '')
     } catch (err: any) {
       console.warn('Não foi possível consultar fontes de hardware:', err)
       setSourcesError('Driver de hardware ou serviço de descoberta indisponível.')
     } finally {
       setIsLoadingSources(false)
     }
-  }, [selectedSdiDevice, selectedNdiSource])
+  }, [mode])
 
   useEffect(() => {
     void fetchSources()
@@ -120,13 +123,10 @@ export function CanonicalProtocolSelector({
 
     switch (kind) {
       case 'SDI': {
-        const hasHardware = (sources?.sdi.sources.length ?? 0) > 0
-        if (!hasHardware && !useManualSdi) {
-          isValid = false
-        }
         const dev = useManualSdi ? manualSdiDevice.trim().replace(/^sdi:/, '') : selectedSdiDevice
-        uri = `sdi:${dev || '0'}`
-        nameRec = `DeckLink SDI Porta ${dev || '0'}`
+        isValid = /^\d+$/.test(dev) && (useManualSdi || Boolean(sdiFamily?.sources.some((s) => s.reference === `sdi:${dev}`)))
+        uri = dev ? `sdi:${dev}` : ''
+        nameRec = dev ? sourceName(uri, sdiFamily?.sources ?? []) : ''
         break
       }
 
@@ -136,13 +136,14 @@ export function CanonicalProtocolSelector({
           if (!hasSources || useManualNdi) {
             const cleanName = manualNdiSource.trim().replace(/^ndi:(\/\/)?/, '')
             uri = cleanName ? `ndi:${cleanName}` : ''
-            nameRec = `NDI ${cleanName || 'Fonte Externa'}`
+            nameRec = cleanName
           } else {
             const raw = selectedNdiSource || sources?.ndi.sources[0]?.reference || ''
             const cleanRaw = raw.replace(/^ndi:(\/\/)?/, '')
             uri = cleanRaw ? `ndi:${cleanRaw}` : ''
-            nameRec = `NDI ${cleanRaw}`
+            nameRec = sourceName(uri, sources?.ndi.sources ?? [])
           }
+          isValid = Boolean(uri)
         } else {
           const cleanName = manualNdiSource.trim().replace(/^ndi:(\/\/)?/, '')
           uri = cleanName ? `ndi:${cleanName}` : 'ndi:RPLAYOUT_PGM_MASTER'
@@ -185,8 +186,18 @@ export function CanonicalProtocolSelector({
       }
 
       case 'OMT': {
-        uri = omtAddress.trim()
-        nameRec = `OMT / SMPTE-2110`
+        if (mode === 'INPUT') {
+          const raw = selectedOmtSource || sources?.omt.sources[0]?.reference || ''
+          const cleanName = raw.replace(/^omt:(\/\/)?/, '')
+          uri = cleanName ? `omt:${cleanName}` : ''
+          nameRec = cleanName ? sourceName(uri, sources?.omt.sources ?? []) : ''
+          isValid = Boolean(cleanName)
+        } else {
+          const cleanName = omtOutputName.trim().replace(/^omt:(\/\/)?/, '')
+          uri = cleanName ? `omt:${cleanName}` : ''
+          nameRec = `OMT Saída ${cleanName || 'PGM'}`
+          isValid = Boolean(cleanName)
+        }
         break
       }
     }
@@ -201,6 +212,7 @@ export function CanonicalProtocolSelector({
     kind,
     mode,
     sources,
+    sdiFamily,
     selectedSdiDevice,
     manualSdiDevice,
     useManualSdi,
@@ -216,7 +228,8 @@ export function CanonicalProtocolSelector({
     rtmpAddress,
     rtmpStreamKey,
     filePath,
-    omtAddress,
+    selectedOmtSource,
+    omtOutputName,
   ])
 
   // Propaga alterações para o componente pai
@@ -280,23 +293,22 @@ export function CanonicalProtocolSelector({
               <span className="material-symbols-outlined text-primary text-[15px]">developer_board</span>
               Blackmagic DeckLink • Portas Físicas de Hardware
             </span>
-            {sources?.sdi.available && (
+            {sdiFamily?.available && (
               <span className="text-[9px] font-label-mono text-status-ok-bright font-bold px-1.5 py-0.2 rounded bg-status-ok/15 border border-status-ok/30">
-                DRIVER DETECTADO
+                PLUGIN DISPONÍVEL
               </span>
             )}
           </div>
 
           {/* Verificação estrita de hardware: só lista se tiver placa instalada */}
-          {!sources?.sdi.available || (sources.sdi.sources.length === 0 && !useManualSdi) ? (
+          {!useManualSdi && (!sdiFamily?.available || sdiFamily.sources.length === 0) ? (
             <div className="p-2.5 rounded bg-armed-amber/10 border border-armed-amber/30 text-armed-amber flex flex-col gap-1.5">
               <div className="flex items-center gap-1.5 text-xs font-bold">
                 <span className="material-symbols-outlined text-[16px]">warning</span>
-                <span>Nenhuma placa DeckLink detectada pelo driver</span>
+                <span>{isLoadingSources ? 'Consultando DeckLink no servidor' : 'Nenhuma porta DeckLink enumerada nesta direção'}</span>
               </div>
               <p className="text-[10px] text-on-surface-variant font-label-mono">
-                {sources?.sdi.reason ||
-                  'O driver Blackmagic Desktop Video não está instalado ou nenhuma porta física foi encontrada nesta máquina.'}
+                {sdiFamily?.reason || 'Aguardando a descoberta no servidor. A ausência de portas na lista não confirma ausência da placa.'}
               </p>
               <button
                 type="button"
@@ -338,7 +350,7 @@ export function CanonicalProtocolSelector({
                 onChange={(e) => setSelectedSdiDevice(e.target.value)}
                 className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary cursor-pointer"
               >
-                {sources.sdi.sources.map((s) => {
+                {sdiFamily?.sources.map((s) => {
                   const devIdx = s.reference.replace(/^sdi:/, '')
                   return (
                     <option key={s.reference} value={devIdx}>
@@ -358,10 +370,10 @@ export function CanonicalProtocolSelector({
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
               <span className="material-symbols-outlined text-primary text-[15px]">sensors</span>
-              NDI 5.6 • Fontes de Rede Local
+              NDI • Fontes de Rede
             </span>
             <span className="text-[9px] font-label-mono text-accent-ice font-bold">
-              mDNS / Discovery Server
+              Descoberta no servidor
             </span>
           </div>
 
@@ -369,7 +381,7 @@ export function CanonicalProtocolSelector({
             sources && sources.ndi.sources.length > 0 && !useManualNdi ? (
               <div className="flex flex-col gap-1">
                 <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
-                  Fontes NDI Ativas Encontradas na Rede
+                  Fontes NDI Listadas
                 </label>
                 <select
                   value={selectedNdiSource}
@@ -378,7 +390,7 @@ export function CanonicalProtocolSelector({
                 >
                   {sources.ndi.sources.map((s) => (
                     <option key={s.reference} value={s.reference}>
-                      {s.label} ({s.reference})
+                      {s.label} {s.discovery === 'CONFIGURED' ? '— cadastrada; descoberta não confirmada' : ''}
                     </option>
                   ))}
                 </select>
@@ -395,7 +407,7 @@ export function CanonicalProtocolSelector({
                 <div className="p-2 rounded bg-surface-base border border-border-subtle text-[10px] text-outline flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[15px] text-armed-amber">info</span>
                   <span>
-                    Nenhuma fonte NDI ativa transmitindo na rede local neste momento. Informe o nome da fonte:
+                    Nenhuma fonte NDI listada nesta consulta. Isso não confirma ausência de sinal; informe o nome ou revise a descoberta no servidor:
                   </span>
                 </div>
                 <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
@@ -621,7 +633,7 @@ export function CanonicalProtocolSelector({
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
           <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
             <span className="material-symbols-outlined text-primary text-[15px]">save</span>
-            Gravação Contínua em Disco (Arquivo MP4 / MKV)
+            Gravação Contínua em Disco (Matroska / MKV)
           </span>
           <div className="flex flex-col gap-1">
             <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
@@ -630,40 +642,64 @@ export function CanonicalProtocolSelector({
             <input
               type="text"
               value={filePath}
-              onChange={(e) => setFilePath(e.target.value)}
-              placeholder="C:/Gravacoes/canal-master.mp4"
+              readOnly
+              placeholder="Escolha a pasta do servidor e o nome do arquivo…"
               className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
             />
+            <button type="button" className="btn small" onClick={() => setChoosingFile(true)}>ESCOLHER DESTINO NO SERVIDOR…</button>
           </div>
         </div>
       )}
 
-      {/* 6. PROTOCOLO OMT / SMPTE-2110 */}
+      {choosingFile && <ServerFileTargetDialog onClose={() => setChoosingFile(false)} onChoose={path => { setFilePath(path); setChoosingFile(false) }} />}
+
+      {/* 6. OPEN MEDIA TRANSPORT — descoberta por nome, sem IP manual. */}
       {kind === 'OMT' && (
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
           <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
             <span className="material-symbols-outlined text-accent-ice text-[15px]">lan</span>
-            OMT • Open Media Transport (SMPTE-2110 IP)
+            OMT • Open Media Transport
           </span>
-          <div className="flex flex-col gap-1">
-            <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
-              Endereço Multicast IP / Porta
-            </label>
-            <input
-              type="text"
-              value={omtAddress}
-              onChange={(e) => setOmtAddress(e.target.value)}
-              placeholder="omt://239.255.0.1:5004"
-              className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
-            />
-            {mode === 'INPUT' && (
+          {mode === 'INPUT' ? (
+            <div className="flex flex-col gap-1">
+              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">Fonte OMT descoberta na rede</label>
+              <div className="flex gap-2">
+                <select
+                  value={selectedOmtSource}
+                  onChange={(event) => setSelectedOmtSource(event.target.value)}
+                  disabled={!sources?.omt.sources.length}
+                  className="min-w-0 flex-1 bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary disabled:opacity-50"
+                >
+                  {!sources?.omt.sources.length && <option value="">Nenhuma fonte OMT encontrada</option>}
+                  {sources?.omt.sources.map((source) => (
+                    <option key={source.reference} value={source.reference}>{source.label}</option>
+                  ))}
+                </select>
+                <button type="button" onClick={() => void fetchSources(true)} className="px-2 rounded border border-border-subtle text-accent-ice hover:border-primary" title="Escanear fontes OMT">
+                  <span className="material-symbols-outlined text-[16px]">refresh</span>
+                </button>
+              </div>
               <div className="rounded border border-border-subtle bg-surface-base p-2 text-[10px] text-outline leading-snug">
                 {sources?.omt.sources.length
-                  ? `Serviços NMOS/OMT encontrados: ${sources.omt.sources.map((source) => source.label).join(', ')}. Informe a URI RTP/SDP publicada pelo controlador para abrir o fluxo.`
-                  : `A descoberta OMT procura anúncios NMOS/mDNS; ela não inventa uma URI RTP. ${sources?.omt.reason ?? 'Informe a URI/SDP do fluxo ou registre-o no controlador NMOS.'}`}
+                  ? 'Selecione a fonte anunciada por DNS-SD. OMT usa nomes de fontes, sem endereço IP manual.'
+                  : (sources?.omt.reason ?? 'Escaneando DNS-SD OMT (_omt._tcp.local)…')}
               </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">Nome da saída OMT publicada</label>
+              <input
+                type="text"
+                value={omtOutputName}
+                onChange={(event) => setOmtOutputName(event.target.value)}
+                placeholder="RPLAYOUT_PGM"
+                className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
+              />
+              <div className="rounded border border-warning/40 bg-warning/5 p-2 text-[10px] text-outline leading-snug">
+                O engine publica vídeo e áudio pelo runtime OMT nativo incluído no pacote. O nome será anunciado na rede; a entrega é confirmada quando um receptor receber o sinal.
+              </div>
+            </div>
+          )}
         </div>
       )}
 

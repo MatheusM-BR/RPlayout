@@ -5,11 +5,17 @@
 //! inteligência de tempo continua no `packages/scheduler`.
 
 mod channel;
+mod audio_routing;
+mod audio_bus;
 mod loudness;
 mod limiter;
 mod limiter_element;
 mod output;
+mod omt;
+mod omt_runtime;
 mod protocol;
+mod bootstrap;
+mod fencing;
 
 use anyhow::{anyhow, Context, Result};
 use channel::{Channel, Config, Output, Scan};
@@ -30,7 +36,7 @@ const METER_EVERY: Duration = Duration::from_millis(100);
 const LIVE_RETRY: Duration = Duration::from_secs(2);
 const OUTPUT_EVERY: Duration = Duration::from_secs(1);
 
-fn parse_args() -> Result<Config> {
+fn parse_args(input: &mut impl BufRead) -> Result<(Config, Option<String>, Option<Output>)> {
     let mut channel_id = String::from("canal");
     let mut width = 1920;
     let mut height = 1080;
@@ -38,10 +44,14 @@ fn parse_args() -> Result<Config> {
     let mut fps_d = 1;
     let mut bitrate_kbps = 4000;
     let mut ceiling_dbtp = -1.0;
+    let mut audio_channels = 2;
     let mut scan = Scan::Progressive;
     let mut top_field_first = true;
     let mut outputs = Vec::new();
     let mut preview = None;
+    let mut qc_preview = None;
+    let mut private_outputs = false;
+    let mut fence_owner = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut index = 0;
@@ -62,20 +72,36 @@ fn parse_args() -> Result<Config> {
             "--fps-den" => fps_d = value()?.parse().context("--fps-den")?,
             "--bitrate" => bitrate_kbps = value()?.parse().context("--bitrate")?,
             "--ceiling" => ceiling_dbtp = value()?.parse().context("--ceiling")?,
+            "--audio-channels" => audio_channels = value()?.parse().context("--audio-channels")?,
             "--scan" => scan = Scan::parse(&value()?)?,
             "--field-order" => top_field_first = value()? != "bff",
             "--output" => outputs.push(Output::parse(&value()?)?),
             "--preview" => preview = Some(Output::parse(&value()?)?),
+            "--private-outputs-stdin" => private_outputs = true,
             other => return Err(anyhow!("argumento desconhecido: {other}")),
         }
         index += 1;
     }
 
+    if private_outputs {
+        if !outputs.is_empty() || preview.is_some() {
+            return Err(anyhow!("Configuração privada não admite destinos também nos argumentos."));
+        }
+        let private: bootstrap::EngineOutputs = bootstrap::read(input)?;
+        fence_owner = private.fence_owner;
+        outputs = private.outputs.iter().map(|value| Output::parse(value)
+            .map_err(|_| anyhow!("Destino inválido na configuração privada."))).collect::<Result<_>>()?;
+        preview = private.preview.as_deref().map(Output::parse).transpose()
+            .map_err(|_| anyhow!("Preview inválido na configuração privada."))?;
+        qc_preview = private.qc_preview.as_deref().map(Output::parse).transpose()
+            .map_err(|_| anyhow!("Inspeção inválida na configuração privada."))?;
+    }
     if outputs.is_empty() {
         outputs.push(Output::Null);
     }
 
-    Ok(Config {
+    audio_bus::validate_channels(audio_channels)?;
+    Ok((Config {
         channel_id,
         width,
         height,
@@ -83,11 +109,12 @@ fn parse_args() -> Result<Config> {
         fps_d,
         bitrate_kbps,
         ceiling_dbtp,
+        audio_channels,
         scan,
         top_field_first,
         outputs,
         preview,
-    })
+    }, fence_owner, qc_preview))
 }
 
 /// Empacota uma leitura do medidor para o protocolo.
@@ -116,8 +143,23 @@ fn announce(channel: &Channel) {
     .emit();
 }
 
+/// An asynchronously rejected live preroll is an item fault, not an engine
+/// fault. The previous program and all independent outputs must stay alive.
+fn poll_pending_take(channel:&mut Channel)->(bool,Option<Event>) {
+    let candidate=channel.armed_id();
+    match channel.service_pending_take() {
+        Ok(Some(_))=>(true,None),
+        Ok(None)=>(false,None),
+        Err(error)=>(true,Some(match candidate {
+            Some(item_id)=>Event::ItemError{item_id,bus:"pgm",message:format!("TAKE recusado: {error}; PGM anterior preservado")},
+            None=>Event::Error{message:format!("TAKE pendente recusado: {error}; PGM anterior preservado")},
+        })),
+    }
+}
+
 fn run_command(channel: &mut Channel, command: Command) -> Result<bool> {
     match command {
+        Command::FenceGrant { .. } => Err(anyhow!("Concessão deve ser processada pela thread privada da cerca.")),
         Command::Load { item } => {
             channel.load(item)?;
             announce(channel);
@@ -125,6 +167,11 @@ fn run_command(channel: &mut Channel, command: Command) -> Result<bool> {
         }
         Command::Take => {
             channel.take()?;
+            announce(channel);
+            Ok(true)
+        }
+        Command::CancelTake => {
+            channel.cancel_pending_take();
             announce(channel);
             Ok(true)
         }
@@ -162,6 +209,11 @@ fn run_command(channel: &mut Channel, command: Command) -> Result<bool> {
             for report in channel.outputs_report() {
                 Event::Publisher { report }.emit();
             }
+            Ok(true)
+        }
+        Command::QcMonitor { item_id, on } => {
+            channel.set_qc_monitor(&item_id, on)?;
+            for report in channel.outputs_report() { Event::Publisher { report }.emit(); }
             Ok(true)
         }
         Command::ReplaceOutput { output_id, output } => {
@@ -249,13 +301,35 @@ fn main() -> Result<()> {
     gst::init().context("GStreamer não inicializou")?;
     limiter_element::register().context("o limiter não registrou")?;
 
-    let config = parse_args()?;
+    let mut input = std::io::BufReader::new(std::io::stdin());
+    let (config, fence_owner, qc_preview) = parse_args(&mut input)?;
     let channel_id = config.channel_id.clone();
     let width = config.width;
     let height = config.height;
     let fps = config.fps_n as f64 / config.fps_d as f64;
 
+    fencing::install(fence_owner)?;
+    // Read renewal grants while Channel::new/start or a decoder/driver blocks.
+    let (sender, receiver) = mpsc::channel::<Envelope>();
+    std::thread::spawn(move || {
+        for line in input.lines() {
+            let Ok(line) = line else { break };
+            if line.trim().is_empty() { continue; }
+            match serde_json::from_str::<Envelope>(&line) {
+                Ok(Envelope { id, command: Command::FenceGrant { owner_id, nonce, term, ttl_ms } }) => {
+                    let result = fencing::grant(&owner_id, nonce, term, ttl_ms);
+                    if result.is_ok() { Event::FenceApplied { nonce, term }.emit(); }
+                    Event::Ack { id, ok: result.is_ok(), error: result.err().map(|error| error.to_string()) }.emit();
+                }
+                Ok(envelope) => { if sender.send(envelope).is_err() { break; } }
+                Err(_) => Event::Error { message: "Comando JSON inválido.".into() }.emit(),
+            }
+        }
+        fencing::abort();
+    });
+    fencing::wait_initial()?;
     let mut channel = Channel::new(config).context("não consegui montar o pipeline do canal")?;
+    if let Some(output) = qc_preview { channel.attach_qc_preview(&output)?; }
     channel.start().context("o canal não entrou em execução")?;
     // As saídas de rede sobem depois do canal e por conta própria: se o
     // destino ainda não está de pé, o canal não pode ficar esperando por ele.
@@ -271,27 +345,9 @@ fn main() -> Result<()> {
     }
     .emit();
 
-    // O stdin bloqueia, então lê numa thread e entrega pela fila.
-    let (sender, receiver) = mpsc::channel::<Envelope>();
-    std::thread::spawn(move || {
-        for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break };
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<Envelope>(&line) {
-                Ok(envelope) => {
-                    if sender.send(envelope).is_err() {
-                        break;
-                    }
-                }
-                Err(error) => Event::Error {
-                    message: format!("comando inválido: {error}"),
-                }
-                .emit(),
-            }
-        }
-    });
+    // Um evento por fonte/barramento: não poluir o protocolo a cada ciclo.
+    let mut ready_pgm: Option<String> = None;
+    let mut ready_pvw: Option<String> = None;
 
     let bus = channel.bus();
     let mut last_position = Instant::now();
@@ -308,7 +364,18 @@ fn main() -> Result<()> {
         last_graphics = Instant::now();
         channel.tick_graphics(elapsed.as_secs_f64() * 1000.0);
 
-        while let Ok(envelope) = receiver.try_recv() {
+        loop {
+            let envelope = match receiver.try_recv() {
+                Ok(envelope) => envelope,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // The owning server closed stdin or crashed. Do not leave
+                    // an orphan engine publishing while a replacement starts.
+                    eprintln!("Canal de controle encerrado; fechando o engine pertencente ao servidor.");
+                    running = false;
+                    break;
+                }
+            };
             let id = envelope.id;
             match run_command(&mut channel, envelope.command) {
                 Ok(keep_running) => {
@@ -332,13 +399,38 @@ fn main() -> Result<()> {
                     .emit();
                 }
             }
+            if !running {
+                break;
+            }
+        }
+        if !running {
+            break;
         }
 
         // TAKE de fonte ao vivo só comuta o seletor depois que o decoder
         // confirmou um frame. Enquanto a NDI/SRT/RTMP faz preroll, o PGM
         // continua no item anterior em vez de expor o preto do inter.
-        if channel.service_pending_take()?.is_some() {
+        let (take_changed,take_error)=poll_pending_take(&mut channel);
+        if let Some(error)=take_error {error.emit();}
+        if take_changed {
             announce(&channel);
+        }
+
+        match channel.on_air_live_ready() {
+            Some(item_id) if ready_pgm.as_deref() != Some(item_id.as_str()) => {
+                ready_pgm = Some(item_id.clone());
+                Event::SourceReady { item_id, bus: "pgm" }.emit();
+            }
+            None => ready_pgm = None,
+            _ => {}
+        }
+        match channel.preview_live_ready() {
+            Some(item_id) if ready_pvw.as_deref() != Some(item_id.as_str()) => {
+                ready_pvw = Some(item_id.clone());
+                Event::SourceReady { item_id, bus: "pvw" }.emit();
+            }
+            None => ready_pvw = None,
+            _ => {}
         }
 
         if let Some(message) = bus.timed_pop(gst::ClockTime::from_mseconds(20)) {
@@ -453,6 +545,9 @@ fn main() -> Result<()> {
 
         if last_output.elapsed() >= OUTPUT_EVERY {
             last_output = Instant::now();
+            for (item_id, bus, signal) in channel.live_signal_reports() {
+                Event::SourceTelemetry { item_id, bus, signal }.emit();
+            }
             Event::Output {
                 frames: channel.frames_out(),
             }

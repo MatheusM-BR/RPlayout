@@ -22,6 +22,12 @@ function sadios(quantos: number, andou = false) {
 }
 
 describe('vigilia do motor', () => {
+  it('discovery frio antes de Ready tem prazo próprio limitado a 90s',()=>{
+    expect(decidirVigilia({vao:50,andou:false,semQuadroMs:20_000,booted:false,ready:false}).matar).toBe(false)
+    expect(decidirVigilia({vao:50,andou:false,semQuadroMs:89_950,booted:false,ready:false}).matar).toBe(true)
+    expect(decidirVigilia({vao:50,andou:false,semQuadroMs:19_950,booted:false,ready:true}).matar).toBe(true)
+    expect(decidirVigilia({vao:50,andou:false,semQuadroMs:2_950,booted:true,ready:false}).matar).toBe(true)
+  })
   it('aplica backoff exponencial com teto de cinco minutos', () => {
     expect(restartDelayMs(0)).toBe(1_000)
     expect(restartDelayMs(4)).toBe(16_000)

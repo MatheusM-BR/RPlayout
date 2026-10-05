@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+#[path = "../bootstrap.rs"]
+mod bootstrap;
 
 /// Espera entre tentativas. Dobra a cada falha até o teto, e volta ao piso
 /// assim que uma conexão se sustenta -- destino que cai e volta não deve
@@ -95,6 +97,14 @@ fn parse_args() -> Result<Args> {
     let mut to = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args == ["--private-connection-stdin"] {
+        let config: bootstrap::RelayConnection = bootstrap::read(&mut std::io::BufReader::new(std::io::stdin()))?;
+        DestinationKind::parse(&config.to)?;
+        if !config.from.starts_with("rtsp://") && !config.from.starts_with("rtsps://") {
+            return Err(anyhow!("Origem privada deve usar RTSP."));
+        }
+        return Ok(Args { from: config.from, to: config.to });
+    }
     let mut index = 0;
     while index < args.len() {
         let flag = args[index].clone();

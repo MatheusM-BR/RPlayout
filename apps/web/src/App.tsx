@@ -3,6 +3,10 @@ import type { ReactNode } from 'react'
 import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
 import type { AudioLevel, Channel, EditScope, Fit, Trim, ScheduleEventType, TimingFlags } from '@rplayout/protocol'
 import { api } from './api.js'
+import { liveSnapshot } from './domain/live-snapshot.js'
+import { loadSessionOperation } from './domain/session-load.js'
+import { clientContext, ContextCommandQueue, SupersededContextError } from './domain/client-context.js'
+import { commitSnapshot } from './domain/snapshot-commit.js'
 import { clock, dur } from './format.js'
 import type {
   HistoryState,
@@ -39,6 +43,7 @@ import { DocumentationPanel } from './components/DocumentationPanel.js'
 import { WorkspaceShell, type WorkspaceId } from './components/WorkspaceShell.js'
 import { QualityControlPanel } from './components/QualityControlPanel.js'
 import { MasterControlView } from './views/MasterControlView.js'
+import {UnavailableChannelReturns} from './components/broadcast/UnavailableChannelReturns.js'
 import { PlaylistScheduleView } from './views/PlaylistScheduleView.js'
 import { QualityControlView } from './views/QualityControlView.js'
 import { EngineeringDistributionView } from './views/EngineeringDistributionView.js'
@@ -50,18 +55,19 @@ import { SessionAlertsDialog } from './components/broadcast/SessionAlertsDialog.
 
 type Dialog =
   | { kind: 'trim'; view: ItemView }
-  | { kind: 'playlists' }
+  | { kind: 'playlists';revision?:number }
   | { kind: 'still'; view: ItemView }
-  | { kind: 'audio'; view: ItemView }
-  | { kind: 'add'; assetId?: string; rundownId?: string; onApplied?: (snapshot: Snapshot) => void }
+  | { kind: 'audio'; view: ItemView; channel:Channel }
+  | { kind: 'add'; assetId?: string; rundownId?: string; onApplied?: (snapshot: Snapshot) => void; revision?:number }
   | { kind: 'distribution' }
   | { kind: 'alerts' }
   | { kind: 'graphics' }
-  | { kind: 'itemGraphics'; view: ItemView }
+  | { kind: 'itemGraphics'; view: ItemView;channelId:string }
   | { kind: 'asrun' }
   | {
       kind: 'autofill'
       rundownId?: string
+      revision?:number
       onApplied?: (snapshot: Snapshot) => void
       initialHours?: number
       initialMinutes?: number
@@ -104,6 +110,8 @@ export function App() {
   const [folders, setFolders] = useState<LibraryFolder[]>([])
   const [categorias, setCategorias] = useState<Categoria[]>([])
   const [dialog, setDialog] = useState<Dialog>(null)
+  const addingItem=useRef(false)
+  const [isAddingItem,setIsAddingItem]=useState(false)
   /** Uma lista .m3u está sendo arrastada por cima da janela. */
   const [listaSobrevoando, setListaSobrevoando] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -130,11 +138,15 @@ export function App() {
   const [authRequired, setAuthRequired] = useState(false)
   const [authenticated, setAuthenticated] = useState(true)
   const [authError, setAuthError] = useState<string | null>(null)
+  const [sessionRefresh, setSessionRefresh] = useState(0)
   /** Tudo que deu errado nesta sessão, venha de onde vier. */
   const [problemas, setProblemas] = useState<Problema[]>([])
   const proximoProblema = useRef(1)
   /** O que já foi anotado, para não repetir a cada releitura. */
   const vistos = useRef(new Set<string>())
+  // CUE e TAKE são comandos ordenados do switcher, não requisições soltas.
+  // Sem esta fila um TAKE podia alcançar o servidor antes do CUE clicado.
+  const transportQueue = useRef(new ContextCommandQueue(clientContext))
   /** Linhas marcadas para agrupar. Marcar não é armar: o PGM não muda. */
   const [marked, setMarked] = useState<Set<string>>(new Set())
   const [followOnAir, setFollowOnAir] = useState(false)
@@ -148,6 +160,13 @@ export function App() {
    */
   const channelRef = useRef<string | null>(null)
   const toastTimer = useRef<number | null>(null)
+  const clearSessionOperation = useCallback(() => {
+    clientContext.nextSession()
+    channelRef.current = null
+    setView(null); setExecutionView(null); setLive(null); setMonitors(null)
+    setChannels([]); setRundownOf({}); setDialog(null); setMarked(new Set())
+    setProblemas([]); vistos.current.clear()
+  }, [])
 
   const [currentWorkspace, setCurrentWorkspace] = useState<WorkspaceId>(() => {
     const requested = new URLSearchParams(window.location.search).get('workspace')
@@ -222,11 +241,16 @@ export function App() {
     toastTimer.current = window.setTimeout(() => setToast(null), 3600)
   }, [])
 
+  const [executionView, setExecutionView] = useState<RundownView | null>(null)
   const absorb = useCallback((snapshot: Snapshot) => {
-    if (snapshot.view) setView(snapshot.view)
-    setLive(snapshot.live)
-    setHistory(snapshot.history)
-    setMonitors(snapshot.monitors)
+    commitSnapshot(clientContext,snapshot,channelRef.current,value=>{
+      if(value.view){
+        if(channelRef.current!==value.view.channel.id){setMarked(new Set());setDialog(null);setError(null)}
+        channelRef.current=value.view.channel.id;setView(value.view)
+      }
+      setExecutionView(executionFromSnapshot(value))
+      setLive(value.live);setHistory(value.history);setMonitors(value.monitors)
+    })
   }, [])
 
   /**
@@ -256,10 +280,12 @@ export function App() {
 
   const guard = useCallback(
     async (action: () => Promise<void>) => {
+      const ticket = clientContext.capture()
       try {
         await action()
-        setError(null)
+        if (clientContext.current(ticket)) setError(null)
       } catch (failure) {
+        if (!clientContext.current(ticket) || failure instanceof SupersededContextError) return
         const texto = failure instanceof Error ? failure.message : 'Falha inesperada.'
         setError(texto)
         anotar('SERVIDOR', texto)
@@ -270,7 +296,7 @@ export function App() {
 
   const refreshLibrary = useCallback(async () => {
     const [library, status, cats] = await Promise.all([
-      api.library(),
+      api.library(channelRef.current ?? undefined),
       api.scanStatus(),
       api.categories(),
     ])
@@ -281,35 +307,51 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const [state, session] = await Promise.all([api.state(), api.session(), refreshLibrary()])
+    let active = true
+    void loadSessionOperation({
+      service:api, refreshLibrary, active:()=>active,
+      onSession:session=>{
         setSessionRole(session.label)
         setAuthRequired(session.required)
         setAuthenticated(session.authenticated)
+      },
+      onState:state=>{
+        setInitializationFailed(false)
         setChannels(state.channels)
         // Uma grade por canal: a primeira de cada um é a que a troca abre.
         const first: Record<string, string> = {}
         for (const rundown of state.rundowns) first[rundown.channelId] ??= rundown.id
         setRundownOf(first)
 
-        const start = state.rundowns[0]
-        if (start) absorb(await api.rundown(start.id))
-      } catch (failure) {
+      },
+      onSnapshot:absorb,
+      onEmpty:()=>{channelRef.current=null;setView(null);setExecutionView(null);setLive(null);setMonitors(null)},
+      onError:failure=>{
+        if (failure instanceof SupersededContextError) return
         setInitializationFailed(true)
         setError(failure instanceof Error ? failure.message : 'Servidor fora do ar.')
-      } finally {
-        setLoading(false)
-      }
-    })()
-  }, [absorb, refreshLibrary])
+      },
+      onDone:()=>setLoading(false),
+    })
+    return () => { active = false }
+  }, [absorb, refreshLibrary, sessionRefresh, clearSessionOperation])
+
+  useEffect(() => {
+    const ended = () => { clearSessionOperation(); setAuthRequired(true); setAuthenticated(false); setAuthError('A sessão encerrou. Entre novamente para continuar.'); setSessionRefresh(value=>value+1) }
+    window.addEventListener('rplayout-session-ended', ended)
+    return () => window.removeEventListener('rplayout-session-ended', ended)
+  }, [clearSessionOperation])
 
   const login = useCallback(async (username: string, password: string) => {
+    clearSessionOperation()
+    const ticket = clientContext.capture()
     const response = await fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) })
     const body = await response.json() as { error?: string; label?: string }
+    if (!clientContext.sessionCurrent(ticket)) return
     if (!response.ok) { setAuthError(body.error ?? 'Não foi possível entrar.'); return }
-    setAuthError(null); setAuthenticated(true); setSessionRole(body.label ?? 'Administrador')
-  }, [])
+    setAuthError(null); setAuthenticated(true); setSessionRole(body.label ?? 'Operador')
+    setLoading(true); setSessionRefresh(value => value + 1)
+  }, [clearSessionOperation])
 
   /**
    * Dispara a varredura e acompanha até acabar.
@@ -330,6 +372,7 @@ export function App() {
 
   // Acompanha também varreduras iniciadas pelo servidor ou por outro operador.
   useEffect(() => {
+    if (authRequired && !authenticated) return
     let cancelled = false
     let timer: number | undefined
     let wasRunning = false
@@ -348,7 +391,7 @@ export function App() {
     }
     timer = window.setTimeout(() => void poll(), 1500)
     return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [refreshLibrary, say, anotar])
+  }, [refreshLibrary, say, anotar, authRequired, authenticated])
 
   // O painel de distribuição tem endereço próprio: dá para deixar aberto numa
   // segunda tela ou mandar o link para quem cuida da entrega.
@@ -388,14 +431,17 @@ export function App() {
   }, [assets, anotar])
 
   useEffect(() => {
+    if (authRequired && !authenticated) return
     let socket: WebSocket
+    const ticket = clientContext.capture()
     let closed = false
     let retry: number | undefined
     const connect = (): void => {
     socket = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`)
     socket.addEventListener('message', (event: MessageEvent<string>) => {
+      if (closed || !clientContext.sessionCurrent(ticket)) return
       const payload = JSON.parse(event.data) as
-        | { type: 'view'; channelId: string; view: RundownView | null }
+        | { type: 'view'; channelId: string; view: RundownView | null; executionView?: RundownView | null }
         | ({ type: 'live'; channelId: string } & Live)
         | { type: 'library' }
 
@@ -410,25 +456,25 @@ export function App() {
 
       if (payload.type === 'view') {
         if (payload.view) setView(payload.view)
+        setExecutionView(executionFromSnapshot(payload))
       } else {
-        setLive({
-          transport: payload.transport,
-          graphic: payload.graphic,
-          alerts: payload.alerts,
-          now: payload.now,
-          meters: payload.meters,
-        })
+        setLive(liveSnapshot(payload))
       }
     })
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', event => {
+      if (closed || !clientContext.sessionCurrent(ticket)) return
+      if (event.code === 4401) { window.dispatchEvent(new Event('rplayout-session-ended')); return }
       if (!closed) retry = window.setTimeout(connect, 2000)
     })
     }
     connect()
     return () => { closed = true; window.clearTimeout(retry); socket.close() }
-  }, [refreshLibrary, anotar])
+  }, [refreshLibrary, anotar, authRequired, authenticated, sessionRefresh])
 
-  channelRef.current = view?.channel.id ?? null
+  useEffect(() => {
+    if (!view?.channel.id || (authRequired && !authenticated)) return
+    void refreshLibrary().catch((failure: Error) => anotar('SERVIDOR', failure.message))
+  }, [view?.channel.id, authRequired, authenticated, refreshLibrary, anotar])
 
   const rate = view?.channel.rate ?? { num: 30000, den: 1001 }
 
@@ -452,7 +498,7 @@ export function App() {
   const openAssetId = target?.kind === 'ASSET' ? target.id : null
   const onAirId = live?.transport.onAir?.itemId ?? null
 
-  const onAirItem = view?.items.find((item) => item.item.id === onAirId) ?? null
+  const onAirItem = (executionView ?? view)?.items.find((item) => item.item.id === onAirId) ?? null
   const selected = view?.items.find((item) => item.item.id === selectedId) ?? null
 
   const remainingOnAir = useMemo(() => {
@@ -515,13 +561,17 @@ export function App() {
     return view.items.slice(Math.max(0, index + 1)).find((item) => schedule.get(item.item.id)?.state !== 'DROPPED') ?? null
   }, [view, onAirId, schedule])
 
+  const enqueueTransportCommand = useCallback((action: () => Promise<void>): Promise<void> => {
+    return transportQueue.current.enqueue(action)
+  }, [])
+
   const command = useCallback(
     (action: 'take' | 'cue' | 'stop' | 'park' | 'seek', body?: { itemId?: string; assetId?: string; sourceRef?: string; sourceTitle?: string; bus?: 'pgm' | 'pvw'; frames?: number }) =>
-      guard(async () => {
-        if (!view) return
+      enqueueTransportCommand(() => guard(async () => {
+        if (!view || view.channel.id !== channelRef.current) return
         absorb(await api.transport(view.channel.id, action, body))
-      }),
-    [view, guard, absorb],
+      })),
+    [view, guard, absorb, enqueueTransportCommand],
   )
 
   const undo = useCallback(
@@ -529,7 +579,7 @@ export function App() {
       guard(async () => {
         if (!view) return
         const result =
-          direction === 'undo' ? await api.undo(view.rundown.id) : await api.redo(view.rundown.id)
+          direction === 'undo' ? await api.undo(view.rundown.id,view.editorialRevision) : await api.redo(view.rundown.id,view.editorialRevision)
         absorb(result)
         say(`${direction === 'undo' ? 'Desfeito' : 'Refeito'}: ${result.label}.`)
       }),
@@ -583,7 +633,7 @@ export function App() {
       if (event.key === 'i' && selected?.asset) {
         setDialog({ kind: isStill(selected.asset) ? 'still' : 'trim', view: selected })
       }
-      if (event.key === 'n' && selected?.asset) setDialog({ kind: 'audio', view: selected })
+      if (event.key === 'n' && selected?.asset && view) setDialog({ kind: 'audio', view: selected,channel:view.channel })
 
       // Setas andam pela grade armando linha a linha, sem tirar a mão do teclado.
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -601,16 +651,16 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [dialog, selected, selectedId, command, view, undo])
 
-  const move = (id: string, toIndex: number): void => {
+  const move = (id: string, toIndex: number,revision?:number): void => {
     void guard(async () => {
-      absorb(await api.moveItem(id, toIndex))
+      absorb(await api.moveItem(id, toIndex,revision ?? view?.editorialRevision))
     })
   }
 
   const group = (): void => {
     if (!view || marked.size < 2) return
     void guard(async () => {
-      absorb(await api.group(view.rundown.id, [...marked]))
+      absorb(await api.group(view.rundown.id, [...marked],view.editorialRevision))
       setMarked(new Set())
       say('Bloco criado. Os itens passam a andar juntos.')
     })
@@ -627,19 +677,15 @@ export function App() {
    * Caixa de confirmação em ferramenta de todo dia vira clique automático, e aí
    * não protege ninguém.
    */
-  const removerItem = (id: string, targetRundownId?: string, onRemoved?: (id: string) => void): void => {
+  const removerItem = (id: string, targetRundownId?: string, onRemoved?: (id: string) => void,revision?:number): void => {
     if (id === onAirId) {
       say('O item no ar não sai da grade. Pare antes.')
       return
     }
     const alvo = view?.items.find((entry) => entry.item.id === id)
     const targetId = targetRundownId ?? view?.rundown.id
-    // Atualização otimista imediata na interface
-    if (view && targetId === view.rundown.id) {
-      setView({ ...view, items: view.items.filter((entry) => entry.item.id !== id) })
-    }
     void guard(async () => {
-      const snapshot = await api.removeItem(id)
+      const snapshot = await api.removeItem(id,revision ?? (targetId===view?.rundown.id?view?.editorialRevision:undefined))
       if (!targetRundownId || targetRundownId === view?.rundown.id) {
         absorb(snapshot)
       }
@@ -648,7 +694,7 @@ export function App() {
     })
   }
 
-  const removerItensEmLote = (ids: string[], targetRundownId?: string, onRemoved?: () => void): void => {
+  const removerItensEmLote = (ids: string[], targetRundownId?: string, onRemoved?: () => void,revision?:number): void => {
     if (!view || ids.length === 0) return
     const targetId = targetRundownId ?? view.rundown.id
     const onAir = live?.transport.onAir?.itemId
@@ -657,12 +703,8 @@ export function App() {
       say('O item no ar não sai da grade. Pare antes.')
       return
     }
-    // Atualização otimista imediata na interface
-    if (targetId === view.rundown.id) {
-      setView({ ...view, items: view.items.filter((entry) => !validIds.includes(entry.item.id)) })
-    }
     void guard(async () => {
-      const snapshot = await api.bulkDeleteItems(targetId, validIds)
+      const snapshot = await api.bulkDeleteItems(targetId, validIds,revision ?? (targetId===view.rundown.id?view.editorialRevision:undefined))
       if (targetId === view.rundown.id) {
         absorb(snapshot)
       }
@@ -673,7 +715,7 @@ export function App() {
 
   const ungroup = (blockId: string): void => {
     void guard(async () => {
-      absorb(await api.ungroup(blockId))
+      absorb(await api.ungroup(blockId,view?.editorialRevision))
       say('Bloco desfeito.')
     })
   }
@@ -709,38 +751,37 @@ export function App() {
     lastClicked.current = id
   }
 
-  const applyTrim = (trim: Trim, scope: EditScope): void => {
+  const applyTrim = async(trim: Trim, scope: EditScope,scopeReviewToken?:string): Promise<void> => {
     const item = dialog?.kind === 'trim' ? dialog.view : null
-    if (!item) return
-    setDialog(null)
-    void guard(async () => {
-      const result = await api.setTrim(item.item.id, trim, scope)
-      absorb(result)
-      say(result.result.message)
-    })
+    if (!item)throw new Error('Esta edição não está mais aberta.')
+    const result = await api.setTrim(item.item.id, trim, scope,item.editorialRevision,scopeReviewToken)
+    absorb(result)
+    setDialog(current=>current?.kind==='trim' && current.view===item?null:current)
+    say(result.result.message)
   }
 
-  const applyAudio = (audio: AudioLevel, scope: EditScope): void => {
+  const applyAudio = async(audio: AudioLevel, scope: EditScope,audioTrack:number,scopeReviewToken?:string): Promise<void> => {
     const item = dialog?.kind === 'audio' ? dialog.view : null
-    if (!item) return
-    setDialog(null)
-    void guard(async () => {
-      const result = await api.setAudio(item.item.id, audio, scope)
-      absorb(result)
-      say(result.result.message)
-    })
+    if (!item)throw new Error('Esta edição não está mais aberta.')
+    const result = await api.setAudio(item.item.id, audio, scope,item.editorialRevision,audioTrack,scopeReviewToken)
+    absorb(result)
+    setDialog(current=>current?.kind==='audio' && current.view===item?null:current)
+    say(result.result.message)
   }
 
   const addItem = (
     request: NewItem,
     targetRundownId?: string,
     onApplied?: (snapshot: Snapshot) => void,
+    revision?:number,
   ): void => {
-    if (!view) return
+    if (!view || addingItem.current) return
+    addingItem.current=true
+    setIsAddingItem(true)
     const targetId = targetRundownId ?? view.rundown.id
-    setDialog(null)
     void guard(async () => {
-      const snapshot = await api.addItem(targetId, request)
+      const snapshot = await api.addItem(targetId, request,revision)
+      setDialog(null)
       if (targetId === view.rundown.id) {
         absorb(snapshot)
       }
@@ -751,7 +792,7 @@ export function App() {
           ? 'Item inserido no fim da grade.'
           : `Item inserido em ${clock(at, view.channel.rate)}; a grade foi remanejada.`,
       )
-    })
+    }).finally(()=>{addingItem.current=false;setIsAddingItem(false)})
   }
 
   /** Cria um canal e abre a grade dele. Serve à barra e à tela de primeira vez. */
@@ -801,7 +842,7 @@ export function App() {
           title: asset?.title,
           anchor: { kind: 'FLOW' },
           atIndex,
-        }),
+        },view.editorialRevision),
       )
       say(`${asset?.title ?? 'Arquivo'} inserido na posição ${atIndex + 1}.`)
     })
@@ -817,7 +858,7 @@ export function App() {
           type: 'VT',
           title: asset?.title,
           anchor: { kind: 'FLOW' },
-        }),
+        },view.editorialRevision),
       )
       say(`${asset?.title ?? 'Arquivo'} no fim da grade.`)
     })
@@ -864,14 +905,14 @@ export function App() {
 
   const setTrack = (id: string, audioTrack: number): void => {
     void guard(async () => {
-      absorb(await api.patchItem(id, { audioTrack }))
+      absorb(await api.patchItem(id, { audioTrack },view?.items.find(entry=>entry.item.id===id)?.editorialRevision))
       say(`Item passa a tocar a ${audioTrack + 1}ª trilha de áudio.`)
     })
   }
 
   const setFit = (id: string, fit: Fit): void => {
     void guard(async () => {
-      absorb(await api.patchItem(id, { fit }))
+      absorb(await api.patchItem(id, { fit },view?.items.find(entry=>entry.item.id===id)?.editorialRevision))
       say(
         fit === 'CROP'
           ? 'Item enche a tela; a sobra da proporção é cortada.'
@@ -880,31 +921,42 @@ export function App() {
     })
   }
 
-  const saveNotes = (id: string, notes: string): void => {
+  const saveNotes = (id: string, notes: string,revision?:number): void => {
     void guard(async () => {
-      absorb(await api.patchItem(id, { notes: notes.trim() === '' ? null : notes }))
+      absorb(await api.patchItem(id, { notes: notes.trim() === '' ? null : notes },revision))
     })
   }
 
-  const aceitarDoAcervo = (assetId: string): void => {
-    void guard(async () => {
-      await api.patchAsset(assetId, { ignored: false })
+  const aceitarDoAcervo = async (assetId: string,review:import('@rplayout/protocol').QcReview): Promise<void> => {
+    try {
+      const asset = folders.flatMap(folder => folder.assets).find(asset => asset.id === assetId)
+      if (!view || !asset) throw new Error('Selecione um canal e uma versão de mídia antes de aprovar.')
+      const result=await api.qcDecision(assetId, { channelId: view.channel.id, contentHash: review.contentHash, status: 'APPROVED' },review)
       await refreshLibrary()
-      say('Arquivo aceito no acervo ativo.')
-    })
+      say(result.refreshError??'Arquivo aceito neste canal para a versão conferida.')
+    } catch (error) {
+      say(error instanceof Error ? error.message : 'Falha ao aprovar o arquivo.')
+      throw error
+    }
   }
 
-  const ignorarNoAcervo = (assetId: string): void => {
-    void guard(async () => {
-      await api.patchAsset(assetId, { ignored: true })
+  const ignorarNoAcervo = async (assetId: string,review:import('@rplayout/protocol').QcReview): Promise<void> => {
+    try {
+      if(review.assetId!==assetId || review.channelId!==view?.channel.id)throw new Error('A conferência pertence a outro arquivo/canal; nenhuma rejeição foi enviada.')
+      const result=await api.patchAsset(assetId, { qcStatus: 'REJECTED' },review.assetRevision)
       await refreshLibrary()
-      say('Arquivo movido para os ignorados.')
-    })
+      say(result.refreshError??'Arquivo movido para os ignorados em todos os canais.')
+    } catch (error) {
+      say(error instanceof Error ? error.message : 'Falha ao rejeitar o arquivo.')
+      throw error
+    }
   }
 
   const trocarCanal = (channelId: string): void => {
     const rundownId = rundownOf[channelId]
     if (!rundownId || channelId === view?.channel.id) return
+    clientContext.nextView(); channelRef.current = null
+    setLive(null);setMonitors(null)
     void guard(async () => absorb(await api.rundown(rundownId)))
   }
 
@@ -949,7 +1001,7 @@ export function App() {
             optional: options?.timingFlags?.optional,
             protected: options?.timingFlags?.protected,
             atIndex,
-          }),
+          },view.editorialRevision),
         )
         say(`Fonte ao vivo "${liveConfig.title}" inserida na grade.`)
       } else if (assetId) {
@@ -966,7 +1018,7 @@ export function App() {
             optional: options?.timingFlags?.optional,
             protected: options?.timingFlags?.protected,
             atIndex,
-          }),
+          },view.editorialRevision),
         )
         say(`"${asset?.title ?? 'Arquivo'}" inserido na grade.`)
       }
@@ -979,6 +1031,8 @@ export function App() {
   // "carregando" para sempre, que é a pior primeira impressão possível --
   // parece defeito e é só falta de canal.
   if (!view && channels.length === 0 && !loading && !initializationFailed) {
+    if (currentWorkspace === 'aired') return <div className="w-screen h-screen"><AiredView channels={[]} onNavigate={navigateWorkspace} sessionRole={sessionRole ?? 'Operador'} authRequired={authRequired} /></div>
+    if (currentWorkspace === 'audit') return <div className="w-screen h-screen"><AuditPanel isModal={false} onClose={()=>navigateWorkspace('master')} /></div>
     return (
       <div className="app">
         <div className="firstrun">
@@ -986,10 +1040,11 @@ export function App() {
             RPlayout<span>.</span>
           </h1>
           <p>
-            Nenhum canal ainda. Um canal é o que tem grade, saídas e monitores — sem ele não há
-            o que operar.
+            Nenhum canal ativo disponível para esta conta. Verifique as permissões ou consulte
+            o histórico dos canais arquivados. Sem canal ativo autorizado, não há operação de PGM.
           </p>
-          <div className="row">
+          <div className="row"><button type="button" className="btn" onClick={()=>navigateWorkspace('aired')}>Consultar histórico</button><button type="button" className="btn" onClick={()=>navigateWorkspace('audit')}>Auditoria</button></div>
+          {['Supervisor','Administrador'].includes(sessionRole ?? '') && <div className="row">
             <input
               type="text"
               autoFocus
@@ -1001,12 +1056,12 @@ export function App() {
             <button className="btn take" onClick={createChannel}>
               criar canal
             </button>
-          </div>
-          <p className="hint">
+          </div>}
+          {['Supervisor','Administrador'].includes(sessionRole ?? '') && <p className="hint">
             O canal nasce no padrão broadcast 1080i59.94 (ou 1080p59.94), com uma grade vazia. Depois aponte
             <code>RPLAYOUT_MEDIA</code> para a sua pasta de vídeos e use <b>LER PASTA</b>: o
             acervo é lido do disco, com duração, loudness e miniatura de cada arquivo.
-          </p>
+          </p>}
           {error && <p className="hint bad">{error}</p>}
         </div>
       </div>
@@ -1023,6 +1078,7 @@ export function App() {
             <p className="hint bad">{error}</p>
             <button className="btn" onClick={() => window.location.reload()}>Tentar novamente</button>
           </>}
+          {!loading && <UnavailableChannelReturns channels={channels}/>}
         </div>
       </div>
     )
@@ -1034,7 +1090,7 @@ export function App() {
         <MasterControlView
           channel={view.channel}
           channels={channels}
-          view={view}
+          view={executionView ?? view}
           live={live}
           folders={folders}
           scan={scan}
@@ -1045,6 +1101,7 @@ export function App() {
           onTake={(itemId?: string) => void command('take', itemId ? { itemId } : {})}
           onStop={() => void command('stop')}
           onCue={(itemId?: string) => void command('cue', { itemId })}
+          onClearCue={() => void command('cue', {})}
           onSeek={(bus: 'pvw' | 'pgm', frames: number) =>
             void command('seek', {
               bus,
@@ -1053,8 +1110,8 @@ export function App() {
             })
           }
           onStartScan={(measure: boolean) => void startScan(measure)}
-          onAddItem={() => setDialog({ kind: 'add' })}
-          onAutoFill={() => setDialog({ kind: 'autofill' })}
+          onAddItem={() => setDialog({ kind: 'add',revision:view.editorialRevision })}
+          onAutoFill={() => setDialog({ kind: 'autofill',revision:view.editorialRevision })}
           onExportCsv={exportCsv}
           onOpenTrim={(item: ItemView) =>
             setDialog({
@@ -1062,8 +1119,8 @@ export function App() {
               view: item,
             })
           }
-          onOpenAudio={(item: ItemView) => setDialog({ kind: 'audio', view: item })}
-          onOpenGraphics={(item: ItemView) => setDialog({ kind: 'itemGraphics', view: item })}
+          onOpenAudio={(item: ItemView) => setDialog({ kind: 'audio', view: item,channel:view.channel })}
+          onOpenGraphics={(item: ItemView) => setDialog({ kind: 'itemGraphics', view: item,channelId:view.channel.id })}
           onOpenStill={(item: ItemView) => setDialog({ kind: 'still', view: item })}
           onRemoveItem={(itemId: string) => removerItem(itemId)}
           onBulkRemoveItems={(ids: string[]) => removerItensEmLote(ids)}
@@ -1101,7 +1158,7 @@ export function App() {
               // buscar outro imediatamente impede que uma resposta anterior
               // da grade vença a atualização acabada de salvar.
               absorb(snapshot ?? await api.rundown(view.rundown.id))
-              say('Programação sincronizada com o Master com sucesso!')
+              say('Dados da grade atualizados. A publicação operacional é uma ação separada.')
             })
           }}
           onOpenAutoFill={(
@@ -1113,11 +1170,13 @@ export function App() {
               initialStart?: string
               initialEnd?: string
               autoPreview?: boolean
+              editorialRevision?:number
             },
           ) =>
             setDialog({
               kind: 'autofill',
               rundownId,
+              revision:options?.editorialRevision,
               onApplied,
               initialHours: options?.initialHours,
               initialMinutes: options?.initialMinutes,
@@ -1128,8 +1187,8 @@ export function App() {
           }
           sessionRole={sessionRole ?? 'Operador Master'}
           authRequired={authRequired}
-          onAddItem={(rundownId?: string, onApplied?: (snapshot: Snapshot) => void) =>
-            setDialog({ kind: 'add', rundownId, onApplied })
+          onAddItem={(rundownId?: string, onApplied?: (snapshot: Snapshot) => void,revision?:number) =>
+            setDialog({ kind: 'add', rundownId, onApplied,revision })
           }
           onExportCsv={exportCsv}
           onOpenTrim={(item: ItemView) =>
@@ -1138,12 +1197,12 @@ export function App() {
               view: item,
             })
           }
-          onOpenAudio={(item: ItemView) => setDialog({ kind: 'audio', view: item })}
-          onRemoveItem={(itemId: string, rundownId?: string, onRemoved?: (id: string) => void) =>
-            removerItem(itemId, rundownId, onRemoved)
+          onOpenAudio={(item: ItemView) => setDialog({ kind: 'audio', view: item,channel:view.channel })}
+          onRemoveItem={(itemId: string, rundownId?: string, onRemoved?: (id: string) => void,revision?:number) =>
+            removerItem(itemId, rundownId, onRemoved,revision)
           }
-          onBulkRemoveItems={(ids: string[], rundownId?: string, onRemoved?: () => void) =>
-            removerItensEmLote(ids, rundownId, onRemoved)
+          onBulkRemoveItems={(ids: string[], rundownId?: string, onRemoved?: () => void,revision?:number) =>
+            removerItensEmLote(ids, rundownId, onRemoved,revision)
           }
           onOpenSettings={() => navigateWorkspace('settings')}
         />
@@ -1151,6 +1210,7 @@ export function App() {
 
       {currentWorkspace === 'qc' && (
         <QualityControlView
+          isLiveOnAir={Boolean(live?.transport.playing && live?.transport.onAir)}
           channel={view.channel}
           channels={channels}
           folders={folders}
@@ -1165,6 +1225,9 @@ export function App() {
           authRequired={authRequired}
           monitors={monitors}
           onPreviewLiveSource={(sourceRef: string, title: string) => void command('cue', { sourceRef, sourceTitle: title })}
+          signals={live?.transport.liveSources ?? []}
+          previewTarget={live?.transport.preview}
+          onMediaChanged={() => void refreshLibrary()}
         />
       )}
 
@@ -1210,6 +1273,7 @@ export function App() {
       {currentWorkspace === 'settings' && (
         <SettingsView
           channel={view.channel}
+          live={live}
           channels={channels}
           onNavigate={navigateWorkspace}
           onSelectChannel={trocarCanal}
@@ -1225,6 +1289,7 @@ export function App() {
               setRundownOf(map)
               const alvo = map[view.channel.id] ?? state.rundowns[0]?.id
               if (alvo) absorb(await api.rundown(alvo))
+              else { clientContext.nextView();channelRef.current=null;setView(null);setExecutionView(null);setLive(null);setMonitors(null) }
             })
           }}
           onOpenFormat={(channelId: string) => {
@@ -1359,6 +1424,7 @@ export function App() {
 
       {dialog?.kind === 'playlists' && (
         <PlaylistsDialog
+          revision={dialog.revision}
           rundownId={view.rundown.id}
           onCancel={() => setDialog(null)}
           onLoaded={(snapshot, message) => {
@@ -1384,9 +1450,9 @@ export function App() {
           onCancel={() => setDialog(null)}
           onApply={(frames) => {
             const id = dialog.view.item.id
-            setDialog(null)
             void guard(async () => {
-              absorb(await api.patchItem(id, { durationOverride: frames }))
+              absorb(await api.patchItem(id, { durationOverride: frames },dialog.view.editorialRevision))
+              setDialog(null)
               say('Tempo da imagem parada atualizado; a grade foi remanejada.')
             })
           }}
@@ -1394,13 +1460,10 @@ export function App() {
       )}
       {dialog?.kind === 'audio' && (
         <AudioDialog
-          // A linha vem da grade viva, não da cópia de quando o diálogo abriu:
-          // trocar de trilha aplica na hora e o seletor tem de acompanhar.
-          view={view.items.find((item) => item.item.id === dialog.view.item.id) ?? dialog.view}
-          channel={view.channel}
+          view={dialog.view}
+          channel={dialog.channel}
           onCancel={() => setDialog(null)}
           onApply={applyAudio}
-          onSetTrack={(index) => setTrack(dialog.view.item.id, index)}
         />
       )}
       {dialog?.kind === 'add' && (
@@ -1409,15 +1472,17 @@ export function App() {
           initialAssetId={dialog.assetId}
           rate={rate}
           suggestedAt={view.schedule.endsAt}
+          error={error}
+          pending={isAddingItem}
           onCancel={() => setDialog(null)}
-          onAdd={(req) => addItem(req, dialog.rundownId, dialog.onApplied)}
+          onAdd={(req) => addItem(req, dialog.rundownId, dialog.onApplied,dialog.revision)}
         />
       )}
 
       {dialog?.kind === 'itemGraphics' && (
         <ItemGraphicsDialog
           view={dialog.view}
-          channelId={view.channel.id}
+          channelId={dialog.channelId}
           onClose={() => setDialog(null)}
           onMessage={say}
         />
@@ -1437,6 +1502,7 @@ export function App() {
               setRundownOf(map)
               const alvo = map[view.channel.id] ?? state.rundowns[0]?.id
               if (alvo) absorb(await api.rundown(alvo))
+              else { clientContext.nextView();channelRef.current=null;setView(null);setExecutionView(null);setLive(null);setMonitors(null) }
             })
           }}
           // Editar um canal que não está em foco troca o foco antes: a tela
@@ -1475,6 +1541,7 @@ export function App() {
       )}
       {dialog?.kind === 'autofill' && (
         <AutoFillDialog
+          revision={dialog.revision}
           rundownId={dialog.rundownId ?? view.rundown.id}
           channelId={view.channel.id}
           categories={[
@@ -1544,3 +1611,4 @@ export function App() {
     </div>
   )
 }
+import {executionFromSnapshot} from './domain/execution-snapshot.js'

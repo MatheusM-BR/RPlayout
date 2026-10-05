@@ -1,9 +1,10 @@
-import { describe, expect, it, beforeAll, afterAll } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll,vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
-import { createApp, type App } from '../app.js'
+import { createApp,runtimeFor, type App } from '../app.js'
 import { registerRoutes } from '../routes.js'
 import { channels } from '../db/schema.js'
 import { globalSrtManager } from './srt.js'
+import { ProcessMetrics } from './process-metrics.js'
 
 describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', () => {
   let app: App
@@ -34,6 +35,23 @@ describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', 
 
   afterAll(async () => {
     await server.close()
+    app.close()
+  })
+
+  it('painel de processos mascara destinos e compartilha medição com todas as saídas do PID',async()=>{
+    const runtime=(await runtimeFor(app,'ch-fase-b'))!
+    const publisher=vi.spyOn(runtime.transport,'publishers').mockReturnValue([{url:'srt://203.0.113.2:9000?passphrase=PRIVATE-SRT',health:'onAir',attempts:0,delivered:1},
+      {url:'rtmp://example.invalid/app/PRIVATE-KEY',health:'connecting',attempts:1,delivered:0}])
+    const pid=vi.spyOn(runtime.transport,'processId').mockReturnValue(42)
+    const measurement=vi.spyOn(ProcessMetrics.prototype,'latest').mockResolvedValue({samples:new Map([[42,{cpuTimeMs:25,memoryBytes:10000}]]),error:null})
+    try {
+      const response=await server.inject({method:'GET',url:'/api/processes'})
+      expect(response.statusCode).toBe(200)
+      expect(response.body).not.toContain('PRIVATE-SRT');expect(response.body).not.toContain('PRIVATE-KEY')
+      const rows=response.json().processes.filter((row:{pid:number})=>row.pid===42)
+      expect(rows).toHaveLength(3)
+      expect(rows.every((row:{cpuTimeMs:number;memoryBytes:number})=>row.cpuTimeMs===25 && row.memoryBytes===10000)).toBe(true)
+    } finally {publisher.mockRestore();pid.mockRestore();measurement.mockRestore()}
   })
 
   it('GET /api/v1/srt/telemetry retorna telemetrias registradas', async () => {

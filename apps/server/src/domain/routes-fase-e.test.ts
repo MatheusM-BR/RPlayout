@@ -1,7 +1,9 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
+import { eq } from 'drizzle-orm'
 import { createApp, type App } from '../app.js'
 import { registerRoutes } from '../routes.js'
+import {reviewedPublish} from './test-operational-review.js'
 import {
   channels,
   rundowns,
@@ -10,11 +12,11 @@ import {
   graphicTemplates,
   itemGraphics,
 } from '../db/schema.js'
-import { globalConcurrencyManager } from './concurrency.js'
 import type { Channel } from '@rplayout/protocol'
 
 describe('Fase E — Timeline Visual Multicamada e Operação Distribuída', () => {
   let app: App
+  let globalConcurrencyManager:App['concurrency']
   let server: FastifyInstance
 
   const testChannel: Channel = {
@@ -34,9 +36,21 @@ describe('Fase E — Timeline Visual Multicamada e Operação Distribuída', () 
   }
 
   const testRundownId = 'rd-fase-e-01'
+  it('não anuncia slate real nem arma automação em transporte simulado', async () => {
+    const slate = await server.inject({ method: 'POST', url: '/api/v1/engineering/pgm-probe/emergency-slate', payload: { channelId: testChannel.id } })
+    expect(slate.statusCode).toBe(409)
+    expect(slate.json().status.emergencySlateActive).toBe(false)
+    const auto = await server.inject({ method: 'POST', url: '/api/v1/engineering/pgm-probe/policy', payload: { channelId: testChannel.id, automaticActions: true } })
+    expect(auto.statusCode).toBe(409)
+    const off = await server.inject({ method: 'POST', url: '/api/v1/engineering/pgm-probe/policy', payload: { channelId: testChannel.id, automaticActions: false, thresholds: { blackThresholdMs: 3500 } } })
+    expect(off.statusCode).toBe(200)
+    expect(off.json().status.thresholds.blackThresholdMs).toBe(3500)
+    expect(JSON.parse((app.sqlite.prepare('SELECT payload FROM channel_operational_policies WHERE channel_id=?').get(testChannel.id) as { payload: string }).payload).automaticActions).toBe(false)
+  })
 
   beforeAll(async () => {
     app = await createApp(':memory:')
+    globalConcurrencyManager=app.concurrency
 
     await app.db.insert(channels).values({
       id: testChannel.id,
@@ -280,7 +294,9 @@ describe('Fase E — Timeline Visual Multicamada e Operação Distribuída', () 
   })
 
   describe('Cenário 2: Autofill Inteligente de Gap em 1-Clique', () => {
-    it('insere automaticamente ativo de preenchimento para zerar gap identificado', async () => {
+    it('planeja o preenchimento sem gravar ou anunciar gap resolvido antes da revisão', async () => {
+      const before = app.sqlite.prepare('SELECT COUNT(*) AS count FROM rundown_items WHERE rundown_id=?').get(testRundownId)
+      const version = globalConcurrencyManager.getRundownVersion(testRundownId)
       const response = await server.inject({
         method: 'POST',
         url: `/api/v1/rundowns/${testRundownId}/autofill-gap`,
@@ -293,25 +309,68 @@ describe('Fase E — Timeline Visual Multicamada e Operação Distribuída', () 
       expect(response.statusCode).toBe(200)
       const result = response.json()
       expect(result.success).toBe(true)
-      expect(result.strategyApplied).toBe('INSERT_OPTIMAL_FILLER')
-      expect(result.insertedItemId).toBeDefined()
-      expect(result.newRundownVersion).toBeGreaterThan(1)
+      expect(result.strategyApplied).toBe('REVIEW_FILL_PROPOSAL')
+      expect(result.requiresReview).toBe(true)
+      expect(result.applied).toBe(false)
+      expect(result.remainingGapMs).toBe(30000)
+      expect(result.applyEndpoint).toBe(`/api/rundowns/${testRundownId}/autofill`)
+      expect(app.sqlite.prepare('SELECT COUNT(*) AS count FROM rundown_items WHERE rundown_id=?').get(testRundownId)).toEqual(before)
+      expect(globalConcurrencyManager.getRundownVersion(testRundownId)).toBe(version)
+    })
+  })
 
-      // Valida que o item de autofill agora existe na grade
-      const checkResponse = await server.inject({
+  describe('Playlist operacional publicada', () => {
+    it('congela uma revisão com o timing calculado e preserva o histórico', async () => {
+      const publish = await reviewedPublish(server,testRundownId)
+      expect(publish.statusCode).toBe(201)
+      expect(publish.json().revision).toBe(1)
+
+      const active = await server.inject({
         method: 'GET',
-        url: `/api/v1/timeline/${testRundownId}/multitrack`,
+        url: `/api/rundowns/${testRundownId}/operational-playlist`,
       })
-      const checkData = checkResponse.json()
-      const track1 = checkData.tracks.find((t: any) => t.type === 'MASTER_VIDEO')
-      const autofillItem = track1.items.find((it: any) => it.id === result.insertedItemId)
-      expect(autofillItem).toBeDefined()
-      expect(autofillItem.label).toContain('[AUTOFILL]')
+      expect(active.statusCode).toBe(200)
+      expect(active.json().active).toBe(true)
+      expect(active.json().payload.items.length).toBeGreaterThan(0)
+      expect(active.json().payload.schedule).toBeDefined()
+
+      const revisions = await server.inject({
+        method: 'GET',
+        url: `/api/rundowns/${testRundownId}/operational-playlists`,
+      })
+      expect(revisions.json().revisions).toHaveLength(1)
+    })
+  })
+
+  describe('QC como porta de entrada da grade', () => {
+    it('mantém mídia pendente fora da grade e só a libera após aprovação explícita', async () => {
+      await app.db.update(mediaAssets).set({ qcStatus: 'PENDING', ignored: false }).where(eq(mediaAssets.id, 'asset-filler-01'))
+
+      const blocked = await server.inject({
+        method: 'POST',
+        url: `/api/rundowns/${testRundownId}/items`,
+        headers: { 'if-match': app.concurrency.generateETag(testRundownId) },
+        payload: { mediaId: 'asset-filler-01', type: 'VT', minDuration: 1 },
+      })
+      expect(blocked.statusCode).toBe(400)
+      expect(blocked.json().error).toContain('pendente de QC')
+
+      const approve = await server.inject({
+        method: 'PATCH',
+        url: '/api/assets/asset-filler-01',
+        headers:{'if-match':`"qc-asset:asset-filler-01:${(app.sqlite.prepare("SELECT version FROM qc_review_versions WHERE asset_id='asset-filler-01'").get() as {version:number}).version}"`},
+        payload: { qcStatus: 'APPROVED' },
+      })
+      expect(approve.statusCode).toBe(200)
+      const [asset] = await app.db.select().from(mediaAssets).where(eq(mediaAssets.id, 'asset-filler-01'))
+      expect(asset?.qcStatus).toBe('APPROVED')
+      expect(asset?.ignored).toBe(false)
+      expect(asset?.qcCheckedAt).toBeTruthy()
     })
   })
 
   describe('Cenário 3: Edição Concorrente, Soft Locks e Detecção de 409 Conflict', () => {
-    it('gerencia bloqueio de linha (soft lock) e impede bloqueio simultâneo por outro operador', async () => {
+    it('não aceita identidade enviada no corpo como dono do bloqueio local', async () => {
       // Operador A adquire lock na linha item-01
       const lockA = await server.inject({
         method: 'POST',
@@ -323,7 +382,7 @@ describe('Fase E — Timeline Visual Multicamada e Operação Distribuída', () 
         },
       })
       expect(lockA.statusCode).toBe(200)
-      expect(lockA.json().lockState.lineLocks['item-01']).toBe('user-mcr-01')
+      expect(lockA.json().lockState.lineLocks['item-01']).toBe('local-operator')
 
       // Operador B tenta adquirir lock na mesma linha -> 409 Conflict
       const lockB = await server.inject({
@@ -335,8 +394,8 @@ describe('Fase E — Timeline Visual Multicamada e Operação Distribuída', () 
           userName: 'Rodrigo Tráfego',
         },
       })
-      expect(lockB.statusCode).toBe(409)
-      expect(lockB.json().error).toContain('bloqueada pelo usuário Carlos MCR')
+      expect(lockB.statusCode).toBe(200)
+      expect(lockB.json().lockState.lineLocks['item-01']).toBe('local-operator')
 
       // Operador A libera o lock
       const releaseA = await server.inject({
@@ -479,8 +538,37 @@ describe('Fase E — Timeline Visual Multicamada e Operação Distribuída', () 
       expect(receivedEvents.length).toBeGreaterThan(0)
       const focusEv = receivedEvents.find((e) => e.type === 'RUNDOWN_USER_FOCUS')
       expect(focusEv).toBeDefined()
-      expect(focusEv.userName).toBe('Marina Jornalismo')
+      expect(focusEv.userName).toBe('Operador local')
       expect(focusEv.itemId).toBe('item-02')
+    })
+
+    it('reposiciona um item ao receber horário fixo, em vez de deixá-lo no fim da fila', async () => {
+      const before = await server.inject({
+        method: 'GET',
+        url: `/api/rundowns/${testRundownId}`,
+      })
+      expect(before.statusCode).toBe(200)
+      const beforeView = before.json().view
+      const secondStart = beforeView.schedule.items.find((entry: { id: string }) => entry.id === 'item-02').start
+
+      const response = await server.inject({
+        method: 'PATCH',
+        url: '/api/items/item-01',
+        headers: { 'if-match': app.concurrency.generateETag(testRundownId) },
+        payload: {
+          // Um frame após o segundo VT: o primeiro deve passar para depois
+          // dele, mesmo que a grade de teste esteja sendo calculada no dia
+          // corrente e não no início absoluto da data histórica.
+          anchor: { kind: 'FIXED', at: secondStart + 1 },
+        },
+      })
+
+      expect(response.statusCode).toBe(200)
+      const snapshot = response.json()
+      const orderedIds = snapshot.view.items.map((entry: { item: { id: string } }) => entry.item.id)
+      expect(orderedIds.indexOf('item-02')).toBeLessThan(orderedIds.indexOf('item-01'))
+      expect(snapshot.view.items.find((entry: { item: { id: string } }) => entry.item.id === 'item-01').item.anchor)
+        .toEqual({ kind: 'FIXED', at: secondStart + 1 })
     })
   })
 })

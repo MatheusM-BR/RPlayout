@@ -35,6 +35,18 @@ async function esperarFim(limiteMs = 60_000): Promise<void> {
 }
 
 describe('varredura', () => {
+  it('não cadastra documentos como VIDEO quando a sonda falha, mas conserva vídeo quebrado', async () => {
+    const old = new Date('2020-01-01')
+    for (const name of ['AÇÃO.pdf', 'roteiro.txt', 'planilha.xlsx', 'quebrado.MXF']) {
+      const path = join(pasta, name); writeFileSync(path, 'conteúdo de teste'); utimesSync(path, old, old)
+    }
+    vi.spyOn(ingest as unknown as { probe: () => Promise<unknown> }, 'probe').mockResolvedValue({ ok: false, reason: 'codec ausente' })
+    ingest.start(pasta); await esperarFim()
+    const rows = await db.select().from(mediaAssets)
+    expect(rows.map(row => row.path)).toEqual([join(pasta, 'quebrado.MXF')])
+    expect(rows[0]).toMatchObject({ kind: 'VIDEO', ignored: true, probeError: 'codec ausente' })
+    expect(ingest.status()).toMatchObject({ failed: 1, skipped: 3 })
+  })
   it('marca arquivo de raiz removida e recupera ao voltar com mesmo tamanho e data', async () => {
     const root = join(pasta, 'raiz'); mkdirSync(root)
     const file = join(root, 'video.mkv'); writeFileSync(file, 'video')
@@ -49,6 +61,7 @@ describe('varredura', () => {
     mkdirSync(root); writeFileSync(file, 'video'); utimesSync(file, old, old)
     ingest.start(root); await esperarFim()
     expect((await db.select().from(mediaAssets))[0]?.probeError).toBeNull()
+    expect((await db.select().from(mediaAssets))[0]?.qcStatus).toBe('PENDING')
     expect(probe).toHaveBeenCalledTimes(2)
   })
 
@@ -83,6 +96,7 @@ describe('varredura', () => {
     // que importa aqui é que ele não foi pulado em silêncio.
     expect(ingest.status().skipped).toBe(0)
     expect(ingest.status().failed).toBe(1)
+    expect(linhas[0]?.qcStatus).toBe('FAILED')
   }, 70_000)
 
   it('varre mais de uma pasta numa procura só', async () => {

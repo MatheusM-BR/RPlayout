@@ -1,5 +1,6 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags } from '@rplayout/protocol'
+import { qcApproved } from '@rplayout/protocol'
 import { clock, dur, formatStandardRate } from '../format.js'
 import type {
   Categoria,
@@ -8,22 +9,28 @@ import type {
   LibraryFolder,
   Live,
   MediaRoot,
+  ServerFolderBrowser,
   Monitors as MonitorFeeds,
   RundownView,
   ScanStatus,
 } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { api } from '../api.js'
-import { canonicalLiveSourceRef } from '../liveSource.js'
+import { canonicalLiveSourceRef, sameLiveSource } from '../liveSource.js'
 import { Whep } from '../components/Whep.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { BroadcastMonitor } from '../components/broadcast/BroadcastMonitor.js'
 import { ContinuityCacheBadge } from '../components/broadcast/ContinuityCacheBadge.js'
 import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
+import { InterruptedItemsBanner } from '../components/broadcast/InterruptedItemsBanner.js'
+import {OperationalInsertionPanel} from '../components/broadcast/OperationalInsertionPanel.js'
+import { NextPlaylistPanel } from '../components/broadcast/NextPlaylistPanel.js'
 import { DynamicCgSecondaryBar } from '../components/broadcast/DynamicCgSecondaryBar.js'
 import { MultiTrackTimeline } from '../components/broadcast/MultiTrackTimeline.js'
 import { ConflictDrawer } from '../components/broadcast/ConflictDrawer.js'
 import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
+import type { ProtocolResult } from '../components/broadcast/CanonicalProtocolSelector.js'
+import { inputName } from '../components/broadcast/protocol-config.js'
 
 interface Props {
   channel: Channel
@@ -39,6 +46,7 @@ interface Props {
   onTake: (itemId?: string) => void
   onStop: () => void
   onCue: (itemId: string) => void
+  onClearCue: () => void
   onSeek: (bus: 'pgm' | 'pvw', frames: number) => void
   onStartScan: (measure: boolean) => void
   onAddItem: () => void
@@ -102,6 +110,7 @@ export function MasterControlView({
   onTake,
   onStop,
   onCue,
+  onClearCue,
   onSeek,
   onStartScan,
   onAddItem,
@@ -127,10 +136,13 @@ export function MasterControlView({
   onOpenConflicts,
   onOpenLiveInput,
 }: Props) {
+  const publicationRequired=Boolean(view.rundown.publicationRequired)
   // MAM filter & search states
   const [mamSearch, setMamSearch] = useState('')
   const [selectedTag, setSelectedTag] = useState<'TODOS' | 'VT' | 'JORNAL' | 'AO VIVO'>('TODOS')
   const [transitionMode, setTransitionMode] = useState<'CUT' | 'MIX' | 'WIPE'>('CUT')
+  const [adjustingLive, setAdjustingLive] = useState(false)
+  const [liveTimingMessage, setLiveTimingMessage] = useState<string | null>(null)
 
   // Drag & drop dropzone target
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
@@ -152,6 +164,7 @@ export function MasterControlView({
 
   // Gerenciamento de Pastas do Acervo MAM
   const [mamRoots, setMamRoots] = useState<MediaRoot[]>([])
+  const [serverBrowser, setServerBrowser] = useState<ServerFolderBrowser | null>(null)
   const [newFolderPath, setNewFolderPath] = useState('')
   const [newFolderLabel, setNewFolderLabel] = useState('')
   const [isFolderLoading, setIsFolderLoading] = useState(false)
@@ -167,21 +180,19 @@ export function MasterControlView({
   }
 
   useEffect(() => {
-    if (folderModalOpen) void loadMamRoots()
+    if (!folderModalOpen) return
+    void loadMamRoots()
+    void browseServerFolders()
   }, [folderModalOpen])
 
-  const handlePickFolder = async () => {
+  const browseServerFolders = async (path?: string) => {
     setIsFolderLoading(true)
-    setFolderActionMsg('Abrindo seletor de pastas...')
+    setFolderActionMsg('Lendo pastas no servidor...')
     try {
-      const picked = await api.pickMediaRoot()
-      if (picked) {
-        setFolderActionMsg(`Pasta "${picked.root.label}" adicionada ao acervo!`)
-        await loadMamRoots()
-        onStartScan(false)
-      } else {
-        setFolderActionMsg('Seleção de pasta cancelada pelo operador.')
-      }
+      const browser = await api.browseMediaRoot(path)
+      setServerBrowser(browser)
+      setNewFolderPath(browser.path)
+      setFolderActionMsg('Escolha uma pasta neste painel. A navegação ocorre no servidor do playout.')
     } catch (err: any) {
       setFolderActionMsg(`Erro: ${err.message}`)
     } finally {
@@ -246,14 +257,26 @@ export function MasterControlView({
       kind: source.family === 'WEBRTC' ? 'RTMP' : source.family,
       targetUrl: source.sourceRef,
     })
-    setCustomSources((previous) => [...previous, { ...source, id: created.id }])
+    setCustomSources((previous) => [...previous, { ...source, id: created.id, sourceRef: canonicalLiveSourceRef(created) }])
   }
 
   // Estados locais dos modais de Ingestão e Linha
-  const [newLiveTitle, setNewLiveTitle] = useState('DeckLink SDI 1 - Estúdio A')
-  const [newLiveFamily, setNewLiveFamily] = useState<'SDI' | 'NDI' | 'SRT' | 'WEBRTC'>('SDI')
-  const [newLiveRef, setNewLiveRef] = useState('sdi:0')
+  const [newLiveTitle, setNewLiveTitle] = useState('')
+  const [newLiveNameEdited, setNewLiveNameEdited] = useState(false)
+  const [newLiveValid, setNewLiveValid] = useState(false)
+  const [newLiveFamily, setNewLiveFamily] = useState<CustomLiveSource['family']>('NDI')
+  const [newLiveRef, setNewLiveRef] = useState('')
   const [newLiveDurationMin, setNewLiveDurationMin] = useState(15)
+  const selectNewLiveInput = useCallback((result: ProtocolResult) => {
+    setNewLiveRef(result.targetUri)
+    setNewLiveFamily(result.kind as CustomLiveSource['family'])
+    setNewLiveValid(result.isHardwareValid)
+    setNewLiveTitle((current) => inputName(current, result.nameRecommendation, newLiveNameEdited))
+  }, [newLiveNameEdited])
+  const resetLiveInput = () => {
+    setNewLiveTitle(''); setNewLiveNameEdited(false); setNewLiveRef(''); setNewLiveValid(false)
+    setNewLiveFamily('NDI')
+  }
 
   const [addLineTab, setAddLineTab] = useState<'library' | 'live'>('library')
   const [addLineSearch, setAddLineSearch] = useState('')
@@ -269,8 +292,10 @@ export function MasterControlView({
   const [lineOptional, setLineOptional] = useState(false)
   const [lineProtected, setLineProtected] = useState(false)
   const [isSavingLineConfig, setIsSavingLineConfig] = useState(false)
+  const [lineConfigError,setLineConfigError]=useState<string|null>(null)
 
   const handleOpenAddLine = () => {
+    resetLiveInput()
     setEditingItemView(null)
     setLineEventType('SEQUENTIAL')
     setLineTrimmable(false)
@@ -281,6 +306,7 @@ export function MasterControlView({
 
   const handleOpenEditLine = (item: ItemView) => {
     setEditingItemView(item)
+    setLineConfigError(null)
     const inferredType: ScheduleEventType =
       item.item.eventType ??
       (item.item.anchor?.kind === 'HARD_TIME'
@@ -306,6 +332,7 @@ export function MasterControlView({
 
   const handleSaveEditedLine = async () => {
     if (!editingItemView) return
+    setLineConfigError(null)
     setIsSavingLineConfig(true)
     try {
       await api.patchItem(editingItemView.item.id, {
@@ -315,11 +342,11 @@ export function MasterControlView({
           optional: lineOptional,
           protected: lineProtected,
         },
-      })
+      },editingItemView.editorialRevision)
       setAddLineModalOpen(false)
       setEditingItemView(null)
     } catch (err) {
-      console.error('Falha ao atualizar parâmetros de automação da linha:', err)
+      setLineConfigError(err instanceof Error?err.message:'Não foi possível salvar a edição. Seus campos continuam neste formulário.')
     } finally {
       setIsSavingLineConfig(false)
     }
@@ -364,7 +391,8 @@ export function MasterControlView({
     }
   }, [])
 
-  // Item no ar e próximo item preparado
+  // Item no ar e próximo item preparado. "Próximo" é pré-roll automático;
+  // CUE é a escolha explícita do operador para o PVW.
   const onAirIndex = useMemo(() => {
     if (!live.transport.onAir) return -1
     return view.items.findIndex((item) => item.item.id === live.transport.onAir?.itemId)
@@ -382,10 +410,17 @@ export function MasterControlView({
     return view.items[0] ?? null
   }, [live.transport.preparedItemId, onAirIndex, view.items])
 
+  const cueItem = useMemo(() => {
+    const preview = live.transport.preview as PreviewTarget | null
+    return preview?.kind === 'ITEM'
+      ? view.items.find((item) => item.item.id === preview.id) ?? null
+      : null
+  }, [live.transport.preview, view.items])
+
   const cuedIndex = useMemo(() => {
-    if (!armedItem) return -1
-    return view.items.findIndex((item) => item.item.id === armedItem.item.id)
-  }, [armedItem, view.items])
+    if (!cueItem) return -1
+    return view.items.findIndex((item) => item.item.id === cueItem.item.id)
+  }, [cueItem, view.items])
 
   // Seleção direta de preview (via MAM ou grade)
   const [selectedPreviewAsset, setSelectedPreviewAsset] = useState<LibraryAsset | null>(null)
@@ -393,7 +428,10 @@ export function MasterControlView({
   // Monitoramento de áudio mutuamente exclusivo (PGM ou PVW, nunca os dois juntos)
   const [activeAudioBus, setActiveAudioBus] = useState<'pgm' | 'pvw' | null>(null)
 
-  const activePreviewAsset = selectedPreviewAsset ?? armedItem?.asset ?? null
+  const confirmedPreview = live.transport.preview as PreviewTarget | null
+  const activePreviewAsset = confirmedPreview?.kind === 'ASSET'
+    ? (selectedPreviewAsset?.id === confirmedPreview.id ? selectedPreviewAsset : folders.flatMap((folder) => folder.assets).find((asset) => asset.id === confirmedPreview.id) ?? null)
+    : cueItem?.asset ?? null
   /**
    * Uma fonte direta não tem asset MAM nem item preparado. O motor, porém,
    * está efetivamente com ela no PVW. Nunca derive o nome do cartão somente
@@ -402,12 +440,29 @@ export function MasterControlView({
    */
   const transportPreview = live.transport.preview as PreviewTarget | null
   const directPreview = transportPreview?.kind === 'SOURCE' ? transportPreview : null
-  const previewTitle = activePreviewAsset?.title ?? armedItem?.item.title ?? directPreview?.title ?? directPreview?.source ?? 'Nenhum item armado'
-  const previewKind = activePreviewAsset?.kind ?? (directPreview ? 'AO VIVO' : armedItem?.asset?.kind ?? 'COMERCIAL')
+  const previewTitle = activePreviewAsset?.title ?? cueItem?.item.title ?? armedItem?.item.title ?? directPreview?.title ?? directPreview?.source ?? 'Nenhum item armado'
+  // "Encontrada na rede" não significa "com sinal". O selo vem apenas do
+  // engine depois de CUE/TAKE e evita que o operador confunda descoberta com
+  // quadro utilizável.
+  const previewSourceRef = directPreview?.source ?? cueItem?.item.sourceRef ?? null
+  const previewSignal = previewSourceRef
+    ? live.transport.liveSources.find((signal) => sameLiveSource(signal.source, previewSourceRef)) ?? null
+    : null
+  const previewSignalState = previewSignal?.busStates?.pvw ?? previewSignal?.state
+  const previewSignalLabel: Record<NonNullable<typeof previewSignal>['state'], string> = {
+    IDLE: 'NÃO SINTONIZADA',
+    CUEING: 'ABRINDO SINAL',
+    PVW_READY: 'SINAL NO PVW',
+    TAKE_PENDING: 'AGUARDANDO TAKE',
+    ON_PGM: 'SINAL NO PGM',
+    LOST: 'SINAL PERDIDO',
+    FAILED: 'FALHA NA FONTE',
+  }
+  const previewKind = activePreviewAsset?.kind ?? (cueItem?.item.type === 'LIVE' || directPreview ? 'AO VIVO' : armedItem?.asset?.kind ?? 'COMERCIAL')
   const activePreviewDuration = selectedPreviewAsset
     ? selectedPreviewAsset.durationFrames
-    : armedItem
-    ? getItemDuration(armedItem)
+    : cueItem
+    ? getItemDuration(cueItem)
     : 0
 
   const handleRowClick = (e: React.MouseEvent, item: ItemView, index: number) => {
@@ -429,7 +484,7 @@ export function MasterControlView({
       setSelectedItemIds(new Set([itemId]))
       lastClickedIndexRef.current = index
       setSelectedPreviewAsset(null)
-      onCue(item.item.id)
+      if(!publicationRequired)onCue(item.item.id)
     }
   }
 
@@ -473,26 +528,7 @@ export function MasterControlView({
   }
 
   const handleTake = () => {
-    if (selectedPreviewAsset) {
-      const matching = view.items.find((i) => i.item.mediaId === selectedPreviewAsset.id)
-      if (matching) {
-        onTake(matching.item.id)
-      } else {
-        onInsertAsset(selectedPreviewAsset.id)
-        onTake()
-      }
-      setSelectedPreviewAsset(null)
-    } else {
-      // A seleção de uma linha já manda o CUE assíncrono ao motor. Não use
-      // somente `armedItem` aqui: entre o clique na grade e o snapshot que
-      // confirma o CUE ele ainda aponta para o item anterior. Isso fazia TAKE
-      // parecer inoperante (ou levar o VT errado) quando o operador clicava
-      // em CUE e TAKE em sequência, especialmente para fontes ao vivo.
-      const selectedForTake = selectedItemIds.size === 1
-        ? view.items.find((item) => selectedItemIds.has(item.item.id)) ?? null
-        : null
-      onTake(selectedForTake?.item.id ?? armedItem?.item.id)
-    }
+    if (!publicationRequired && live.transport.preview) onTake()
   }
 
   // Mapa de horários resolvidos
@@ -543,6 +579,9 @@ export function MasterControlView({
       defaultAudio: null,
       loudnessFile: null,
       suggestedTrim: null,
+      qcStatus: 'APPROVED' as const,
+      qcNotes: null,
+      qcCheckedAt: null,
       thumbnailUrl: '',
       createdAt: new Date().toISOString(),
       isLiveSource: true,
@@ -634,18 +673,20 @@ export function MasterControlView({
 
   // Audio meter telemetry
   const meter = live?.meters?.program ?? {
-    peakDbfs: [-23.8, -24.1],
-    momentaryLufs: -24.0,
-    shortTermLufs: -24.0,
-    integratedLufs: -24.0,
+    peakDbfs: [-90, -90],
+    momentaryLufs: -70,
+    shortTermLufs: -70,
+    integratedLufs: -70,
     rangeLu: 0,
-    truePeakDbtp: -1.2,
+    truePeakDbtp: -90,
     gainReductionDb: 0,
-    correlation: 0.88,
+    correlation: 0,
   }
 
-  const peak0 = meter.peakDbfs?.[0] ?? -60
-  const peak1 = meter.peakDbfs?.[1] ?? -60
+  const nativeMeter = live.transport.mode === 'NATIVE' && live.transport.playing && Boolean(live.meters?.program)
+  const validPhase = nativeMeter && meter.peakDbfs.some(peak=>peak > -70) && Number.isFinite(meter.correlation)
+  const peak0 = nativeMeter ? meter.peakDbfs?.[0] ?? -90 : -90
+  const peak1 = nativeMeter ? meter.peakDbfs?.[1] ?? -90 : -90
   const leftPeakPercent = Math.min(100, Math.max(0, ((peak0 + 60) / 60) * 100))
   const rightPeakPercent = Math.min(100, Math.max(0, ((peak1 + 60) / 60) * 100))
 
@@ -668,9 +709,13 @@ export function MasterControlView({
       />
 
       <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto broadcast-scroll">
+        {publicationRequired && <div role="alert" className="px-margin py-3 bg-amber-500/10 text-amber-400">A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.</div>}
         {/* 1.1 WATCHDOG & SONDA DE PGM / SLATE DE EMERGÊNCIA (FASE C) */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0">
           <PgmProbeBanner channelId={channel.id} />
+          <NextPlaylistPanel channelId={channel.id} />
+          <InterruptedItemsBanner channelId={channel.id} rate={channel.rate} />
+          <OperationalInsertionPanel channelId={channel.id} rate={channel.rate} assets={allAssets}/>
         </div>
 
         {/* 2. TOP OPERATIONAL STRIP (Compact Switcher & Monitors for Variante 2 - 4 Colunas) */}
@@ -683,10 +728,10 @@ export function MasterControlView({
                   <div className="flex items-center justify-between flex-wrap gap-1.5 pb-1 border-b border-border-subtle/50">
                     <div className="flex items-center gap-1.5">
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[9px] font-bold tracking-wider">
-                        <span className="w-1.5 h-1.5 rounded-full bg-on-air-crimson animate-pulse"></span> NO AR
+                        <span className={`w-1.5 h-1.5 rounded-full ${live?.transport.onAir && live.transport.playing ? 'bg-on-air-crimson animate-pulse' : 'bg-outline'}`}></span> {live?.transport.onAir ? live.transport.playing ? 'NO AR' : 'PGM PAUSADO' : 'SEM ITEM NO PGM'}
                       </span>
                       <span className="font-label-mono text-[10px] text-outline">
-                        {formatStandardRate(channel.rate, channel.scan, channel.height)} • {onAirItem?.asset?.kind === 'VIDEO' ? 'ProRes HQ' : onAirItem?.asset?.kind ?? 'ProRes HQ'}
+                        {formatStandardRate(channel.rate, channel.scan, channel.height)} • {onAirItem?.item.type === 'LIVE' ? 'AO VIVO' : onAirItem?.asset?.kind ?? 'SEM ITEM'}
                       </span>
                     </div>
                   </div>
@@ -704,6 +749,19 @@ export function MasterControlView({
                   <div className="font-label-mono text-label-mono text-outline mt-1">
                     TC {onAirItem ? dur(elapsedFrames, rate) : '00:00:00:00'}
                   </div>
+                  {onAirItem?.item.type === 'LIVE' && <div className="mt-2 border-t border-border-subtle pt-2">
+                    <div className="text-[9px] text-outline mb-1">AJUSTAR ESTIMATIVA DO AO VIVO</div>
+                    <div className="flex flex-wrap justify-center gap-1">
+                      {[-60, -30, -5, 5, 30, 60].map(seconds => <button key={seconds} disabled={adjustingLive} className="px-2 py-1 rounded border border-border-subtle text-[10px] hover:border-primary disabled:opacity-40" onClick={() => {
+                        setAdjustingLive(true)
+                        void api.adjustLiveDuration(channel.id, seconds).then(result => setLiveTimingMessage(`Duração ajustada; revisão ${result.revision}. Conflitos recalculados.`))
+                          .catch(error => setLiveTimingMessage(error instanceof Error ? error.message : 'Não foi possível ajustar o ao vivo.'))
+                          .finally(() => setAdjustingLive(false))
+                      }}>{seconds > 0 ? '+' : ''}{seconds}s</button>)}
+                    </div>
+                    <div className="text-[9px] text-outline mt-1">{onAirItem.item.liveConfig?.autoFollowOnEnd ?? onAirItem.item.liveAutoFollowOnEnd ? 'Saída automática ao fim da duração configurada.' : 'Saída manual: a estimativa não dispara TAKE.'}</div>
+                    {liveTimingMessage && <div role="status" className="text-[10px] text-primary mt-1">{liveTimingMessage}</div>}
+                  </div>}
                 </div>
                 <div>
                   <div className="w-full bg-surface-container-lowest h-2 rounded-full overflow-hidden flex">
@@ -739,6 +797,7 @@ export function MasterControlView({
                 isAudioMonitored={activeAudioBus === 'pgm'}
                 onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pgm' ? null : 'pgm'))}
                 onSeek={(frames) => onSeek('pgm', frames)}
+                onWatching={(_bus, watching) => { void api.setWatching(channel.id, 'mon', watching).catch(() => {}) }}
               />
             </div>
 
@@ -747,7 +806,7 @@ export function MasterControlView({
               <BroadcastMonitor
                 bus="pvw"
                 className="w-full h-full"
-                title="PVW • Próximo Evento"
+                title="PVW • CUE Selecionado"
                 badgeText={selectedPreviewAsset ? 'MAM CUED' : 'CUED'}
                 webrtcPath={monitors?.preview ?? null}
                 port={monitors?.port ?? 8889}
@@ -763,9 +822,18 @@ export function MasterControlView({
                 onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pvw' ? null : 'pvw'))}
                 onSeek={(frames) => onSeek('pvw', frames)}
                 onWatching={(bus, watching) => {
-                  void api.setWatching(channel.id, (bus as 'pvw') || 'pvw', watching)
+                  void api.setWatching(channel.id, 'pvw', watching).catch(() => {})
                 }}
               />
+              <button
+                type="button"
+                disabled={publicationRequired || !live.transport.preview}
+                onClick={() => { setSelectedPreviewAsset(null); onClearCue() }}
+                title="Limpar somente o CUE/PVW; conserva o PGM e permite selecionar outra grade com o canal parado"
+                className="mt-1 rounded border border-border-subtle px-2 py-1 text-[10px] text-on-surface-variant hover:text-on-surface disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                LIMPAR CUE / PVW
+              </button>
             </div>
 
             {/* COLUNA 4: PAINEL TÁTICO + CARD PRÓXIMO [PVW] */}
@@ -810,7 +878,8 @@ export function MasterControlView({
                     onClick={handleTake}
                     className="col-span-6 h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer"
                     id="btn-take"
-                    title="Executar transição imediata para o próximo evento preparado (Espaço)"
+                    disabled={publicationRequired || !live.transport.preview}
+                    title="Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE"
                   >
                     <span className="material-symbols-outlined text-[18px]">play_arrow</span>
                     <span>TAKE</span>
@@ -818,9 +887,15 @@ export function MasterControlView({
                   </button>
 
                   <button
-                    onClick={() => armedItem && onCue(armedItem.item.id)}
+                    onClick={() => {
+                      const selected = selectedItemIds.size === 1
+                        ? view.items.find((item) => selectedItemIds.has(item.item.id)) ?? null
+                        : null
+                      const target = selected ?? armedItem
+                      if (target && !publicationRequired) onCue(target.item.id)
+                    }}
                     className="col-span-4 h-12 bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer"
-                    title="Armar próximo evento no PVW (F11)"
+                    title="Abre em CUE no PVW o item selecionado; sem seleção, abre o Próximo (F11)"
                   >
                     <div className="flex items-center gap-0.5">
                       <span className="material-symbols-outlined text-[14px]">skip_next</span>
@@ -847,9 +922,9 @@ export function MasterControlView({
 
                 <div className="flex items-center justify-between font-label-mono text-[9px] text-outline pt-0.5 border-t border-border-subtle/40">
                   <span className="inline-flex items-center gap-1 text-on-surface-variant">
-                    <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span> GENLOCK OK
+                    SINCRONISMO EXTERNO: N/D
                   </span>
-                  <span>LATÊNCIA: 0.8ms</span>
+                  <span>LATÊNCIA: NÃO MEDIDA</span>
                 </div>
               </div>
 
@@ -858,13 +933,15 @@ export function MasterControlView({
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-space-sm">
                     <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-armed-amber/20 border border-armed-amber/40 text-armed-amber font-label-caps text-label-caps font-bold tracking-wider">
-                      PRÓXIMO [PVW]
+                      {cueItem ? 'CUE [PVW]' : 'PRÓXIMO [PREP]'}
                     </span>
                     <span className="font-label-mono text-label-mono text-armed-amber bg-surface-container px-1.5 py-0.5 rounded">
                       {previewKind}
                     </span>
                   </div>
-                  <span className="font-label-mono text-label-mono text-status-ok-bright">AUTO-ARM</span>
+                  <span className={`font-label-mono text-label-mono ${previewSignalState === 'PVW_READY' || previewSignalState === 'ON_PGM' ? 'text-status-ok-bright' : previewSignalState === 'LOST' || previewSignalState === 'FAILED' ? 'text-on-air-crimson' : 'text-armed-amber'}`} title={previewSignal?.message ?? undefined}>
+                    {previewSignalState ? previewSignalLabel[previewSignalState] : cueItem ? 'CUE MANUAL' : 'AUTO-PREP'}
+                  </span>
                 </div>
 
                 <div className="my-space-xs">
@@ -881,8 +958,8 @@ export function MasterControlView({
                     <div className="text-right">
                       <span className="font-label-mono text-label-mono text-outline block">PREVISÃO</span>
                       <span className="font-timecode-table text-timecode-table text-on-surface font-semibold tabular-nums">
-                        {armedItem && scheduleMap.get(armedItem.item.id)?.start != null
-                          ? clock(scheduleMap.get(armedItem.item.id)!.start, rate)
+                        {(cueItem ?? armedItem) && scheduleMap.get((cueItem ?? armedItem)!.item.id)?.start != null
+                          ? clock(scheduleMap.get((cueItem ?? armedItem)!.item.id)!.start, rate)
                           : onAirItem && scheduleMap.get(onAirItem.item.id)?.end != null
                           ? clock(scheduleMap.get(onAirItem.item.id)!.end, rate)
                           : '--:--:--:--'}
@@ -893,7 +970,9 @@ export function MasterControlView({
 
                 <div className="flex items-center justify-between text-on-surface-variant font-label-mono text-label-mono pt-1.5 border-t border-border-subtle/50">
                   <span className="text-outline">
-                    {activePreviewAsset?.path?.endsWith('.mp4') ? 'H.264 • 25 Mbps' : 'ProRes • 1080p50'}
+                    {activePreviewAsset?.probe?.height && activePreviewAsset.probe.rate
+                      ? formatStandardRate(activePreviewAsset.probe.rate, activePreviewAsset.probe.interlaceMode === 'interleaved' ? 'INTERLACED' : 'PROGRESSIVE', activePreviewAsset.probe.height)
+                      : 'FORMATO DA FONTE: N/D'}
                   </span>
                   <span className="text-armed-amber font-semibold">
                     DISPARO EM {dur(remainingFrames, rate)}
@@ -933,7 +1012,7 @@ export function MasterControlView({
                     + Pastas
                   </button>
                   <button
-                    onClick={() => setLiveInputModalOpen(true)}
+                    onClick={() => { resetLiveInput(); setLiveInputModalOpen(true) }}
                     className="px-2 py-0.5 rounded bg-accent-ice/15 hover:bg-accent-ice/30 text-accent-ice-bright border border-accent-ice/40 font-label-caps text-[9px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
                     title="Adicionar fonte externa (DeckLink SDI, NDI, WebRTC, SRT) à biblioteca"
                   >
@@ -1160,7 +1239,7 @@ export function MasterControlView({
                     remainingFrames={remainingFrames}
                     onSelectItem={(index) => {
                       const target = view.items[index]
-                      if (target) onCue(target.item.id)
+                      if (target && !publicationRequired) onCue(target.item.id)
                     }}
                     onAutoFill={onAutoFill}
                     rundownId={view.rundown?.id}
@@ -1214,12 +1293,12 @@ export function MasterControlView({
                       ) : (
                         view.items.map((item, index) => {
                           const isItemOnAir = index === onAirIndex
-                          const isItemCued =
-                            item.item.id === live.transport.preparedItemId ||
-                            (selectedPreviewAsset === null && armedItem?.item.id === item.item.id)
+                          const isItemCued = selectedPreviewAsset === null && cueItem?.item.id === item.item.id
+                          const isItemPrepared = item.item.id === live.transport.preparedItemId
                           const isAired = onAirIndex >= 0 && index < onAirIndex
                           const durationFrames = getItemDuration(item)
                           const isSelected = selectedItemIds.has(item.item.id)
+                          const unavailable = Boolean(item.item.mediaId && (!item.asset || item.asset.probeError || item.asset.ignored || !qcApproved(item.asset.qcStatus ?? 'APPROVED')))
 
                           const eventType: ScheduleEventType =
                             item.item.eventType ??
@@ -1289,13 +1368,19 @@ export function MasterControlView({
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-armed-amber text-surface-base font-label-caps text-[10px] font-bold">
                                     CUED
                                   </span>
+                                ) : unavailable ? (
+                                  <span className="px-2 py-0.5 rounded text-[10px] text-on-air-crimson bg-on-air-crimson/10" title={item.asset?.probeError ?? 'Mídia indisponível ou não aprovada no QC'}>BLOQUEADO</span>
+                                ) : isItemPrepared ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-ok/20 text-status-ok-bright font-label-caps text-[10px] font-bold">
+                                    PRÓXIMO
+                                  </span>
                                 ) : isAired ? (
                                   <span className="px-2 py-0.5 rounded font-label-caps text-[10px] text-outline bg-surface-container">
                                     EXIBIDO
                                   </span>
                                 ) : (
                                   <span className="px-2 py-0.5 rounded font-label-caps text-[10px] text-status-ok-bright bg-surface-container font-semibold">
-                                    PRONTO
+                                    AGENDADO
                                   </span>
                                 )}
                               </td>
@@ -1523,9 +1608,10 @@ export function MasterControlView({
                 </div>
 
                 <div className="flex items-center justify-between font-label-mono text-label-mono text-outline pt-1">
-                  <span>{view.items.length} EVENTOS PROGRAMADOS • MODO MONUMENTAL ATIVO</span>
+                  <span>{view.items.length} EVENTOS PROGRAMADOS</span>
                   <span className="flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span> AUTOMAÇÃO ATIVA
+                    <span className={`w-1.5 h-1.5 rounded-full ${live.transport.playing ? 'bg-status-ok' : 'bg-outline'}`}></span>
+                    {live.transport.mode === 'SIMULATED' ? 'SIMULADO' : live.transport.mode === 'NATIVE' ? 'ENGINE NATIVO' : 'ENGINE NÃO CONFIRMADO'} · {live.transport.playing ? 'EM EXECUÇÃO' : 'PARADO'}
                   </span>
                 </div>
               </>
@@ -1538,11 +1624,11 @@ export function MasterControlView({
                   <div className="flex items-center gap-2">
                     <span className="material-symbols-outlined text-accent-ice text-[18px]">equalizer</span>
                     <span className="font-label-caps text-label-caps uppercase text-on-surface font-bold">
-                      Áudio EBU R128
+                      {nativeMeter ? 'Áudio PGM · EBU R128' : 'Áudio PGM · sem medição nativa'}
                     </span>
                   </div>
                   <span className="font-headline-md text-[18px] text-status-ok-bright font-bold tabular-nums">
-                    {meter.integratedLufs.toFixed(1)} LUFS
+                    {nativeMeter && Number.isFinite(meter.integratedLufs) ? `${meter.integratedLufs.toFixed(1)} LUFS` : 'N/D'}
                   </span>
                 </div>
 
@@ -1557,7 +1643,7 @@ export function MasterControlView({
                         ></div>
                       </div>
                       <span className="font-label-mono text-[9px] text-on-surface tabular-nums w-8">
-                        {meter.peakDbfs[0]?.toFixed(1) ?? '-23.8'}
+                        {nativeMeter ? meter.peakDbfs[0]?.toFixed(1) ?? 'N/D' : 'N/D'}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1569,20 +1655,20 @@ export function MasterControlView({
                         ></div>
                       </div>
                       <span className="font-label-mono text-[9px] text-on-surface tabular-nums w-8">
-                        {meter.peakDbfs[1]?.toFixed(1) ?? '-24.1'}
+                        {nativeMeter ? meter.peakDbfs[1]?.toFixed(1) ?? 'N/D' : 'N/D'}
                       </span>
                     </div>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-space-md font-label-mono text-label-mono text-outline">
-                  <span>FASE: {meter.correlation >= 0 ? `+${meter.correlation.toFixed(2)}` : meter.correlation.toFixed(2)}</span>
-                  <span className="text-status-ok flex items-center gap-1 font-semibold">
-                    <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span> EM FASE
+                  <span>FASE: {validPhase ? `${meter.correlation >= 0 ? '+' : ''}${meter.correlation.toFixed(2)}` : 'N/D'}</span>
+                  <span className={`${!validPhase ? 'text-outline' : meter.correlation < 0 ? 'text-danger' : 'text-status-ok'} flex items-center gap-1 font-semibold`}>
+                    {validPhase ? meter.correlation < 0 ? 'ANTIFASE' : 'CORRELAÇÃO POSITIVA' : 'SEM MEDIÇÃO'}
                   </span>
                   <div className="h-4 w-px bg-border-subtle"></div>
                   {/* Badge de Cobertura do Cache de Continuidade (Fase C: 48h AIR-GAP) */}
-                  <ContinuityCacheBadge />
+                  <ContinuityCacheBadge channelId={channel.id} />
                 </div>
               </div>
             </div>
@@ -1608,7 +1694,7 @@ export function MasterControlView({
                     Cadastrar Fonte Ao Vivo no MAM
                   </h3>
                   <p className="font-label-mono text-label-mono text-outline">
-                    Entrada SDI DeckLink, Stream NDI, SRT ou WebRTC
+                    Selecione NDI, OMT, SDI, SRT ou RTMP; depois confirme o nome
                   </p>
                 </div>
               </div>
@@ -1621,6 +1707,7 @@ export function MasterControlView({
             </div>
 
             <div className="flex flex-col gap-3">
+              <CanonicalProtocolSelector mode="INPUT" defaultKind="NDI" onChange={selectNewLiveInput} />
               <div>
                 <label className="font-label-caps text-label-caps text-outline block mb-1">
                   NOME / IDENTIFICADOR DA FONTE
@@ -1628,9 +1715,9 @@ export function MasterControlView({
                 <input
                   type="text"
                   value={newLiveTitle}
-                  onChange={(e) => setNewLiveTitle(e.target.value)}
+                  onChange={(e) => { setNewLiveTitle(e.target.value); setNewLiveNameEdited(Boolean(e.target.value.trim())) }}
                   className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-body-sm focus:border-primary focus:outline-none"
-                  placeholder="ex: DeckLink SDI 1 - Switcher Estúdio"
+                  placeholder="Nome da fonte selecionada ou apelido operacional"
                 />
               </div>
 
@@ -1648,19 +1735,6 @@ export function MasterControlView({
                 />
               </div>
 
-              {/* Seletor Modular de Protocolos Canônicos (NDI, SDI, SRT, RTMP) */}
-              <CanonicalProtocolSelector
-                mode="INPUT"
-                defaultKind="SDI"
-                initialUri={newLiveRef}
-                onChange={(res) => {
-                  setNewLiveRef(res.targetUri)
-                  setNewLiveFamily(res.kind as any)
-                  if (!newLiveTitle || newLiveTitle.startsWith('DeckLink') || newLiveTitle.startsWith('NDI') || newLiveTitle.startsWith('SRT')) {
-                    if (res.nameRecommendation) setNewLiveTitle(res.nameRecommendation)
-                  }
-                }}
-              />
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-subtle">
@@ -1672,7 +1746,7 @@ export function MasterControlView({
               </button>
               <button
                 onClick={() => {
-                  if (!newLiveTitle.trim() || !newLiveRef.trim()) return
+                  if (!newLiveTitle.trim() || !newLiveRef.trim() || !newLiveValid) return
                   const fpsVal = rate.num / rate.den
                   const durFrames = Math.round(newLiveDurationMin * 60 * fpsVal)
                   const newSource: Omit<CustomLiveSource, 'id'> = {
@@ -1685,6 +1759,7 @@ export function MasterControlView({
                     .then(() => setLiveInputModalOpen(false))
                     .catch(() => window.alert('Não foi possível cadastrar a fonte ao vivo.'))
                 }}
+                disabled={!newLiveValid || !newLiveTitle.trim()}
                 className="px-4 py-2 rounded-lg bg-primary hover:bg-accent-ice text-surface-base font-body-sm font-bold shadow transition-all cursor-pointer"
               >
                 Salvar na Biblioteca MAM
@@ -1736,6 +1811,7 @@ export function MasterControlView({
             </div>
 
             {/* MODO EDIÇÃO: Exibe cabeçalho informativo do item já presente na grade */}
+            {lineConfigError && <div role="alert" className="mx-6 mb-3 rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-sm text-red-200">{lineConfigError} Feche e reabra o item para comparar com a versão atual antes de editar novamente.</div>}
             {editingItemView ? (
               <div className="bg-surface-panel p-3 rounded-lg border border-border-subtle flex items-center justify-between">
                 <div className="flex items-center gap-2.5 min-w-0">
@@ -1851,6 +1927,7 @@ export function MasterControlView({
                   </div>
                 ) : (
                   <div className="flex flex-col gap-3">
+                    <CanonicalProtocolSelector mode="INPUT" defaultKind="NDI" onChange={selectNewLiveInput} />
                     <div>
                       <label className="font-label-caps text-label-caps text-outline block mb-1">
                         NOME DA ENTRADA AO VIVO
@@ -1858,7 +1935,7 @@ export function MasterControlView({
                       <input
                         type="text"
                         value={newLiveTitle}
-                        onChange={(e) => setNewLiveTitle(e.target.value)}
+                        onChange={(e) => { setNewLiveTitle(e.target.value); setNewLiveNameEdited(Boolean(e.target.value.trim())) }}
                         className="w-full bg-surface-panel border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-body-sm focus:border-primary focus:outline-none"
                         placeholder="ex: DeckLink SDI 1 - Estúdio A"
                       />
@@ -1878,18 +1955,6 @@ export function MasterControlView({
                       />
                     </div>
 
-                    <CanonicalProtocolSelector
-                      mode="INPUT"
-                      defaultKind="SDI"
-                      initialUri={newLiveRef}
-                      onChange={(res) => {
-                        setNewLiveRef(res.targetUri)
-                        setNewLiveFamily(res.kind === 'SDI' ? 'SDI' : res.kind === 'NDI' ? 'NDI' : 'SRT')
-                        if (!newLiveTitle || newLiveTitle === 'Entrada Externa / Ao Vivo') {
-                          if (res.nameRecommendation) setNewLiveTitle(res.nameRecommendation)
-                        }
-                      }}
-                    />
 
                     <label className="flex items-center gap-2 cursor-pointer pt-1">
                       <input
@@ -2089,7 +2154,7 @@ export function MasterControlView({
                         onInsertAsset(addLineSelectedAssetId, targetIdx, undefined, options)
                       }
                     } else {
-                      if (!newLiveTitle.trim() || !newLiveRef.trim()) return
+                      if (!newLiveTitle.trim() || !newLiveRef.trim() || !newLiveValid) return
                       const fpsVal = rate.num / rate.den
                       const durFrames = Math.round(newLiveDurationMin * 60 * fpsVal)
                       if (addLineSaveToLibrary) {
@@ -2163,48 +2228,78 @@ export function MasterControlView({
               </div>
             )}
 
-            {/* Ação 1: Seletor Nativo do Windows */}
-            <div className="bg-surface-panel p-3.5 rounded-lg border border-border-subtle flex items-center justify-between gap-3">
-              <div>
-                <span className="font-headline-sm text-sm font-semibold text-on-surface block">
-                  Escolher Pasta no Sistema
-                </span>
-                <span className="font-label-mono text-[11px] text-outline">
-                  Abre o explorador de arquivos do Windows para selecionar a pasta desejada.
-                </span>
+            {/* Seletor renderizado no navegador: a lista vem do servidor e
+                nunca abre Explorer/WinForms na máquina onde ele roda. */}
+            <div className="bg-surface-panel p-3.5 rounded-lg border border-border-subtle flex flex-col gap-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <span className="font-headline-sm text-sm font-semibold text-on-surface block">
+                    Pastas do Servidor
+                  </span>
+                  <span className="font-label-mono text-[11px] text-outline">
+                    Navegue pelo disco ou NAS do servidor diretamente nesta página remota.
+                  </span>
+                </div>
+                <button
+                  onClick={() => void browseServerFolders(newFolderPath || undefined)}
+                  disabled={isFolderLoading}
+                  className="px-3 py-1.5 rounded bg-surface-container hover:bg-surface-container-high border border-border-subtle text-on-surface font-label-caps text-xs font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[15px]">refresh</span>
+                  Atualizar
+                </button>
               </div>
-              <button
-                onClick={handlePickFolder}
-                disabled={isFolderLoading}
-                className="px-3.5 py-2 rounded-lg bg-primary hover:bg-primary-fixed text-surface-base font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[16px]">folder_open</span>
-                <span>Escolher Pasta...</span>
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => serverBrowser?.parent && void browseServerFolders(serverBrowser.parent)}
+                  disabled={!serverBrowser?.parent || isFolderLoading}
+                  className="px-2 rounded border border-border-subtle text-outline hover:text-on-surface disabled:opacity-40"
+                  title="Pasta acima"
+                >
+                  <span className="material-symbols-outlined text-[17px]">drive_folder_upload</span>
+                </button>
+                <input
+                  type="text"
+                  value={newFolderPath}
+                  onChange={(e) => setNewFolderPath(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void browseServerFolders(newFolderPath) }}
+                  placeholder="C:\\Midia ou \\\\NAS\\Playout"
+                  className="min-w-0 flex-1 bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 text-xs text-on-surface font-label-mono focus:border-primary focus:outline-none"
+                />
+              </div>
+              <div className="max-h-36 overflow-y-auto broadcast-scroll border border-border-subtle/50 rounded bg-surface-base">
+                {serverBrowser?.directories.length ? serverBrowser.directories.map((folder) => (
+                  <button
+                    key={folder.path}
+                    type="button"
+                    onClick={() => void browseServerFolders(folder.path)}
+                    className="w-full text-left px-2.5 py-1.5 flex items-center gap-2 hover:bg-surface-container text-xs text-on-surface border-b border-border-subtle/40 last:border-b-0"
+                  >
+                    <span className="material-symbols-outlined text-[16px] text-primary">folder</span>
+                    <span className="truncate">{folder.name}</span>
+                  </button>
+                )) : (
+                  <span className="block px-3 py-4 text-center text-outline font-label-mono text-xs">
+                    {isFolderLoading ? 'Consultando o servidor…' : 'Nenhuma subpasta acessível neste local.'}
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Ação 2: Adição Manual por Caminho */}
             <div className="bg-surface-panel p-3.5 rounded-lg border border-border-subtle flex flex-col gap-2.5">
               <span className="font-label-caps text-[10px] text-outline font-bold uppercase tracking-wider">
-                Ou Digitar Caminho Local / Rede
+                Adicionar a Pasta Selecionada
               </span>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <div className="sm:col-span-2">
                   <input
                     type="text"
-                    list="folder-suggestions"
-                    placeholder="ex: C:\IA\RPlayout\midia ou \\NAS\Playout"
+                    placeholder="Caminho selecionado no servidor"
                     value={newFolderPath}
                     onChange={(e) => setNewFolderPath(e.target.value)}
                     className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 text-xs text-on-surface font-label-mono focus:border-primary focus:outline-none"
                   />
-                  <datalist id="folder-suggestions">
-                    <option value="C:\IA\RPlayout\midia" label="Pasta de Mídia Padrão" />
-                    <option value="C:\Midia" />
-                    <option value="D:\Midia" />
-                    <option value="D:\Videos" />
-                    <option value="E:\Videos" />
-                  </datalist>
                 </div>
                 <div>
                   <input
@@ -2305,6 +2400,7 @@ export function MasterControlView({
         onClose={() => setIsConflictDrawerOpen(false)}
         items={view.items}
         rate={channel.rate}
+        conflicts={view.schedule.conflicts}
         onAutoFill={onAutoFill}
       />
     </div>

@@ -1,16 +1,17 @@
 import { randomUUID } from 'node:crypto'
-import dgram from 'node:dgram'
-import net from 'node:net'
 import type {
   ExternalControlAuditEntry,
   ExternalControlResult,
   ExternalDeviceCommand,
 } from '@rplayout/protocol'
 import { EXTERNAL_CONTROL_TOKEN } from '../config.js'
+import { secretEquals } from './access.js'
+import { VideohubRouterDriver, type DeviceReply } from './videohub-control.js'
+export { VideohubRouterDriver } from './videohub-control.js'
 
 /**
- * Driver para switcher de produção Blackmagic ATEM.
- * Comunica via protocolo UDP (porta padrão 9910).
+ * Contrato ATEM: simulação somente explícita. A integração física via SDK
+ * ainda é pendente; um pacote UDP inicial não é comando de comutação.
  */
 export class AtemSwitcherDriver {
   constructor(
@@ -30,6 +31,7 @@ export class AtemSwitcherDriver {
         success: true,
         details: {
           simulated: true,
+          physicalExecutionConfirmed: false,
           action,
           input,
           meIndex,
@@ -40,104 +42,22 @@ export class AtemSwitcherDriver {
       }
     }
 
-    return new Promise((resolve) => {
-      const socket = dgram.createSocket('udp4')
-      let finished = false
-      const finish = (value: { success: boolean; details?: Record<string, unknown> }) => {
-        if (finished) return
-        finished = true
-        clearTimeout(timeout)
-        try { socket.close() } catch {}
-        resolve(value)
-      }
-      const timeout = setTimeout(() => {
-        finish({ success: false, details: { error: 'TIMEOUT_WAITING_ATEM_ACK', host: this.host, port: this.port } })
-      }, 500)
-
-      // Montagem preliminar do pacote binário ATEM
-      const msg = Buffer.alloc(12)
-      msg.writeUInt8(0x08, 0) // Bit flag ATEM Init
-      msg.writeUInt16BE(12, 2) // Packet length
-
-      socket.send(msg, this.port, this.host, (err) => {
-        if (err) {
-          finish({ success: false, details: { error: err.message } })
-          return
-        }
-      })
-      socket.once('message', () => finish({ success: true, details: { host: this.host, port: this.port, input, meIndex, acknowledged: true } }))
-    })
+    // A preliminary UDP handshake was not a TAKE. Never report an input
+    // change until an actual SDK/driver can issue and read back that command.
+    return { success: false, details: { error: 'Driver de comutação ATEM ainda não integrado. Nenhum TAKE físico foi enviado.', physicalExecutionConfirmed: false } }
   }
 }
 
 /**
- * Driver para matriz de roteamento Blackmagic Videohub.
- * Comunica via protocolo de texto TCP (porta padrão 9990).
- */
-export class VideohubRouterDriver {
-  constructor(
-    private readonly host: string = '127.0.0.1',
-    private readonly port: number = 9990,
-    private readonly simulated: boolean = false,
-  ) {}
-
-  async execute(action: string, params: Record<string, unknown>): Promise<{ success: boolean; details?: Record<string, unknown> }> {
-    const destination = Number(params.destination ?? params.dest ?? params.output ?? 0)
-    const source = Number(params.source ?? params.src ?? params.input ?? 0)
-
-    if (this.simulated) {
-      return {
-        success: true,
-        details: {
-          simulated: true,
-          action,
-          destination,
-          source,
-          host: this.host,
-          port: this.port,
-        },
-      }
-    }
-
-    return new Promise((resolve) => {
-      const socket = new net.Socket()
-      let finished = false
-      const finish = (value: { success: boolean; details?: Record<string, unknown> }) => {
-        if (finished) return
-        finished = true
-        clearTimeout(timeout)
-        socket.destroy()
-        resolve(value)
-      }
-      const timeout = setTimeout(() => {
-        finish({ success: false, details: { error: 'TIMEOUT_VIDEOHUB_TCP', host: this.host, port: this.port } })
-      }, 500)
-
-      socket.connect(this.port, this.host, () => {
-        const cmd = `VIDEO OUTPUT ROUTING:\n${destination} ${source}\n\n`
-        socket.write(cmd, () => {
-          // A escrita no TCP só confirma o buffer local. O sucesso operacional
-          // exige retorno do Videohub, recebido no handler abaixo.
-        })
-      })
-
-      socket.once('data', () => finish({ success: true, details: { destination, source, routed: true, acknowledged: true } }))
-
-      socket.on('error', (err) => {
-        finish({ success: false, details: { error: err.message } })
-      })
-    })
-  }
-}
-
-/**
- * Driver para módulos de relé GPIO e sinalizadores Tally ópticos.
- * Suporta acionamento por pulso temporizado (50ms a 500ms) e retenção (LATCH).
+ * Simulação explícita de GPIO para testes. Sem integração do protocolo de um
+ * módulo real, PULSE/LATCH não podem anunciar acionamento físico.
  */
 export class GpioRelayDriver {
   private pinStates = new Map<number, boolean>()
+  constructor(private readonly simulated = false) {}
 
   async execute(action: string, params: Record<string, unknown>): Promise<{ success: boolean; details?: Record<string, unknown> }> {
+    if (!this.simulated) return { success: false, details: { error: 'Protocolo físico de GPIO não integrado. Nenhum relé foi acionado.', physicalExecutionConfirmed: false } }
     const pin = Number(params.pin ?? params.relayIndex ?? 1)
     const normalizedAction = action.toUpperCase()
 
@@ -151,6 +71,8 @@ export class GpioRelayDriver {
       return {
         success: true,
         details: {
+          simulated: true,
+          physicalExecutionConfirmed: false,
           mode: 'PULSE',
           pin,
           durationMs,
@@ -165,6 +87,8 @@ export class GpioRelayDriver {
       return {
         success: true,
         details: {
+          simulated: true,
+          physicalExecutionConfirmed: false,
           mode: 'LATCH',
           pin,
           state,
@@ -190,10 +114,11 @@ export class GpioRelayDriver {
 export class StudioAutomationGateway {
   private readonly gpioDriver = new GpioRelayDriver()
   private readonly auditLog: ExternalControlAuditEntry[] = []
-  private devices = new Map<string, { host: string; port: number; enabled: boolean }>()
+  private devices = new Map<string, { id: string; kind: string; host: string; port: number; enabled: boolean }>()
+  private readonly pending = new Map<string, Promise<unknown>>()
 
-  configureDevices(rows: Array<{ kind: string; host: string; port: number; enabled: boolean }>): void {
-    this.devices = new Map(rows.map((row) => [row.kind, { host: row.host, port: row.port, enabled: row.enabled }]))
+  configureDevices(rows: Array<{ id: string; kind: string; host: string; port: number; enabled: boolean }>): void {
+    this.devices = new Map(rows.map(row => [row.id, { ...row }]))
   }
 
   validateToken(token?: string): boolean {
@@ -201,13 +126,14 @@ export class StudioAutomationGateway {
       // Se não há token configurado no ambiente, acesso interno é liberado
       return true
     }
-    return Boolean(token && token.trim() === EXTERNAL_CONTROL_TOKEN.trim())
+    return Boolean(token && secretEquals(token.trim(), EXTERNAL_CONTROL_TOKEN.trim()))
   }
 
   async execute(
     cmd: ExternalDeviceCommand,
     clientToken?: string,
     pgmTimecode = '00:00:00:00',
+    canDispatch?: () => boolean,
   ): Promise<ExternalControlResult> {
     const start = performance.now()
     const token = cmd.token ?? clientToken
@@ -237,27 +163,27 @@ export class StudioAutomationGateway {
       }
     }
 
-    let result: { success: boolean; details?: Record<string, unknown> }
+    let result: DeviceReply
     const target = cmd.targetDevice.toUpperCase()
-
+    const candidates = [...this.devices.values()].filter(device => device.kind === target && device.enabled)
+    const device = cmd.deviceId ? this.devices.get(cmd.deviceId) : candidates.length === 1 ? candidates[0] : undefined
     try {
-      if (target === 'ATEM_SWITCHER' || target === 'BLACKMAGIC_ATEM') {
-        const device = this.devices.get('ATEM_SWITCHER')
-        result = !device || !device.enabled
-          ? { success: false, details: { error: 'ATEM não configurado ou desabilitado.' } }
-          : await new AtemSwitcherDriver(device.host, device.port, false).execute(cmd.action, cmd.params)
-      } else if (target === 'VIDEOHUB_ROUTER' || target === 'LEITCH_ROUTER') {
-        const device = this.devices.get('VIDEOHUB_ROUTER')
-        result = !device || !device.enabled
-          ? { success: false, details: { error: 'Videohub não configurado ou desabilitado.' } }
-          : await new VideohubRouterDriver(device.host, device.port, false).execute(cmd.action, cmd.params)
-      } else if (target === 'GPIO_RELAY') {
-        const device = this.devices.get('GPIO_RELAY')
-        result = !device || !device.enabled
-          ? { success: false, details: { error: 'GPIO não configurado ou desabilitado.' } }
-          : await this.gpioDriver.execute(cmd.action, cmd.params)
-      } else {
+      if (!['ATEM_SWITCHER', 'VIDEOHUB_ROUTER', 'GPIO_RELAY'].includes(target)) {
         result = { success: false, details: { error: `Dispositivo não suportado: ${cmd.targetDevice}` } }
+      } else if (!device || !device.enabled || device.kind !== target) {
+        result = { success: false, details: { error: candidates.length > 1 && !cmd.deviceId ? 'Mais de um equipamento deste tipo está ativo. Selecione o dispositivo pelo ID.' : 'Equipamento não configurado, desabilitado ou de outro tipo.' } }
+      } else {
+        const previous = this.pending.get(device.id) ?? Promise.resolve()
+        const task = previous.catch(() => {}).then(async (): Promise<DeviceReply> => {
+          const current = this.devices.get(device.id)
+          if (!current?.enabled || current.kind !== device.kind || current.host !== device.host || current.port !== device.port || canDispatch && !canDispatch()) return { success: false, details: { error: 'Configuração ou contexto operacional mudou antes do envio. Comando não enviado.' } }
+          if (target === 'VIDEOHUB_ROUTER') return new VideohubRouterDriver(device.host, device.port).execute(cmd.action, cmd.params, canDispatch)
+          if (target === 'ATEM_SWITCHER') return new AtemSwitcherDriver(device.host, device.port).execute(cmd.action, cmd.params)
+          return this.gpioDriver.execute(cmd.action, cmd.params)
+        })
+        this.pending.set(device.id, task)
+        try { result = await task } finally { if (this.pending.get(device.id) === task) this.pending.delete(device.id) }
+        result = { ...result, details: { ...result.details, deviceId: device.id } }
       }
     } catch (err) {
       result = { success: false, details: { error: (err as Error).message } }

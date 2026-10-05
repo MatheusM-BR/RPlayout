@@ -18,22 +18,11 @@ export function deviation(frames: Frames, rate: Rate): string {
 
 /** Formatação amigável de padrão broadcast (1080i59.94 / 1080p59.94). */
 export function formatStandardRate(rate: Rate, scan?: string, height = 1080): string {
-  if (scan === 'INTERLACED' || (rate.num === 30000 && rate.den === 1001)) {
-    return `${height}i59.94`
-  }
-  if (rate.num === 60000 && rate.den === 1001) {
-    return `${height}p59.94`
-  }
-  const fps = (rate.num / rate.den).toFixed(2)
-  return `${height}p${fps}`
+  const interlaced = scan === 'INTERLACED'
+  const cadence = (rate.num / rate.den * (interlaced ? 2 : 1)).toFixed(2).replace(/\.00$/, '')
+  return `${height}${interlaced ? 'i' : 'p'}${cadence}`
 }
 
 export function rateFpsLabel(rate: Rate, scan?: string): string {
-  if (scan === 'INTERLACED' || (rate.num === 30000 && rate.den === 1001)) {
-    return '1080i59.94'
-  }
-  if (rate.num === 60000 && rate.den === 1001) {
-    return '1080p59.94'
-  }
-  return `${(rate.num / rate.den).toFixed(2)} fps`
+  return formatStandardRate(rate, scan)
 }

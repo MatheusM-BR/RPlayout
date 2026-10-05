@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { formatVideoFormat, monitorSize, suggestedBitrateKbps } from './channel.js'
+import { formatVideoFormat, monitorSize, suggestedBitrateKbps,channelConfigurationETag } from './channel.js'
 import { RATE } from './rate.js'
+
+describe('ETag de configuração é próprio ao canal',()=>{
+  it('codifica contexto Unicode e aceita apenas versões inteiras seguras',()=>{
+    expect(channelConfigurationETag('ação:QC/1',3)).toBe('"channel:a%C3%A7%C3%A3o%3AQC%2F1:3"')
+    for(const version of [0,-1,NaN,Infinity,1.1,Number.MAX_SAFE_INTEGER+1])expect(()=>channelConfigurationETag('ch',version)).toThrow()
+  })
+})
 
 describe('nome do formato de vídeo', () => {
   it('progressivo leva a cadência de quadros', () => {
@@ -79,18 +86,18 @@ describe('suggestedBitrateKbps', () => {
 })
 
 describe('monitorSize', () => {
-  /** 1080p vira 480p mantendo o 16:9: monitor esticado engana enquadramento. */
-  it('reduz 1080p para 480p sem deformar', () => {
-    expect(monitorSize(1920, 1080)).toEqual([854, 480])
+  /** 1080p vira 240p mantendo o 16:9: monitor esticado engana enquadramento. */
+  it('reduz 1080p para 240p sem deformar', () => {
+    expect(monitorSize(1920, 1080)).toEqual([428, 240])
   })
 
   it('mantém a proporção 4:3', () => {
-    expect(monitorSize(1440, 1080)).toEqual([640, 480])
+    expect(monitorSize(1440, 1080)).toEqual([320, 240])
   })
 
   /** O que já é pequeno não é ampliado: monitor não inventa resolução. */
   it('não amplia o que já cabe', () => {
-    expect(monitorSize(640, 360)).toEqual([640, 360])
+    expect(monitorSize(320, 180)).toEqual([320, 180])
   })
 
   it('sai sempre em números pares', () => {

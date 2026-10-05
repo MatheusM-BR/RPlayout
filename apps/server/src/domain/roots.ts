@@ -1,67 +1,29 @@
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { basename, resolve, sep } from 'node:path'
+import { basename, dirname, resolve, sep } from 'node:path'
 import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import { mediaRoots } from '../db/schema.js'
 
-const execFileAsync = promisify(execFile)
-
-function runPowerShell(script: string, timeout = 60_000): Promise<string> {
-  const encoded = Buffer.from(script, 'utf16le').toString('base64')
-  return execFileAsync('powershell.exe', ['-NoProfile', '-STA', '-EncodedCommand', encoded], {
-    windowsHide: false,
-    timeout,
-  }).then((r) => r.stdout.trim())
-}
-
-/** Abre o seletor nativo na máquina que executa o servidor. */
-export async function pickFolder(): Promise<string | null> {
-  if (process.platform !== 'win32') return null
-  const script = `
-Add-Type -AssemblyName System.Windows.Forms
-$form = New-Object System.Windows.Forms.Form
-$form.TopMost = $true
-$form.StartPosition = 'CenterScreen'
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = "Escolha a pasta do acervo"
-if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::Write($dialog.SelectedPath)
-}
-$form.Dispose()
-`
-  try {
-    const path = await runPowerShell(script, 60_000)
-    return path === '' ? null : path
-  } catch {
-    return null
+/** Resolve um destino novo, sem criar arquivo nem abrir janela no servidor. */
+export function recordingTarget(folder: string, filename: string):
+  { ok: true; path: string } | { ok: false; status: 400 | 409; error: string } {
+  if (!folder.trim()) return { ok: false, status: 400, error: 'Escolha uma pasta do servidor.' }
+  // O engine usa matroskamux: uma extensão MP4 aqui produziria um arquivo
+  // Matroska disfarçado. Nomes e regras são iguais também no servidor Linux.
+  if (!filename || filename.length > 160 || filename !== filename.trim() ||
+      /[<>:"/\\|?*\u0000-\u001f]/.test(filename) || /[. ]$/.test(filename) ||
+      /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(filename) ||
+      !/\.mkv$/i.test(filename)) {
+    return { ok: false, status: 400, error: 'Use um nome de arquivo válido terminado em .mkv, sem barras ou caracteres reservados.' }
   }
-}
-
-/** Abre o seletor nativo de arquivo na máquina do servidor. */
-export async function pickFile(): Promise<string | null> {
-  if (process.platform !== 'win32') return null
-  const script = `
-Add-Type -AssemblyName System.Windows.Forms
-$form = New-Object System.Windows.Forms.Form
-$form.TopMost = $true
-$form.StartPosition = 'CenterScreen'
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = "Escolha o arquivo de saída"
-$dialog.Filter = "Vídeo e áudio|*.mp4;*.mov;*.mkv;*.ts;*.wav;*.mp3|Todos os arquivos|*.*"
-if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::Write($dialog.FileName)
-}
-$form.Dispose()
-`
-  try {
-    const path = await runPowerShell(script, 60_000)
-    return path === '' ? null : path
-  } catch {
-    return null
-  }
+  const directory = resolve(folder.trim())
+  if (!existe(directory)) return { ok: false, status: 400, error: 'A pasta escolhida não existe ou não está disponível no servidor.' }
+  const path = resolve(directory, filename)
+  if (dirname(path) !== directory) return { ok: false, status: 400, error: 'O arquivo deve ficar na pasta escolhida.' }
+  if (existsSync(path)) return { ok: false, status: 409, error: 'Esse arquivo já existe. Escolha outro nome para não sobrescrever a gravação.' }
+  return { ok: true, path }
 }
 
 export interface MediaRoot {
@@ -70,6 +32,40 @@ export interface MediaRoot {
   readonly label: string
   /** A pasta existe agora? Uma unidade de rede desconectada some sem avisar. */
   readonly present: boolean
+}
+
+/** Uma pasta navegável do próprio servidor, para o seletor web remoto. */
+export interface ServerFolderBrowser {
+  readonly path: string
+  readonly parent: string | null
+  readonly directories: readonly { name: string; path: string }[]
+}
+
+/**
+ * Lista somente subpastas no processo do servidor. Não abre UI nativa: assim
+ * quem opera de outra máquina escolhe no navegador a pasta que realmente será
+ * lida pelo playout.
+ */
+export async function browseServerFolders(fallback: string, requested?: string): Promise<ServerFolderBrowser> {
+  const raw = requested?.trim() || fallback
+  const path = resolve(raw)
+  let entries: Array<{ name: string; isDirectory(): boolean }>
+  try {
+    entries = await readdir(path, { withFileTypes: true, encoding: 'utf8' })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'Não consegui ler a pasta.'
+    throw new Error(`Não consegui abrir ${path}: ${reason}`)
+  }
+  const parent = dirname(path)
+  return {
+    path,
+    parent: parent === path ? null : parent,
+    directories: entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({ name: entry.name, path: resolve(path, entry.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+      .slice(0, 1_000),
+  }
 }
 
 /** Nome curto de uma pasta, para quando o operador não escolher um. */

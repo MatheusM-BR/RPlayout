@@ -1,8 +1,8 @@
 //! Sonda de arquivo de mídia.
 //!
 //! Abre o arquivo com o **mesmo GStreamer que vai tocá-lo**. É isso que faz o
-//! resultado valer alguma coisa: se a sonda abriu, o playout abre; se a sonda
-//! não abriu, o motivo que ela devolve é o mesmo que o playout daria. Uma lista
+//! resultado valer alguma coisa: prova a decodificação local, não a saída
+//! física nem todo trim/mix que o playout poderá usar. Uma lista
 //! de extensões nossa não teria essa propriedade -- diria "sim" para arquivo
 //! que o pipeline recusa e "não" para arquivo que ele tocaria sem reclamar.
 //!
@@ -81,6 +81,13 @@ struct AudioInfo {
 #[serde(rename_all = "camelCase")]
 struct Probe {
     ok: bool,
+    /// Nonempty raw buffers on the first selected decoded video/audio pads.
+    /// Caps alone are not evidence of decoded signal. Other audio tracks are
+    /// discovered, not individually decoded or loudness-certified here.
+    decoded_video_buffers: u64,
+    decoded_audio_buffers: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    video_codec: Option<String>,
     /// Duração em nanossegundos. Converter para frames é de quem sabe a
     /// cadência do canal, não da sonda.
     duration_ns: u64,
@@ -199,8 +206,31 @@ fn parse_args() -> Result<Args> {
         fita: fita.map(|n: u32| n.clamp(1, 64)),
         // Largura ímpar quebra a subamostragem de croma do JPEG; e uma largura
         // absurda transformaria a sonda num gerador de imagem enorme.
-        largura: largura.clamp(64, 1920) & !1,
+        largura: inspection_width(largura),
     })
+}
+
+// QC may explicitly request a native 4K inspection frame. The default remains
+// 320px; bound width and even chroma dimensions apply to every CLI consumer.
+fn inspection_width(requested: i32) -> i32 {
+    requested.clamp(64, 3840) & !1
+}
+
+#[cfg(test)]
+mod inspection_width_tests {
+    use super::inspection_width;
+    #[test]
+    fn keeps_economical_default_and_allows_explicit_4k() {
+        assert_eq!(inspection_width(320), 320);
+        assert_eq!(inspection_width(1920), 1920);
+        assert_eq!(inspection_width(3840), 3840);
+    }
+    #[test]
+    fn bounds_requested_pixels_and_even_chroma() {
+        assert_eq!(inspection_width(i32::MAX), 3840);
+        assert_eq!(inspection_width(-1), 64);
+        assert_eq!(inspection_width(1921), 1920);
+    }
 }
 
 fn uri_for(path: &str) -> Result<String> {
@@ -229,6 +259,24 @@ fn main() -> Result<()> {
         .build()
         .context("uridecodebin não existe nesta instalação do GStreamer")?;
     pipeline.add(&src)?;
+    // Read encoded caps before autoplug decoding; raw output caps do not
+    // identify the codec contained in the file. Always allow normal decoding.
+    let video_codec: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let observed_codec = Arc::clone(&video_codec);
+    src.connect("autoplug-continue", false, move |values| {
+        if let Ok(caps) = values[2].get::<gst::Caps>() {
+            if let Some(structure) = caps.structure(0) {
+                let name = structure.name().to_string();
+                let container = matches!(name.as_str(), "video/quicktime" | "video/x-matroska" | "video/x-ms-asf" | "video/x-flv" | "video/mpegts")
+                    || structure.get::<bool>("systemstream").unwrap_or(false);
+                if name.starts_with("video/") && name != "video/x-raw" && !container {
+                    let mut codec = observed_codec.lock().unwrap();
+                    if codec.is_none() { *codec = Some(name); }
+                }
+            }
+        }
+        Some(true.to_value())
+    });
 
     // O vídeo vai para um `appsink` de um quadro por segundo: um deles vira a
     // miniatura e o resto é descartado sem custo de codificação.
@@ -237,6 +285,8 @@ fn main() -> Result<()> {
     // Toda trilha entra na lista; só a primeira é decodificada e medida.
     let audio_tracks: Arc<Mutex<Vec<AudioTrack>>> = Arc::new(Mutex::new(Vec::new()));
     let meter: Arc<Mutex<Option<Meter>>> = Arc::new(Mutex::new(None));
+    let decoded_video = Arc::new(AtomicU64::new(0));
+    let decoded_audio = Arc::new(AtomicU64::new(0));
     let thumbnail_done = Arc::new(AtomicU64::new(0));
     // Sem `--at` nem `--fita`, o primeiro quadro serve e a captura já nasce
     // liberada.
@@ -258,6 +308,8 @@ fn main() -> Result<()> {
     let largura_thumb = args.largura;
     let thumb_flag = Arc::clone(&thumbnail_done);
     let porteiro_video = Arc::clone(&liberado);
+    let counted_video = Arc::clone(&decoded_video);
+    let counted_audio = Arc::clone(&decoded_audio);
 
     src.connect_pad_added(move |_, pad| {
         let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
@@ -278,6 +330,8 @@ fn main() -> Result<()> {
                 largura_thumb,
             ) {
                 eprintln!("[probe] vídeo ignorado: {error}");
+            } else {
+                count_decoded_buffers(pad, counted_video.clone());
             }
         } else if name.starts_with("audio/") {
             let mut tracks = listed_audio.lock().unwrap();
@@ -295,6 +349,8 @@ fn main() -> Result<()> {
             }
             if let Err(error) = attach_audio(&stage, pad, &seen_audio, &shared_meter, measure) {
                 eprintln!("[probe] áudio ignorado: {error}");
+            } else {
+                count_decoded_buffers(pad, counted_audio.clone());
             }
         }
     });
@@ -384,6 +440,9 @@ fn main() -> Result<()> {
         let _ = pipeline.set_state(gst::State::Null);
         let probe = Probe {
             ok: true,
+            decoded_video_buffers: decoded_video.load(Ordering::Acquire),
+            decoded_audio_buffers: decoded_audio.load(Ordering::Acquire),
+            video_codec: video_codec.lock().unwrap().clone(),
             duration_ns: total,
             video: video_info.lock().unwrap().take(),
             audio: None,
@@ -449,6 +508,9 @@ fn main() -> Result<()> {
 
     let probe = Probe {
         ok: true,
+        decoded_video_buffers: decoded_video.load(Ordering::Acquire),
+        decoded_audio_buffers: decoded_audio.load(Ordering::Acquire),
+        video_codec: video_codec.lock().unwrap().clone(),
         duration_ns,
         video: video_info.lock().unwrap().take(),
         audio,
@@ -459,6 +521,18 @@ fn main() -> Result<()> {
     };
     println!("{}", serde_json::to_string(&probe)?);
     Ok(())
+}
+
+fn count_decoded_buffers(pad: &gst::Pad, counter: Arc<AtomicU64>) {
+    pad.add_probe(gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST, move |_, info| {
+        let count = if let Some(buffer) = info.buffer() {
+            u64::from(buffer.size() > 0)
+        } else if let Some(list) = info.buffer_list() {
+            list.iter().filter(|buffer| buffer.size() > 0).count() as u64
+        } else { 0 };
+        counter.fetch_add(count, Ordering::AcqRel);
+        gst::PadProbeReturn::Ok
+    });
 }
 
 /// Idioma declarado da trilha, quando o arquivo diz.

@@ -18,7 +18,8 @@ import type { RundownView } from './plan.js'
 import { emitIntegrationEvent } from './integrations.js'
 
 /** Uma linha do as-run como ela sai para a interface e para o relatório. */
-export type AsRunEntry = typeof asRun.$inferSelect
+type Provenance = 'revisionId' | 'mediaHash' | 'startPositionFrames' | 'endPositionFrames' | 'rateNum' | 'rateDen' | 'executionKind' | 'durationEvidence'
+export type AsRunEntry = Omit<typeof asRun.$inferSelect, Provenance> & Partial<Pick<typeof asRun.$inferSelect, Provenance>>
 
 /**
  * Escreve o que foi ao ar.
@@ -28,17 +29,24 @@ export type AsRunEntry = typeof asRun.$inferSelect
  * sucesso não serve para explicar o dia em que algo falhou.
  */
 export class AsRun {
-  private open: { id: string; itemId: string; startedMs: number } | null = null
+  private open: { id: string; itemId: string; startedMs: number; startPositionFrames: number; rate: Rate } | null = null
   /**
    * O as-run em memória é recriado junto com o servidor. Sem esta
    * reconciliação, uma queda/reinício deixa a linha anterior com `endedAt`
    * nulo e a tela Aired passa a mostrar dois (ou mais) itens como NO AR.
    */
   private reconciledAfterStartup = false
+  private serial: Promise<void> = Promise.resolve()
+  private exitReasons = new Map<string, { reason: string; frames: number }>()
+
+  noteExit(itemId: string, reason: string, frames: number): void {
+    this.exitReasons.set(itemId, { reason, frames: Math.max(0, Math.floor(frames)) })
+  }
 
   constructor(
     private readonly db: Db,
     private readonly channel: Channel,
+    private readonly executionKind: 'NATIVE' | 'SIMULATED' | 'UNKNOWN' = 'UNKNOWN',
   ) {}
 
   /**
@@ -46,12 +54,24 @@ export class AsRun {
    *
    * Idempotente para o mesmo item: só escreve se a chave mudar.
    */
-  async follow(itemId: string | null, view: RundownView | null = null): Promise<void> {
+  follow(itemId: string | null, view: RundownView | null = null, revisionId: string | null = null, positionFrames = 0, newTake = false): Promise<void> {
+    return this.enqueue(() => this.followSerial(itemId, view, revisionId, positionFrames, newTake))
+  }
+
+  private enqueue(action: () => Promise<void>): Promise<void> {
+    const operation = this.serial.then(action)
+    this.serial = operation.catch(() => {})
+    return operation
+  }
+
+  private async followSerial(itemId: string | null, view: RundownView | null, revisionId: string | null, positionFrames: number, newTake: boolean): Promise<void> {
     await this.reconcileAfterStartup()
-    if (this.open && this.open.itemId === itemId) return
+    if (this.open && this.open.itemId === itemId && !newTake) return
 
     if (this.open) {
-      await this.close(this.open, itemId ? 'NEXT' : 'STOP')
+      const exit = this.exitReasons.get(this.open.itemId)
+      await this.close(this.open, exit?.reason ?? (itemId ? 'NEXT' : 'STOP'), exit?.frames)
+      this.exitReasons.delete(this.open.itemId)
       this.open = null
     }
 
@@ -71,6 +91,9 @@ export class AsRun {
       rundownId: view?.rundown.id ?? null,
       itemId,
       mediaId: entry?.item.mediaId ?? null,
+      revisionId,
+      mediaHash: entry?.asset?.contentHash ?? null,
+      startPositionFrames: Math.max(0, Math.floor(positionFrames)),
       title: entry?.item.title ?? 'item desconhecido',
       type: entry?.item.type ?? 'VT',
       startedAt: new Date().toISOString(),
@@ -78,12 +101,16 @@ export class AsRun {
       plannedStart: scheduled?.start ?? null,
       actualStart: now,
       airedFrames: null,
+      rateNum: this.channel.rate.num,
+      rateDen: this.channel.rate.den,
+      executionKind: this.executionKind,
+      durationEvidence: 'UNKNOWN',
       plannedFrames: scheduled?.duration ?? null,
       endedBy: null,
       createdAt: new Date().toISOString(),
     })
     void emitIntegrationEvent(this.db, 'asrun.started', { itemId, title: entry?.item.title ?? 'item desconhecido', startedAt: new Date().toISOString() }, this.channel.id)
-    this.open = { id, itemId, startedMs: Date.now() }
+    this.open = { id, itemId, startedMs: Date.now(), startPositionFrames: Math.max(0, Math.floor(positionFrames)), rate: { ...this.channel.rate } }
   }
 
   /** Fecha apenas linhas órfãs de processos anteriores, uma única vez. */
@@ -98,20 +125,26 @@ export class AsRun {
   }
 
   /** Fecha a linha aberta, se houver. Chamado ao encerrar o canal. */
-  async finish(reason = 'STOP'): Promise<void> {
-    if (!this.open) return
-    await this.close(this.open, reason)
-    this.open = null
+  finish(reason = 'STOP', endPositionFrames?: number): Promise<void> {
+    return this.enqueue(async () => {
+      if (!this.open) return
+      await this.close(this.open, reason, endPositionFrames)
+      this.exitReasons.delete(this.open.itemId)
+      this.open = null
+    })
   }
 
-  private async close(open: { id: string; itemId: string; startedMs: number }, reason: string): Promise<void> {
-    const aired = msToFrames(Date.now() - open.startedMs, this.channel.rate)
+  private async close(open: NonNullable<AsRun['open']>, reason: string, endPositionFrames?: number): Promise<void> {
+    const positionConfirmed = this.executionKind === 'NATIVE' && Number.isSafeInteger(endPositionFrames) && endPositionFrames! >= open.startPositionFrames
+    const aired = positionConfirmed ? endPositionFrames! - open.startPositionFrames : msToFrames(Math.max(0, Date.now() - open.startedMs), open.rate)
     await this.db
       .update(asRun)
       .set({
         endedAt: new Date().toISOString(),
         airedFrames: Math.max(0, aired),
+        durationEvidence: positionConfirmed ? 'ENGINE_POSITION' : 'CLOCK_ESTIMATE',
         endedBy: reason,
+        endPositionFrames: endPositionFrames ?? null,
       })
       .where(eq(asRun.id, open.id))
     void emitIntegrationEvent(this.db, 'asrun.ended', { itemId: open.itemId, endedAt: new Date().toISOString(), reason, airedFrames: Math.max(0, aired) }, this.channel.id)
@@ -144,31 +177,43 @@ export async function listAsRun(
     .limit(limit)
 }
 
-/** Converte um AsRunEntry bruto para o modelo estendido com métricas de compliance. */
+/** Cadência histórica nunca é inferida do preset atual. Relógio fechado é
+ * somente estimativa; linha aberta não possui duração final. */
+export function asRunDurationData(entry: AsRunEntry) {
+  const rate = Number.isSafeInteger(entry.rateNum) && Number.isSafeInteger(entry.rateDen) && entry.rateNum! > 0 && entry.rateDen! > 0
+    ? { num: entry.rateNum!, den: entry.rateDen! } : null
+  const frames = entry.endedAt && Number.isSafeInteger(entry.airedFrames) && entry.airedFrames! >= 0 ? entry.airedFrames : null
+  if (frames !== null && rate) return { frames, rate, seconds: framesToSeconds(frames, rate), evidence: entry.durationEvidence ?? 'UNKNOWN' }
+  const elapsed = entry.endedAt ? Date.parse(entry.endedAt) - Date.parse(entry.startedAt) : NaN
+  const seconds = Number.isFinite(elapsed) && elapsed >= 0 ? elapsed / 1000 : null
+  return { frames, rate, seconds, evidence: seconds === null ? 'UNKNOWN' as const : 'CLOCK_ESTIMATE' as const }
+}
+
+/** Converte o registro sem fabricar homologação, cadência ou fim de arquivo. */
 export function toAsRunRecordExtended(
   entry: AsRunEntry,
-  rate: Rate = RATE_PADRAO,
+  _rate: Rate = RATE_PADRAO,
 ): AsRunRecordExtended {
-  const plannedFrames = entry.plannedFrames ?? 0
-  const airedFrames = entry.airedFrames ?? plannedFrames
+  const duration = asRunDurationData(entry)
+  const airedFrames = duration.frames
+  const historicalRate = duration.rate
   const delta = (entry.actualStart ?? 0) - (entry.plannedStart ?? entry.actualStart ?? 0)
 
-  let status: AsRunExtendedStatus = 'PLAYED_FULL'
+  let status: AsRunExtendedStatus = 'UNKNOWN'
   const endedBy = (entry.endedBy ?? '').toUpperCase()
-  if (endedBy === 'FAILED' || endedBy === 'ERROR' || endedBy === 'FAILED_MEDIA_ERROR') {
+  if (!entry.endedAt) status = 'RUNNING'
+  else if (/FAIL|ERROR|ABORT/.test(endedBy)) {
     status = 'FAILED'
-  } else if (airedFrames === 0) {
+  } else if (endedBy === 'SKIP' || endedBy === 'DROPPED') {
     status = 'DROPPED'
-  } else if (plannedFrames > 0 && airedFrames < plannedFrames * 0.95) {
-    // O arquivo não é "truncado": a veiculação foi interrompida antes do
-    // término previsto. O operador precisa saber a diferença para auditar.
+  } else if (['NEXT', 'TAKE', 'STOP', 'LIVE_PRIORITY', 'RESTART', 'CONTINGENCY_RETURN'].includes(endedBy)) {
     status = 'INTERRUPTED'
-  } else {
+  } else if (['EOS', 'EOF'].includes(endedBy)) {
     status = 'PLAYED_FULL'
   }
 
   const isCommercial =
-    entry.type.toUpperCase() === 'COMMERCIAL' ||
+    entry.type.toUpperCase() === 'COMMERCIAL' || entry.type.toUpperCase() === 'COMERCIAL' ||
     entry.type.toUpperCase() === 'SPOT' ||
     entry.type.toUpperCase() === 'PUB'
 
@@ -179,50 +224,54 @@ export function toAsRunRecordExtended(
     eventType: entry.type,
     scheduledStart:
       entry.plannedStart !== null && entry.plannedStart !== undefined
-        ? formatTimecode(entry.plannedStart, rate)
-        : (entry.startedAt ?? '00:00:00:00'),
-    actualStart: formatTimecode(entry.actualStart, rate),
+        ? historicalRate ? formatTimecode(entry.plannedStart, historicalRate) : 'N/D'
+        : entry.startedAt,
+    actualStart: historicalRate ? formatTimecode(entry.actualStart, historicalRate) : entry.startedAt,
     durationFrames: airedFrames,
+    durationSeconds: duration.seconds,
+    endedBy: entry.endedBy,
+    rate: historicalRate,
+    executionKind: entry.executionKind ?? 'UNKNOWN',
+    durationEvidence: duration.evidence,
     deltaFrames: delta,
     status,
-    audioLufs: -24.0,
-    audioTruePeakDb: -2.0,
-    ancineQuotaEligible: !isCommercial,
-    commercialContractId: isCommercial ? `CTR-${entry.id.slice(0, 8).toUpperCase()}` : undefined,
+    // As-run has no persisted PGM loudness measurement or contract metadata.
+    // Do not manufacture compliant values, national eligibility or contracts.
+    audioLufs: null,
+    audioTruePeakDb: null,
+    ancineQuotaEligible: isCommercial ? false : null,
+    commercialContractId: undefined,
   }
 }
 
 /**
- * Calcula a conformidade regulatória ANCINE e a regra dos 25% de publicidade por hora
- * (art. 67 Decreto nº 52.795/1963 e Lei 4.117/1962).
+ * Soma duração classificada. Não verifica janela legal, origem, direitos ou
+ * sinal físico e, portanto, não certifica conformidade regulatória.
  */
 export function calculateAncineCompliance(
   entries: readonly (AsRunEntry | AsRunRecordExtended)[],
-  rate: Rate = RATE_PADRAO,
+  _rate: Rate = RATE_PADRAO,
 ): AncineComplianceSummary {
   let commercialSeconds = 0
   let nationalSeconds = 0
+  let nationalMetadataComplete = true
+  let missingDurationCount = 0
 
   for (const item of entries) {
-    const isCommercial =
-      'ancineQuotaEligible' in item
-        ? !item.ancineQuotaEligible
-        : item.type.toUpperCase() === 'COMMERCIAL' ||
-          item.type.toUpperCase() === 'SPOT' ||
-          item.type.toUpperCase() === 'PUB'
+    const kind = ('eventType' in item ? item.eventType : item.type).toUpperCase()
+    const isCommercial = ['COMERCIAL', 'COMMERCIAL', 'SPOT', 'PUB'].includes(kind)
 
-    const frames =
-      'durationFrames' in item
-        ? item.durationFrames
-        : item.airedFrames ?? item.plannedFrames ?? 0
-
-    const seconds = framesToSeconds(frames, rate)
+    const recordedSeconds = 'durationFrames' in item
+      ? item.durationSeconds !== undefined ? item.durationSeconds : item.durationFrames !== null && item.rate ? framesToSeconds(item.durationFrames, item.rate) : null
+      : asRunDurationData(item).seconds
+    const seconds = recordedSeconds !== null && Number.isFinite(recordedSeconds) && recordedSeconds >= 0 ? recordedSeconds : null
+    if (seconds === null) missingDurationCount++
 
     if (isCommercial) {
-      commercialSeconds += seconds
-    } else {
-      nationalSeconds += seconds
-    }
+      commercialSeconds += seconds ?? 0
+    } else if ('ancineQuotaEligible' in item && item.ancineQuotaEligible === true) {
+      nationalSeconds += seconds ?? 0
+    } else if (!('ancineQuotaEligible' in item) || item.ancineQuotaEligible === null) nationalMetadataComplete = false
   }
 
   // Janela regulatória padrão de 1 hora cheia de relógio (3600 segundos)
@@ -234,9 +283,16 @@ export function calculateAncineCompliance(
   return {
     hourlyCommercialPercent,
     maxAllowedCommercialPercent: 25.0,
-    nationalContentMinutes,
-    nationalContentQuotaMin: 30.0,
-    compliant: hourlyCommercialPercent <= 25.0,
+    nationalContentMinutes: nationalMetadataComplete ? nationalContentMinutes : null,
+    nationalContentQuotaMin: null,
+    nationalMetadataComplete,
+    durationMetadataComplete: missingDurationCount === 0,
+    missingDurationCount,
+    evidence: 'AS_RUN_EVENT_CLASSIFICATION_ONLY',
+    compliant: null,
+    regulatoryValidated: false,
+    commercialThresholdExceeded: hourlyCommercialPercent > 25.0,
+    aggregationBasis: 'CLASSIFIED_DURATION_PER_3600_SECONDS_NOT_LEGAL_WINDOW',
   }
 }
 
@@ -263,7 +319,8 @@ export async function getAncineComplianceSummary(
 
 function escapeCsvField(val: unknown): string {
   if (val === null || val === undefined) return ''
-  const str = String(val)
+  const raw = String(val)
+  const str = /^[=+@\-\t\r]/.test(raw) ? "'" + raw : raw
   if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
     return `"${str.replace(/"/g, '""')}"`
   }
@@ -291,6 +348,13 @@ export function exportAsRunCsv(
     'audioTruePeakDb',
     'ancineQuotaEligible',
     'commercialContractId',
+    'executionKind',
+    'durationEvidence',
+    'rateNum',
+    'rateDen',
+    'regulatoryValidation',
+    'durationSeconds',
+    'endedBy',
   ]
 
   const lines = [headers.join(',')]
@@ -313,6 +377,13 @@ export function exportAsRunCsv(
       escapeCsvField(rec.audioTruePeakDb),
       escapeCsvField(rec.ancineQuotaEligible),
       escapeCsvField(rec.commercialContractId ?? ''),
+      escapeCsvField(rec.executionKind ?? 'UNKNOWN'),
+      escapeCsvField(rec.durationEvidence ?? 'UNKNOWN'),
+      escapeCsvField(rec.rate?.num),
+      escapeCsvField(rec.rate?.den),
+      'NOT_HOMOLOGATED',
+      escapeCsvField(rec.durationSeconds),
+      escapeCsvField(rec.endedBy),
     ]
     lines.push(row.join(','))
   }
@@ -331,7 +402,8 @@ function escapeXml(val: unknown): string {
 }
 
 /**
- * Exporta o log de exibição em XML compatível com o padrão SMPTE-2021 BXF (Broadcast eXchange Format).
+ * Exportação XML legada, não validada por XSD BXF. Mantém os elementos para
+ * consumidores existentes, mas não anuncia interoperabilidade SMPTE.
  */
 export function exportAsRunBxf(
   entries: readonly (AsRunEntry | AsRunRecordExtended)[],
@@ -358,22 +430,26 @@ export function exportAsRunBxf(
         <BroadcastEvent eventType="${escapeXml(rec.eventType)}">
           <EventData eventTitle="${escapeXml(rec.title)}">
             <CommercialContractId>${escapeXml(rec.commercialContractId ?? '')}</CommercialContractId>
-            <AncineQuotaEligible>${rec.ancineQuotaEligible}</AncineQuotaEligible>
+            <AncineQuotaEligible>${rec.ancineQuotaEligible ?? ''}</AncineQuotaEligible>
           </EventData>
           <TimingData>
             <ScheduledStart>${escapeXml(rec.scheduledStart)}</ScheduledStart>
             <ActualStart>${escapeXml(rec.actualStart)}</ActualStart>
-            <DurationFrames>${rec.durationFrames}</DurationFrames>
+            <DurationFrames>${rec.durationFrames ?? ''}</DurationFrames>
+            <DurationSeconds>${rec.durationSeconds ?? ''}</DurationSeconds>
+            <Rate num="${rec.rate?.num ?? ''}" den="${rec.rate?.den ?? ''}" />
             <DeltaFrames>${rec.deltaFrames}</DeltaFrames>
           </TimingData>
-          <AudioCompliance audioLufs="${rec.audioLufs}" audioTruePeakDb="${rec.audioTruePeakDb}" standard="EBU-R128" />
-          <ExecutionResult status="${rec.status}" />
+          ${rec.audioLufs !== null && rec.audioTruePeakDb !== null ? `<AudioCompliance audioLufs="${rec.audioLufs}" audioTruePeakDb="${rec.audioTruePeakDb}" standard="EBU-R128" />` : '<AudioCompliance measured="false" />'}
+          <ExecutionResult status="${rec.status}" endedBy="${escapeXml(rec.endedBy)}" />
+          <Evidence transport="${escapeXml(rec.executionKind ?? 'UNKNOWN')}" duration="${escapeXml(rec.durationEvidence ?? 'UNKNOWN')}" regulatoryValidated="false" />
         </BroadcastEvent>
       </ScheduleItem>\n`
   }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<BxfMessage xmlns="http://smpte-ra.org/schemas/2021/2008/BXF" messageType="AsRun" version="2.0">
+<!-- Legacy RPlayout XML draft: NOT XSD-VALIDATED OR SMPTE-HOMOLOGATED. -->
+<BxfMessage xmlns="http://smpte-ra.org/schemas/2021/2008/BXF" messageType="AsRun" version="2.0" schemaValidated="false">
   <BxfHeader>
     <MessageId>${messageId}</MessageId>
     <DateTime>${timestamp}</DateTime>

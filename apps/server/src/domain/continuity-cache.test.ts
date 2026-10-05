@@ -5,6 +5,39 @@ import { join } from 'node:path'
 import { ContinuityCache } from './continuity-cache.js'
 
 describe('cache de continuidade', () => {
+  it('quota não remove original ou documento desconhecido numa pasta compartilhada',async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'rplayout-cache-foreign-'))
+    try {
+      await writeFile(join(dir,'ORIGINAL-ÇÃO.mp4'),'original')
+      await writeFile(join(dir,'Operação.txt'),'orientações')
+      const cache=new ContinuityCache(dir,1)
+      await cache.prune()
+      expect(await readFile(join(dir,'ORIGINAL-ÇÃO.mp4'),'utf8')).toBe('original')
+      expect(await readFile(join(dir,'Operação.txt'),'utf8')).toBe('orientações')
+      const status=await cache.getStatus()
+      expect(status.status).toBe('DEGRADED')
+      expect(status.totalCachedFiles).toBe(0)
+      expect(status.totalCachedBytes).toBe(0)
+    } finally {await rm(dir,{recursive:true,force:true})}
+  })
+  it('substitui proteção por canal, libera janela antiga e conserva outro canal/PGM', async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'rplayout-cache-owners-'))
+    try {
+      const cache=new ContinuityCache(join(dir,'cache'),1)
+      const a={id:'a',contentHash:'old',path:join(dir,'old.mp4')},b={id:'b',contentHash:'current',path:join(dir,'current.mp4')},c={id:'c',contentHash:'other',path:join(dir,'other.mp4')}
+      for(const asset of [a,b,c]) await writeFile(asset.path,'12345')
+      cache.protect(c)
+      await cache.warmSchedule([a],[],{owner:'ch:a'})
+      await cache.warmSchedule([b],[],{owner:'ch:b'})
+      cache.replaceProtection('ch:a',[])
+      await cache.prune()
+      expect(cache.isProtected(cache.pathFor(a))).toBe(false)
+      expect(cache.isProtected(cache.pathFor(b))).toBe(true)
+      expect(cache.isProtected(cache.pathFor(c))).toBe(true)
+      await expect(stat(cache.pathFor(a))).rejects.toThrow()
+      await expect(stat(cache.pathFor(b))).resolves.toBeDefined()
+    } finally { await rm(dir,{recursive:true,force:true}) }
+  })
   it('aquece arquivo e resolve o caminho cacheado', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'rplayout-cache-'))
     const source = join(dir, 'origem.mp4')
@@ -56,7 +89,7 @@ describe('cache de continuidade', () => {
     await expect(stat(targetCritical)).resolves.toBeDefined()
   })
 
-  it('calcula métricas de cobertura 48h, 7d e autonomia offline (AIR_GAP_READY)', async () => {
+  it('não converte quantidade de arquivos em horas de autonomia', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'rplayout-cache-telemetry-'))
     const f1 = join(dir, 'f1.mp4')
     const f2 = join(dir, 'f2.mp4')
@@ -75,11 +108,53 @@ describe('cache de continuidade', () => {
     // Aquece todos os arquivos da grade 48h
     await cache.warmSchedule([asset1, asset2])
 
-    // Após aquecer: 100% de cobertura, AIR_GAP_READY e autonomia >= 48h
+    // Cobertura da coleção não prova 48h de execução ordenada.
     const statusAfter = await cache.getStatus([asset1, asset2])
     expect(statusAfter.coverage48hPercent).toBe(100)
-    expect(statusAfter.offlineAutonomyHours).toBeGreaterThanOrEqual(48)
-    expect(statusAfter.status).toBe('AIR_GAP_READY')
-    expect(await cache.isAirGapReady([asset1, asset2])).toBe(true)
+    expect(statusAfter.offlineAutonomyHours).toBe(0)
+    expect(statusAfter.coverageBasis).toBe('LIBRARY')
+    expect(statusAfter.status).toBe('SYNCHRONIZING')
+    expect(await cache.isAirGapReady([asset1, asset2])).toBe(false)
+  })
+
+  it('verifica hash, recusa arquivo alterado e soma apenas o prefixo reproduzível', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rplayout-cache-hash-'))
+    try {
+      const { createHash } = await import('node:crypto')
+      const source = join(dir, 'ÇÃO.mp4')
+      await writeFile(source, 'video')
+      const asset = { id: 'sha', path: source, kind: 'VIDEO', contentHash: createHash('sha256').update('video').digest('hex') }
+      const cache = new ContinuityCache(join(dir, 'cache'))
+      expect((await cache.warm([asset])).cached).toBe(1)
+      const sequence = [{ asset, durationSeconds: 1800 }, { asset: null, durationSeconds: 3600 }, { asset, durationSeconds: 1800 }]
+      expect((await cache.getStatus([asset], [], sequence)).offlineAutonomyHours).toBe(0.5)
+      await writeFile(cache.pathFor(asset), 'corrupt')
+      expect(await cache.verified(asset)).toBe(false)
+      await writeFile(source, 'changed')
+      expect((await cache.warm([asset])).missing).toBe(1)
+      expect((await cache.getStatus([asset], [], sequence)).offlineAutonomyHours).toBe(0)
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+  it('reutiliza versão por SHA mesmo renomeada e migra cópia antiga verificada', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rplayout-cache-name-'))
+    try {
+      const { createHash } = await import('node:crypto')
+      const { mkdir, readdir } = await import('node:fs/promises')
+      const cache = new ContinuityCache(join(dir, 'cache'))
+      const hash = createHash('sha256').update('video').digest('hex')
+      const asset = { id: 'a', contentHash: hash, path: join(dir,'AÇÃO.mp4'), kind: 'VIDEO' }
+      await mkdir(cache.root)
+      await writeFile(join(cache.root, `${hash}-AÇÃO.mp4`), 'video')
+      const archived = { ...asset, path: join(dir, `${hash}.mp4`) }
+      expect(cache.pathFor(asset)).toBe(cache.pathFor(archived))
+      expect(await cache.verified(archived)).toBe(true)
+      expect(await readFile(cache.pathFor(asset),'utf8')).toBe('video')
+      expect(await readdir(cache.root)).toEqual([`${hash}.media`])
+      const sequence = [{ asset: archived, durationSeconds: 3600 }, { asset: null, durationSeconds: 3600 }, { asset: archived, durationSeconds: 3600 }]
+      const status = await cache.getStatus([asset], [asset], sequence)
+      expect(status.offlineAutonomyHours).toBe(1)
+      expect(status.coverage48hPercent).toBe(4.1)
+      expect(status.coverage7dPercent).toBe(1.1)
+    } finally { await rm(dir, { recursive: true, force: true }) }
   })
 })

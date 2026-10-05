@@ -7,6 +7,7 @@ const CONFLICT_LABEL: Record<ConflictKind, string> = {
   ANCHOR_IMPOSSIBLE: 'Âncoras incompatíveis',
   ANCHOR_MISSED: 'Fora da janela',
   ANCHOR_PAST: 'Horário já passou',
+  PROTECTED_ZONE_OVERRIDDEN: 'Zona protegida alterada',
 }
 
 const ADJUSTMENT_LABEL: Record<AdjustmentKind, string> = {

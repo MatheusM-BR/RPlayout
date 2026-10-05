@@ -3,6 +3,7 @@ import type { Channel, ManagedLiveSource } from '@rplayout/protocol'
 import { api } from '../api.js'
 import type { SourceList } from '../types.js'
 import { CanonicalProtocolSelector, type ProtocolResult } from './broadcast/CanonicalProtocolSelector.js'
+import { inputName } from './broadcast/protocol-config.js'
 
 interface Props {
   channel: Channel
@@ -22,9 +23,24 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
   // Estado para cadastro de nova entrada
   const [isAdding, setIsAdding] = useState(false)
   const [editingSource, setEditingSource] = useState<ManagedLiveSource | null>(null)
+  const [keepConnection, setKeepConnection] = useState(false)
   const [name, setName] = useState('')
+  const [nameEdited, setNameEdited] = useState(false)
   const [selectedProtocolResult, setSelectedProtocolResult] = useState<ProtocolResult | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+
+  const selectInput = useCallback((result: ProtocolResult) => {
+    setSelectedProtocolResult(result)
+    setName((current) => inputName(current, result.nameRecommendation, nameEdited))
+  }, [nameEdited])
+
+  const resetForm = () => {
+    setName('')
+    setNameEdited(false)
+    setSelectedProtocolResult(null)
+    setEditingSource(null)
+    setKeepConnection(false)
+  }
 
   const loadSources = useCallback(async (refresh = false) => {
     setIsLoadingSources(true)
@@ -65,7 +81,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
       onMessage('Informe um nome identificador para a fonte de entrada.')
       return
     }
-    if (!selectedProtocolResult || !selectedProtocolResult.targetUri.trim()) {
+    if (!selectedProtocolResult || !selectedProtocolResult.targetUri.trim() || !selectedProtocolResult.isHardwareValid) {
       onMessage('Configure o endereço ou porta da entrada.')
       return
     }
@@ -85,6 +101,8 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
         onMessage(`✓ Fonte ao vivo "${name.trim()}" cadastrada com sucesso!`)
       }
       setName('')
+      setNameEdited(false)
+      setSelectedProtocolResult(null)
       setIsAdding(false)
       setEditingSource(null)
       await loadLiveSourcesList()
@@ -98,10 +116,12 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
 
   const beginEdit = (source: ManagedLiveSource) => {
     setEditingSource(source)
+    setKeepConnection(Boolean(source.credentialProtected))
     setName(source.name)
+    setNameEdited(true)
     setSelectedProtocolResult({
       kind: source.kind,
-      targetUri: source.targetUrl,
+      targetUri: source.controlRef ?? source.targetUrl,
       nameRecommendation: source.name,
       isHardwareValid: true,
     })
@@ -173,7 +193,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                   </span>
                 ) : (
                   <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-surface-container text-outline border border-border-subtle font-bold">
-                    SEM PLACAS FÍSICAS
+                    {isLoadingSources ? 'CONSULTANDO' : 'SEM PORTAS ENUMERADAS'}
                   </span>
                 )}
               </div>
@@ -189,13 +209,13 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                         Porta {idx + 1} ({s.reference}):
                       </span>
                       <span className="text-status-ok-bright font-semibold">
-                        {s.label || 'Sinal Ativo'}
+                        {s.label || 'Disponível para CUE'}
                       </span>
                     </div>
                   ))
                 ) : (
                   <div className="text-outline italic text-[10.5px] py-1">
-                    Nenhuma placa Blackmagic DeckLink instalada ou detectada no barramento PCI/Thunderbolt.
+                    {sources?.sdi.reason || 'Aguardando a descoberta de portas DeckLink no servidor.'}
                   </div>
                 )}
               </div>
@@ -212,7 +232,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                 </span>
                 {sources && sources.ndi.sources.length > 0 ? (
                   <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-accent-ice/20 text-accent-ice-bright border border-accent-ice/40 font-bold">
-                    {sources.ndi.sources.length} FONTES ATIVAS
+                    {sources.ndi.sources.length} FONTES LISTADAS
                   </span>
                 ) : (
                   <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-surface-container text-outline border border-border-subtle font-bold">
@@ -221,7 +241,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                 )}
               </div>
               <p className="font-body-sm text-[11.5px] text-outline mt-1 leading-snug">
-                Fontes NDI anunciadas automaticamente na rede local para inclusão na grade de exibição.
+                Fontes NDI anunciadas automaticamente na rede local. A descoberta confirma o anúncio; o sinal só é confirmado após CUE no PVW.
               </p>
 
               <div className="bg-surface-base p-2.5 rounded border border-border-subtle mt-2 font-label-mono text-[11px] flex flex-col gap-1.5">
@@ -261,7 +281,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
             type="button"
             onClick={() => {
               setIsAdding(!isAdding)
-              if (isAdding) setEditingSource(null)
+              resetForm()
             }}
             className="px-3 py-1.5 rounded bg-primary hover:bg-primary/90 text-on-primary font-label-caps text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-md transition-colors"
           >
@@ -280,12 +300,24 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
           >
             <div className="flex items-center justify-between border-b border-border-subtle/50 pb-2">
               <span className="font-headline-md text-[13px] text-primary font-bold uppercase tracking-wider">
-                Configurar Parâmetros da Nova Entrada
+                {editingSource ? 'Editar Entrada' : 'Configurar Parâmetros da Nova Entrada'}
               </span>
               <span className="text-[10px] text-outline font-label-mono">
                 Padrão Canônico Broadcast
               </span>
             </div>
+
+            {keepConnection && editingSource ? <div className="rounded border border-border-subtle p-3 text-xs text-outline">
+              <p>{editingSource.kind} · {editingSource.targetUrl}</p>
+              <p className="mt-1">Conexão e credenciais preservadas no servidor. Alterar o nome não troca a fonte nem revela a senha.</p>
+              <button type="button" className="mt-2 text-primary hover:underline" onClick={() => { setKeepConnection(false); setSelectedProtocolResult(null) }}>Substituir conexão (informe os parâmetros completos)</button>
+            </div> : <CanonicalProtocolSelector
+              key={editingSource?.id ?? 'new'}
+              mode="INPUT"
+              defaultKind={editingSource?.kind ?? 'NDI'}
+              initialUri={editingSource?.credentialProtected ? '' : editingSource?.targetUrl ?? ''}
+              onChange={selectInput}
+            />}
 
             <div className="flex flex-col gap-1">
               <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
@@ -295,37 +327,30 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                 type="text"
                 required
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Ex: Link Externa Brasília, Mochila 01 Live, Estúdio B"
+                onChange={(e) => { setName(e.target.value); setNameEdited(Boolean(e.target.value.trim())) }}
+                placeholder="Selecione a entrada acima para definir seu nome"
                 className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
               />
+              <span className="text-[10px] text-outline">O nome acompanha a fonte selecionada até você definir um apelido.</span>
+              {nameEdited && (
+                <button type="button" className="self-start text-[10px] text-primary hover:underline"
+                  onClick={() => { setNameEdited(false); setName(selectedProtocolResult?.nameRecommendation || '') }}>
+                  Usar nome da fonte selecionada
+                </button>
+              )}
             </div>
-
-            {/* Componente Modular de Protocolos: SRT, RTMP, NDI, SDI */}
-            <CanonicalProtocolSelector
-              key={editingSource?.id ?? 'new'}
-              mode="INPUT"
-              defaultKind={editingSource?.kind ?? 'SRT'}
-              initialUri={editingSource?.targetUrl ?? ''}
-              onChange={(res) => {
-                setSelectedProtocolResult(res)
-                if (!name && res.nameRecommendation) {
-                  setName(res.nameRecommendation)
-                }
-              }}
-            />
 
             <div className="flex justify-end gap-2 pt-2 border-t border-border-subtle/50">
               <button
                 type="button"
-                onClick={() => { setIsAdding(false); setEditingSource(null) }}
+                onClick={() => { setIsAdding(false); resetForm() }}
                 className="px-3 py-1.5 rounded bg-surface-card hover:bg-surface-container text-outline hover:text-on-surface font-label-caps text-[11px] cursor-pointer"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
-                disabled={isSaving}
+                disabled={isSaving || !selectedProtocolResult?.isHardwareValid || !name.trim()}
                 className="px-4 py-1.5 rounded bg-primary hover:bg-primary/90 text-on-primary font-label-caps text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50"
               >
                 {isSaving ? 'Salvando...' : editingSource ? 'Salvar Alterações' : 'Salvar Entrada Ao Vivo'}
@@ -349,7 +374,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                 Nenhuma entrada ao vivo cadastrada para este canal.
               </span>
               <span className="text-outline text-[11px] max-w-sm">
-                Cadastre links SRT/RTMP, canais NDI, serviços OMT/NMOS ou portas DeckLink para alimentar a programação ao vivo.
+                Cadastre links SRT/RTMP, fontes NDI, fontes OMT ou portas DeckLink para alimentar a programação ao vivo.
               </span>
             </div>
           ) : (

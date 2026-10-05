@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
-import type { MediaRoot } from '../types.js'
+import type { MediaRoot, ServerFolderBrowser } from '../types.js'
 
 interface Props {
   onMessage: (text: string) => void
@@ -20,6 +20,8 @@ export function PastasPanel({ onMessage, onChanged }: Props) {
   const [pastas, setPastas] = useState<MediaRoot[]>([])
   const [busy, setBusy] = useState(false)
   const [varrendo, setVarrendo] = useState(false)
+  const [browser, setBrowser] = useState<ServerFolderBrowser | null>(null)
+  const [browsePath, setBrowsePath] = useState('')
 
   const recarregar = useCallback(async () => {
     const resposta = await api.mediaRoots()
@@ -65,14 +67,17 @@ export function PastasPanel({ onMessage, onChanged }: Props) {
       .finally(() => setBusy(false))
   }
 
+  const navegar = async (path?: string): Promise<void> => {
+    const result = await api.browseMediaRoot(path)
+    setBrowser(result)
+    setBrowsePath(result.path)
+  }
+
   const acrescentar = (): void => {
     guard(async () => {
-      const picked = await api.pickMediaRoot()
-      if (!picked) {
-        onMessage('Seleção de pasta cancelada pelo operador.')
-        return
-      }
-      const { root, scanning } = picked
+      const path = browsePath.trim()
+      if (!path) throw new Error('Escolha uma pasta no navegador do servidor.')
+      const { root, scanning } = await api.addMediaRoot(path)
       setVarrendo(scanning)
       onMessage(
         scanning
@@ -81,6 +86,13 @@ export function PastasPanel({ onMessage, onChanged }: Props) {
       )
       onChanged()
     })
+  }
+
+  const abrirNavegador = (): void => {
+    setBusy(true)
+    void navegar(browsePath || undefined)
+      .catch((failure: Error) => onMessage(failure.message))
+      .finally(() => setBusy(false))
   }
 
   const tirar = (pasta: MediaRoot): void => {
@@ -138,13 +150,31 @@ export function PastasPanel({ onMessage, onChanged }: Props) {
       </ul>
 
       <div className="pastas-add">
-        <button className="btn small" disabled={busy} onClick={acrescentar}>
-          ESCOLHER PASTA…
+        <button className="btn small" disabled={busy} onClick={abrirNavegador}>
+          NAVEGAR NO SERVIDOR…
         </button>
         <button className="btn small" disabled={busy || varrendo} onClick={procurar}>
           {varrendo ? 'PROCURANDO…' : 'PROCURAR'}
         </button>
       </div>
+      {browser && (
+        <div className="pastas-browser" aria-label="Pastas do servidor">
+          <div className="note">Navegação no servidor do playout — não abre uma janela na estação do servidor.</div>
+          <div className="pastas-add">
+            <button className="btn small" disabled={busy || !browser.parent} onClick={() => void navegar(browser.parent ?? undefined)}>↑</button>
+            <input value={browsePath} onChange={(event) => setBrowsePath(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void navegar(browsePath) }} aria-label="Caminho no servidor" />
+            <button className="btn small" disabled={busy} onClick={() => void navegar(browsePath)}>ABRIR</button>
+            <button className="btn small" disabled={busy} onClick={acrescentar}>USAR ESTA PASTA</button>
+          </div>
+          <ul className="pastas">
+            {browser.directories.map((folder) => (
+              <li key={folder.path}>
+                <button className="btn small" disabled={busy} onClick={() => void navegar(folder.path)}>📁 {folder.name}</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

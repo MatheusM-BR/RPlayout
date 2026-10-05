@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
  * A mensagem que o operador vê quando o binário nativo não serve.
  *
  * O erro de origem despeja treze caminhos e uma pilha de vinte linhas, sem
- * dizer que a causa é a versão do Node -- e é sempre isso. Este teste existe
+ * explicar a incompatibilidade entre o módulo e o runtime. Este teste existe
  * porque a tradução é fácil de perder num refactor, e sem ela o defeito volta
  * a ser meia hora de investigação na madrugada.
  */
@@ -19,8 +19,8 @@ describe('abrir o banco', () => {
       },
     }))
     const { openDatabase } = await import('./client.js')
-    expect(() => openDatabase(':memory:')).toThrowError(/Node 22 ou 24/)
-    expect(() => openDatabase(':memory:')).toThrowError(/pnpm install/)
+    expect(() => openDatabase(':memory:')).toThrowError(/Node e o SQLite testados juntos/)
+    expect(() => openDatabase(':memory:')).toThrowError(/não é necessário instalar tsx, tsc ou módulos manualmente/)
     vi.doUnmock('better-sqlite3')
     vi.resetModules()
   })

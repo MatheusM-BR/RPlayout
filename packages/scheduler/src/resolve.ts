@@ -17,6 +17,7 @@ import {
   type ScheduleCompensationReport,
   type ScheduleCompensationStatus,
   type Suggestion,
+  type ProtectedTimingZone,
 } from '@rplayout/protocol'
 
 /**
@@ -24,6 +25,9 @@ import {
  * passadas sobre o mesmo segmento até o tempo fechar.
  */
 interface Work {
+  readonly zones: readonly ProtectedTimingZone[]
+  referenceStart: Frames
+  referenceEnd: Frames
   readonly item: PlanItem
   duration: Frames
   dropped: boolean
@@ -51,22 +55,29 @@ function isFixed(item: PlanItem): boolean {
   )
 }
 
-function isProtected(item: PlanItem): boolean {
-  return item.timingFlags?.protected === true || item.locked === true
+function matchingZones(w: Work): readonly ProtectedTimingZone[] {
+  return w.zones.filter(zone => (w.referenceStart < zone.to && w.referenceEnd > zone.from) ||
+    (w.start < zone.to && w.end > zone.from))
+}
+function isProtected(w: Work, anchored?: Work): boolean {
+  return w.item.timingFlags?.protected === true || w.item.locked === true ||
+    matchingZones(w).some(zone => zone.priority >= (anchored ? anchorPriority(anchored.item.anchor) : 1))
 }
 
 function isFiller(item: PlanItem): boolean {
   return item.eventType === 'FILLER' || item.isFiller || item.elastic !== null
 }
 
-function isOptional(item: PlanItem): boolean {
-  if (isProtected(item)) return false
+function isOptional(w: Work, anchored?: Work): boolean {
+  const item = w.item
+  if (isProtected(w, anchored)) return false
   if (item.timingFlags?.optional === true) return true
   return item.onOverrun === 'DROP_FILLER' || item.onOverrun === 'SKIP'
 }
 
-function isTrimmable(item: PlanItem): boolean {
-  if (isProtected(item)) return false
+function isTrimmable(w: Work, anchored?: Work): boolean {
+  const item = w.item
+  if (isProtected(w, anchored)) return false
   if (item.timingFlags?.trimmable === true) return true
   return item.onOverrun === 'TRIM_PREV'
 }
@@ -164,7 +175,7 @@ function stretchElastics(
   let left = amount
   for (let k = to - 1; k >= from && left > 0; k--) {
     const w = work[k]
-    if (!w || w.dropped || isProtected(w.item)) continue
+    if (!w || w.dropped || isProtected(w, anchored)) continue
     if (!w.item.elastic) continue
 
     const room = w.item.elastic.max - w.duration
@@ -281,7 +292,7 @@ function recoverTime(
   // ---- PASSO 1: Encolher FILLER elástico ou inteligente até minDuration ----
   for (let k = index - 1; k >= segmentStart && over > 0; k--) {
     const w = work[k]
-    if (!w || w.dropped || isProtected(w.item)) continue
+    if (!w || w.dropped || isProtected(w, anchored)) continue
     if (!isFiller(w.item)) continue
 
     const minFloor = w.item.elastic?.min ?? (w.item.minDuration > 0 ? w.item.minDuration : 0)
@@ -317,8 +328,8 @@ function recoverTime(
   // ---- PASSO 2: Descartar itens OPTIONAL (de trás para frente no bloco) ----
   for (let k = index - 1; k >= segmentStart && over > 0; k--) {
     const w = work[k]
-    if (!w || w.dropped || isProtected(w.item) || w.aired > 0) continue
-    if (!isOptional(w.item)) continue
+    if (!w || w.dropped || isProtected(w, anchored) || w.aired > 0) continue
+    if (!isOptional(w, anchored)) continue
 
     w.dropped = true
     const dropFrames = w.duration
@@ -347,8 +358,8 @@ function recoverTime(
   // ---- PASSO 3: Cortar cauda de TRIMMABLE até minDuration (de trás para frente) ----
   for (let k = index - 1; k >= segmentStart && over > 0; k--) {
     const w = work[k]
-    if (!w || w.dropped || isProtected(w.item)) continue
-    if (!isTrimmable(w.item)) continue
+    if (!w || w.dropped || isProtected(w, anchored)) continue
+    if (!isTrimmable(w, anchored)) continue
 
     // Regra de salvaguarda: piso mínimo é minDuration, ou 70% da duração original caso não declarada
     const configuredMin =
@@ -524,7 +535,9 @@ export function resolve(input: ResolveInput): ResolveResult {
   const actions: CompensationAction[] = []
   let totalInitialDrift = 0
 
-  const actionTimestamp = (input as any).generatedAt ?? '1970-01-01T00:00:00.000Z'
+  const actionTimestamp = input.generatedAt ?? '1970-01-01T00:00:00.000Z'
+  const zones = input.protectedZones ?? []
+  if (zones.some(zone => !Number.isSafeInteger(zone.from) || !Number.isSafeInteger(zone.to) || zone.from < 0 || zone.to <= zone.from || ![1,2,3,4,5].includes(zone.priority))) throw new Error('Zona protegida inválida.')
 
   const work: Work[] = items.map((item) => {
     // Suporte a items LIVE: utiliza estimatedDuration de liveConfig se configurado
@@ -534,6 +547,7 @@ export function resolve(input: ResolveInput): ResolveResult {
         : item.duration
 
     return {
+      zones, referenceStart: 0, referenceEnd: 0,
       item,
       duration: baseDuration,
       dropped: false,
@@ -548,6 +562,18 @@ export function resolve(input: ResolveInput): ResolveResult {
     }
   })
 
+  // Preserva a intenção nominal mesmo se uma compensação mover o item para
+  // fora da janela. Também testa o intervalo atual para entradas que se movem
+  // para dentro dela. A associação não depende de relógio ou I/O.
+  let nominalCursor = input.plannedStart
+  for (const w of work) {
+    const target = anchorTarget(w.item.anchor)
+    const actual = input.onAir?.itemId === w.item.id ? input.onAir : null
+    w.referenceStart = actual?.startedAt ?? Math.max(nominalCursor, target ?? nominalCursor)
+    w.referenceEnd = w.referenceStart + Math.max(w.duration, actual?.elapsed ?? 0)
+    nominalCursor = w.referenceEnd
+  }
+
   if (work.length === 0) {
     return {
       items: [],
@@ -555,7 +581,7 @@ export function resolve(input: ResolveInput): ResolveResult {
       suggestions,
       endsAt: input.plannedStart,
       compensationReport: {
-        rundownId: (input as any).rundownId,
+        rundownId: input.rundownId,
         generatedAt: actionTimestamp,
         rateNum: rate.num,
         rateDen: rate.den,
@@ -738,6 +764,13 @@ export function resolve(input: ResolveInput): ResolveResult {
     deviation: w.deviation,
   }))
 
+  const protections = work.flatMap(w => matchingZones(w).map(zone => {
+    const changedFrames = w.adjustments.filter(adjustment => ['TRIMMED','SHRUNK','STRETCHED','DROPPED','SKIPPED'].includes(adjustment.kind)).reduce((sum, adjustment) => sum + adjustment.frames, 0)
+    if (changedFrames > 0) conflicts.push({ kind: 'PROTECTED_ZONE_OVERRIDDEN', itemId: w.item.id, frames: changedFrames, severity: 'WARN',
+      message: `Zona protegida “${zone.label}” (prioridade ${zone.priority}) alterada em ${formatDuration(changedFrames, rate)} por compromisso de prioridade superior ou FIXED/HARD_TIME mandatório. Corrija a grade antes da publicação.` })
+    return { itemId: w.item.id, zoneId: zone.id, label: zone.label, priority: zone.priority, status: changedFrames > 0 ? 'OVERRIDDEN' as const : 'PRESERVED' as const, changedFrames }
+  }))
+
   const lastLive = [...work].reverse().find((w) => !w.dropped)
 
   const compensatedDriftFrames = actions.reduce((sum, a) => sum + a.deltaFrames, 0)
@@ -758,14 +791,14 @@ export function resolve(input: ResolveInput): ResolveResult {
     if (conflicts.some((c) => c.kind === 'GAP')) {
       return 'CRITICAL_UNDERRUN'
     }
-    if (conflicts.some((c) => c.severity === 'ERROR' || c.kind === 'ANCHOR_MISSED')) {
+    if (conflicts.length > 0) {
       return 'RESOLVED_WITH_WARNINGS'
     }
     return 'RESOLVED_CLEAN'
   })()
 
   const compensationReport: ScheduleCompensationReport = {
-    rundownId: (input as any).rundownId,
+    rundownId: input.rundownId,
     generatedAt: actionTimestamp,
     rateNum: rate.num,
     rateDen: rate.den,
@@ -777,6 +810,7 @@ export function resolve(input: ResolveInput): ResolveResult {
   }
 
   return {
+    protections,
     items: resolved,
     conflicts,
     suggestions,

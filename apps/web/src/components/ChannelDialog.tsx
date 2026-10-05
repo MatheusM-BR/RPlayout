@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { formatVideoFormat, type Channel } from '@rplayout/protocol'
+import { formatVideoFormat, sameRate, type Channel } from '@rplayout/protocol'
 import { api } from '../api.js'
+import {channelConfigurationPatch} from '../domain/channel-configuration.js'
+import {CadenceConversionDialog,type CadenceConversionRequest} from './CadenceConversionDialog.js'
 
 interface Props {
   channel: Channel
@@ -10,7 +12,7 @@ interface Props {
 
 /** Formatos padrão para emissoras e playout profissional. */
 const RATES: { label: string; num: number; den: number }[] = [
-  { label: '59,94 (Padrão)', num: 60000, den: 1001 },
+  { label: '59,94', num: 60000, den: 1001 },
   { label: '29,97', num: 30000, den: 1001 },
   { label: '23,976', num: 24000, den: 1001 },
   { label: '50', num: 50, den: 1 },
@@ -24,45 +26,49 @@ const SIZES: { label: string; width: number; height: number }[] = [
 ]
 
 export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
+  const [baseline]=useState(()=>structuredClone(channel))
   const [name, setName] = useState(channel.name)
   const [size, setSize] = useState({ width: channel.width, height: channel.height })
   const [rate, setRate] = useState({ num: channel.rate.num, den: channel.rate.den })
   const [scan, setScan] = useState(channel.scan)
   const [fieldOrder, setFieldOrder] = useState(channel.fieldOrder)
+  const [audioChannels,setAudioChannels]=useState<2|8|16>(channel.audioChannels??2)
+  const [error,setError]=useState('')
   const [busy, setBusy] = useState(false)
+  const [conversion,setConversion]=useState<CadenceConversionRequest|null>(null)
 
   const preview = formatVideoFormat({ height: size.height, rate, scan })
   const muda =
-    size.width !== channel.width ||
-    size.height !== channel.height ||
-    rate.num !== channel.rate.num ||
-    rate.den !== channel.rate.den ||
-    scan !== channel.scan ||
-    fieldOrder !== channel.fieldOrder
+    size.width !== baseline.width ||
+    size.height !== baseline.height ||
+    rate.num !== baseline.rate.num ||
+    rate.den !== baseline.rate.den ||
+    scan !== baseline.scan ||
+    fieldOrder !== baseline.fieldOrder || audioChannels!==(baseline.audioChannels??2)
 
-  const salvar = (): void => {
+  const salvar = async (): Promise<void> => {
+    setError('')
+    if(channel.id!==baseline.id){setError('O canal selecionado mudou. Feche e reabra a configuração; seus campos não foram enviados.');return}
+    if(!sameRate(baseline.rate,rate)&&audioChannels!==(baseline.audioChannels??2)){
+      setError('Altere o barramento de áudio e a cadência em etapas separadas, conferindo e publicando as grades após cada mudança.')
+      return
+    }
+    const patch=channelConfigurationPatch(baseline,{name,width:size.width,height:size.height,rateNum:rate.num,rateDen:rate.den,scan,fieldOrder,audioChannels})
+    if(!sameRate(baseline.rate,rate)){
+      const {rateNum:ignoredNum,rateDen:ignoredDen,audioChannels:ignoredAudio,expectedAudioChannels:ignoredPrevious,...format}=patch
+      setConversion({channel:baseline,rate,format})
+      return
+    }
+    if(!Object.keys(patch).length){onSaved('Nenhuma configuração alterada.');return}
     setBusy(true)
-    api
-      .patchChannel(channel.id, {
-        name,
-        width: size.width,
-        height: size.height,
-        rateNum: rate.num,
-        rateDen: rate.den,
-        scan,
-        fieldOrder,
-      })
-      .then((result) =>
-        onSaved(
-          result.formatChanged
-            ? `Canal configurado em ${preview}. Motor reconfigurado com sucesso.`
-            : 'Canal atualizado.',
-        ),
-      )
-      .catch((failure: Error) => onSaved(failure.message))
-      .finally(() => setBusy(false))
+    try{
+      const result=await api.patchChannel(baseline.id,patch,baseline.configurationRevision)
+      onSaved(result.engineError?`Configuração gravada, mas o engine exige conferência: ${result.engineError}. Confira antes de operar.`:result.formatChanged?`Configuração gravada em ${preview}. Reinício controlado solicitado; confira o estado do engine antes de operar.`:'Canal atualizado.')
+    }catch(failure){setError(failure instanceof Error?failure.message:'Configuração não confirmada.')}
+    finally{setBusy(false)}
   }
 
+  if(conversion)return <CadenceConversionDialog request={conversion} onCancel={()=>setConversion(null)} onApplied={onSaved}/>
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
@@ -83,7 +89,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
                 Formato do Canal
               </h2>
               <div className="font-label-mono text-[10px] text-outline">
-                Atualmente em <strong className="text-primary">{formatVideoFormat(channel)}</strong> · Grade temporizada nesta cadência
+                Revisão aberta em <strong className="text-primary">{formatVideoFormat(baseline)}</strong> · Grade temporizada nesta cadência
               </div>
             </div>
           </div>
@@ -226,15 +232,24 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
             Formato resultante: <strong className="text-on-surface">{preview}</strong>.
             {scan === 'INTERLACED' &&
               ' Em modo entrelaçado, a grade conta quadros inteiros e o compositor renderiza em campos dobrados.'}
-            {' '}A cadência 59.94 Hz é a referência oficial ISDB-Tb / ATSC.
+            {' '}Escolha a cadência do canal; revise separadamente as saídas e o perfil de QC.
           </div>
 
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="channel-audio-bus" className="text-[10px] text-outline">Canais de áudio do PGM / SDI</label>
+            <select id="channel-audio-bus" value={audioChannels} onChange={event=>setAudioChannels(Number(event.target.value) as 2|8|16)} className="bg-surface-panel p-2 border border-border-subtle rounded text-xs">
+              <option value={2}>2 · Master estéreo</option><option value={8}>8 · Master + 3 pares auxiliares</option><option value={16}>16 · Master + 7 pares auxiliares</option>
+            </select>
+            <p className="text-[11px] text-outline">Auxiliares são definidos no áudio de cada item. Preview/saídas de rede continuam estéreo. Mudar este total exige PGM parado, CUE limpo e nova publicação; não comprova uma saída SDI física.</p>
+          </div>
+          {error&&<p role="alert" className="text-xs text-on-air-crimson">{error}</p>}
+          {channel.configurationRevision!==baseline.configurationRevision&&<p role="alert" className="text-xs text-armed-amber">A configuração mudou enquanto esta janela estava aberta. Seus campos foram conservados. Feche e reabra para conferir a nova configuração antes de aplicar.</p>}
           {/* AVISO DE RECONSTRUÇÃO */}
           {muda && (
             <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] font-label-mono text-amber-400 flex items-start gap-2">
               <span className="material-symbols-outlined text-[16px] shrink-0 mt-0.5">warning</span>
               <span>
-                Alterar o raster ou a cadência recria o pipeline do canal — haverá uma breve interrupção de sinal. O item em reprodução reiniciará do início.
+                Alterar o formato recria o pipeline e provoca uma interrupção controlada. Mudar FPS ou o total de canais de áudio exige PGM parado e CUE limpo, revisão e nova publicação das grades, sem TAKE automático.
               </span>
             </div>
           )}

@@ -23,7 +23,7 @@ interface Props {
   /** Linhas marcadas para agrupar. Marcação é diferente de armar. */
   marked: Set<string>
   onSelect: (id: string, modifier: 'none' | 'range' | 'toggle') => void
-  onMove: (id: string, toIndex: number) => void
+  onMove: (id: string, toIndex: number,revision?:number) => void
   onUngroup: (blockId: string) => void
   onOpenTrim: (view: ItemView) => void
   onOpenAudio: (view: ItemView) => void
@@ -35,7 +35,7 @@ interface Props {
   onRemove: (id: string) => void
   /** Cor de cada categoria, para pintar a linha do item. */
   categoryColors: Map<string, string>
-  onNotes: (id: string, notes: string) => void
+  onNotes: (id: string, notes: string,revision?:number) => void
 }
 
 /**
@@ -69,9 +69,10 @@ const TYPE_LABEL: Record<ItemType, string> = {
 const COLUMNS = 12
 
 /** Campo de observação da linha. Salva ao sair, não a cada tecla. */
-function Notes({ value, onSave }: { value: string; onSave: (text: string) => void }) {
+function Notes({ value,revision,onSave }: { value: string;revision?:number; onSave: (text: string,revision?:number) => void }) {
   const [text, setText] = useState(value)
-  useEffect(() => setText(value), [value])
+  const editing=useRef(false),baseRevision=useRef(revision),baseValue=useRef(value)
+  useEffect(() => {if(!editing.current)setText(value)}, [value])
 
   return (
     <input
@@ -80,12 +81,13 @@ function Notes({ value, onSave }: { value: string; onSave: (text: string) => voi
       value={text}
       title={text || 'Observação da linha'}
       placeholder="—"
+      onFocus={()=>{editing.current=true;baseRevision.current=revision;baseValue.current=value}}
       onClick={(event) => event.stopPropagation()}
       onChange={(event) => setText(event.target.value)}
-      onBlur={() => text !== value && onSave(text)}
+      onBlur={() => {editing.current=false;if(text!==baseValue.current)onSave(text,baseRevision.current);else setText(value)}}
       onKeyDown={(event) => {
         if (event.key === 'Enter') event.currentTarget.blur()
-        if (event.key === 'Escape') setText(value)
+        if (event.key === 'Escape'){baseValue.current=value;setText(value)}
       }}
     />
   )
@@ -95,6 +97,7 @@ export function Rundown(props: Props) {
   const { rate } = props
   const liveRow = useRef<HTMLTableRowElement | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
+  const dragRevision=useRef<number|undefined>()
   const [dropIndex, setDropIndex] = useState<number | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
 
@@ -226,6 +229,7 @@ export function Rundown(props: Props) {
                 draggable
                 onDragStart={(event) => {
                   setDragId(id)
+                  dragRevision.current=view.editorialRevision
                   event.dataTransfer.effectAllowed = 'move'
                 }}
                 onDragOver={(event) => {
@@ -247,7 +251,7 @@ export function Rundown(props: Props) {
                   event.preventDefault()
                   const assetId = event.dataTransfer.getData('application/x-rplayout-asset')
                   if (assetId) props.onDropAsset(assetId, index)
-                  else if (dragId && dragId !== id) props.onMove(dragId, index)
+                  else if (dragId && dragId !== id) props.onMove(dragId, index,dragRevision.current)
                   setDragId(null)
                   setDropIndex(null)
                 }}
@@ -335,7 +339,7 @@ export function Rundown(props: Props) {
                   </div>
                 </td>
                 <td>
-                  <Notes value={view.item.notes ?? ''} onSave={(text) => props.onNotes(id, text)} />
+                  <Notes value={view.item.notes ?? ''} revision={view.editorialRevision} onSave={(text,revision) => props.onNotes(id, text,revision)} />
                 </td>
                 <td>{clock(scheduled.start, rate)}</td>
                 <td

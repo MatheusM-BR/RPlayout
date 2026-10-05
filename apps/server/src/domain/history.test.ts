@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { asc, eq } from 'drizzle-orm'
 import type { Trim } from '@rplayout/protocol'
 import { openDatabase, type Db } from '../db/client.js'
-import { channels, mediaAssets, rundownItems, rundowns } from '../db/schema.js'
+import { channels, mediaAssets, rundownItems, rundowns,secondaryEvents } from '../db/schema.js'
 import { History } from './history.js'
 import { applyTrim, targetItemIds } from './scopes.js'
 
@@ -121,8 +121,7 @@ const trim: Trim = { in: 100, out: 5000 }
 describe('desfazer', () => {
   it('devolve o corte de todos os itens que a edição pegou', async () => {
     const targets = await targetItemIds(db, a1, 'RUNDOWN')
-    await history.capture(db, gradeA, 'marcar entrada e saída', { itemIds: targets.ids })
-    await applyTrim(db, a1, trim, 'RUNDOWN')
+    await applyTrim(db, a1, trim, 'RUNDOWN',tx=>history.prepareCapture(tx,gradeA,'marcar entrada e saída',{itemIds:targets.ids}))
 
     expect(await trimOf(a1)).toEqual(trim)
     expect(await trimOf(a2)).toEqual(trim)
@@ -134,8 +133,7 @@ describe('desfazer', () => {
 
   it('alcança itens de outra grade quando o escopo saiu desta', async () => {
     const targets = await targetItemIds(db, a1, 'ALL_RUNDOWNS')
-    await history.capture(db, gradeA, 'marcar entrada e saída', { itemIds: targets.ids })
-    await applyTrim(db, a1, trim, 'ALL_RUNDOWNS')
+    await applyTrim(db, a1, trim, 'ALL_RUNDOWNS',tx=>history.prepareCapture(tx,gradeA,'marcar entrada e saída',{itemIds:targets.ids}))
     expect(await trimOf(b1)).toEqual(trim)
 
     await history.undo(db, gradeA)
@@ -144,23 +142,27 @@ describe('desfazer', () => {
   })
 
   it('devolve o padrão do acervo junto com o item', async () => {
-    await history.capture(db, gradeA, 'marcar entrada e saída', {
+    await applyTrim(db,a1,trim,'ASSET_DEFAULT',tx=>history.prepareCapture(tx,gradeA,'marcar entrada e saída',{
       itemIds: [a1],
       assetIds: [assetId],
-    })
-    await applyTrim(db, a1, trim, 'ASSET_DEFAULT')
+    }))
 
     const [changed] = await db.select().from(mediaAssets).where(eq(mediaAssets.id, assetId))
     expect(changed?.defaultTrim).toEqual(trim)
+    expect(changed?.defaultTrimRateNum).toBe(50)
+    expect(changed?.defaultTrimRateDen).toBe(1)
 
     await history.undo(db, gradeA)
     const [restored] = await db.select().from(mediaAssets).where(eq(mediaAssets.id, assetId))
     expect(restored?.defaultTrim).toBeNull()
+    expect(restored?.defaultTrimRateNum).toBeNull()
+    expect(restored?.defaultTrimRateDen).toBeNull()
+    await history.redo(db,gradeA)
+    expect(db.select().from(mediaAssets).where(eq(mediaAssets.id,assetId)).get()).toMatchObject({defaultTrim:trim,defaultTrimRateNum:50,defaultTrimRateDen:1})
   })
 
   it('devolve item removido e a ordem em que ele estava', async () => {
-    await history.capture(db, gradeA, 'remover item', { wholeRundown: true })
-    await db.delete(rundownItems).where(eq(rundownItems.id, a1))
+    history.edit(db,gradeA,'remover item',{wholeRundown:true},tx=>tx.delete(rundownItems).where(eq(rundownItems.id,a1)).run())
     expect(await titlesOf(gradeA)).toEqual(['segundo'])
 
     await history.undo(db, gradeA)
@@ -168,8 +170,7 @@ describe('desfazer', () => {
   })
 
   it('devolve a ordem depois de mover', async () => {
-    await history.capture(db, gradeA, 'mover item', { wholeRundown: true })
-    await db.update(rundownItems).set({ sortOrder: 30 }).where(eq(rundownItems.id, a1))
+    history.edit(db,gradeA,'mover item',{wholeRundown:true},tx=>tx.update(rundownItems).set({sortOrder:30}).where(eq(rundownItems.id,a1)).run())
     expect(await titlesOf(gradeA)).toEqual(['segundo', 'primeiro'])
 
     await history.undo(db, gradeA)
@@ -179,8 +180,7 @@ describe('desfazer', () => {
 
 describe('refazer', () => {
   it('repete o passo desfeito', async () => {
-    await history.capture(db, gradeA, 'marcar entrada e saída', { itemIds: [a1] })
-    await applyTrim(db, a1, trim, 'ITEM')
+    await applyTrim(db,a1,trim,'ITEM',tx=>history.prepareCapture(tx,gradeA,'marcar entrada e saída',{itemIds:[a1]}))
 
     await history.undo(db, gradeA)
     expect(await trimOf(a1)).toBeNull()
@@ -190,12 +190,11 @@ describe('refazer', () => {
   })
 
   it('uma alteração nova descarta o refazer pendente', async () => {
-    await history.capture(db, gradeA, 'primeira', { itemIds: [a1] })
-    await applyTrim(db, a1, trim, 'ITEM')
+    await applyTrim(db,a1,trim,'ITEM',tx=>history.prepareCapture(tx,gradeA,'primeira',{itemIds:[a1]}))
     await history.undo(db, gradeA)
     expect(history.state(gradeA).canRedo).toBe(true)
 
-    await history.capture(db, gradeA, 'segunda', { itemIds: [a2] })
+    history.edit(db,gradeA,'segunda',{itemIds:[a2]},()=>undefined)
     expect(history.state(gradeA).canRedo).toBe(false)
     expect(history.state(gradeA).undoLabel).toBe('segunda')
   })
@@ -204,5 +203,88 @@ describe('refazer', () => {
     expect(await history.undo(db, gradeA)).toBeNull()
     expect(await history.redo(db, gradeA)).toBeNull()
     expect(history.state(gradeA)).toMatchObject({ canUndo: false, canRedo: false })
+  })
+})
+
+describe('histórico selado e protegido contra alterações posteriores',()=>{
+  const cut=()=>applyTrim(db,a1,trim,'ITEM',tx=>history.prepareCapture(tx,gradeA,'corte',{itemIds:[a1]}))
+  it('não registra captura que não foi selada após a escrita',()=>{
+    const remember=history.prepareCapture(db,gradeA,'incompleta',{itemIds:[a1]})
+    remember()
+    expect(history.state(gradeA).canUndo).toBe(false)
+  })
+  it('falha durante restauração reverte linhas e contadores, conservando o passo para nova revisão',async()=>{
+    history.edit(db,gradeA,'alterar ordem',{wholeRundown:true},tx=>tx.update(rundownItems).set({sortOrder:30}).where(eq(rundownItems.id,a1)).run())
+    const before=db.select().from(rundownItems).all(),versions=db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all(),pending=history.state(gradeA)
+    db.$client.exec(`CREATE TRIGGER fail_restore BEFORE INSERT ON rundown_items WHEN NEW.id='${a2}' BEGIN SELECT RAISE(ABORT,'restauração interrompida'); END`)
+    await expect(history.undo(db,gradeA)).rejects.toThrow('restauração interrompida')
+    expect(db.select().from(rundownItems).all()).toEqual(before)
+    expect(db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()).toEqual(versions)
+    expect(history.state(gradeA)).toEqual(pending)
+    db.$client.exec('DROP TRIGGER fail_restore')
+    await history.undo(db,gradeA)
+    expect(await titlesOf(gradeA)).toEqual(['primeiro','segundo'])
+  })
+  it('falha no meio da edição reverte dados e contadores sem passo fictício',()=>{
+    const before=db.select().from(rundownItems).all(),versions=db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()
+    expect(()=>history.edit(db,gradeA,'falhou',{wholeRundown:true},tx=>{
+      tx.update(rundownItems).set({title:'Não gravado'}).where(eq(rundownItems.id,a1)).run()
+      throw new Error('falha deliberada')
+    })).toThrow('falha deliberada')
+    expect(db.select().from(rundownItems).all()).toEqual(before)
+    expect(db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()).toEqual(versions)
+    expect(history.state(gradeA).canUndo).toBe(false)
+  })
+  it('desfazer não sobrescreve edição posterior da mesma linha',async()=>{
+    await cut()
+    db.update(rundownItems).set({notes:'Outra estação'}).where(eq(rundownItems.id,a1)).run()
+    const before=db.select().from(rundownItems).all()
+    await expect(history.undo(db,gradeA)).rejects.toThrow('alterados depois')
+    expect(db.select().from(rundownItems).all()).toEqual(before)
+    expect(history.state(gradeA).canUndo).toBe(true)
+  })
+  it('alteração em linha fora da operação não impede um desfazer restrito e não é revertida',async()=>{
+    await cut()
+    db.update(rundownItems).set({notes:'Outra estação'}).where(eq(rundownItems.id,a2)).run()
+    await history.undo(db,gradeA)
+    expect(await trimOf(a1)).toBeNull()
+    expect(db.select().from(rundownItems).where(eq(rundownItems.id,a2)).get()?.notes).toBe('Outra estação')
+  })
+  it('refazer também recusa alteração posterior e conserva a ação pendente',async()=>{
+    await cut();await history.undo(db,gradeA)
+    db.update(rundownItems).set({title:'Posterior ao undo'}).where(eq(rundownItems.id,a1)).run()
+    await expect(history.redo(db,gradeA)).rejects.toThrow('alterados depois')
+    expect(await trimOf(a1)).toBeNull()
+    expect(db.select().from(rundownItems).where(eq(rundownItems.id,a1)).get()?.title).toBe('Posterior ao undo')
+    expect(history.state(gradeA).canRedo).toBe(true)
+  })
+  it('confere linhas de outras grades alcançadas pelo escopo',async()=>{
+    await applyTrim(db,a1,trim,'ALL_RUNDOWNS',tx=>history.prepareCapture(tx,gradeA,'global',{itemIds:[a1,a2,b1]}))
+    db.update(rundownItems).set({notes:'Novo texto de B'}).where(eq(rundownItems.id,b1)).run()
+    await expect(history.undo(db,gradeA)).rejects.toThrow('alterados depois')
+    expect(await trimOf(a1)).toEqual(trim);expect(await trimOf(b1)).toEqual(trim)
+  })
+  it.each(['hash','new-reference'])('padrão do acervo não volta sobre conteúdo ou vínculos superados: %s',async change=>{
+    await applyTrim(db,a1,trim,'ASSET_DEFAULT',tx=>history.prepareCapture(tx,gradeA,'padrão',{itemIds:[a1],assetIds:[assetId]}))
+    if(change==='hash')db.update(mediaAssets).set({contentHash:'novo-conteúdo'}).where(eq(mediaAssets.id,assetId)).run()
+    else await addItem(gradeB,'novo uso',30)
+    await expect(history.undo(db,gradeA)).rejects.toThrow('alterados depois')
+    expect(db.select().from(mediaAssets).where(eq(mediaAssets.id,assetId)).get()?.defaultTrim).toEqual(trim)
+  })
+  it.each(['trim','audio','notes'])('desfazer padrão não altera sem revisão um usuário existente que foi editado depois: %s',async field=>{
+    await applyTrim(db,a1,trim,'ASSET_DEFAULT',tx=>history.prepareCapture(tx,gradeA,'padrão',{itemIds:[a1],assetIds:[assetId]}))
+    db.update(rundownItems).set(field==='trim'?{trim:{in:0,out:200}}:field==='audio'?{audio:{mode:'MANUAL',gainDb:-3,measured:null}}:{notes:'Outro operador'}).where(eq(rundownItems.id,b1)).run()
+    const before=db.select().from(rundownItems).all()
+    await expect(history.undo(db,gradeA)).rejects.toThrow('alterados depois')
+    expect(db.select().from(rundownItems).all()).toEqual(before)
+    expect(db.select().from(mediaAssets).where(eq(mediaAssets.id,assetId)).get()?.defaultTrim).toEqual(trim)
+    expect(history.state(gradeA).canUndo).toBe(true)
+  })
+  it('não restaura definições secundárias antigas sobre uma edição posterior',async()=>{
+    history.edit(db,gradeA,'ordem',{wholeRundown:true},tx=>tx.update(rundownItems).set({sortOrder:30}).where(eq(rundownItems.id,a1)).run())
+    const channelId=db.select().from(rundowns).where(eq(rundowns.id,gradeA)).get()!.channelId
+    db.insert(secondaryEvents).values({id:'new-event',channelId,itemId:a1,definition:{id:'new-event',channelId,rundownItemId:a1,name:'Novo logo',type:'GRAPHICS_OVERLAY',targetLayer:'STATION_LOGO',triggerMode:'MANUAL',offsetFrames:0,templateId:'',payload:{},enabled:true},createdAt:now,updatedAt:now}).run()
+    await expect(history.undo(db,gradeA)).rejects.toThrow('alterados depois')
+    expect(db.select().from(secondaryEvents).all()).toHaveLength(1)
   })
 })

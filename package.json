@@ -13,7 +13,7 @@
     "typecheck": "pnpm -r --parallel run typecheck",
     "lint": "eslint .",
     "dev": "pnpm -r --parallel run dev",
-    "build": "pnpm --filter @rplayout/web build",
+    "build": "pnpm --filter @rplayout/server build && pnpm --filter @rplayout/web build",
     "start": "pnpm --filter @rplayout/server start"
   },
   "devDependencies": {
@@ -21,6 +21,7 @@
     "eslint": "^9.14.0",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.13.0",
+    "esbuild": "^0.28.2",
     "vitest": "^2.1.4"
   }
 }

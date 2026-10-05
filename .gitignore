@@ -29,3 +29,12 @@ scratch/
 *.rvf.lock
 *.log
 Processing.NDI.Lib.x64.dll
+
+# Mídia e estado local gerados pelos ensaios/operação (não são código-fonte).
+.continuity-cache/
+.media-versions/
+.claude-flow/swarm/
+.swarm/
+vault.json
+vault*.json
+apps/server/UsersfsdaAppDataLocalTempRPlayout-*.mp4
