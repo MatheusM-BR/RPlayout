@@ -16,6 +16,19 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use crate::omt_runtime::load_runtime;
 
+/// Same receive deadline as the NDI path: a sender that stops delivering for
+/// this long is a lost source. The appsrc never sees EOS/error from libomt, so
+/// without this the PGM stayed black indefinitely while the engine waited
+/// (observed on r88-4 QA: vMix OMT still announced, no reopen for 31 min).
+const RECEIVE_STALL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Deadline counts from the opening until the first delivered buffer and then
+/// from the last buffer actually accepted downstream (a push refused while the
+/// pipeline is not flowing is not delivery).
+fn receive_stalled(last_delivery: std::time::Instant, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(last_delivery) >= RECEIVE_STALL
+}
+
 const VIDEO: i32 = 2;
 const AUDIO: i32 = 4;
 const UYVY: i32 = 0x5956_5955;
@@ -325,10 +338,22 @@ fn receive_loop(session: ReceiverSession, video_ref: gst::glib::WeakRef<gst_app:
     let mut audio_configured: Option<(i32, i32)> = None;
     let mut started = false;
     let mut last_valid_frame:Option<std::time::Instant>=None;
+    let mut last_delivery=std::time::Instant::now();
+    let mut stall_reported=false;
     loop {
         let (Some(video), Some(audio)) = (video_ref.upgrade(), audio_ref.upgrade()) else { break; };
         if video.current_state() != gst::State::Null { started = true; }
         else if started { break; }
+        // Only a flowing pipeline is expected to receive; CUE/PREPARE before
+        // PLAYING must not be declared lost.
+        if !started { last_delivery=std::time::Instant::now(); }
+        if started && !stall_reported && receive_stalled(last_delivery,std::time::Instant::now()) {
+            // Reported once through the item's bus: the engine's live
+            // recovery (SourceLost, 2 s retry, new opening) owns the reopen.
+            stall_reported=true;
+            let message=gst::message::Error::builder(gst::ResourceError::Read,"a fonte OMT parou de entregar quadros por 5 s").src(&video).build();
+            let _=video.post_message(message);
+        }
         let frame = unsafe { (session.receive)(session.handle as *mut c_void, VIDEO | AUDIO, 250) };
         if frame.is_null() {
             continue;
@@ -378,6 +403,7 @@ fn receive_loop(session: ReceiverSession, video_ref: gst::glib::WeakRef<gst_app:
             if audio.push_buffer(buffer).is_err() {
                 break;
             }
+            last_delivery=std::time::Instant::now();stall_reported=false;
             continue;
         }
         if frame.kind != VIDEO || frame.frame_rate_n <= 0 || frame.frame_rate_d <= 0 {
@@ -430,6 +456,7 @@ fn receive_loop(session: ReceiverSession, video_ref: gst::glib::WeakRef<gst_app:
         if video.push_buffer(buffer).is_err() {
             break;
         }
+        last_delivery=std::time::Instant::now();stall_reported=false;
     }
     Ok(())
 }
@@ -437,6 +464,15 @@ fn receive_loop(session: ReceiverSession, video_ref: gst::glib::WeakRef<gst_app:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receive_stall_matches_ndi_deadline() {
+        let start = std::time::Instant::now();
+        assert!(!receive_stalled(start, start + std::time::Duration::from_millis(4_999)));
+        assert!(receive_stalled(start, start + std::time::Duration::from_secs(5)));
+        // A clock that appears to go backwards is never a stall.
+        assert!(!receive_stalled(start + std::time::Duration::from_secs(1), start));
+    }
 
     #[test]
     fn rejects_invalid_frames_and_accounts_for_row_padding() {
@@ -650,6 +686,7 @@ mod tests {
         stage(11,"sender loss and native signal expiry");
         let decoder_id=channel.0.decoder_id("pgm");
         output.0.set_state(gst::State::Null).unwrap();
+        let stopped_at=Instant::now();
         let deadline=Instant::now()+Duration::from_secs(8);
         let mut lost=false;
         while Instant::now()<deadline && !lost {
@@ -658,6 +695,20 @@ mod tests {
         }
         assert!(lost,"stopped OMT publisher cannot remain SIGNAL_OK");
         assert_eq!(channel.0.on_air_id().as_deref(),Some("omt-native-signal"));
+        // libomt gives the appsrc no EOS/error: a sender gone for the NDI
+        // deadline must surface on the item bus, which feeds the engine's
+        // SourceLost -> reopen recovery (here no main loop consumes it).
+        let deadline=stopped_at+Duration::from_secs(10);
+        let mut stall_error=false;
+        let bus=channel.0.item_bus().expect("PGM item bus");
+        while Instant::now()<deadline && !stall_error {
+            if let Some(message)=bus.timed_pop(gst::ClockTime::from_mseconds(100)) {
+                if let gst::MessageView::Error(error)=message.view() { stall_error=error.error().to_string().contains("5 s"); }
+            }
+        }
+        assert!(stall_error,"OMT stall must post a bus error for live recovery");
+        assert!(stopped_at.elapsed()>=Duration::from_secs(3),"stall error must not fire before the receive deadline");
+        eprintln!("OMT stall reported after {} ms",stopped_at.elapsed().as_millis());
         stage(12,"sender return and running-clock rebasing");
         input.0.by_name("omt-test-picture").unwrap().set_property_from_str("pattern","red");
         output.0.set_state(gst::State::Playing).unwrap();
@@ -672,7 +723,7 @@ mod tests {
         }
         assert!(returned,"new red OMT picture/audio must reach PGM after the sender clock restarts, not held white");
         assert_eq!(channel.0.on_air_id().as_deref(),Some("omt-native-signal"));
-        assert_eq!(channel.0.decoder_id("pgm"),decoder_id,"OMT appsrc session must survive this short interruption");
+        assert_eq!(channel.0.decoder_id("pgm"),decoder_id,"without a main loop the same appsrc session resumes after the reported stall");
         stage(13,"cleanup");
     }
 }
