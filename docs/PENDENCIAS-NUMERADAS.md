@@ -1,6 +1,14 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-3 gerada e instalada em QA (D:\RPlayout-builds)
+## Estado atual — r88-4 gerada e instalada em QA (D:\RPlayout-builds)
+
+20/10 noite — r88-4 (8a384d4), 13/13 PASS. Corrige o que o operador viu na r88-3
+instalada: thread do servidor ~83% ocupada (checagem de cópia restaurada
+refeita ~8 consultas por uso, prepare com ida extra ao processo do banco);
+canal criado sem reiniciar não carregava a grade (CUE 404); busca de fontes
+5–15 s → 2,6–3,4 s e sem bloquear. Ganho de CPU na instalação ainda não medido
+na r88-4 instalada pelo operador. Nenhum item da matriz fechado por esta build.
+Totais10/53:8concluídas/34andamento/4pendentes/7v3.
 
 20/10 final — r88-3 GERADA no Windows (b9baa54): 13/13 etapas automáticas PASS,
 Rust 124/0/4 no GStreamer 1.28, ensaio REAL da troca de fonte com engine

@@ -1,5 +1,19 @@
 # RPlayout r88 — marco utilizável (build parcial, NÃO homologada)
 
+## GERADA — r88-4, 20/10/2026 (Windows, commit 8a384d4) — USAR ESTA
+
+- Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-4-instalador.zip`
+  SHA256 `A5C823760F4DBF0D3418C1AD02DB16F574C5FF4CA402FEE09E384FCE89902D95`.
+- Instalação QA: `D:\RPlayout-builds\qa\r88-installed-20261020-182112`. Resumo:
+  `D:\RPlayout-builds\r88-summary-20261020-182112.json`. 13/13 etapas PASS.
+- Corrige o relatado na r88-3 instalada (ver DESEMPENHO-R88-4-2026-10-20.md):
+  servidor saturado por consultas ao banco (acervo/QC/rotas lentos), canal
+  criado na sessão sem grade carregada (clique na grade sem efeito, PVW/PGM
+  vazios), descoberta de fontes lenta e bloqueante.
+- Conferido no Windows depois da build: 52/52 testes dos módulos alterados
+  (inclui banco em processo isolado real); descoberta 5,1–14,8 s (r88-3) →
+  2,6–3,4 s (r88-4), mesmas fontes NDI e OMT encontradas na rede.
+
 ## GERADA — r88-3, 20/10/2026 (Windows, commit b9baa54)
 
 - Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-3-instalador.zip`
