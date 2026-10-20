@@ -57,6 +57,9 @@ export interface NativeLiveReplacementWirePort {
  validate:(operation:NativeLiveReplacementOperation,request:NativeLiveReplacementRequest)=>void
  write:(message:Record<string,unknown>,failed:(error:Error)=>void)=>void
  fence:()=>{ownerId:string;term:number}|null
+ /** True only under an HA lease (native fence installed). Without it the
+  * private owning pipe is the authority, exactly as for TAKE. */
+ fenceRequired:()=>boolean
  /** Must commit before bytes reach stdin; a throw means no command is sent. */
  beforeSend:(operation:NativeLiveReplacementOperation,request:NativeLiveReplacementRequest)=>void
  /** Must persist before the receipt is allowed to satisfy a caller. */
@@ -147,13 +150,14 @@ export class NativeLiveReplacementWire {
   if(this.selectionUnknown&&operation!=='STATUS')throw new NativeLiveReplacementUnknown()
   if([...this.pending.values()].some(pending=>pending.request.transactionId===request.transactionId))throw new Error('Já existe um comando dessa transação aguardando recibo.')
   const prior=this.receipts.get(request.transactionId)
-  const fence=operation==='COMMIT'?this.port.fence():null
-  if(operation==='COMMIT'&&(!fence||!Number.isSafeInteger(fence.term)||fence.term<=0))throw new Error('Troca exige concessão nativa atual.')
+  const fenced=operation==='COMMIT'&&this.port.fenceRequired()
+  const fence=fenced?this.port.fence():null
+  if(fenced&&(!fence||!Number.isSafeInteger(fence.term)||fence.term<=0))throw new Error('Troca exige concessão nativa atual.')
   this.port.beforeSend(operation,request)
   this.port.assertOwned();this.port.validate(operation,request)
   const id=this.port.nextId(),base={id,engineGeneration:request.engineGeneration,transactionId:request.transactionId}
   const command=operation==='PREPARE'?{id,cmd:'prepareLiveReplacement',request}:
-   operation==='COMMIT'?{...base,cmd:'commitLiveReplacement',preparedDecoderId:prior!.preparedDecoderId,...fence}:
+   operation==='COMMIT'?{...base,cmd:'commitLiveReplacement',preparedDecoderId:prior!.preparedDecoderId,...(fence??{})}:
    {...base,cmd:operation==='CANCEL'?'cancelLiveReplacement':'liveReplacementStatus'}
   if(operation==='COMMIT')this.unresolvedCommits.add(request.transactionId)
   return new Promise((resolve,reject)=>{

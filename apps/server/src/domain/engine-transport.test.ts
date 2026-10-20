@@ -457,7 +457,7 @@ describe('durable STOP hook for journals of other server processes (simulated ch
  it('runs inside the durable STOP section; a refusal keeps the native block until it succeeds',async()=>{
   const value=view(['live'])
   Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:PRIMARY',configuredSourceId:'primary',durationOverride:250,autoNext:false},asset:null})
-  const durable=vi.fn((_proof:{engineGeneration:string|null;nativeRequestId:number})=>{throw new Error('PREDECESSOR_SQL_REFUSED')})
+  const durable=vi.fn<(proof:{engineGeneration:string|null;nativeRequestId:number})=>void>(()=>{throw new Error('PREDECESSOR_SQL_REFUSED')})
   start(value,undefined,()=>value,()=> 'rev',{executionOccurrenceId:()=> 'exec',onStopDurable:durable})
   event({event:'ready',channelId:channel.id,decoderIdentity:true,liveReplacementProtocol:1,engineGeneration:'00000000-0000-4000-8000-000000000020'})
   child.stdin.removeAllListeners('data')

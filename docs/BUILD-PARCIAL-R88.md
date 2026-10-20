@@ -1,5 +1,53 @@
-# RPlayout r88 — registro pré-geração, NOT_BUILT
+# RPlayout r88 — marco utilizável (build parcial, NÃO homologada)
 
+Uso interno e testes, sem distribuição. Não substitui instalações anteriores,
+não altera bancos operacionais e não instala drivers DeckLink.
+
+## O que a r88 entrega
+
+1. **Troca da fonte da live no PGM** pelo par cadastrado (principal ↔ reserva),
+   no bloco da live no ar do MASTER: *Preparar* abre a reserva sem tocar o PGM;
+   *Cortar fonte* troca no engine preservando relógio, CUE, próximo e a mesma
+   ocorrência de as-run; *Cancelar*; *Consultar* (nunca repete o corte).
+   Resultado desconhecido pede consulta, não reenvio. Sem HA, o canal privado do
+   processo dono autoriza o corte, como no TAKE; com HA, exige a cerca atual.
+2. Autorização revalidada a cada comando (sessão, papel TRANSPORT, canal,
+   operador, runtime). Journal durável, checkpoint v2 com a fonte selecionada e
+   retomada automática do último ponto salvo continuam valendo.
+3. Fábrica de sessão, rotas HTTP, abandono durável de intenção não enviada e
+   resolução no STOP de journal de execução anterior comprovadamente parada.
+
+## Evidência antes do empacotamento (Linux, GStreamer 1.24)
+
+- Engine Rust compilado pela primeira vez com o código novo: 220 PASS /
+  3 FAIL / 4 ignorados. Os 12 testes da troca rodaram pela primeira vez: PASS.
+  Falhas: `ndisrc` ausente (plugin só no pacote Windows) e dois casos de áudio
+  multicanal sem posições (diferença de versão GStreamer a confirmar no Windows).
+- **Ensaio real**: engine verdadeiro + duas fontes SRT locais. PREPARE
+  (PREPARING→READY sem tocar PGM) → COMMIT confirmado → PGM na reserva, mesmo
+  relógio e mesma ocorrência de as-run, checkpoint v2, replay pela mesma chave
+  sem segundo corte, STOP. 4/4 PASS. `scripts/verify-live-replacement-native.mts`.
+- JS: tipos servidor/interface PASS; núcleo da troca e interface PASS.
+
+## Como gerar (uma linha, no Windows)
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File D:\RPlayout\scripts\build-r88.ps1`
+
+Gera em `D:\RPlayout-builds`: ZIP, instalação QA nova em `qa\`, log e
+`r88-summary-<data>.json` com o resultado de cada etapa (testes Windows do
+engine, ensaio nativo com GStreamer 1.28, ZIP, instalação, verificação do
+pacote e anúncio do protocolo pelo engine instalado).
+
+## NÃO validado nesta r88
+
+DeckLink física (adiada); emissor NDI/OMT externo; saída de broadcast real (o
+ensaio usa saída null); Windows limpo; soak 24/48h; estações remotas em rede
+real; interface clicada em navegador contra engine real; revisão de licença NDI
+(REVIEW_REQUIRED); grupo 8 HA entre máquinas (v3). Não é homologação broadcast.
+
+---
+
+Histórico anterior (pré-geração):
 Destino reservado: `D:\RPlayout-builds` (autorizado pelo usuário).
 ZIP, hash do pacote, instalação e ensaio integrado: **NOT_RUN**.
 O último pacote instalado e verificado continua sendo a r87; não foi alterado.

@@ -95,6 +95,40 @@ pub fn abort() { if let Some(fence) = FENCE.get() { if let Ok(mut state) = fence
 
 /// Publication admission binds to this native owner and its STILL VALID term.
 /// A historical Node/witness ACK cannot open hardware/network sinks.
+/// Authority for a native live replacement COMMIT.
+/// - HA fence installed: owner AND term are mandatory and must be current.
+/// - No HA fence: the owning server's private pipe is the authority, exactly as
+///   for TAKE; a supplied owner/term is then refused instead of being ignored.
+pub fn commit_authority(owner: Option<&str>, term: Option<u64>) -> Result<Option<(String, u64)>> {
+    decide_commit_authority(FENCE.get().is_some(), owner, term, authorize_publication)
+}
+fn decide_commit_authority(fenced: bool, owner: Option<&str>, term: Option<u64>, authorize: impl Fn(&str, u64) -> Result<()>) -> Result<Option<(String, u64)>> {
+    match (fenced, owner, term) {
+        (true, Some(owner), Some(term)) => { authorize(owner, term)?; Ok(Some((owner.to_string(), term))) }
+        (true, _, _) => Err(anyhow!("Troca exige concessão HA nativa atual.")),
+        (false, None, None) => Ok(None),
+        (false, _, _) => Err(anyhow!("Concessão HA informada sem cerca nativa instalada; troca recusada.")),
+    }
+}
+#[cfg(test)]
+mod commit_authority_tests {
+    use super::decide_commit_authority;
+    use anyhow::anyhow;
+    #[test]
+    fn fenced_engine_requires_current_owner_and_term() {
+        assert!(decide_commit_authority(true, None, None, |_, _| Ok(())).is_err());
+        assert!(decide_commit_authority(true, Some("o"), None, |_, _| Ok(())).is_err());
+        assert!(decide_commit_authority(true, Some("o"), Some(3), |_, _| Err(anyhow!("expired"))).is_err());
+        assert_eq!(decide_commit_authority(true, Some("o"), Some(3), |_, _| Ok(())).unwrap(), Some(("o".into(), 3)));
+    }
+    #[test]
+    fn unfenced_engine_uses_private_pipe_and_refuses_a_stray_lease() {
+        assert_eq!(decide_commit_authority(false, None, None, |_, _| panic!("no fence to consult")).unwrap(), None);
+        assert!(decide_commit_authority(false, Some("o"), Some(3), |_, _| Ok(())).is_err());
+        assert!(decide_commit_authority(false, None, Some(3), |_, _| Ok(())).is_err());
+    }
+}
+
 pub fn authorize_publication(owner: &str, term: u64) -> Result<()> {
     let fence=FENCE.get().ok_or_else(|| anyhow!("Admissão de publicação exige cerca HA nativa."))?;
     if fence.owner!=owner { return Err(anyhow!("Admissão de outro engine.")); }

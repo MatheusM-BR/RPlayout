@@ -7,7 +7,7 @@ const request:NativeLiveReplacementRequest={transactionId:'tx-1',engineGeneratio
 let wire:NativeLiveReplacementWire,port:NativeLiveReplacementWirePort,commands:Record<string,unknown>[],selected:boolean,sequence:number
 beforeEach(()=>{
  commands=[];selected=false;sequence=0
- port={nextId:()=>++sequence,assertOwned:vi.fn(),validate:vi.fn(),write:vi.fn(message=>commands.push(message)),fence:()=>({ownerId:'owner',term:17}),
+ port={nextId:()=>++sequence,assertOwned:vi.fn(),validate:vi.fn(),write:vi.fn(message=>commands.push(message)),fence:()=>({ownerId:'owner',term:17}),fenceRequired:()=>true,
   beforeSend:vi.fn(),recordReceipt:vi.fn(),selectionObserved:()=>selected}
  wire=new NativeLiveReplacementWire(port)
  wire.ready({engineGeneration:generation,liveReplacementProtocol:1,decoderIdentity:true})
@@ -67,6 +67,12 @@ it('commit requires fresh native preparation and a current lease',async()=>{
  await expect(wire.commit('unknown')).rejects.toThrow('não pertence')
  await prepared();port.fence=()=>null
  await expect(wire.commit('tx-1')).rejects.toThrow('concessão');expect(commands).toHaveLength(1)
+})
+it('without an HA lease the private pipe is the authority: COMMIT carries no owner/term',async()=>{
+ port.fenceRequired=()=>false;port.fence=()=>{throw new Error('MUST_NOT_CONSULT_FENCE')}
+ await prepared();void wire.commit('tx-1').catch(()=>{})
+ expect(commands[1]).toMatchObject({cmd:'commitLiveReplacement',preparedDecoderId:8})
+ expect(commands[1]).not.toHaveProperty('ownerId');expect(commands[1]).not.toHaveProperty('term')
 })
 it('receipt, current selector state and ACK are required; durable commit intent comes first',async()=>{
  await prepared();const action=wire.commit('tx-1')

@@ -504,6 +504,7 @@ export class EngineTransport implements Transport {
       },
       beforeSend:(operation,request)=>{const session=this.replacementSessions.get(request.transactionId)!;if(session.action)session.action.beforeSend(operation,request);else session.persistence.beforeSend(operation,request)},
       fence:()=>this.fenceBinding(),
+      fenceRequired:()=>Boolean(this.options.fenceLease),
       write:(message,failed)=>{if(!this.alive||this.closed||!this.ready||!this.child.stdin?.writable)throw new Error('Pipe nativo indisponível.');this.child.stdin.write(JSON.stringify(message)+'\n',error=>{if(error)failed(error)})},
       recordReceipt:receipt=>{
         const session=this.replacementSessions.get(receipt.transactionId);if(!session)throw new Error('Recibo sem transação pertencente ao engine.')

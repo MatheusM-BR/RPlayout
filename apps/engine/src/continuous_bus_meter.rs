@@ -70,7 +70,7 @@ impl ContinuousBusMeter{
             assert_eq!(segments[0]["firstFrame"].as_u64(),Some(0));assert_eq!(segments[0]["sampleFrames"].as_u64(),Some(19200));
             assert_eq!(segments[1]["firstFrame"].as_u64(),Some(19200));assert_eq!(segments[1]["sampleFrames"].as_u64(),Some(24000));
             assert!(segments[0]["pairs"][0]["truePeakDbtp"].as_f64().unwrap()>-20.0);
-            assert!(segments[1]["pairs"][0]["truePeakDbtp"].as_f64().unwrap()<-50.0);
+            assert!(segments[1]["pairs"][0]["truePeakDbtp"].as_f64().unwrap() < -50.0);
             assert_eq!(value["sourceCoverageConfirmed"],false);assert_eq!(value["publicationAuthorized"],false);assert!(meter.finish().is_err());
         }
     }

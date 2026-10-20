@@ -128,7 +128,12 @@ export class NativeLiveReplacementLedger {
    const prior=tx.select().from(operatorDecisions).where(eq(operatorDecisions.id,decisionId)).get()
    if(prior){
     const saved=this.stored(tx,transactionId).payload
-    if(saved.digest!==digest||saved.actorId!==this.actorId)reject(409,'Chave da troca pertence a outro pedido/operador.')
+    // After THIS transaction's own confirmed cut the PGM decoder/source/policy
+    // changed, so the digest of the current context differs. A retry of the same
+    // key (lost response) must still answer from the journal, never 409/re-cut.
+    const changedByOwnCut=saved.receipt?.phase==='COMMITTED'&&saved.targetSourceId===targetSourceId&&context.sourceId===targetSourceId
+     &&(['channelId','rundownId','revisionId','executionId','occurrenceId','itemId','ownerRunId'] as const).every(field=>saved.context[field]===context[field])
+    if(saved.actorId!==this.actorId||saved.digest!==digest&&!changedByOwnCut)reject(409,'Chave da troca pertence a outro pedido/operador.')
     // Historical replay does not authorize another PREPARE/COMMIT.
     return {transactionId,replayed:true,context:structuredClone(saved.context),receipt:saved.receipt,closed:saved.closed}
    }

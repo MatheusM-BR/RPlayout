@@ -73,7 +73,7 @@ import { PgmProbe } from './domain/pgm-probe.js'
 import { activeOperationalPlaylist, readOperationalPayload } from './domain/operational-playlist.js'
 import { Checkpoints, type ChannelCheckpoint } from './domain/checkpoints.js'
 import {resolveLiveProgramBinding} from './domain/live-program-binding.js'
-import {assertPersistedLiveReplacementReceipt,type NativeLiveReplacementContext} from './domain/native-live-replacement-ledger.js'
+import {assertPersistedLiveReplacementReceipt,unresolvedNativeReplacementJournals,type NativeLiveReplacementContext} from './domain/native-live-replacement-ledger.js'
 import {createNativeReplacementSession,resolveStoppedPredecessorJournals,type NativeReplacementActor,type NativeReplacementAuthorization,type NativeReplacementRuntimePort,type NativeReplacementSession} from './domain/native-live-replacement-session.js'
 import {assertProgramTrim} from './domain/program-trim.js'
 import {programDurationFrames} from '@rplayout/protocol'
@@ -721,6 +721,22 @@ export class ChannelRuntime {
    * again at each command inside the engine queue (session/role/channel). */
   nativeReplacementSession(actor:NativeReplacementActor,authorize:NativeReplacementAuthorization):NativeReplacementSession{
     return createNativeReplacementSession(this.nativeReplacementPort(),actor,authorize)
+  }
+  private replacementJournalCache:{at:number;openTransactionId:string|null}|null=null
+  /** Operator-facing capability, no URI/credential. Journal read is throttled. */
+  liveReplacementStatus():{supported:boolean;selectionUncertain:boolean;pgmSourceId:string|null;openTransactionId:string|null}|null{
+    if(!(this.transport instanceof EngineTransport))return null
+    // Feeds the whole live snapshot: an indicator must never break it.
+    const health=(()=>{try{return this.transport instanceof EngineTransport?this.transport.health().nativeLiveReplacement:null}catch{return null}})()
+    if(!health)return null
+    let pgmSourceId:string|null=null
+    try{pgmSourceId=this.transport.nativeLiveSelection().sourceId}catch{/* no catalogued live in PGM */}
+    if(!this.replacementJournalCache||Date.now()-this.replacementJournalCache.at>1000){
+      let openTransactionId:string|null=null
+      try{openTransactionId=unresolvedNativeReplacementJournals(this.db,this.channel.id).find(row=>row.prepareSent)?.transactionId??null}catch{openTransactionId=null}
+      this.replacementJournalCache={at:Date.now(),openTransactionId}
+    }
+    return {supported:health.supported,selectionUncertain:health.selectionUncertain,pgmSourceId,openTransactionId:this.replacementJournalCache.openTransactionId}
   }
   private resolveReplacementJournalsAfterStop(proof:{engineGeneration:string|null;nativeRequestId:number}):void{
     if(!(this.transport instanceof EngineTransport)||!this.checkpoints||!this.executionLease)return
@@ -1484,6 +1500,7 @@ export class ChannelRuntime {
     return {
       transport: state,
       reconfiguration: this.reconfigurationStatus(),
+      liveReplacement: this.liveReplacementStatus(),
       graphic: this.graphics.onAir(),
       alerts: this.alerts(),
       now: this.view ? rundownFrames(this.view.rundown.date, this.channel.rate) ?? framesSinceMidnight(new Date(), this.channel.rate) : framesSinceMidnight(new Date(), this.channel.rate),

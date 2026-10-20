@@ -19,6 +19,7 @@ import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { api } from '../api.js'
 import {commandRequestId} from '../domain/request-id.js'
 import { canonicalLiveSourceRef, sameLiveSource } from '../liveSource.js'
+import { LiveReplacementControl } from '../components/LiveReplacementControl.js'
 import { Whep } from '../components/Whep.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { BroadcastMonitor } from '../components/broadcast/BroadcastMonitor.js'
@@ -841,6 +842,7 @@ export function MasterControlView({
                     </div>}
                     <div className="text-[9px] text-outline mt-1">{onAirItem.item.liveConfig?.autoFollowOnEnd ?? onAirItem.item.liveAutoFollowOnEnd ? 'Saída automática ao fim da duração configurada.' : 'Saída manual: a estimativa não dispara TAKE.'}</div>
                     {liveTimingMessage && <div role="status" className="text-[10px] text-primary mt-1">{liveTimingMessage}</div>}
+                    <LiveReplacementControl channelId={channel.id} info={live.liveReplacement??null} sources={sourceListReview?.sources??[]} />
                   </div>}
                 </div>
                 <div>

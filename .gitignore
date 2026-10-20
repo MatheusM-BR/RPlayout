@@ -1,6 +1,8 @@
 node_modules/
 dist/
 build/
+# Build-time SOURCE of the web package (third-party notices), not an artifact.
+!/apps/web/build/
 coverage/
 *.local
 .env

@@ -174,7 +174,8 @@ pub enum Command {
     /// Independent decoder; never LOAD/TAKE or an editorial occurrence.
     PrepareLiveReplacement { request: crate::live_replacement::Request },
     /// Explicit commit, bound to this process's prepared decoder and lease.
-    CommitLiveReplacement { engine_generation: String, transaction_id: String, prepared_decoder_id: u64, owner_id: String, term: u64 },
+    /// owner/term are required exactly when an HA fence is installed (see fencing::commit_authority).
+    CommitLiveReplacement { engine_generation: String, transaction_id: String, prepared_decoder_id: u64, #[serde(default)] owner_id: Option<String>, #[serde(default)] term: Option<u64> },
     CancelLiveReplacement { engine_generation: String, transaction_id: String },
     LiveReplacementStatus { engine_generation: String, transaction_id: String },
     /// Grafismo: SVG já preenchido, ou nada para tirar do ar.
@@ -412,13 +413,18 @@ mod program_admission_tests {
     }
 
     #[test]
+    fn commit_without_owner_term_parses_for_the_non_ha_private_pipe() {
+        let envelope: Envelope = serde_json::from_value(serde_json::json!({"id":92,"cmd":"commitLiveReplacement","engineGeneration":"generation-a","transactionId":"tx-1","preparedDecoderId":8})).unwrap();
+        assert!(matches!(envelope.command, Command::CommitLiveReplacement { owner_id: None, term: None, prepared_decoder_id: 8, .. }));
+    }
+    #[test]
     fn commit_cancel_and_status_are_bound_to_the_same_engine_generation() {
         for command in ["commitLiveReplacement", "cancelLiveReplacement", "liveReplacementStatus"] {
             let value = serde_json::json!({"id":91,"cmd":command,"engineGeneration":"generation-a","transactionId":"tx-1",
                 "preparedDecoderId":8,"ownerId":"owner","term":17});
             let envelope: Envelope = serde_json::from_value(value).unwrap();
             match envelope.command {
-                Command::CommitLiveReplacement {engine_generation,transaction_id,prepared_decoder_id:8,term:17,..}
+                Command::CommitLiveReplacement {engine_generation,transaction_id,prepared_decoder_id:8,term:Some(17),..}
                     | Command::CancelLiveReplacement {engine_generation,transaction_id}
                     | Command::LiveReplacementStatus {engine_generation,transaction_id} => {
                         assert_eq!(engine_generation,"generation-a"); assert_eq!(transaction_id,"tx-1");

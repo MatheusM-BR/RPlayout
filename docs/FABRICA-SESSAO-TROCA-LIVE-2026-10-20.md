@@ -93,3 +93,19 @@ NDI/OMT externo, DeckLink, interface, instalação ou r88.
 
 Totais mantidos: 10 grupos / 53 verificações — 8 concluídas, 34 em andamento,
 4 pendentes, 7 v3. Nenhuma verificação ampla fechada por testes simulados.
+
+## Correções posteriores (mesmo dia, ao validar com engine real)
+
+- O commit `de36180` saiu com erro de tipo em `engine-transport.test.ts` (o
+  typecheck foi rodado antes desse teste ser escrito). Corrigido; o vitest não
+  checa tipos, por isso passava.
+- COMMIT exigia a cerca HA (`owner/term`) também sem HA, nos dois lados; numa
+  instalação sem HA a troca era impossível. Agora: com cerca instalada, dono e
+  termo continuam obrigatórios e conferidos antes/depois; sem cerca, o canal
+  privado do processo dono é a autoridade (como no TAKE) e um dono/termo
+  informado é recusado. Testes Rust e TS para os quatro casos.
+- Repetir a mesma Idempotency-Key depois do próprio corte confirmado dava 409
+  (o contexto do PGM mudou pelo próprio corte). Agora responde do journal; outra
+  ocorrência, outro destino ou outro operador continuam recusados.
+- O PREPARE responde PREPARING; READY chega depois. A interface consulta STATUS
+  (busca, nunca novo corte) por até 20 s.

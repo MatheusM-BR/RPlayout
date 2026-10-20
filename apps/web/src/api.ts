@@ -241,7 +241,15 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
 const post = <T>(path: string, body: unknown): Promise<T> =>
   send<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
+export interface LiveReplacementView {
+  transactionId:string;targetSourceId?:string;receipt:{phase:string}|null;prepareSent?:boolean;commitSent?:boolean;cancelSent?:boolean;closed?:boolean
+  nativeProgramConfirmed:boolean;physicalOutputValidated:false;replayed?:boolean;error?:string;outcomeUnknown?:boolean
+}
+const liveReplacementPath=(channelId:string,suffix='')=>`/api/channels/${encodeURIComponent(channelId)}/live-replacement${suffix}`
 export const api = {
+  /** PREPARE: 409 bodies are returned (not thrown) so the screen can show outcome flags. */
+  liveReplacementPrepare:(channelId:string,targetSourceId:string,idempotencyKey:string)=>requestResult<LiveReplacementView>(liveReplacementPath(channelId),{method:'POST',headers:{'idempotency-key':idempotencyKey},body:JSON.stringify({targetSourceId})},{acceptedStatuses:[409]}),
+  liveReplacementCommand:(channelId:string,transactionId:string,operation:'commit'|'cancel'|'status')=>requestResult<LiveReplacementView>(liveReplacementPath(channelId,`/${encodeURIComponent(transactionId)}/${operation}`),{method:'POST',body:JSON.stringify(operation==='status'?{}:{confirm:true})},{acceptedStatuses:[409]}),
   executionOwnership:(id:string)=>send<import('@rplayout/protocol').OwnershipStatusView>(`/api/channels/${encodeURIComponent(id)}/execution-ownership`),
   distributionOwnership:()=>send<import('@rplayout/protocol').OwnershipStatusView>('/api/distribution/execution-ownership'),
   cadencePreview: (id:string, rate:import('@rplayout/protocol').Rate,format:Partial<Pick<Channel,'name'|'width'|'height'|'scan'|'fieldOrder'|'targetLufs'|'ceilingDbtp'>>,revision:number|undefined) => send<{report:import('@rplayout/protocol').CadenceConversionReport}>(`/api/channels/${encodeURIComponent(id)}/cadence-preview`,{method:'POST',headers:configurationHeaders(id,revision),body:JSON.stringify({rateNum:rate.num,rateDen:rate.den,format})}),

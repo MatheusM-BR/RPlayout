@@ -2,6 +2,18 @@
 
 ## Estado atual — r87 instalada; ciclo r86→r87→r86 conferido no D:
 
+20/10 posterior — r88 definida como marco utilizável. Engine Rust compilado e
+testado pela primeira vez (Linux/GStreamer1.24): 220PASS/3FAIL/4ign; 12 testes da
+troca PASS. Corrigido: COMMIT exigia cerca HA mesmo sem HA (troca impossível na
+instalação real); replay da mesma chave após o próprio corte dava 409; erro de
+tipo de teste no commit de36180; fonte apps/web/build excluída do git pelo
+.gitignore. Ensaio REAL engine+SRT local: PREPARE→READY→COMMIT→reserva no PGM,
+mesmo relógio/as-run, checkpoint v2, replay, STOP: 4/4 PASS. Botão na interface
+(Preparar/Cortar/Cancelar/Consultar). Script único scripts/build-r88.ps1 para o
+Windows (testes Windows, ensaio GStreamer1.28, ZIP, QA, verificação). r88 ainda
+NOT_BUILT até o usuário executar o script. Itens 2.5/6.2/7.3 avançam; nenhum
+fechado. Totais10/53:8concluídas/34andamento/4pendentes/7v3.
+
 20/10 — 6.2/7.3: fábrica de sessão autorizada no ChannelRuntime, autorização
 por comando instalada dentro da fila do engine (sem reaproveitar a da primeira
 requisição), rotas HTTP de PREPARE/COMMIT/CANCEL/STATUS (inertes sem protocolo

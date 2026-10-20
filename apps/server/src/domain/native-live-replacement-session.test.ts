@@ -126,6 +126,19 @@ describe('authorized native replacement session factory (real SQLite, simulated 
   await expect(session().prepare('cut-8','backup')).resolves.toMatchObject({replayed:true,prepareSent:true})
   expect(transport.sent).toEqual(['PREPARE'])
  })
+ it('a retry of the same key after its own confirmed cut replays from the journal (no 409, no second cut)',async()=>{
+  const prepared=await session().prepare('cut-retry','backup')
+  await session().commit(prepared.transactionId)
+  // The PGM now runs the backup: decoder/source/connection of the context changed.
+  context={...context,sourceId:'backup',decoderId:8,sourceConnectionSignature:nativeSourceConnectionSignature('backup','NDI','ndi:backup')}
+  await expect(session().prepare('cut-retry','backup')).resolves.toMatchObject({replayed:true,nativeProgramConfirmed:true})
+  expect(transport.sent).toEqual(['PREPARE','COMMIT'])
+  // Same key for a cut back to the primary is another request: refused.
+  await expect(session().prepare('cut-retry','primary')).rejects.toMatchObject({status:409})
+  // Same key in another occurrence is refused even after the cut.
+  context={...context,occurrenceId:'asrun-2'}
+  await expect(session().prepare('cut-retry','backup')).rejects.toMatchObject({status:409})
+ })
  it('a refusal before any byte closes the intent durably and frees the channel',async()=>{
   transport.refusePrepareBeforeSend=new Error('Engine sem contrato de troca nativa desta geração; nenhum TAKE alternativo será enviado.')
   await expect(session().prepare('cut-9','backup')).rejects.toThrow('sem contrato')

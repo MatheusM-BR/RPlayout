@@ -304,10 +304,10 @@ fn run_command(channel: &mut Channel, command: Command, request_id:u64) -> Resul
             Ok(true)
         }
         Command::CommitLiveReplacement { engine_generation, transaction_id, prepared_decoder_id, owner_id, term } => {
-            fencing::authorize_publication(&owner_id, term)?;
+            let lease = fencing::commit_authority(owner_id.as_deref(), term)?;
             let replayed = channel.live_replacement_receipt(&engine_generation, &transaction_id).is_ok_and(|receipt| receipt.phase.terminal());
             let result = channel.commit_live_replacement(&engine_generation, &transaction_id, prepared_decoder_id);
-            if fencing::authorize_publication(&owner_id, term).is_err() { std::process::exit(75); }
+            if let Some((owner, term)) = &lease { if fencing::authorize_publication(owner, *term).is_err() { std::process::exit(75); } }
             let receipt = result?;
             emit_replacement_receipt(channel, request_id, receipt, replayed);
             announce(channel);

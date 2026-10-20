@@ -144,7 +144,7 @@ it('real SQLite rejection of send intent prevents the wire from writing COMMIT',
  // transitions use the real SQL implementation and rejection trigger.
  const wire=new NativeLiveReplacementWire({nextId:()=>++sequence,assertOwned:()=>owner(context.ownerRunId),validate:()=>{},
   beforeSend:(operation,value)=>ledger.beforeSend(operation,value),recordReceipt:value=>ledger.recordReceipt(value),
-  write:value=>commands.push(value),fence:()=>({ownerId:'native-owner',term:17}),selectionObserved:()=>false})
+  write:value=>commands.push(value),fence:()=>({ownerId:'native-owner',term:17}),fenceRequired:()=>true,selectionObserved:()=>false})
  wire.ready({engineGeneration:context.engineGeneration,liveReplacementProtocol:1,decoderIdentity:true})
  const prepare=wire.prepare(request);wire.absorb({event:'liveReplacement',id:sequence,receipt:receipt(request)});wire.absorb({event:'ack',id:sequence,ok:true});await prepare
  database.sqlite.exec("CREATE TRIGGER reject_native_wire BEFORE INSERT ON health_events BEGIN SELECT RAISE(ABORT,'QA_NATIVE_WIRE_REFUSED'); END")
