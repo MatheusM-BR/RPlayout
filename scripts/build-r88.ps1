@@ -1,7 +1,9 @@
 param(
   [string]$Output = 'D:\RPlayout-builds',
   [string]$BasePackage = 'release/runtime-base-r30',
-  [string]$Edition = 'RPlayout-1.1-parcial-20261020-r88'
+  [string]$Edition = 'RPlayout-1.1-parcial-20261020-r88',
+  # Re-run only the installed-package checks (12, 13) against an existing QA install.
+  [string]$VerifyInstalled = ''
 )
 # r88: ONE command on the build machine (Windows, PowerShell 5.1+):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File D:\RPlayout\scripts\build-r88.ps1
@@ -40,6 +42,11 @@ function Run([string]$File, [string[]]$Arguments, [string]$What) {
   if ($LASTEXITCODE -ne 0) { throw "$What falhou (exit $LASTEXITCODE)" }
 }
 
+if ($VerifyInstalled) {
+  $summary.installed = [IO.Path]::GetFullPath($VerifyInstalled)
+  if (!(Test-Path -LiteralPath (Join-Path $summary.installed 'installation-receipt.json'))) { throw "Instalacao QA sem recibo: $VerifyInstalled" }
+  $summary.mode = 'VERIFY_INSTALLED_ONLY'
+} else {
 Step '01 pre-requisitos' {
   foreach ($tool in @('node','pnpm.cmd','cargo','git')) { if (!(Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool nao encontrado no PATH" } }
   if (!$env:GSTREAMER_1_0_ROOT_MSVC_X86_64 -or !(Test-Path (Join-Path $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 'bin\gst-launch-1.0.exe'))) { throw 'GSTREAMER_1_0_ROOT_MSVC_X86_64 ausente ou incompleto' }
@@ -109,6 +116,7 @@ Step '11 instalacao isolada de QA' {
     -Destination $summary.installed -ShortcutDirectory (Join-Path $qa "r88-shortcuts-$stamp") -ExternalQaRoot $qa | Out-Null
   $summary.installed
 }
+}
 Step '12 verificacao funcional do pacote instalado' { & (Join-Path $PSScriptRoot 'verify-rplayout-package.ps1') -Package $summary.installed -SkipDeferredHa; 'ok' } -ContinueOnFailure
 Step '13 engine instalado anuncia a troca nativa' -ContinueOnFailure {
   $engine = Join-Path $summary.installed 'apps\engine\target\release\rplayout-engine.exe'
@@ -129,11 +137,15 @@ Step '13 engine instalado anuncia a troca nativa' -ContinueOnFailure {
       if ($null -eq $line) { break }
       if ($line -match '"event":"ready"') { $ready = $line | ConvertFrom-Json }
     }
+    # Keep draining: meters are written every frame and a full pipe blocks the engine.
+    if (!$pending) { $rest = $process.StandardOutput.ReadToEndAsync() }
     $process.StandardInput.WriteLine('{"id":1,"cmd":"shutdown"}'); $process.StandardInput.Flush()
-    if (!$process.WaitForExit(15000)) { $process.Kill() }
+    $exitedInTime = $process.WaitForExit(15000)
+    if (!$exitedInTime) { $process.Kill() }
   } finally { $env:PATH = $saved; Remove-Item Env:GST_PLUGIN_PATH, Env:GST_PLUGIN_SYSTEM_PATH -ErrorAction SilentlyContinue }
   if (!$ready -or $ready.liveReplacementProtocol -ne 1 -or $ready.engineGeneration -notmatch '^[0-9a-f-]{36}$') { throw 'Engine instalado nao anunciou liveReplacementProtocol=1 com geracao' }
-  "liveReplacementProtocol=1 engineGeneration=$($ready.engineGeneration)"
+  if (!$exitedInTime) { throw 'Engine instalado anunciou o protocolo mas nao encerrou em 15 s apos shutdown' }
+  "liveReplacementProtocol=1 engineGeneration=$($ready.engineGeneration); encerrou apos shutdown"
 }
 Save-Summary
 Stop-Transcript | Out-Null

@@ -153,7 +153,12 @@ try {
     if (!$loadedCrt -or $loadedCrt.FileName -ine (Join-Path $engineDirectory 'vcruntime140.dll')) { throw 'Engine não comprovou carregamento do MSVC incluído; não aceitar dependência do runtime global.' }
     $engine.StandardInput.WriteLine('{"id":1,"cmd":"shutdown"}')
     $engine.StandardInput.Flush()
-    if (!$engine.WaitForExit(15000)) { throw 'Engine portátil não encerrou dentro do prazo.' }
+    $shutdownAt = [DateTime]::UtcNow
+    if (!$engine.WaitForExit(15000)) {
+      $engine.Kill(); [void]$engine.WaitForExit(5000)
+      $seen = @(($stdout.GetAwaiter().GetResult() -split '\r?\n') | Where-Object { $_ -notmatch '"event":"(levels|videoProbe|output)"' } | Select-Object -First 8) -join ' | '
+      throw "Engine portátil não encerrou dentro do prazo (aguardou $([int]((Get-Date).ToUniversalTime()-$shutdownAt).TotalSeconds) s após shutdown). Saída: $seen; erro: $($stderr.GetAwaiter().GetResult())"
+    }
     $engineOutput = $stdout.GetAwaiter().GetResult() -split '\r?\n'
     $engineError = $stderr.GetAwaiter().GetResult()
     if ($engine.ExitCode -ne 0) { throw "Engine portátil não inicializou: $engineError" }
