@@ -26,4 +26,11 @@ describe('QC disponibiliza inspeção explícita sem ativar qualidade ao abrir',
   it('sem arquivo selecionado não oferece download original ou aprovação de vídeo inexistente',()=>{
     expect(markup([])).not.toContain('Ver em qualidade')
   })
+  it('lista ao vivo inicial é N/D e desabilitada, não zero entradas confirmado',()=>{
+    const html=markup([])
+    expect(html).toContain('Entradas ao vivo ainda não conferidas')
+    expect(html).toContain('AO VIVO (N/D)')
+    expect(html).toContain('Reconsultar entradas ao vivo')
+    expect(html).not.toContain('AO VIVO (0)')
+  })
 })

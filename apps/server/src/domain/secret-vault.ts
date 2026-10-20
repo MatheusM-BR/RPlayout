@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac }
 import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import {windowsPowerShellExecutable} from './windows-system.js'
 
 export const SECRET_PREFIX = 'rplayout-secret:v1:'
 
@@ -68,7 +69,7 @@ function windowsProtect(data: Buffer, decrypt: boolean): Buffer {
     `$result=[Security.Cryptography.ProtectedData]::${method}($value,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); ` +
     '[Console]::Out.Write([Convert]::ToBase64String($result))'
   try {
-    const value = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { input: data.toString('base64'), encoding: 'utf8', timeout: 10_000, windowsHide: true, stdio: ['pipe','pipe','pipe'] })
+    const value = execFileSync(windowsPowerShellExecutable(process.env.SystemRoot), ['-NoProfile', '-NonInteractive', '-Command', script], { input: data.toString('base64'), encoding: 'utf8', timeout: 10_000, windowsHide: true, stdio: ['pipe','pipe','pipe'] })
     return Buffer.from(value.trim(), 'base64')
   } catch {
     throw new Error('Cofre indisponível: o Windows não conseguiu proteger/abrir a chave para este usuário. Não troque nem apague a chave existente.')

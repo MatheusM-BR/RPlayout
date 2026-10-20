@@ -80,6 +80,26 @@ describe('ganho automático', () => {
 })
 
 describe('ganho efetivo por modo', () => {
+  it('TRIM vinculado só resolve para o mesmo intervalo, hash, trilha e mix',()=>{
+    const content=asset(),routing={mode:'STEREO_1_2' as const},cut={inNs:1e9,outNs:3e9}
+    const level:AudioLevel={mode:'AUTO',gainDb:0,analysisId:'stored',routing,measured:{...measurement(-18,-3,'TRIM'),input:{contentHash:content.contentHash,audioTrack:0,routing,trim:cut}}}
+    expect(resolveAudio(level,content,0,cut).value.measured).toEqual(level.measured)
+    expect(resolveAudio(level,content,0,{inNs:1e9,outNs:4e9}).value.measured).toBeNull()
+    expect(resolveAudio(level,content,1,cut).value.measured).toBeNull()
+    expect(resolveAudio(level,{...content,contentHash:'changed'},0,cut).value.measured).toBeNull()
+    expect(resolveAudio({...level,routing:{mode:'LEFT_ONLY'}},content,0,cut).value.measured).toBeNull()
+  })
+  it('TRIM sem identidade do corte não é reutilizado como FILE, mesmo com analysisId',()=>{
+    const content=asset(),routing={mode:'STEREO_1_2' as const}
+    const cut:AudioLevel={mode:'AUTO',gainDb:0,analysisId:'stored',routing,measured:{...measurement(-18,-3,'TRIM'),input:{contentHash:content.contentHash,audioTrack:0,routing}}}
+    expect(resolveAudio(cut,content).value.measured).toBeNull()
+    expect(resolveAudio({...cut,analysisId:undefined,routing:{mode:'DEFAULT'}},content).value.measured).toBeNull()
+    expect(resolveAudio(null,{...content,loudnessFile:measurement(-18,-3,'TRIM')}).value.measured).toBeNull()
+  })
+  it('FILE do acervo tem prioridade sobre medição velha anexada ao nível',()=>{
+    const file=measurement(-27,-5),content=asset({loudnessFile:file})
+    expect(resolveAudio({mode:'AUTO',gainDb:0,measured:measurement(-18,-3)},content).value.measured).toEqual(file)
+  })
   it('mix selecionado não herda medição de loudness do arquivo inteiro',()=>{
     const routed:AudioLevel={mode:'MANUAL',gainDb:0,measured:measurement(-18,-3),routing:{mode:'STEREO_3_4'}}
     expect(resolveAudio(routed,asset({loudnessFile:measurement(-23,-1)})).value).toEqual({...routed,measured:null})

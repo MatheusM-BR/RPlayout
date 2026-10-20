@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import {
   escapeXml,
   framesSinceMidnight,
@@ -16,6 +16,11 @@ import type { Db } from '../db/client.js'
 import { graphicTemplates } from '../db/schema.js'
 import type { Transport } from './transport.js'
 import { globalScteDispatcher } from './scte.js'
+import {SecondaryEventUncertain} from './secondary-event-ledger.js'
+import {EngineCommandRejected} from './engine.js'
+import {captureGraphicDisplay,graphicDisplaySchema,graphicLayers,type GraphicDisplaySnapshot} from './graphic-composition.js'
+import {fitGraphicViewport} from './graphic-viewport.js'
+export {fitGraphicViewport} from './graphic-viewport.js'
 
 export interface TriggerLayerOptions {
   templateId?: string
@@ -28,6 +33,9 @@ export interface TriggerLayerOptions {
   opacity?: number
 }
 
+/** Engine composition uses a canonical 1920x1080 viewport. Standalone SVG
+ * templates retain their own coordinate system via viewBox, not a tiny nested
+ * viewport when designed at SD/720p/UHD dimensions. Bare groups are canonical. */
 /**
  * Gerenciador de camadas de grafismo RGBA (Fase D).
  *
@@ -38,7 +46,76 @@ export interface TriggerLayerOptions {
  * - LOWER_THIRD: Tarja de apresentador / programa
  */
 export class Graphics {
+  private commandTail:Promise<unknown>=Promise.resolve()
+  private confirming=false
+  get commandPending():boolean{return this.confirming}
+  /** Stage manual changes separately. No optimistic "active" state or second
+   * unacknowledged send after native ACK. Serialize manual commands; automatic
+   * callers defer while this operation owns the composition. */
+  private confirmed<T>(change:(draft:Graphics)=>T,authorize:()=>void,beforeSend:()=>void=()=>{},adjustHold=true):Promise<T>{
+    const work=this.commandTail.then(async()=>{
+      authorize();this.confirming=true
+      try{
+        let rendered:{svg:string|null;fadeMs:number}|null=null
+        const draft=new Graphics(this.channel,{graphic:(svg:string|null,fadeMs:number)=>{rendered={svg,fadeMs}}} as Transport)
+        draft.current=structuredClone(this.current);draft.currentLayer=this.currentLayer;Object.assign(draft.layers,structuredClone(this.layers))
+        Object.assign(draft.expirationDeadlines,this.expirationDeadlines)
+        Object.assign(draft.layerVersions,this.layerVersions)
+        for(const [layer,owner] of this.secondaryOwners)draft.secondaryOwners.set(layer,{...owner})
+        const priorLayers={...draft.layers},preparedAt=Date.now()
+        const result=change(draft)
+        if(!rendered)throw new Error('Composição não produzida; grafismo anterior preservado.')
+        authorize()
+        const command=rendered as {svg:string|null;fadeMs:number}
+        if(this.transport.state().mode==='NATIVE'){
+          if(!this.transport.graphicConfirmed)throw new Error('Transporte não confirma grafismo; operação recusada.')
+          await this.transport.graphicConfirmed(command.svg,command.fadeMs,()=>{authorize();beforeSend()})
+        }else {beforeSend();this.transport.graphic(command.svg,command.fadeMs)}
+        // A new layer's hold starts at acknowledgement, not while waiting for
+        // the native queue. Existing layers keep their original deadline.
+        const acknowledgementDelay=Math.max(0,Date.now()-preparedAt)
+        if(adjustHold)for(const key of Object.keys(draft.layers) as GraphicsLayer[])if(draft.layers[key]!==priorLayers[key]&&draft.expirationDeadlines[key]!=null)draft.expirationDeadlines[key]!+=acknowledgementDelay
+        Object.assign(this.layers,draft.layers);this.expirationDeadlines={...draft.expirationDeadlines};this.layerVersions={...draft.layerVersions};this.current=draft.current;this.currentLayer=draft.currentLayer
+        this.secondaryOwners.clear();for(const [layer,owner] of draft.secondaryOwners)this.secondaryOwners.set(layer,{...owner})
+        captureGraphicDisplay(this.displaySnapshot())
+        return result
+      }finally{this.confirming=false}
+    })
+    this.commandTail=work.catch(()=>{});return work
+  }
+  showConfirmed(template:GraphicTemplate,values:Record<string,string>,authorize:()=>void,beforeSend?:()=>void):Promise<GraphicOnAir>{return this.confirmed(draft=>draft.show(template,values),authorize,beforeSend)}
+  hideConfirmed(authorize:()=>void,fadeMs=300,beforeSend?:()=>void):Promise<void>{return this.confirmed(draft=>draft.hide(fadeMs),authorize,beforeSend)}
+  hasExpiredLayers():boolean{
+    const now=Date.now()
+    return (Object.keys(this.layers) as GraphicsLayer[]).some(key=>this.layers[key].active&&this.expirationDeadlines[key]!=null&&now>=this.expirationDeadlines[key]!)
+  }
+  expireConfirmed(authorize:()=>void,beforeSend?:()=>void):Promise<boolean>{
+    return this.confirmed(draft=>draft.tick(),authorize,beforeSend)
+  }
+  triggerLayerConfirmed(layer:GraphicsLayer,action:'SHOW'|'HIDE'|'UPDATE',options:TriggerLayerOptions,authorize:()=>void,beforeSend?:()=>void):Promise<GraphicLayerState>{return this.confirmed(draft=>draft.triggerLayer(layer,action,options),authorize,beforeSend)}
   private current: GraphicOnAir | null = null
+  private currentLayer:GraphicsLayer|null=null
+  private expirationDeadlines:Partial<Record<GraphicsLayer,number>>={}
+  private layerVersions:Partial<Record<GraphicsLayer,number>>={}
+  private readonly secondaryOwners=new Map<GraphicsLayer,{eventId:string;version:number}>()
+  displaySnapshot():GraphicDisplaySnapshot {
+    const owners=Object.fromEntries([...this.secondaryOwners].filter(([key,owner])=>this.layers[key].active&&owner.version===this.layerVersions[key]))
+    return graphicDisplaySchema.parse({version:1,layers:structuredClone(this.layers),current:structuredClone(this.current),currentLayer:this.currentLayer,deadlines:{...this.expirationDeadlines},versions:{...this.layerVersions},owners,emergencySvg:null})
+  }
+  restoreDisplayConfirmed(value:GraphicDisplaySnapshot,authorize:()=>void,beforeSend:()=>void):Promise<void>{
+    const saved=graphicDisplaySchema.parse(structuredClone(value))
+    let remainingDeadlines:number[]=[]
+    return this.confirmed(draft=>{
+      Object.assign(draft.layers,saved.layers);draft.expirationDeadlines={...saved.deadlines};draft.layerVersions={...saved.versions}
+      draft.current=saved.current;draft.currentLayer=saved.currentLayer;draft.secondaryOwners.clear()
+      for(const key of graphicLayers)if(saved.owners[key])draft.secondaryOwners.set(key,{...saved.owners[key]!})
+      // Absolute hold deadlines survive downtime; recovery never grants a new hold.
+      for(const key of graphicLayers)if(draft.layers[key].active&&draft.expirationDeadlines[key]!=null&&Date.now()>=draft.expirationDeadlines[key]!)draft.triggerLayer(key,'HIDE',{fadeMs:0})
+      remainingDeadlines=saved.emergencySvg===null?graphicLayers.filter(key=>draft.layers[key].active&&draft.expirationDeadlines[key]!=null).map(key=>draft.expirationDeadlines[key]!):[]
+      draft.renderComposite(0)
+      if(saved.emergencySvg!==null)draft.transport.graphic(saved.emergencySvg,0)
+    },authorize,()=>{authorize();if(remainingDeadlines.some(deadline=>Date.now()>=deadline))throw new Error('Prazo da composição venceu durante a fila; display antigo não enviado.');beforeSend()},false).then(()=>{if(saved.emergencySvg!==null)captureGraphicDisplay({...this.displaySnapshot(),emergencySvg:saved.emergencySvg})})
+  }
   private readonly layers: Record<GraphicsLayer, GraphicLayerState> = {
     STATION_LOGO: { layer: 'STATION_LOGO', active: false },
     ONAIR_CLOCK: { layer: 'ONAIR_CLOCK', active: false },
@@ -53,12 +130,16 @@ export class Graphics {
     private readonly transport: Transport,
     private readonly eventOptions?: {
       template: (id:string) => GraphicTemplate | undefined
-      execute: (event:SecondaryEvent,mode:'FIRE'|'DISMISS',work:()=>Promise<void>) => Promise<void>
+      execute: (event:SecondaryEvent,mode:'FIRE'|'DISMISS',work:(authorize:()=>void,beforeSend?:()=>void)=>Promise<void>) => Promise<void>
+      remainingDurationFrames?: (event:SecondaryEvent)=>number|undefined
       scte?: (message:import('@rplayout/protocol').Scte35Message,scte35Hex:string,scte104Hex:string) => Promise<void>
       device?: (event: SecondaryEvent) => Promise<void>
     },
   ) {
-    const dispatch = async (event:SecondaryEvent,mode:'FIRE'|'DISMISS') => {
+    const dispatch = async (event:SecondaryEvent,mode:'FIRE'|'DISMISS',authorize:()=>void=()=>{},persistSend:()=>void=()=>{}) => {
+      let sent=false
+      const beforeSend=()=>{authorize();persistSend();sent=true}
+      try{
       if (mode === 'FIRE') {
         if (event.type === 'SCTE_TRIGGER' || event.scteConfig) {
           const scteConfig = event.scteConfig ?? {
@@ -80,20 +161,38 @@ export class Graphics {
         }
 
         // Gráficos de camada
-        this.triggerLayer(event.targetLayer, 'SHOW', {
+        const durationFor=this.eventOptions?.remainingDurationFrames
+        const template=this.eventOptions?.template(event.templateId)
+        // An explicitly selected published template may not silently become a
+        // generic layer. Empty ID is the intentional legacy built-in graphic.
+        if(event.templateId&&!template)throw new Error('Template publicado do grafismo não encontrado; nenhum SHOW enviado.')
+        await this.triggerLayerConfirmed(event.targetLayer, 'SHOW', {
           templateId: event.templateId,
-          template: this.eventOptions?.template(event.templateId),
+          template,
           values: Object.fromEntries(Object.entries(event.payload).map(([key,value])=>[key,String(value)])),
           payload: event.payload,
-          durationFrames: event.durationFrames,
-        })
+          get durationFrames(){return durationFor?durationFor(event):event.durationFrames},
+        },authorize,beforeSend)
+        this.secondaryOwners.set(event.targetLayer,{eventId:event.id,version:this.layerVersions[event.targetLayer]!})
+        captureGraphicDisplay(this.displaySnapshot())
       } else if (mode === 'DISMISS') {
         if (event.type === 'DEVICE_AUTOMATION' || event.deviceConfig || event.type === 'SCTE_TRIGGER') throw new Error('Equipamento/SCTE não possui descarte automático de camada.')
-        this.triggerLayer(event.targetLayer, 'HIDE')
+        const assertOwned=()=>{
+          authorize()
+          const owner=this.secondaryOwners.get(event.targetLayer)
+          if(owner?.eventId!==event.id||owner.version!==this.layerVersions[event.targetLayer])throw new Error('Camada substituída; descarte antigo não enviado.')
+        }
+        await this.triggerLayerConfirmed(event.targetLayer, 'HIDE',{},assertOwned,beforeSend)
+        this.secondaryOwners.delete(event.targetLayer)
+        captureGraphicDisplay(this.displaySnapshot())
+      }
+      }catch(error){
+        if(sent&&this.transport.state().mode==='NATIVE'&&!(error instanceof EngineCommandRejected))throw new SecondaryEventUncertain('Grafismo enviado sem confirmação de resultado.',{cause:error})
+        throw error
       }
     }
     this.scheduler = new SecondaryEventScheduler((event,mode) => this.eventOptions
-      ? this.eventOptions.execute(event,mode,()=>dispatch(event,mode)) : dispatch(event,mode))
+      ? this.eventOptions.execute(event,mode,(authorize,persistSend)=>dispatch(event,mode,authorize,persistSend)) : dispatch(event,mode))
   }
 
   /** Retorna o estado atual de todas as 4 camadas. */
@@ -105,6 +204,7 @@ export class Graphics {
   onAir(): GraphicOnAir | null {
     return this.current
   }
+  onAirLayer():GraphicsLayer|null{return this.currentLayer}
 
   /**
    * Aciona uma camada específica de grafismo (SHOW, HIDE, UPDATE).
@@ -114,16 +214,21 @@ export class Graphics {
     action: 'SHOW' | 'HIDE' | 'UPDATE',
     options: TriggerLayerOptions = {},
   ): GraphicLayerState {
+    if(this.confirming)throw new Error('Grafismo aguarda confirmação nativa; tente após atualizar o estado.')
     const fadeMs = options.fadeMs ?? 300
+    this.layerVersions[layer]=(this.layerVersions[layer]??0)+1
+    this.secondaryOwners.delete(layer)
 
     if (action === 'HIDE') {
+      delete this.expirationDeadlines[layer]
       this.layers[layer] = {
         layer,
         active: false,
         updatedAt: new Date().toISOString(),
       }
-      if (this.current && this.current.templateId === options.templateId) {
+      if (this.currentLayer===layer) {
         this.current = null
+        this.currentLayer=null
       }
       this.renderComposite(fadeMs)
       return this.layers[layer]
@@ -134,9 +239,11 @@ export class Graphics {
     const nowFrames = framesSinceMidnight(new Date(), this.channel.rate)
     const expiresAtFrames =
       durationFrames && durationFrames > 0 ? nowFrames + durationFrames : null
+    if(durationFrames&&durationFrames>0)this.expirationDeadlines[layer]=Date.now()+durationFrames*1000*this.channel.rate.den/this.channel.rate.num
+    else delete this.expirationDeadlines[layer]
 
     const svg = options.template
-      ? renderTemplate(options.template, options.values ?? {})
+      ? fitGraphicViewport(renderTemplate(options.template, options.values ?? {}))
       : this.buildDefaultLayerSvg(layer, options)
 
     const state: GraphicLayerState = {
@@ -152,6 +259,7 @@ export class Graphics {
     }
 
     this.layers[layer] = state
+    this.currentLayer=layer
     this.current = {
       templateId: state.templateId ?? layer,
       name: state.name ?? layer,
@@ -165,10 +273,14 @@ export class Graphics {
 
   /** Desativa todas as camadas no ar. */
   dismissAllLayers(fadeMs = 300): void {
+    if(this.confirming)throw new Error('Grafismo aguarda confirmação nativa; retirada não enviada.')
     for (const key of Object.keys(this.layers) as GraphicsLayer[]) {
       this.layers[key] = { layer: key, active: false, updatedAt: new Date().toISOString() }
+      this.layerVersions[key]=(this.layerVersions[key]??0)+1
     }
     this.current = null
+    this.currentLayer=null
+    this.expirationDeadlines={}
     this.transport.graphic(null, fadeMs)
   }
 
@@ -205,20 +317,16 @@ export class Graphics {
    * Devolve true se houve alteração no estado das camadas.
    */
   tick(): boolean {
-    const now = framesSinceMidnight(new Date(), this.channel.rate)
+    if(this.confirming)return false
+    const now = Date.now()
     let changed = false
 
     for (const key of Object.keys(this.layers) as GraphicsLayer[]) {
       const layerState = this.layers[key]
-      if (layerState.active && layerState.expiresAtFrames && now >= layerState.expiresAtFrames) {
+      if (layerState.active && this.expirationDeadlines[key]!=null && now >= this.expirationDeadlines[key]!) {
         this.triggerLayer(key, 'HIDE')
         changed = true
       }
-    }
-
-    if (this.current?.endsAt !== null && this.current !== null && now >= this.current.endsAt) {
-      this.current = null
-      changed = true
     }
 
     return changed
@@ -365,6 +473,27 @@ export class SecondaryEventScheduler {
     }
   }
 
+  /** Explicit occurrence admission, not reset/replay. Use only an authenticated
+   * recovery plan. Suppressed source phases are bookkeeping, not local sends. */
+  seedRecoveredItem(itemId:string,phases:readonly {eventId:string;seedFired:boolean;seedDismissed:boolean}[]):void{
+    if(!itemId||this.activeItemState)throw new Error('Recuperação secundária exige ocorrência nova, ainda não armada.')
+    const ids=new Set<string>()
+    for(const phase of phases){
+      if(!phase.eventId||ids.has(phase.eventId)||phase.seedDismissed&&!phase.seedFired||!this.events.some(event=>event.id===phase.eventId&&(!event.rundownItemId||event.rundownItemId===itemId)))throw new Error('Fases de recuperação secundária inválidas ou de outro item.')
+      ids.add(phase.eventId)
+    }
+    this.activeItemState={itemId,firedEventIds:new Set(phases.filter(row=>row.seedFired).map(row=>row.eventId)),dismissedEventIds:new Set(phases.filter(row=>row.seedDismissed).map(row=>row.eventId))}
+  }
+
+  hasDue(itemId:string,elapsedFrames:number,totalDurationFrames:number):boolean{
+    if(!this.activeItemState||this.activeItemState.itemId!==itemId)return false
+    return this.events.some(event=>{
+      if(!event.enabled||event.rundownItemId&&event.rundownItemId!==itemId||event.triggerMode==='MANUAL')return false
+      const start=event.triggerMode==='OFFSET_BEFORE_END'?Math.max(0,totalDurationFrames-event.offsetFrames):event.offsetFrames
+      return elapsedFrames>=start&&!this.activeItemState!.firedEventIds.has(event.id)||!!event.durationFrames&&event.durationFrames>0&&elapsedFrames>=start+event.durationFrames&&this.activeItemState!.firedEventIds.has(event.id)&&!this.activeItemState!.dismissedEventIds.has(event.id)
+    })
+  }
+
   /**
    * Avalia eventos secundários a cada ciclo (tick) de reprodução do item.
    *
@@ -484,18 +613,18 @@ const DEFAULTS: {
 ]
 
 export async function ensureDefaultGraphics(db: Db): Promise<void> {
-  for (const template of DEFAULTS) {
-    const [existing] = await db
-      .select()
-      .from(graphicTemplates)
-      .where(eq(graphicTemplates.name, template.name))
-    if (existing) continue
-
-    await db.insert(graphicTemplates).values({
-      id: randomUUID(),
-      channelId: null,
-      ...template,
-      createdAt: new Date().toISOString(),
-    })
-  }
+  // Reserve the writer before reading the marker/catalog. A restart is not a
+  // request to restore deleted or renamed factory templates. All inserts and
+  // their revision triggers commit together with the one-time marker.
+  db.transaction(tx => {
+    const marker = tx.get(sql`SELECT state FROM graphics_initialization WHERE scope='G'`) as {state: string} | undefined
+    if (marker?.state === 'INITIALIZED') return
+    if (marker?.state !== 'PENDING') throw new Error('Inicialização das artes inválida; nenhum modelo foi recriado.')
+    for (const template of DEFAULTS) {
+      const existing = tx.select().from(graphicTemplates).where(and(isNull(graphicTemplates.channelId), eq(graphicTemplates.name, template.name))).get()
+      if (existing) continue
+      tx.insert(graphicTemplates).values({id: randomUUID(), channelId: null, ...template, createdAt: new Date().toISOString()}).run()
+    }
+    tx.run(sql`UPDATE graphics_initialization SET state='INITIALIZED',initialized_at=${new Date().toISOString()} WHERE scope='G' AND state='PENDING'`)
+  }, {behavior: 'immediate'})
 }

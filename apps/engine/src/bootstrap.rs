@@ -31,6 +31,8 @@ pub struct EngineOutputs {
     pub qc_preview: Option<String>,
     #[serde(default, rename = "fenceOwner")]
     pub fence_owner: Option<String>,
+    #[serde(default, rename = "holdProgramOutputs")]
+    pub hold_program_outputs: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -39,6 +41,8 @@ pub struct EngineOutputs {
 pub struct RelayConnection {
     pub from: String,
     pub to: String,
+    #[serde(default, rename = "fenceOwner")]
+    pub fence_owner: Option<String>,
 }
 
 #[cfg(test)]
@@ -52,11 +56,19 @@ mod tests {
         let config: EngineOutputs = read(&mut input).unwrap();
         assert_eq!(config.outputs, ["null"]);
         assert!(config.preview.is_none());
+        assert!(!config.hold_program_outputs);
         let mut command = String::new();
         input.read_line(&mut command).unwrap();
         assert_eq!(command, "{\"id\":1,\"cmd\":\"shutdown\"}\n");
     }
 
+    #[test]
+    fn preparacao_retida_exige_booleano_e_preserva_flag_privada() {
+        let mut input=Cursor::new(b"{\"outputs\":[\"null\"],\"preview\":null,\"holdProgramOutputs\":true}\n");
+        let config:EngineOutputs=read(&mut input).unwrap();assert!(config.hold_program_outputs);
+        let mut invalid=Cursor::new(b"{\"outputs\":[\"null\"],\"preview\":null,\"holdProgramOutputs\":\"true\"}\n");
+        assert!(read::<EngineOutputs>(&mut invalid).is_err());
+    }
     #[test]
     fn rejeita_truncamento_tamanho_e_campos_desconhecidos_sem_expor_segredo() {
         for text in ["{\"outputs\":[\"PRIVATE_SECRET\"]}", "{\"outputs\":[\"PRIVATE_SECRET\"],\"unexpected\":true}\n", "{invalid PRIVATE_SECRET}\n"] {
@@ -74,5 +86,12 @@ mod tests {
         let config: RelayConnection = read(&mut input).unwrap();
         assert_eq!(config.from, "rtsp://127.0.0.1/ESTÚDIO");
         assert_eq!(config.to, "srt://host:9000?passphrase=PRIVATE_SECRET");
+        assert!(config.fence_owner.is_none());
+    }
+    #[test]
+    fn conserva_grant_bufferizado_apos_config_do_relay() {
+        let mut input=BufReader::new(Cursor::new(b"{\"from\":\"rtsp://127.0.0.1/pgm\",\"to\":\"srt://127.0.0.1:9000\",\"fenceOwner\":\"consumer\"}\n{\"cmd\":\"fenceGrant\"}\n"));
+        let config:RelayConnection=read(&mut input).unwrap();assert_eq!(config.fence_owner.as_deref(),Some("consumer"));
+        let mut command=String::new();input.read_line(&mut command).unwrap();assert_eq!(command,"{\"cmd\":\"fenceGrant\"}\n");
     }
 }

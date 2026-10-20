@@ -22,6 +22,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 #[path = "../bootstrap.rs"]
 mod bootstrap;
+#[path = "relay/fence.rs"]
+mod relay_fence;
 
 /// Espera entre tentativas. Dobra a cada falha até o teto, e volta ao piso
 /// assim que uma conexão se sustenta -- destino que cai e volta não deve
@@ -90,6 +92,8 @@ impl Event<'_> {
 struct Args {
     from: String,
     to: String,
+    fence_owner: Option<String>,
+    commands: Option<std::io::BufReader<std::io::Stdin>>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -98,12 +102,13 @@ fn parse_args() -> Result<Args> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--private-connection-stdin"] {
-        let config: bootstrap::RelayConnection = bootstrap::read(&mut std::io::BufReader::new(std::io::stdin()))?;
+        let mut reader=std::io::BufReader::new(std::io::stdin());
+        let config: bootstrap::RelayConnection = bootstrap::read(&mut reader)?;
         DestinationKind::parse(&config.to)?;
         if !config.from.starts_with("rtsp://") && !config.from.starts_with("rtsps://") {
             return Err(anyhow!("Origem privada deve usar RTSP."));
         }
-        return Ok(Args { from: config.from, to: config.to });
+        return Ok(Args { from: config.from, to: config.to, commands:if config.fence_owner.is_some(){Some(reader)}else{None},fence_owner:config.fence_owner });
     }
     let mut index = 0;
     while index < args.len() {
@@ -125,6 +130,8 @@ fn parse_args() -> Result<Args> {
     Ok(Args {
         from: from.ok_or_else(|| anyhow!("--from é obrigatório"))?,
         to: to.ok_or_else(|| anyhow!("--to é obrigatório"))?,
+        fence_owner: None,
+        commands: None,
     })
 }
 
@@ -184,6 +191,7 @@ fn attempt(from: &str, to: &str) -> Result<(Duration, String)> {
     };
 
     pipeline.add_many([&src, &mux, &queue, &sink])?;
+    relay_fence::guard(&sink)?;
     gst::Element::link_many([&mux, &queue, &sink])?;
 
     // Os dois pads do muxer são pedidos agora, antes de qualquer fluxo aparecer.
@@ -373,6 +381,22 @@ fn branch(
 fn main() -> Result<()> {
     gst::init().context("GStreamer não inicializou")?;
     let args = parse_args()?;
+    relay_fence::install(args.fence_owner.clone())?;
+    let Args {from,to,commands,..}=args;
+    if let Some(mut reader)=commands {
+        std::thread::spawn(move||{
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields,rename_all="camelCase")]
+            struct Grant {cmd:String,owner_id:String,nonce:u64,term:u64,ttl_ms:u64}
+            loop {
+                let grant:Grant=match bootstrap::read(&mut reader){Ok(value)=>value,Err(_)=>{relay_fence::abort();return;}};
+                if grant.cmd!="fenceGrant"||relay_fence::grant(&grant.owner_id,grant.nonce,grant.term,grant.ttl_ms).is_err(){relay_fence::abort();return;}
+                println!("{}",serde_json::json!({"event":"fenceApplied","nonce":grant.nonce,"term":grant.term}));
+                let _=std::io::Write::flush(&mut std::io::stdout());
+            }
+        });
+    }
+    relay_fence::wait_initial()?;
 
     let mut backoff = BACKOFF_MIN;
     let mut attempts: u32 = 0;
@@ -380,15 +404,15 @@ fn main() -> Result<()> {
     loop {
         attempts += 1;
         Event::Connecting {
-            to: &args.to,
+            to: &to,
             attempt: attempts,
         }
         .emit();
 
-        match attempt(&args.from, &args.to) {
+        match attempt(&from, &to) {
             Ok((lasted, reason)) => {
                 Event::Disconnected {
-                    to: &args.to,
+                    to: &to,
                     reason,
                 }
                 .emit();

@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { createApp, type App } from '../app.js'
 import { registerRoutes } from '../routes.js'
@@ -13,6 +13,9 @@ import {
 } from './external-control.js'
 import { SimulatedTransport } from './transport.js'
 import type { SecondaryEvent, Channel } from '@rplayout/protocol'
+
+// This suite intentionally uses SimulatedTransport, not global native services.
+vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',RELAY_BINARY:'',DEVICES_BINARY:''}))
 
 describe('Fase D — Eventos Secundários, SCTE e Automação de Estúdio', () => {
   let app: App

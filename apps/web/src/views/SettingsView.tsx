@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback,useRef } from 'react'
 import { sameRate, type Channel, type Scan, type FieldOrder } from '@rplayout/protocol'
 import {CadenceConversionDialog,type CadenceConversionRequest} from '../components/CadenceConversionDialog.js'
+import {ProjectRestorePanel} from '../components/ProjectRestorePanel.js'
 import {formatStandardRate} from '../format.js'
 import { api } from '../api.js'
 import {channelConfigurationPatch} from '../domain/channel-configuration.js'
@@ -11,6 +12,7 @@ import { PastasPanel } from '../components/PastasPanel.js'
 import { CategoriasPanel } from '../components/CategoriasPanel.js'
 import { UsersPanel } from '../components/UsersPanel.js'
 import { IntegrationsPanel } from '../components/IntegrationsPanel.js'
+import {OwnershipDiagnosticsPanel} from '../components/OwnershipDiagnosticsPanel.js'
 import { SaidasTransmissaoPanel } from '../components/SaidasTransmissaoPanel.js'
 import { EntradasAoVivoPanel } from '../components/EntradasAoVivoPanel.js'
 import type { Live } from '../types.js'
@@ -52,6 +54,7 @@ export function SettingsView({
   onChanged,
   sessionRole = 'Operador Master',
   authRequired = false,
+  onOpenGraphics,
   onOpenAudit,
 }: Props) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('canais')
@@ -96,8 +99,6 @@ export function SettingsView({
   const [newChannelName, setNewChannelName] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [conversion,setConversion]=useState<CadenceConversionRequest|null>(null)
-  const [projectLabel, setProjectLabel] = useState('')
-  const [projects, setProjects] = useState<Array<{ id: string; label: string; createdAt: string }>>([])
   const [archivedChannels,setArchivedChannels]=useState<Channel[]>([])
   const loadArchivedChannels=useCallback(async()=>{
     try {setArchivedChannels((await api.archivedChannels()).channels)}
@@ -112,15 +113,6 @@ export function SettingsView({
     finally{setIsSaving(false)}
   }
 
-  const loadProjects = useCallback(async () => {
-    try {
-      const result = await api.channelProjects(currentEditingChannel.id)
-      setProjects(result.projects)
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'Não foi possível consultar os projetos do canal.')
-    }
-  }, [currentEditingChannel.id, onMessage])
-
   const resetChannelDraft=(fresh:Channel)=>{
     setChannelBaseline(structuredClone(fresh));setChannelName(fresh.name);setWidth(fresh.width);setHeight(fresh.height)
     setRateNum(fresh.rate.num);setRateDen(fresh.rate.den);setScan(fresh.scan);setFieldOrder(fresh.fieldOrder)
@@ -128,40 +120,6 @@ export function SettingsView({
   }
   // Background snapshots never replace the baseline or erase a local draft.
   useEffect(() => {resetChannelDraft(currentEditingChannel)}, [currentEditingChannel.id])
-
-  useEffect(() => {
-    if (activeTab === 'projetos') void loadProjects()
-  }, [activeTab, loadProjects])
-
-  const handleSaveProject = async () => {
-    const label = projectLabel.trim() || `Ponto manual ${new Date().toLocaleString('pt-BR')}`
-    setIsSaving(true)
-    try {
-      const result = await api.saveChannelProject(currentEditingChannel.id, label)
-      setProjects(result.projects)
-      setProjectLabel('')
-      onMessage(`Projeto do canal salvo: ${result.project.label}.`)
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'Não foi possível salvar o projeto.')
-    } finally {
-      setIsSaving(false)
-    }
-  }
-
-  const handleRestoreProject = async (project: { id: string; label: string }) => {
-    if (!window.confirm(`Restaurar “${project.label}” somente neste canal? Pare o PGM e limpe o CUE primeiro. O engine será reiniciado para aplicar entradas, formato e saídas. A grade editorial será substituída; publicações existentes serão preservadas.`)) return
-    setIsSaving(true)
-    try {
-      const result = await api.restoreChannelProject(currentEditingChannel.id, project.id)
-      await loadProjects()
-      onChanged()
-      onMessage(`Projeto restaurado: ${result.restored.label}. Configuração reaplicada com reinício controlado; revise e publique a grade antes do CUE/TAKE.`)
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'Não foi possível restaurar o projeto.')
-    } finally {
-      setIsSaving(false)
-    }
-  }
 
   // Salva alterações no canal
   const handleSaveChannel = async () => {
@@ -326,6 +284,7 @@ export function SettingsView({
           </div>
 
           <div className="flex items-center gap-space-sm">
+            {onOpenGraphics&&<button onClick={onOpenGraphics} className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle font-body-sm text-[12px]" title="Abrir cadastro de artes, apresentação técnica e comandos de grafismo"><span className="material-symbols-outlined text-[16px]">subtitles</span><span>Grafismo & Artes</span></button>}
             {onOpenAudit && (
               <button
                 onClick={onOpenAudit}
@@ -802,6 +761,7 @@ export function SettingsView({
             {/* TAB 3: ENTRADAS E AO VIVO */}
             {activeTab === 'entradas' && (
               <EntradasAoVivoPanel
+                key={currentEditingChannel.id}
                 channel={currentEditingChannel}
                 onMessage={onMessage}
                 onChanged={onChanged}
@@ -817,22 +777,7 @@ export function SettingsView({
                   </h3>
                   <p className="font-body-sm text-[11.5px] text-outline mt-1">Salva grade, fontes ao vivo, saídas, regras, multiview e gráficos deste canal. Restaurar exige Supervisor/Administrador, PGM parado e CUE limpo; reinicia o engine para aplicar a configuração. Publicações existentes são preservadas: revise e publique a grade restaurada. Não altera os demais canais nem o acervo MAM.</p>
                 </div>
-                <div className="flex flex-wrap gap-2 mb-4">
-                  <input value={projectLabel} onChange={(event) => setProjectLabel(event.target.value)} placeholder="Nome do ponto de restauração" className="min-w-64 flex-1 bg-surface-base border border-border-subtle rounded px-3 py-2 text-sm text-on-surface" />
-                  <button disabled={isSaving} onClick={() => void handleSaveProject()} className="px-3 py-2 rounded bg-primary text-surface-base font-bold text-sm disabled:opacity-50">SALVAR PONTO</button>
-                </div>
-                {projects.length === 0 ? (
-                  <p className="font-label-mono text-[11px] text-outline py-5 text-center">Nenhum ponto salvo para este canal.</p>
-                ) : (
-                  <div className="divide-y divide-border-subtle border border-border-subtle rounded">
-                    {projects.map((project) => (
-                      <div key={project.id} className="flex items-center justify-between gap-3 p-3">
-                        <div><div className="font-body-sm font-bold text-on-surface">{project.label}</div><div className="font-label-mono text-[10px] text-outline">{new Date(project.createdAt).toLocaleString('pt-BR')}</div></div>
-                        <button disabled={isSaving || !canRestoreProject} title={canRestoreProject ? 'Exige PGM parado e CUE limpo; aplica configuração com reinício controlado.' : 'Exige Supervisor ou Administrador.'} onClick={() => void handleRestoreProject(project)} className="px-2.5 py-1.5 rounded border border-armed-amber text-armed-amber text-[10px] font-bold disabled:opacity-50">RESTAURAR NESTE CANAL</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <ProjectRestorePanel key={currentEditingChannel.id} channelId={currentEditingChannel.id} canRestore={canRestoreProject} externalBusy={isSaving} onMessage={onMessage} onChanged={onChanged}/>
               </div>
             )}
 
@@ -913,6 +858,7 @@ export function SettingsView({
                     </p>
                   </div>
                   <IntegrationsPanel channelId={channel.id} onMessage={onMessage} />
+                  <OwnershipDiagnosticsPanel channelId={channel.id}/>
                 </div>
               </div>
             )}

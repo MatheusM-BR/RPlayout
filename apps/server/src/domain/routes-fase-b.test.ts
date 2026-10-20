@@ -2,13 +2,19 @@ import { describe, expect, it, beforeAll, afterAll,vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { createApp,runtimeFor, type App } from '../app.js'
 import { registerRoutes } from '../routes.js'
-import { channels } from '../db/schema.js'
+import { channels,liveSources } from '../db/schema.js'
 import { globalSrtManager } from './srt.js'
 import { ProcessMetrics } from './process-metrics.js'
+
+// This suite intentionally exercises SIMULATED operation. Do not inherit a
+// developer's installed media service/native processes. Native admission is
+// covered separately by explicit broker fixtures and the compiled verifier.
+vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',RELAY_BINARY:'',DEVICES_BINARY:''}))
 
 describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', () => {
   let app: App
   let server: FastifyInstance
+  let failNotification=false
 
   beforeAll(async () => {
     app = await createApp(':memory:')
@@ -29,13 +35,13 @@ describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', 
     })
 
     server = Fastify()
-    registerRoutes(app, server, () => {})
+    registerRoutes(app, server, () => {if(failNotification)throw new Error('QA_NOTIFICATION_FAILED')})
     await server.ready()
   })
 
   afterAll(async () => {
     await server.close()
-    app.close()
+    await app.close()
   })
 
   it('painel de processos mascara destinos e compartilha medição com todas as saídas do PID',async()=>{
@@ -94,6 +100,7 @@ describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', 
     const createRes = await server.inject({
       method: 'POST',
       url: '/api/v1/sources/live',
+      headers:{'if-match':(await server.inject('/api/channels/ch-fase-b/live-source-review')).headers.etag as string},
       payload: {
         channelId: 'ch-fase-b',
         name: 'Link Externa Reportagem',
@@ -133,6 +140,7 @@ describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', 
     const updateRes = await server.inject({
       method: 'PUT',
       url: `/api/v1/sources/live/${created.id}`,
+      headers:{'if-match':(await server.inject('/api/channels/ch-fase-b/live-source-review')).headers.etag as string},
       payload: {
         name: 'Link Externa Reportagem VIP',
       },
@@ -145,6 +153,7 @@ describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', 
     const failoverRes = await server.inject({
       method: 'POST',
       url: `/api/v1/sources/live/${created.id}/force-failover`,
+      headers:{'idempotency-key':'fase-b-force-failover'},
       payload: {},
     })
     expect(failoverRes.statusCode).toBe(200)
@@ -152,21 +161,26 @@ describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', 
     expect(failoverData.ok).toBe(true)
     expect(failoverData.event.fromRole).toBe('PRIMARY')
     expect(failoverData.event.toRole).toBe('BACKUP')
+    const replay=await server.inject({method:'POST',url:'/api/engineering/failover/trigger',headers:{'idempotency-key':'fase-b-force-failover'},payload:{sourceId:created.id}})
+    expect(replay.statusCode).toBe(200);expect(replay.json()).toMatchObject({event:failoverData.event,metadataDecision:{replayed:true,currentExecutionObserved:false},nativeProgramConfirmed:false})
+    expect(globalSrtManager.failover.getActiveRole(created.id)).toBe('BACKUP')
 
     // 5. Deletar fonte
     const deleteRes = await server.inject({
       method: 'DELETE',
       url: `/api/v1/sources/live/${created.id}`,
+      headers:{'if-match':(await server.inject('/api/channels/ch-fase-b/live-source-review')).headers.etag as string},
     })
     expect(deleteRes.statusCode).toBe(200)
     expect(JSON.parse(deleteRes.body).ok).toBe(true)
   })
 
-  it('POST /api/v1/engineering/failover/trigger chaveia par redundante', async () => {
+  it('POST /api/v1/engineering/failover/trigger registra papel, sem confirmar troca no PGM', async () => {
     // Cria fonte temporária para teste de trigger
     const createRes = await server.inject({
       method: 'POST',
       url: '/api/v1/sources/live',
+      headers:{'if-match':(await server.inject('/api/channels/ch-fase-b/live-source-review')).headers.etag as string},
       payload: {
         channelId: 'ch-fase-b',
         name: 'Fonte Contingência',
@@ -180,6 +194,7 @@ describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', 
     const triggerRes = await server.inject({
       method: 'POST',
       url: '/api/v1/engineering/failover/trigger',
+      headers:{'idempotency-key':'fase-b-engineering-failover'},
       payload: {
         sourceId: source.id,
         targetRole: 'BACKUP',
@@ -193,12 +208,33 @@ describe('Rotas e Endpoints da Fase B (SRT, Failover, Multiview, LiveSources)', 
     expect(result.event.fromRole).toBe('PRIMARY')
     expect(result.event.toRole).toBe('BACKUP')
     expect(result.event.reason).toBe('Manutenção programada na fibra primária')
+    expect(result).toMatchObject({operation:'METADATA_DECISION_ONLY',nativeProgramConfirmed:false,physicalOutputValidated:false})
+  })
+
+  it('quatro aliases recusam pedido sem identidade estável, sem aplicar decisão',async()=>{
+    for(const url of ['/api/engineering/failover/trigger','/api/v1/engineering/failover/trigger','/api/sources/live/missing/force-failover','/api/v1/sources/live/missing/force-failover']){
+      const response=await server.inject({method:'POST',url,payload:url.includes('/engineering/')?{sourceId:'missing'}:{}})
+      expect(response.statusCode).toBe(428)
+    }
+  })
+  it('falha de notificação após commit informa recibo gravado, sem sugerir rollback ou repetir a decisão',async()=>{
+    app.db.insert(liveSources).values({id:'qa-notification',channelId:'ch-fase-b',name:'QA metadata only',kind:'SRT',targetUrl:'srt://127.0.0.1:1',role:'PRIMARY',autoFailover:false,enabled:true,createdAt:new Date().toISOString()}).run()
+    const request={method:'POST' as const,url:'/api/v1/engineering/failover/trigger',headers:{'idempotency-key':'fase-b-notification'},payload:{sourceId:'qa-notification'}}
+    failNotification=true
+    try{
+      const first=await server.inject(request),replay=await server.inject(request)
+      expect(first.statusCode).toBe(200);expect(first.json().refreshError).toContain('Decisão gravada')
+      expect(replay.statusCode).toBe(200);expect(replay.json().metadataDecision.replayed).toBe(true)
+      expect(globalSrtManager.failover.getActiveRole('qa-notification')).toBe('BACKUP')
+    }finally{failNotification=false}
   })
 
   it('GET e PUT /api/v1/multiview/config gerencia layout e células', async () => {
+    const baseline=await server.inject({url:'/api/v1/multiview/config?channelId=ch-fase-b'})
     const putRes = await server.inject({
       method: 'PUT',
       url: '/api/v1/multiview/config',
+      headers:{'if-match':baseline.headers.etag as string},
       payload: {
         channelId: 'ch-fase-b',
         layout: 'GRID_2X2',

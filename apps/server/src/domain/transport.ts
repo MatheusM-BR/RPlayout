@@ -5,18 +5,24 @@ import {
   type Frames,
   type OnAirState,
   type PreviewTarget,
+  type LiveSignalAssessment,
 } from '@rplayout/protocol'
 import type { RundownView } from './plan.js'
 import type { MeterReading } from './meters.js'
 import { liveDurationLimit } from './live-timing.js'
+import type {ProgramTrim} from './program-trim.js'
+export interface ProgramVideoProbe {luma:number;black:boolean;freeze:boolean;freezeDurationMs?:number;sampleAgeMs?:number|null}
 
 /** Situação de uma saída de rede do canal, como o engine reporta. */
 export interface PublisherState {
+  readonly outputId?: string
   readonly url: string
   readonly health: 'connecting' | 'onAir' | 'retrying' | 'failed' | 'idle'
   /** Tentativas desde a última entrega. Zera quando volta a entregar. */
   readonly attempts: number
   readonly delivered: number
+  /** Native generation changes whenever the delivery counter is reset. */
+  readonly generation?: number
   readonly error?: string
 }
 
@@ -28,6 +34,7 @@ export interface LiveSourceMeasurement {
   interlaceMode: string | null; audioChannels: number | null; sampleRate: number | null
   videoAgeMs: number | null; audioAgeMs: number | null; videoPresent: boolean; audioPresent: boolean
   receivedFrames: number; arrivalJitterMs: number | null
+  sampledContentUnchangedMs?:number|null;contentSampleAgeMs?:number|null;contentSampleFrames?:number
 }
 
 export interface LiveSourceSignal {
@@ -39,6 +46,10 @@ export interface LiveSourceSignal {
   readonly busStates?: Partial<Record<'pgm' | 'pvw', LiveSourceSignalState>>
   /** Active item binding per bus; the most recent source event can be from QC. */
   readonly busItemIds?: Partial<Record<'pgm' | 'pvw', string>>
+  /** Catalog metadata echoed by the current native decoder; not signal health. */
+  readonly nativeCatalogBindings?: Partial<Record<'pgm' | 'pvw', string>>
+  /** Diagnosis at snapshot time; consumers must re-evaluate sample freshness. */
+  readonly busSignals?: Partial<Record<'pgm' | 'pvw', LiveSignalAssessment>>
   readonly measurements?: Partial<Record<'pgm' | 'pvw', LiveSourceMeasurement & { sampledAt: string }>>
 }
 
@@ -47,9 +58,13 @@ export interface TransportState {
   readonly channelId: string
   readonly rundownId: string | null
   readonly onAir: OnAirState | null
+  /** Actual mounted file bounds; absent for live/simulator or no confirmed PGM. */
+  readonly programTrim?:ProgramTrim|null
   /** O que está aberto no preview: item da grade ou arquivo do explorador. */
   readonly preview: PreviewTarget | null
   readonly previewPosition: { readonly frames: Frames; readonly duration: Frames } | null
+  /** Decoder delivery only; not proof of publisher/browser picture quality. */
+  readonly previewFrame?:{itemId:string;decoderId:number;delivered:boolean;ageMs:number|null;pausedFile:boolean;sampledAt:number}|null
   /** Item já aberto e decodificado no slot alternativo do programa. */
   readonly preparedItemId: string | null
   /** Item cujo preroll está acontecendo neste instante. */
@@ -67,6 +82,7 @@ export interface TransportState {
  * pelo outro sem tocar em rota nem em interface.
  */
 export interface Transport {
+  commandRevision?(): number
   state(): TransportState
   take(rundownId: string, itemId: string, resumeFrames?: Frames): void | Promise<void>
   cue(target: PreviewTarget | null): void | Promise<void>
@@ -82,7 +98,8 @@ export interface Transport {
   /** Medição real do preview, quando o transporte tem uma. */
   previewMeter(): MeterReading | null
   /** Análise do quadro PGM emitida pelo compositor real; nula no simulador. */
-  videoProbe(): { luma: number; black: boolean; freeze: boolean } | null
+  videoProbe(): ProgramVideoProbe | null
+  signalSample(now?:number,maxAgeMs?:number):{meter:MeterReading|null;videoProbe:ProgramVideoProbe|null}
   /** Saídas de rede do canal. Vazio no simulado, que não sai para lugar nenhum. */
   publishers(): readonly PublisherState[]
   /** PID do processo de renderização, quando há engine real. */
@@ -96,6 +113,7 @@ export interface Transport {
   setMonitor(bus: 'pvw' | 'mon', on: boolean): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
+  graphicConfirmed?(svg: string | null, fadeMs: number, authorize?:()=>void): Promise<void>
   /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */
   watchdog(): void
   /**
@@ -131,6 +149,8 @@ export interface Transport {
  * pergunta o estado, nunca calcula duração por conta própria.
  */
 export class SimulatedTransport implements Transport {
+  private commandSequence = 0
+  commandRevision(): number { return this.commandSequence }
   private rundownId: string | null = null
   private onAirItemId: string | null = null
   private startedAt: Frames = 0
@@ -201,6 +221,7 @@ export class SimulatedTransport implements Transport {
   }
 
   take(rundownId: string, itemId: string, resumeFrames = 0): void {
+    this.commandSequence++
     this.rundownId = rundownId
     this.onAirItemId = itemId
     this.startedAt = this.nowFrames() - Math.max(0, Math.floor(resumeFrames))
@@ -226,6 +247,7 @@ export class SimulatedTransport implements Transport {
   }
 
   cue(target: PreviewTarget | null): void {
+    this.commandSequence++
     this.preview = target
   }
 
@@ -234,6 +256,7 @@ export class SimulatedTransport implements Transport {
    * operador quase sempre quer voltar do mesmo ponto.
    */
   stop(): void {
+    this.commandSequence++
     if (this.onAirItemId) this.preview = { kind: 'ITEM', id: this.onAirItemId }
     this.playing = false
     this.onAirItemId = null
@@ -241,6 +264,7 @@ export class SimulatedTransport implements Transport {
 
   /** Arma a grade no primeiro item, parada, pronta para entrar no ar. */
   park(itemId: string): void {
+    this.commandSequence++
     this.preview = { kind: 'ITEM', id: itemId }
   }
 
@@ -270,6 +294,7 @@ export class SimulatedTransport implements Transport {
     if (elapsed < duration) return false
 
     if (!current.item.autoNext) {
+      this.commandSequence++
       this.playing = false
       return true
     }
@@ -289,6 +314,7 @@ export class SimulatedTransport implements Transport {
     }
 
     this.onAirItemId = next
+    this.commandSequence++
     this.startedAt = this.startedAt + duration
     this.startedAtMs += framesToMs(duration, view.channel.rate)
 
@@ -310,6 +336,7 @@ export class SimulatedTransport implements Transport {
   }
 
   seek(bus: 'pgm' | 'pvw', frames: Frames): void {
+    this.commandSequence++
     if (bus === 'pgm' && this.onAirItemId && this.playing) {
       this.startedAt = this.nowFrames() - Math.max(0, frames)
       const rate = this.view()?.channel.rate
@@ -352,6 +379,7 @@ export class SimulatedTransport implements Transport {
   videoProbe(): { luma: number; black: boolean; freeze: boolean } | null {
     return null
   }
+  signalSample(){return {meter:null,videoProbe:null}}
 
   close(): void {
     // Nada a encerrar: o simulado não tem processo nem soquete.

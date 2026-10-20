@@ -5,11 +5,36 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { validateDatabaseSecrets } from '../db/vault-migration.js'
 import {validateAudioBus} from '../db/audio-bus.js'
+import {validateHealthResolution} from '../db/health-resolution.js'
+import {validateIncidentContexts} from '../db/incident-context.js'
+import {validateGraphicCommandPending} from '../db/graphic-command-pending.js'
 import {validateChannelConfiguration} from '../db/channel-configuration.js'
 import {validatePresetConfiguration} from '../db/preset-configuration.js'
 import {validateQcRevisions} from '../db/qc-revisions.js'
+import {validateProjectRevisions} from '../db/project-revisions.js'
+import {validateLiveSourceRevisions} from '../db/live-source-revisions.js'
+import {validateMultiviewRevisions} from '../db/multiview-revisions.js'
+import {validateScheduleRuleRevisions} from '../db/schedule-rule-revisions.js'
+import {validateGraphicsRevisions} from '../db/graphics-revisions.js'
+import {validateGraphicsInitialization} from '../db/graphics-initialization.js'
+import {validateAccountRevisions} from '../db/account-revisions.js'
+import {validateAssetRemovalRevisions} from '../db/asset-removal-revisions.js'
+import {validateExecutionOwnership} from '../db/execution-ownership.js'
+import {validateDistributionOwnership} from '../db/distribution-ownership.js'
 import {validateEditorialRevisions} from '../db/editorial-revisions.js'
 import {validateTrimCadence} from '../db/trim-cadence.js'
+import {validateCategoryRevisions} from '../db/category-revisions.js'
+import {validateIntegrationRevisions} from '../db/integration-revisions.js'
+import {validateRootRevisions} from '../db/root-revisions.js'
+import {validateScanRevisions} from '../db/scan-revisions.js'
+import {backupOperationalState,type BackupOperationalState} from './backup-operational-state.js'
+import {validateServerInstances} from '../db/server-instances.js'
+import {readStorageAdmission} from '../db/storage-admission.js'
+import {readRestorationRecords} from '../db/restoration-records.js'
+import {readRestoredActivations} from '../db/restored-activations.js'
+import {assertSchemaCompatibility} from '../db/schema-compatibility.js'
+import {validateUpgradeBackupRequests} from '../db/upgrade-backup-requests.js'
+import {writeStandaloneBackup} from './standalone-backup.js'
 
 /**
  * Cópia de segurança do banco.
@@ -25,6 +50,7 @@ const KEEP = 10
 const PREFIX = 'rplayout-'
 
 export interface BackupResult {
+  readonly standalone:true
   readonly file: string
   readonly bytes: number
   readonly removed: string[]
@@ -32,6 +58,7 @@ export interface BackupResult {
 }
 
 export interface RestoreValidation {
+  readonly operationalState:BackupOperationalState
   readonly integrity: 'ok'
   readonly foreignKeys: 'ok'
   readonly tables: Readonly<Record<string, number>>
@@ -48,8 +75,11 @@ export async function validateBackupRestore(file: string): Promise<RestoreValida
   let restored: Database.Database | null = null
   try {
     source = new Database(file, { readonly: true, fileMustExist: true })
+    assertSchemaCompatibility(source)
     await source.backup(join(directory, 'restored.db'))
     restored = new Database(join(directory, 'restored.db'), { readonly: true, fileMustExist: true })
+    assertSchemaCompatibility(restored)
+    validateUpgradeBackupRequests(restored)
     const integrity = restored.pragma('integrity_check', { simple: true })
     if (integrity !== 'ok') throw new Error(`Backup não restaurável: ${String(integrity)}`)
     if ((restored.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('Backup contém referências inválidas (foreign keys).')
@@ -65,10 +95,31 @@ export async function validateBackupRestore(file: string): Promise<RestoreValida
     validateEditorialRevisions(restored)
     validateTrimCadence(restored)
     validateAudioBus(restored)
+    validateHealthResolution(restored)
+    validateIncidentContexts(restored)
+    validateGraphicCommandPending(restored)
     validateChannelConfiguration(restored)
     validatePresetConfiguration(restored)
     validateQcRevisions(restored)
-    return { integrity: 'ok', foreignKeys: 'ok', tables, restoredAt: new Date().toISOString(), ...secrets,
+    validateProjectRevisions(restored)
+    validateLiveSourceRevisions(restored)
+    validateMultiviewRevisions(restored)
+    validateScheduleRuleRevisions(restored)
+    validateGraphicsRevisions(restored)
+    validateGraphicsInitialization(restored)
+    validateAccountRevisions(restored)
+    validateAssetRemovalRevisions(restored)
+    validateExecutionOwnership(restored)
+    validateDistributionOwnership(restored)
+    validateCategoryRevisions(restored)
+    validateIntegrationRevisions(restored)
+    validateRootRevisions(restored)
+    validateScanRevisions(restored)
+    validateServerInstances(restored)
+    readStorageAdmission(restored)
+    readRestorationRecords(restored)
+    readRestoredActivations(restored)
+    return { integrity: 'ok', foreignKeys: 'ok', tables, operationalState:backupOperationalState(restored), restoredAt: new Date().toISOString(), ...secrets,
       ...(secrets.protectedSecrets === 'verified' ? { keyRecovery: 'Preserve a chave fora do banco. No Windows, vault.json só pode ser aberto pelo usuário Windows original; outra máquina/conta exige RPLAYOUT_VAULT_KEY compartilhada previamente configurada.' } : {}),
     }
   } finally {
@@ -81,17 +132,18 @@ export async function validateBackupRestore(file: string): Promise<RestoreValida
 export async function backupDatabase(
   sqlite: Database.Database,
   directory: string,
+  options:{retainExisting?:boolean}={},
 ): Promise<BackupResult> {
   await mkdir(directory, { recursive: true })
 
   // Nome ordenável por data: quem lista a pasta vê a ordem sem abrir nada.
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const file = join(directory, `${PREFIX}${stamp}-${randomUUID()}.db`)
-  await sqlite.backup(file)
+  await writeStandaloneBackup(sqlite,file)
   const validation = await validateBackupRestore(file)
 
-  const removed = await prune(directory)
-  return { file, bytes: (await stat(file)).size, removed, validation }
+  const removed = options.retainExisting?[]:await prune(directory)
+  return { file, bytes: (await stat(file)).size, removed, validation,standalone:true }
 }
 
 /** Apaga as cópias que passaram do limite, das mais velhas para as mais novas. */

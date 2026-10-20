@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import {postWhepOffer} from '../domain/whep-offer.js'
 
 interface Props {
   /** Caminho no servidor de mídia, ex. `canal-1/pgm`. Nulo apaga a tela. */
@@ -87,6 +88,7 @@ export function Whep({
   const [scrub, setScrub] = useState<number | null>(null)
   const volumeRef = useRef(0.7)
   const onVideoFrameRef = useRef(onVideoFrame)
+  const confirmVideoRef = useRef<(()=>void)|null>(null)
 
   // Não use uma callback ref inline no <video>. Uma ref inline é removida e
   // recolocada a cada renderização do monitor; no QC isso alternava o vídeo
@@ -114,6 +116,7 @@ export function Whep({
       if (!active) return
       callbackId = element.requestVideoFrameCallback(() => {
         if (!active) return
+        confirmVideoRef.current?.()
         onVideoFrameRef.current?.()
         next()
       })
@@ -186,6 +189,15 @@ export function Whep({
     peer.addTransceiver('audio', { direction: 'recvonly' })
 
     const stream = new MediaStream()
+    let decoded=false
+    const confirmVideo=()=>{
+      const element=video.current
+      if(cancelled||decoded||['failed','disconnected','closed'].includes(peer.connectionState)||element?.srcObject!==stream||element.readyState<2||!element.videoWidth||!element.videoHeight)return
+      decoded=true
+      window.clearTimeout(negotiationTimeout)
+      setStatus('live');setReason(null)
+    }
+    confirmVideoRef.current=confirmVideo
     peer.ontrack = (event) => {
       if (cancelled) return
       stream.addTrack(event.track)
@@ -204,9 +216,12 @@ export function Whep({
     peer.onconnectionstatechange = () => {
       if (cancelled) return
       if (peer.connectionState === 'connected') {
+        if(retry!==null){window.clearTimeout(retry);retry=null}
         setReason(null)
+        confirmVideo()
       }
       if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+        decoded=false
         // Sessão que caiu no meio: o canal pode ter reiniciado, então o
         // monitor tenta de novo em vez de ficar preto até alguém recarregar.
         setStatus('failed')
@@ -234,16 +249,7 @@ export function Whep({
       })
 
       if (cancelled) return
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/sdp' },
-        body: peer.localDescription?.sdp ?? '',
-        signal: abort.signal,
-      })
-      if (!response.ok) {
-        const detail = await response.text()
-        throw new Error(detail.includes('codecs') ? 'CODEC' : `HTTP ${response.status}`)
-      }
+      const response = await postWhepOffer(endpoint,peer.localDescription?.sdp??'',abort.signal)
       resource = response.headers.get('Location')
       if (cancelled && resource) {
         void fetch(new URL(resource, endpoint), { method: 'DELETE' }).catch(() => undefined)
@@ -269,6 +275,7 @@ export function Whep({
 
     return () => {
       cancelled = true
+      if(confirmVideoRef.current===confirmVideo)confirmVideoRef.current=null
       abort.abort()
       window.clearTimeout(negotiationTimeout)
       if (retry) window.clearTimeout(retry)
@@ -304,7 +311,7 @@ export function Whep({
                 void video.current.play().catch(() => setReason('Clique em Ouvir para iniciar o monitor.'))
               }
         }
-        onLoadedData={() => { setStatus('live'); setReason(null) }}
+        onLoadedData={() => confirmVideoRef.current?.()}
         onLoadedMetadata={() => onVideoFrame?.()}
         onPlaying={() => onVideoFrame?.()}
         onTimeUpdate={() => onVideoFrame?.()}

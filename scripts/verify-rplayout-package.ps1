@@ -1,7 +1,10 @@
-param([string]$Package = "release/RPlayout-1.1")
+param([string]$Package = "release/RPlayout-1.1",[switch]$SkipDeferredHa)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path $Package).Path
 $required = @(
+  'apps/server/dist/recover-restored-reservation.cjs',
+  'apps/server/dist/storage-service.cjs',
+  'apps/server/dist/storage-bridge.cjs',
   'package-manifest.json',
   'runtime/node/node.exe',
   'runtime/gstreamer/bin/gst-inspect-1.0.exe',
@@ -25,6 +28,21 @@ $required = @(
   'apps/server/dist/server.cjs',
   'apps/server/dist/schedule-planner.cjs',
   'apps/server/dist/ha-witness.cjs',
+  'apps/server/dist/restore-backup.cjs',
+  'apps/server/dist/review-restored.cjs',
+  'apps/server/dist/migrate-restored.cjs',
+  'apps/server/dist/reconcile-upgrade-profile.cjs',
+  'apps/server/dist/review-rollback.cjs',
+  'apps/server/dist/rollback-contract.cjs',
+  'apps/server/dist/prepare-compatible-rollback.cjs',
+  'prepare-rplayout-rollback.ps1',
+  'start-rplayout-rollback.ps1',
+  'restore-rplayout-backup.ps1',
+  'prepare-rplayout-upgrade.ps1',
+  'review-rplayout-upgrade.ps1',
+  'start-rplayout-upgrade.ps1',
+  'reconcile-rplayout-upgrade-profile.ps1',
+  'review-rplayout-rollback.ps1',
   'start-rplayout-witness.ps1',
   'verify-portable-witness.mjs',
   'apps/server/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
@@ -34,8 +52,12 @@ $required = @(
   'apps/engine/target/release/rplayout-probe.exe',
   'apps/engine/target/release/rplayout-proxy.exe',
   'apps/engine/target/release/rplayout-audio-analysis.exe',
+  'apps/engine/target/release/rplayout-audio-bus-probe.exe',
+  'apps/engine/target/release/rplayout-graphic-probe.exe',
   'apps/engine/target/release/rplayout-devices.exe',
   'apps/engine/target/release/rplayout-relay.exe',
+  'apps/engine/target/release/rplayout-host-guard.exe',
+  'apps/engine/target/release/rplayout-file-security.exe',
   'mediamtx/mediamtx.exe',
   'RPLAYOUT-1.1-FUNCIONALIDADES.md'
 )
@@ -72,7 +94,7 @@ $files = $required | ForEach-Object {
   $hash = (Get-FileHash $path -Algorithm SHA256).Hash
   [pscustomobject]@{ File = $_; Bytes = (Get-Item $path).Length; SHA256 = $hash }
 }
-$manifest = Get-Content -LiteralPath (Join-Path $root 'package-manifest.json') -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath (Join-Path $root 'package-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($manifest.version -ne 1 -or !$manifest.files -or $manifest.files.Count -lt 10) { throw 'Manifesto de integridade inválido.' }
 if ($manifest.msvc.deployment -ne 'app-local' -or !$manifest.msvc.version) { throw 'Manifesto sem distribuição MSVC app-local.' }
 foreach ($name in @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll')) {
@@ -145,8 +167,12 @@ try {
   Write-Host 'Plugins e engine com PATH exclusivamente portátil: OK (não homologa hardware/sinal físico)' -ForegroundColor Green
   # The verifier and service use only built-in modules and bundled production
   # SQLite/Node. No tsx/tsc/pnpm or global runtime can satisfy this check.
-  & (Join-Path $root 'runtime/node/node.exe') (Join-Path $root 'verify-portable-witness.mjs') $root
-  if ($LASTEXITCODE -ne 0) { throw 'Testemunha/concessão nativa do pacote não passou; pacote não operacional para HA protegida.' }
+  if($SkipDeferredHa){
+    Write-Host 'HA/testemunha: NAO VALIDADO (grupo8 adiado pelo usuario; nenhuma aprovacao de redundancia).' -ForegroundColor Yellow
+  }else{
+    & (Join-Path $root 'runtime/node/node.exe') (Join-Path $root 'verify-portable-witness.mjs') $root
+    if ($LASTEXITCODE -ne 0) { throw 'Testemunha/concessão nativa do pacote não passou; pacote não operacional para HA protegida.' }
+  }
 } finally {
   foreach ($name in $savedPortableEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $savedPortableEnvironment[$name], 'Process') }
 }

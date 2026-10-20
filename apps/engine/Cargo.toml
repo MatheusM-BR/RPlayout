@@ -13,6 +13,10 @@ anyhow = "1"
 gstreamer-app = "0.23"
 gstreamer-base = { version = "0.23", features = ["v1_18"] }
 libloading = "0.8"
+quick-xml = "=0.42.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
 
 [[bin]]
 name = "rplayout-engine"
@@ -48,3 +52,19 @@ path = "src/bin/proxy.rs"
 [[bin]]
 name = "rplayout-audio-analysis"
 path = "src/bin/audio_analysis.rs"
+
+[[bin]]
+name = "rplayout-audio-bus-probe"
+path = "src/bin/audio_bus_probe.rs"
+
+[[bin]]
+name = "rplayout-host-guard"
+path = "src/bin/host_guard.rs"
+
+[[bin]]
+name = "rplayout-file-security"
+path = "src/bin/file_security.rs"
+
+[[bin]]
+name = "rplayout-graphic-probe"
+path = "src/bin/graphic_probe.rs"

@@ -3,6 +3,7 @@ import type {ManagedLiveSource,Rate} from '@rplayout/protocol'
 import {api,type OperationalInsertionInput,type OperationalInsertionReview} from '../../api.js'
 import type {LibraryAsset} from '../../types.js'
 import {commandRequestId} from '../../domain/request-id.js'
+import {ReviewedOperationConfirm} from './ReviewedOperationConfirm.js'
 
 export function OperationalInsertionPanel(props:{channelId:string;rate:Rate;assets:readonly LibraryAsset[]}){
   return <InsertionContent key={props.channelId} {...props}/>
@@ -16,7 +17,7 @@ function InsertionContent({channelId,rate,assets}:{channelId:string;rate:Rate;as
   const perform=async(mode:'NEXT'|'NOW'|'CONFIRM')=>{
     if(busy.current)return
     const captured=review
-    if(mode==='CONFIRM' && (!captured || !window.confirm(captured.input.mode==='NOW'?`Inserir “${captured.item.title}” agora e interromper o PGM após quadro confirmado? Rascunhos não serão publicados.`:`Inserir “${captured.item.title}” como próximo, preservando PGM e CUE? O avanço respeita o Auto Next do item atual.`)))return
+    if(mode==='CONFIRM'&&!captured)return
     busy.current=true;setPending(true);setMessage(null)
     try{
       if(mode==='CONFIRM'){
@@ -53,9 +54,11 @@ function InsertionContent({channelId,rate,assets}:{channelId:string;rate:Rate;as
       <div className="flex gap-2 flex-wrap">
         <button type="button" disabled={pending||!selected} onClick={()=>void perform('NEXT')} className="border rounded p-2 disabled:opacity-40">Conferir inserir próximo</button>
         <button type="button" disabled={pending||!selected} onClick={()=>void perform('NOW')} className="border rounded p-2 disabled:opacity-40">Conferir inserir agora</button>
-        <button type="button" disabled={pending||!review||review.input.mode==='NOW'&&!review.nativeEngine} onClick={()=>void perform('CONFIRM')} className="border rounded p-2 border-amber-400 disabled:opacity-40">Confirmar {review?.input.mode==='NOW'?'inserir agora':'inserção'}</button>
       </div>
       {review&&<div role="status"><p>Conferido: {review.item.title} · {review.input.mode==='NOW'?'AGORA':'PRÓXIMO'} · revisão de origem {review.sourceRevisionId}.</p><p>{review.notice}</p>{review.conflicts.map((conflict,index)=><p key={index} className="text-amber-300">{conflict.message}</p>)}{!review.nativeEngine&&<p>Canal simulado: inserção Próximo é apenas planejamento; Agora exige engine real.</p>}</div>}
+      <ReviewedOperationConfirm reviewKey={review?`${channelId}:${review.input.requestId}:${review.reviewToken}`:null} label={review?.input.mode==='NOW'?'Confirmar inserir agora':'Confirmar inserção'}
+        confirmation={review?.input.mode==='NOW'?`Autorizo inserir “${review.item.title}” AGORA e interromper o PGM somente após quadro confirmado. Rascunhos não serão publicados.`:`Autorizo inserir “${review?.item.title??''}” como PRÓXIMO, preservando PGM/CUE e respeitando o Auto Next do item atual.`}
+        disabled={pending||!review||review.input.mode==='NOW'&&!review.nativeEngine} onConfirm={()=>perform('CONFIRM')}/>
       {pending&&<p role="status">Preparando e conferindo revisão/sinal… Não repita o pedido.</p>}
       {message&&<p role="status" className="text-amber-300">{message}</p>}
     </div>}

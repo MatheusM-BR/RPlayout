@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api.js'
 import type { Categoria } from '../types.js'
+import {CategoryEditor} from './CategoryEditor.js'
+import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 
 interface Props {
   onMessage: (text: string) => void
@@ -9,7 +11,7 @@ interface Props {
 }
 
 /**
- * Paleta fechada, em vez de seletor de cor livre.
+ * Paleta de atalhos: a escolha abre a conferência antes de alterar a cor.
  *
  * Cor escolhida à mão num seletor de milhões de valores acaba clara demais
  * para o fundo escuro do painel, ou tão perto da vizinha que as duas viram a
@@ -33,62 +35,58 @@ export function CategoriasPanel({ onMessage, onChanged }: Props) {
   const [nova, setNova] = useState('')
   const [corNova, setCorNova] = useState(PALETA[0]?.cor ?? '#5570ab')
   const [busy, setBusy] = useState(false)
+  const [loaded,setLoaded]=useState(false),[error,setError]=useState('')
+  const [editing,setEditing]=useState<{id:string;color?:string}|null>(null)
+  const reads=useRef(new BoundedLatestRead()),alive=useRef(false),epoch=useRef(0),pending=useRef(false)
 
   const recarregar = useCallback(async () => {
-    const resposta = await api.categories()
+    const at=epoch.current,reading=await reads.current.read(signal=>api.categories(signal),'A consulta das categorias demorou demais. A lista anterior foi preservada; recarregue para tentar novamente.')
+    if(!reading.current||!alive.current||epoch.current!==at)return
+    const resposta=reading.value
     setCategorias(resposta.categories)
+    setLoaded(true);setError('')
   }, [])
 
   useEffect(() => {
-    void recarregar()
+    alive.current=true;epoch.current++;pending.current=false
+    const at=epoch.current
+    void recarregar().catch(cause=>{if(alive.current&&epoch.current===at)setError(cause instanceof Error?cause.message:'Categorias não consultadas.')})
+    return()=>{alive.current=false;epoch.current++;pending.current=false;reads.current.cancel()}
   }, [recarregar])
 
   const guard = (acao: () => Promise<void>): void => {
+    if(pending.current)return
+    pending.current=true;const at=epoch.current
     setBusy(true)
     void acao()
       .then(recarregar)
-      .then(onChanged)
-      .catch((falha: Error) => onMessage(falha.message))
-      .finally(() => setBusy(false))
+      .then(()=>{if(alive.current&&epoch.current===at)onChanged()})
+      .catch((falha: Error) => {if(alive.current&&epoch.current===at){setError(falha.message);onMessage(falha.message)}})
+      .finally(() => {if(alive.current&&epoch.current===at){pending.current=false;setBusy(false)}})
   }
 
   const pintar = (id: string, cor: string): void => {
-    guard(async () => {
-      await api.setCategoryColor(id, cor)
-    })
+    setEditing({id,color:cor})
   }
 
   const criar = (): void => {
     const nome = nova.trim()
     if (nome === '') return
-    guard(async () => {
-      await api.setCategoryColor(nome, corNova)
-      setNova('')
-      onMessage(`Categoria "${nome}" criada.`)
-    })
+    setEditing({id:nome,color:corNova})
   }
 
   const apagar = (categoria: Categoria): void => {
     // Apagar categoria tira a marca dos arquivos: pergunta com o número na
     // frente, porque "3 arquivos" e "300 arquivos" são decisões diferentes.
-    const aviso =
-      categoria.items > 0
-        ? `Apagar "${categoria.id}"? ${categoria.items} arquivo(s) ficam sem categoria.`
-        : `Apagar "${categoria.id}"?`
-    if (!window.confirm(aviso)) return
-    guard(async () => {
-      const { soltos } = await api.removeCategory(categoria.id)
-      onMessage(
-        soltos > 0
-          ? `"${categoria.id}" apagada; ${soltos} arquivo(s) ficaram sem categoria.`
-          : `"${categoria.id}" apagada.`,
-      )
-    })
+    setEditing({id:categoria.id})
   }
 
   return (
     <div className="field">
       <label>Categorias do acervo</label>
+      {error&&<p role="alert">{error} Falha de consulta não significa acervo vazio.</p>}
+      {!loaded&&<p role="status">Categorias ainda não conferidas.</p>}
+      <button disabled={busy} onClick={()=>guard(async()=>{})}>Recarregar lista</button>
       <div className="note">
         A cor pinta a linha do arquivo na grade e no explorador — é o que
         permite achar o bloco comercial de longe, sem ler nome nenhum.
@@ -120,7 +118,7 @@ export function CategoriasPanel({ onMessage, onChanged }: Props) {
             </button>
           </li>
         ))}
-        {categorias.length === 0 && (
+        {loaded&&categorias.length === 0 && (
           <li className="vazio">
             Nenhuma categoria ainda. Crie aqui, ou marque um arquivo no explorador.
           </li>
@@ -148,9 +146,10 @@ export function CategoriasPanel({ onMessage, onChanged }: Props) {
           ))}
         </span>
         <button className="btn small" disabled={busy || nova.trim() === ''} onClick={criar}>
-          CRIAR
+          CONFERIR NOVA CATEGORIA
         </button>
       </div>
+      {editing&&<CategoryEditor key={editing.id} id={editing.id} initialColor={editing.color} onCancel={()=>setEditing(null)} onSaved={message=>{setEditing(null);setNova('');onMessage(message);guard(async()=>{})}}/>}
     </div>
   )
 }

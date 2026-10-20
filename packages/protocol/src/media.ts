@@ -23,7 +23,21 @@ export interface LoudnessMeasurement {
   readonly scope: LoudnessScope
   readonly measuredAt: string
   /** Exact pre-gain stereo input that was measured, not another track/mix. */
-  readonly input?:{readonly contentHash:string;readonly audioTrack:number;readonly routing:AudioRouting}
+  readonly input?:{readonly contentHash:string;readonly audioTrack:number;readonly routing:AudioRouting;readonly trim?:{readonly inNs:number;readonly outNs:number}}
+}
+
+/** TRIM has no persisted cut identity yet, so cannot stand in for FILE. */
+export function validFileLoudness(measured:LoudnessMeasurement|null|undefined,contentHash?:string):measured is LoudnessMeasurement & {readonly scope:'FILE'} {
+  return Boolean(measured&&measured.scope==='FILE'&&[measured.integratedLufs,measured.lra,measured.truePeakDbtp].every(Number.isFinite)&&measured.lra>=0&&Number.isFinite(Date.parse(measured.measuredAt))&&(!measured.input||measured.input.contentHash===contentHash))
+}
+export interface AudioCutIdentity {readonly inNs:number;readonly outNs:number}
+export function audioCutIdentity(trim:Trim,rate:Rate):AudioCutIdentity {
+  const inNs=Math.round(trim.in*rate.den*1e9/rate.num),outNs=Math.round(trim.out*rate.den*1e9/rate.num)
+  if(!Number.isSafeInteger(inNs)||!Number.isSafeInteger(outNs)||inNs<0||outNs<=inNs)throw new Error('Corte de áudio inválido.')
+  return {inNs,outNs}
+}
+export function sameAudioCut(a:AudioCutIdentity|undefined,b:AudioCutIdentity|undefined):boolean {
+  return Boolean(a&&b&&a.inNs===b.inNs&&a.outNs===b.outNs&&Number.isSafeInteger(a.inNs)&&Number.isSafeInteger(a.outNs)&&a.inNs>=0&&a.outNs>a.inNs)
 }
 
 export type AudioMode =
@@ -80,6 +94,7 @@ export interface AudioRouting {
 export interface AudioMixAnalysisView {
   readonly id:string;readonly itemId:string;readonly contentHash:string;readonly audioTrack:number;readonly routing:AudioRouting
   readonly state:'PENDING'|'RUNNING'|'READY'|'FAILED';readonly measurement:LoudnessMeasurement|null;readonly error:string|null;readonly updatedAt:string
+  readonly trim?:{readonly inNs:number;readonly outNs:number}
 }
 export function resolvedAudioRouting(audio:AudioLevel):AudioRouting {
   return audio.routing ?? (audio.channelMap?.length?{mode:'PAIR_MIX',pairs:audio.channelMap}:{mode:'DEFAULT'})
@@ -87,9 +102,11 @@ export function resolvedAudioRouting(audio:AudioLevel):AudioRouting {
 export function audioRoutingKey(routing:AudioRouting):string {
   return JSON.stringify({mode:routing.mode,...(routing.mode==='MATRIX'?{matrix:routing.matrix}:{}),...(routing.mode==='PAIR_MIX'?{pairs:routing.pairs}:{})})
 }
-export function hasMatchingAudioMeasurement(audio:AudioLevel,contentHash:string|undefined,audioTrack=0):boolean {
+export function hasMatchingAudioMeasurement(audio:AudioLevel,contentHash:string|undefined,audioTrack=0,cut?:AudioCutIdentity):boolean {
   const input=audio.measured?.input
-  return Boolean(audio.analysisId && input && input.contentHash===contentHash && input.audioTrack===audioTrack && audioRoutingKey(input.routing)===audioRoutingKey(resolvedAudioRouting(audio)))
+  const measured=audio.measured
+  const valid=validFileLoudness(measured,contentHash)||(measured?.scope==='TRIM'&&sameAudioCut(input?.trim,cut)&&[measured.integratedLufs,measured.lra,measured.truePeakDbtp].every(Number.isFinite)&&measured.lra>=0&&Number.isFinite(Date.parse(measured.measuredAt)))
+  return Boolean(audio.analysisId && valid && input && input.contentHash===contentHash && input.audioTrack===audioTrack && audioRoutingKey(input.routing)===audioRoutingKey(resolvedAudioRouting(audio)))
 }
 export function validateAudioRouting(routing:AudioRouting,inputChannels?:number):string|null {
   if(!['DEFAULT','STEREO_1_2','STEREO_3_4','DOWNMIX_MONO','LEFT_ONLY','RIGHT_ONLY','MATRIX','PAIR_MIX'].includes(routing.mode))return 'Modo de canais inválido.'
@@ -284,13 +301,14 @@ export function resolveAudio(
   itemAudio: AudioLevel | null | undefined,
   asset: Pick<MediaAsset, 'defaultAudio' | 'loudnessFile'> & {contentHash?:string},
   audioTrack=0,
+  cut?:AudioCutIdentity,
 ): Resolved<AudioLevel> {
   // A medição do arquivo é do arquivo, não do nível. Um AUTO gravado sem
   // medição é um AUTO que ainda não sabe o que fazer — aqui ele passa a saber.
   const withMeasurement = (level: AudioLevel): AudioLevel =>
-    hasMatchingAudioMeasurement(level,asset.contentHash,audioTrack)?level
+    hasMatchingAudioMeasurement(level,asset.contentHash,audioTrack,cut)?level
     : resolvedAudioRouting(level).mode!=='DEFAULT' || audioTrack!==0 || level.analysisId ? {...level,measured:null}
-    : level.measured ? level : { ...level, measured: asset.loudnessFile }
+    : { ...level, measured: validFileLoudness(asset.loudnessFile,asset.contentHash)?asset.loudnessFile:validFileLoudness(level.measured,asset.contentHash)?level.measured:null }
 
   if (itemAudio) return { value: withMeasurement(itemAudio), source: 'ITEM' }
   if (asset.defaultAudio) return { value: withMeasurement(asset.defaultAudio), source: 'ASSET' }

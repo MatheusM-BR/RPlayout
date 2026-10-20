@@ -1,11 +1,12 @@
-import {describe,expect,it,vi} from 'vitest'
+import {afterEach,describe,expect,it,vi} from 'vitest'
 import {loadSessionOperation} from './session-load.js'
 
 function fixture(){
-  const callbacks={onSession:vi.fn(),onState:vi.fn(),onSnapshot:vi.fn(),onEmpty:vi.fn(),onError:vi.fn(),onDone:vi.fn()}
+  const callbacks={onSession:vi.fn(),onState:vi.fn(),onSnapshot:vi.fn(),onEmpty:vi.fn(),onError:vi.fn(),onLibraryError:vi.fn(),onDone:vi.fn()}
   const service={session:vi.fn(async()=>({role:'OPERATOR',label:'Operador',required:true,authenticated:true})),state:vi.fn(async()=>({channels:[],rundowns:[]})),rundown:vi.fn()}
   return {callbacks,options:{service,refreshLibrary:vi.fn(async()=>{}),active:()=>true,...callbacks}}
 }
+afterEach(()=>vi.useRealTimers())
 describe('inicialização vinculada à sessão',()=>{
   it('conta sem canal autorizado limpa a operação anterior, sem buscar grade',async()=>{
     const {options,callbacks}=fixture();await loadSessionOperation(options)
@@ -33,8 +34,37 @@ describe('inicialização vinculada à sessão',()=>{
     options.service.state.mockResolvedValue({channels:[],rundowns:[{id:'old'}] as never[]})
     options.service.rundown.mockImplementation(()=>new Promise(resolve=>{release=resolve}))
     const pending=loadSessionOperation(options)
-    await vi.waitFor(()=>expect(options.service.rundown).toHaveBeenCalledWith('old'))
+    await vi.waitFor(()=>expect(options.service.rundown).toHaveBeenCalledWith('old',expect.any(AbortSignal)))
     active=false;release({privateOldView:true});await pending
     expect(callbacks.onSnapshot).not.toHaveBeenCalled();expect(callbacks.onDone).not.toHaveBeenCalled()
+  })
+  it('acervo pendente não bloqueia snapshot ou fim da carga operacional',async()=>{
+    const {options,callbacks}=fixture();let finish!:()=>void
+    options.refreshLibrary.mockImplementation(()=>new Promise<void>(resolve=>{finish=resolve}))
+    options.service.state.mockResolvedValue({channels:[],rundowns:[{id:'rd'}] as never[]});options.service.rundown.mockResolvedValue({operation:true})
+    const pending=loadSessionOperation(options)
+    await vi.waitFor(()=>expect(callbacks.onDone).toHaveBeenCalledOnce())
+    expect(callbacks.onSnapshot).toHaveBeenCalledWith({operation:true});expect(callbacks.onError).not.toHaveBeenCalled()
+    finish();await pending
+  })
+  it('falha de acervo é não fatal e não apaga a grade carregada',async()=>{
+    const {options,callbacks}=fixture();options.refreshLibrary.mockRejectedValue(new Error('Categorias indisponíveis'))
+    await loadSessionOperation(options)
+    expect(callbacks.onState).toHaveBeenCalledOnce();expect(callbacks.onDone).toHaveBeenCalledOnce()
+    expect(callbacks.onError).not.toHaveBeenCalled();expect(callbacks.onLibraryError).toHaveBeenCalledWith(expect.objectContaining({message:'Categorias indisponíveis'}))
+  })
+  it('consulta operacional tem prazo mesmo se servidor ignora abort; resposta tardia não publica estado',async()=>{
+    vi.useFakeTimers();const {options,callbacks}=fixture();let late!:(value:any)=>void
+    options.service.state.mockImplementation(()=>new Promise(resolve=>{late=resolve}))
+    const pending=loadSessionOperation(options);await vi.advanceTimersByTimeAsync(10000);await pending
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({message:expect.stringContaining('consulta inicial demorou')}))
+    expect(callbacks.onDone).toHaveBeenCalledOnce();expect(options.refreshLibrary).not.toHaveBeenCalled()
+    late({channels:[],rundowns:[]});await Promise.resolve();expect(callbacks.onState).not.toHaveBeenCalled()
+  })
+  it('fechar a sessão aborta GET operacional imediatamente sem callbacks privados tardios',async()=>{
+    const {options,callbacks}=fixture(),controller=new AbortController()
+    options.service.session.mockImplementation(()=>new Promise(()=>{}))
+    const pending=loadSessionOperation({...options,signal:controller.signal});controller.abort();await pending
+    for(const callback of Object.values(callbacks))expect(callback).not.toHaveBeenCalled()
   })
 })

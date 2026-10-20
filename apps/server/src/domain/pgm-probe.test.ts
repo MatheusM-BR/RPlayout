@@ -2,6 +2,52 @@ import { describe, expect, it, vi } from 'vitest'
 import { PgmProbe } from './pgm-probe.js'
 
 describe('sonda com intervenção efetivamente confirmada', () => {
+  it('pedido manual usa autorização própria e não herda confirmação de automação em curso',async()=>{
+    let confirm!:(result:{ok:boolean})=>void
+    const auto=vi.fn(()=>new Promise<{ok:boolean}>(resolve=>{confirm=resolve}))
+    const probe=new PgmProbe(undefined,auto);probe.setAutomaticActions(true)
+    probe.feedMetrics({isBlack:true,deltaMs:2100})
+    await vi.waitFor(()=>expect(confirm).toBeDefined())
+    const manual=vi.fn(async()=>({ok:true}))
+    const refused=await probe.triggerEmergencySlate('Manual',manual)
+    expect(refused.actionStatus).toBe('FAILED');expect(manual).not.toHaveBeenCalled()
+    confirm({ok:true});await vi.waitFor(()=>expect(probe.getStatus().emergencySlateActive).toBe(true))
+    await probe.triggerEmergencySlate('Manual independente',manual)
+    expect(manual).toHaveBeenCalledTimes(1)
+  })
+  it('usa duração nativa sem esperar o debounce legado e sem somar amostra repetida',()=>{
+    const probe=new PgmProbe({freezeThresholdMs:600})
+    expect(probe.feedMetrics({isFreeze:false,freezeDurationMs:500,deltaMs:500})).toEqual([])
+    expect(probe.feedMetrics({isFreeze:false,freezeDurationMs:650,deltaMs:500})[0]).toMatchObject({type:'FREEZE_FRAME',durationMs:650,thresholdMs:600})
+    probe.feedMetrics({isFreeze:false,freezeDurationMs:650,deltaMs:500})
+    expect(probe.getStatus().metrics.freezeDurationMs).toBe(650)
+    probe.feedMetrics({isFreeze:false,freezeDurationMs:0,deltaMs:100})
+    expect(probe.getStatus().activeAlerts).toEqual([])
+    expect(probe.pendingTransitions().filter(row=>row.state==='recovered')).toHaveLength(1)
+  })
+  it('mede limiares configurados e retém transições até confirmar persistência',()=>{
+    const probe=new PgmProbe({blackThresholdMs:500,freezeThresholdMs:600,silenceThresholdMs:700})
+    probe.feedMetrics({isBlack:true,isFreeze:true,audioDbfs:-70,deltaMs:400})
+    expect(probe.pendingTransitions()).toEqual([])
+    probe.feedMetrics({isBlack:true,isFreeze:true,audioDbfs:-70,deltaMs:300})
+    const pending=probe.pendingTransitions();expect(pending).toHaveLength(3)
+    expect(pending.every(row=>row.state==='active')).toBe(true)
+    probe.feedMetrics({isBlack:true,isFreeze:true,audioDbfs:-70,deltaMs:300})
+    expect(probe.pendingTransitions()).toHaveLength(3)
+    probe.confirmTransitions(pending.map(row=>row.key));expect(probe.pendingTransitions()).toEqual([])
+  })
+  it('ausência de métrica não confirma recuperação; só leitura saudável resolve',()=>{
+    const probe=new PgmProbe();probe.feedMetrics({isBlack:true,isFreeze:true,audioDbfs:-70,deltaMs:3100})
+    probe.feedMetrics({deltaMs:200});expect(probe.getStatus().activeAlerts).toHaveLength(3)
+    expect(probe.pendingTransitions().filter(row=>row.state==='recovered')).toEqual([])
+    probe.feedMetrics({isBlack:false,isFreeze:false,audioDbfs:-20,deltaMs:100})
+    expect(probe.getStatus().activeAlerts).toHaveLength(0)
+    expect(probe.pendingTransitions().filter(row=>row.state==='recovered')).toHaveLength(3)
+  })
+  it('pausa encerra observação sem emitir recuperação de sinal',()=>{
+    const probe=new PgmProbe();probe.feedMetrics({isBlack:true,deltaMs:2100});probe.idle();probe.idle()
+    expect(probe.pendingTransitions().map(row=>row.state)).toEqual(['active','unobserved'])
+  })
   it('aciona loop manual confirmado sem anunciar um slate inexistente', async () => {
     const callback = vi.fn(async () => ({ ok: true, message: 'PGM confirmado' }))
     const probe = new PgmProbe(undefined, callback)

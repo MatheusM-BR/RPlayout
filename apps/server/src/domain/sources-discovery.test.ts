@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from '../db/client.js'
-import { Sources } from './sources.js'
+import { Sources,scopedSourceList } from './sources.js'
 
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }))
 vi.mock('node:child_process', () => ({ spawn: spawnMock }))
@@ -26,6 +26,20 @@ beforeEach(() => { spawnMock.mockReset(); vi.useFakeTimers() })
 afterEach(() => { vi.useRealTimers() })
 
 describe('descoberta real de dispositivos', () => {
+  it('não elimina cadastros com mesmo endereço e filtra por canal sem alterar cache',async()=>{
+    const child=probeChild();spawnMock.mockReturnValue(child)
+    const sources=new Sources(fakeDb([{id:'a1',channelId:'a',kind:'NDI',targetUrl:'CAM',name:'Entrada São José',enabled:true},{id:'b1',channelId:'b',kind:'NDI',targetUrl:'ndi:CAM',name:'PRIVATE_OTHER_CHANNEL',enabled:true}]),'devices')
+    const pending=sources.list();child.stdout.emit('data',Buffer.from(JSON.stringify(result())));child.emit('close',0)
+    const list=await pending
+    expect(list.ndi.sources).toHaveLength(3)
+    expect(list.ndi.sources.map(row=>row.configuredId)).toEqual([undefined,'a1','b1'])
+    const scoped=scopedSourceList(list,id=>id==='a','a')
+    expect(scoped.ndi.sources.map(row=>row.label)).toEqual(['Câmera São João','Entrada São José'])
+    expect(JSON.stringify(scoped)).not.toContain('PRIVATE_OTHER_CHANNEL');expect(list.ndi.sources).toHaveLength(3)
+    expect(await sources.list()).toBe(list)
+    const guest={...list,guests:{available:true,reason:null,sources:[{reference:'guest:PRIVATE',label:'PRIVATE',family:'GUEST' as const,channelId:'b'}]}}
+    expect(scopedSourceList(guest,id=>id==='a').guests.sources).toEqual([])
+  })
   it('separa entrada e saída, preserva Unicode mesmo dividido entre buffers', async () => {
     const child = probeChild()
     spawnMock.mockReturnValue(child)

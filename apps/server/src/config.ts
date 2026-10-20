@@ -5,8 +5,8 @@ export const DB_FILE = process.env.RPLAYOUT_DB ?? resolve(process.cwd(), 'rplayo
 export const PORT = Number(process.env.PORT ?? 4000)
 export const HOST = process.env.HOST ?? '0.0.0.0'
 
-function findBinary(name: string): string {
-  if (process.env.VITEST) return ''
+function findBinary(name: string, disableAutomaticInTests=true): string {
+  if (disableAutomaticInTests && process.env.VITEST) return ''
   const candidates = [
     resolve(process.cwd(), `apps/engine/target/release/${name}.exe`),
     resolve(process.cwd(), `apps/engine/target/debug/${name}.exe`),
@@ -26,6 +26,17 @@ function findBinary(name: string): string {
  * que permite operar a grade inteira numa máquina sem GStreamer.
  */
 export const ENGINE_BINARY = process.env.RPLAYOUT_ENGINE ?? findBinary('rplayout-engine')
+/** Required for native distribution. Never infer ownership from test mode or
+ * silently replace a missing native helper with a simulated grant. */
+function findRequiredHelper(name:string):string {
+  const installRoot=process.env.RPLAYOUT_INSTALL_ROOT
+  // A portable installation must not silently borrow a developer's helper.
+  if(installRoot)return[resolve(installRoot,`apps/engine/target/release/${name}.exe`),resolve(installRoot,`${name}.exe`)].find(existsSync)??''
+  return findBinary(name,false)
+}
+export const HOST_GUARD_BINARY=process.env.RPLAYOUT_HOST_GUARD??findRequiredHelper('rplayout-host-guard')
+/** Required Windows ACL helper; no shell/global runtime or test-mode fallback. */
+export const FILE_SECURITY_BINARY=process.env.RPLAYOUT_FILE_SECURITY??findRequiredHelper('rplayout-file-security')
 
 /** Saídas passadas ao engine, separadas por vírgula. */
 export const ENGINE_OUTPUTS = (process.env.RPLAYOUT_ENGINE_OUTPUT ?? 'null')
@@ -72,6 +83,8 @@ export const RELAY_BINARY = process.env.RPLAYOUT_RELAY ?? findBinary('rplayout-r
 export const PROBE_BINARY = process.env.RPLAYOUT_PROBE ?? findBinary('rplayout-probe')
 export const PROXY_BINARY = process.env.RPLAYOUT_PROXY ?? findBinary('rplayout-proxy')
 export const AUDIO_ANALYSIS_BINARY=process.env.RPLAYOUT_AUDIO_ANALYSIS??findBinary('rplayout-audio-analysis')
+export const AUDIO_BUS_PROBE_BINARY=process.env.RPLAYOUT_AUDIO_BUS_PROBE??findBinary('rplayout-audio-bus-probe')
+export const GRAPHIC_PROBE_BINARY=process.env.RPLAYOUT_GRAPHIC_PROBE??findBinary('rplayout-graphic-probe')
 
 /** Pasta que a varredura percorre. */
 export const MEDIA_ROOT = process.env.RPLAYOUT_MEDIA ?? resolve(process.cwd(), 'midia')

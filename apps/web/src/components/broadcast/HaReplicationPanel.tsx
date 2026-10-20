@@ -1,9 +1,13 @@
 import {useEffect,useState} from 'react'
 import {api,type HaReplicationStatus,type HaMediaStatus,type HaAuthorityStatus} from '../../api.js'
+import {HaBindingsPanel} from './HaBindingsPanel.js'
+import {HaExecutionPanel} from './HaExecutionPanel.js'
+import {HaReturnReceiptsPanel} from './HaReturnReceiptsPanel.js'
 export function HaAuthority({authority}:{authority?:HaAuthorityStatus}){
   return <div aria-label="Concessão de publicação nativa" className="text-xs space-y-1">
     <p>{authority?.configured?'Testemunha configurada · concessão curta exigida no engine nativo. Perda da concessão encerra a publicação.':'Testemunha não configurada · espelho não fornece exclusividade de publicação.'}</p>
     {authority?.configured&&authority.leases.map(lease=><p key={lease.channelId}>{lease.channelId} · último termo confirmado pela testemunha: {lease.term||'nenhum'}{lease.error&&<span role="alert" className="text-armed-amber"> · {lease.error}</span>}</p>)}
+    {authority?.configured&&authority.nodeAdmissionRequired&&<p>{authority.explicitTransferConfigured?'Controle de transferência configurado · retorno ao nó anterior exige transferência explícita.':'Controle de transferência não configurado · a chave do engine não permite trocar o nó admitido.'}</p>}
     <p className="text-outline">Confirmação da testemunha não comprova saída física, recuperação de playlist ou autorização de promoção.</p>
   </div>
 }
@@ -27,6 +31,9 @@ export function HaReplicationPanel(){
       {status.role==='STANDBY'&&<p className="text-xs">{status.mirroredChannels} canais e {status.mirroredAsRun} registros as-run no espelho.</p>}
       <HaMediaProgress media={status.media}/>
       <HaAuthority authority={status.authority}/>
+      {status.role==='STANDBY'&&<HaBindingsPanel/>}
+      {status.role==='STANDBY'&&<HaExecutionPanel/>}
+      {status.role==='PRIMARY'&&<HaReturnReceiptsPanel stale={!!error}/>}
       {status.error&&<p role="alert" className="text-armed-amber text-xs">{status.error}</p>}
       <p className="text-armed-amber text-xs">{status.reason}</p>
     </>}

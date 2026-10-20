@@ -2,13 +2,45 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import * as schema from './schema.js'
 import { createHash } from 'node:crypto'
-import { migrateSecretVault } from './vault-migration.js'
+import { migrateSecretVault,finishVaultCleanup } from './vault-migration.js'
 import {migrateEditorialRevisions} from './editorial-revisions.js'
 import {migrateTrimCadence} from './trim-cadence.js'
 import {migrateAudioBus} from './audio-bus.js'
 import {migrateChannelConfiguration} from './channel-configuration.js'
 import {migratePresetConfiguration} from './preset-configuration.js'
 import {migrateQcRevisions} from './qc-revisions.js'
+import {migrateProjectRevisions} from './project-revisions.js'
+import {migrateLiveSourceRevisions} from './live-source-revisions.js'
+import {migrateMultiviewRevisions} from './multiview-revisions.js'
+import {migrateScheduleRuleRevisions} from './schedule-rule-revisions.js'
+import {migrateGraphicsRevisions} from './graphics-revisions.js'
+import {migrateGraphicsInitialization} from './graphics-initialization.js'
+import {migrateAccountRevisions} from './account-revisions.js'
+import {migrateAssetRemovalRevisions} from './asset-removal-revisions.js'
+import {migrateExecutionOwnership} from './execution-ownership.js'
+import {migrateDistributionOwnership} from './distribution-ownership.js'
+import {migrateProxyIntegrity} from './proxy-integrity.js'
+import {migrateMediaJobOwnership} from './media-job-ownership.js'
+import {migrateCategoryRevisions} from './category-revisions.js'
+import {migrateIntegrationRevisions} from './integration-revisions.js'
+import {migrateRootRevisions} from './root-revisions.js'
+import {migrateIngestOwnership} from './ingest-ownership.js'
+import {migrateScanRevisions} from './scan-revisions.js'
+import {migrateServerInstances} from './server-instances.js'
+import {assertStorageAdmissionOpen,migrateStorageAdmission} from './storage-admission.js'
+import {migrateRestorationRecords} from './restoration-records.js'
+import {migrateRestoredActivations} from './restored-activations.js'
+import {migrateItemSourceBindings} from './item-source-bindings.js'
+import {migrateProxyRecipe} from './proxy-recipe.js'
+import {migrateHealthResolution} from './health-resolution.js'
+import {migrateIncidentContexts} from './incident-context.js'
+import {migrateGraphicCommandPending} from './graphic-command-pending.js'
+import type {StorageMaintenance} from '../domain/storage-maintenance.js'
+import {openProcessDatabase} from './process-database.js'
+import {assertSchemaCompatibility} from './schema-compatibility.js'
+import {migrateUpgradeBackupRequests} from './upgrade-backup-requests.js'
+import {assertNoUncertainUpgradeProfile} from '../domain/upgrade-profile-adoption.js'
+import {assertNoUnboundReturnCandidate} from './return-candidate-admission.js'
 
 /**
  * DDL idempotente. O banco de um playout tem que sobreviver a queda de energia,
@@ -355,6 +387,11 @@ export type Db = ReturnType<typeof openDatabase>['db']
  */
 function abrirSqlite(file: string): Database.Database {
   try {
+    const mode=process.env.RPLAYOUT_STORAGE_MODE??(process.argv[1]?.endsWith('.cjs')?'PROCESS':'INLINE')
+    if(!['PROCESS','INLINE'].includes(mode))throw new Error('RPLAYOUT_STORAGE_MODE deve ser PROCESS ou INLINE.')
+    // Tests/dev keep their explicit in-process fixture. Compiled production
+    // uses a private separate process; a missing helper is never silent fallback.
+    if(mode==='PROCESS')return openProcessDatabase(file)
     return new Database(file)
   } catch (falha) {
     const texto = falha instanceof Error ? falha.message : String(falha)
@@ -368,11 +405,20 @@ function abrirSqlite(file: string): Database.Database {
   }
 }
 
-export function openDatabase(file: string) {
+export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.Database)=>void;maintenance?:StorageMaintenance;assertAdmission?:(sqlite:Database.Database)=>void}={}) {
   const sqlite = abrirSqlite(file)
+  const assertAdmission=()=>{if(options.maintenance)options.maintenance.assertHeldOn(sqlite);else assertStorageAdmissionOpen(sqlite);options.assertAdmission?.(sqlite)}
+  try{assertSchemaCompatibility(sqlite);assertNoUnboundReturnCandidate(sqlite);assertAdmission()}catch(error){sqlite.close();throw error}
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
   sqlite.pragma('synchronous = FULL')
+  let vaultCleanup=false
+  const initialize=sqlite.transaction(()=>{
+  assertSchemaCompatibility(sqlite)
+  assertAdmission()
+  // A legacy database may predate migration tracking. Only a truly empty
+  // database may receive factory templates, never an existing empty catalog.
+  const freshDatabase = !sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get()
   sqlite.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)')
   const migrateBaseline = sqlite.transaction(() => {
   if (sqlite.prepare('SELECT version FROM schema_migrations WHERE version = 1').get()) return
@@ -539,6 +585,40 @@ export function openDatabase(file: string) {
       CREATE INDEX cadence_conversions_channel ON channel_cadence_conversions(channel_id,created_at);`)
     sqlite.prepare('INSERT INTO schema_migrations VALUES (16,?,?)').run('reviewed-editorial-cadence-conversion',new Date().toISOString())
   })
-  try { migrateBaseline(); migratePolicies(); migrateMediaWorkflow(); migrateSessions(); migrateAccess(); migrateExecutionAudit(); migrateQc(); migrateHostMetrics(); migrateIntegrationOutbox(); migrateSecondaryEvents(); migrateTimingZones(); migrateAsRunEvidence(); migrateChannelArchive(); migrateCadence(); migrateEditorialRevisions(sqlite); migrateTrimCadence(sqlite); migrateAudioBus(sqlite); migrateChannelConfiguration(sqlite); migratePresetConfiguration(sqlite); migrateQcRevisions(sqlite); migrateSecretVault(sqlite) } catch (error) { sqlite.close(); throw error }
+    migrateBaseline(); migratePolicies(); migrateMediaWorkflow(); migrateSessions()
+    migrateAccess(); migrateExecutionAudit(); migrateQc(); migrateHostMetrics()
+    migrateIntegrationOutbox(); migrateSecondaryEvents(); migrateTimingZones()
+    migrateAsRunEvidence(); migrateChannelArchive(); migrateCadence()
+    migrateEditorialRevisions(sqlite); migrateTrimCadence(sqlite); migrateAudioBus(sqlite)
+    migrateChannelConfiguration(sqlite); migratePresetConfiguration(sqlite); migrateQcRevisions(sqlite)
+    migrateProjectRevisions(sqlite); migrateLiveSourceRevisions(sqlite); migrateMultiviewRevisions(sqlite)
+    migrateScheduleRuleRevisions(sqlite); migrateGraphicsRevisions(sqlite)
+    migrateGraphicsInitialization(sqlite,freshDatabase); migrateAccountRevisions(sqlite)
+    migrateAssetRemovalRevisions(sqlite)
+    vaultCleanup=migrateSecretVault(sqlite,{deferCleanup:true})
+    migrateExecutionOwnership(sqlite)
+    migrateDistributionOwnership(sqlite)
+    migrateProxyIntegrity(sqlite)
+    migrateMediaJobOwnership(sqlite)
+    migrateCategoryRevisions(sqlite)
+    migrateIntegrationRevisions(sqlite)
+    migrateRootRevisions(sqlite)
+    migrateIngestOwnership(sqlite)
+    migrateScanRevisions(sqlite)
+    migrateServerInstances(sqlite)
+    migrateStorageAdmission(sqlite)
+    migrateRestorationRecords(sqlite)
+    migrateRestoredActivations(sqlite)
+    migrateItemSourceBindings(sqlite)
+    migrateProxyRecipe(sqlite)
+    migrateHealthResolution(sqlite)
+    migrateIncidentContexts(sqlite)
+    migrateGraphicCommandPending(sqlite)
+    migrateUpgradeBackupRequests(sqlite)
+    assertSchemaCompatibility(sqlite,true)
+    assertNoUncertainUpgradeProfile(sqlite)
+    options.onOpened?.(sqlite)
+  })
+  try {initialize.immediate();if(vaultCleanup)finishVaultCleanup(sqlite)} catch (error) { sqlite.close(); throw error }
   return { sqlite, db: drizzle(sqlite, { schema }) }
 }

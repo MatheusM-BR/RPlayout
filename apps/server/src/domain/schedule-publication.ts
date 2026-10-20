@@ -17,6 +17,7 @@ import {mediaFileIdentity,isMediaSha,FileVersionVerifier} from './file-version.j
 import {localDate,rundownMidnight} from './rundown-clock.js'
 import {dayRules,type DayPlan,type DayPlanRequest} from './schedule-day.js'
 import {publishOperationalPlaylistNow,readOperationalPayload} from './operational-playlist.js'
+import {isRecoveryRehearsal} from './recovery-rehearsal.js'
 
 const POLICY='SCHEDULE_PUBLICATION_POLICY',JOB='SCHEDULE_PUBLICATION_JOB'
 const policyKey=(channelId:string)=>`schedule-publication:${channelId}`
@@ -130,7 +131,7 @@ export class SchedulePublication {
       .where(and(eq(rundowns.channelId,channelId),eq(operationalPlaylistRevisions.active,true))).orderBy(asc(operationalPlaylistRevisions.id)).all()
   }
   async tick(){
-    if(this.busy||this.closed)return;this.busy=true
+    if(this.busy||this.closed||isRecoveryRehearsal(this.db.$client))return;this.busy=true
     try{for(const row of this.db.select().from(operatorDecisions).where(eq(operatorDecisions.kind,POLICY)).all()){
       const policy=row.payload as unknown as Policy;if(policy.state==='ENABLED')await this.advance(policy)
     }}finally{this.busy=false}

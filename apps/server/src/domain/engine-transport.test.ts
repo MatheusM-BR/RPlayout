@@ -6,9 +6,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { framesSinceMidnight, type Channel } from '@rplayout/protocol'
+import { framesSinceMidnight,DEFAULT_QC_PROFILE, type Channel } from '@rplayout/protocol'
 import type { LivePriorityEvent } from './priority-live.js'
-import { EngineTransport } from './engine.js'
+import { EngineTransport,EngineCommandRejected } from './engine.js'
+import {createLiveProgramBinding} from './live-program-binding.js'
+import {nativeSourceConnectionSignature} from './native-live-replacement-ledger.js'
+import type {NativeReplacementPersistence} from './engine.js'
+import type {NativeLiveReplacementRequest,NativeLiveReplacementReceipt} from './native-live-replacement.js'
 import type { RundownView } from './plan.js'
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
@@ -18,7 +22,7 @@ const channel = { id: 'channel', name: 'Test', width: 320, height: 180,
 let directory: string
 let transport: EngineTransport
 let child: EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; kill: ReturnType<typeof vi.fn> }
-let commands: Array<{ id: number; cmd: string; item?: { itemId: string; path: string }; bus?: 'pgm' | 'pvw'; frames?: number; itemId?:string; on?:boolean }>
+let commands: Array<{ id: number; cmd: string; item?: { itemId: string; path: string;trimIn?:number;trimOut?:number }; bus?: 'pgm' | 'pvw'; frames?: number; itemId?:string|null;decoderId?:number|null;ownerId?:string;term?:number; on?:boolean }>
 let onAir: string | undefined
 let armed: string | undefined
 let rejectLoad: string | null
@@ -26,33 +30,193 @@ let holdLoad: boolean
 let holdLiveTake: boolean
 let rejectTakeAck: boolean
 let holdFileTake: boolean
+let holdPreview: boolean
+let loadDecoderId:number|undefined
 let priorityEvents: LivePriorityEvent[]
 
 function event(value: object): void { child.stdout.write(JSON.stringify(value) + '\n') }
 function ack(id: number, ok = true): void { event({ event: 'ack', id, ok, error: ok ? undefined : 'decoder recusou o arquivo' }) }
+
+describe('programHold private transport receipt contract',()=>{
+  it.each(['HELD','UNCONFIRMED'] as const)('watchdog never reclassifies %s as normal playback',status=>{
+    start(view([]));event({event:'ready',channelId:channel.id,decoderIdentity:true})
+    event({event:'state',onAir:'vt',onAirDecoderId:7,programHold:{itemId:'vt',decoderId:7,status,frames:status==='HELD'?61:null}})
+    event({event:'position',itemId:'vt',decoderId:7,frames:61,duration:200})
+    const internal=transport as unknown as {rundownId:string;recoveryCursor:{itemId:string;frames:number;programHold:string}|null;restore():void}
+    internal.rundownId='grade';child.emit('exit',null,'SIGKILL')
+    expect(internal.recoveryCursor).toMatchObject({itemId:'vt',frames:61,programHold:status})
+    internal.restore();expect(commands).toHaveLength(0)
+    expect(transport.health().error).toContain('retomada PLAYING bloqueada')
+  })
+  it('recoverHeld verifies local SHA/crop and mounts only after native receipt, without TAKE callback',async()=>{
+    const file=join(directory,'held.mkv');writeFileSync(file,'local fixture bytes')
+    const value=heldView(file),confirmed=vi.fn();start(value,confirmed)
+    event({event:'ready',channelId:channel.id,decoderIdentity:true});child.stdin.removeAllListeners('data')
+    child.stdin.on('data',(data:Buffer)=>{
+      const command=JSON.parse(data.toString());commands.push(command)
+      queueMicrotask(()=>{
+        event({event:'programHold',id:command.id,itemId:'0',decoderId:8,held:true,frames:61})
+        event({event:'state',onAir:'0',onAirDecoderId:8,programHold:{itemId:'0',decoderId:8,status:'HELD',frames:61}})
+        event({event:'ack',id:command.id,ok:true,decoderId:8})
+      })
+    })
+    const cut={in:25,out:200,contentHash:value.items[0]!.asset!.contentHash!}
+    await expect(transport.recoverHeld('grade','0',61,cut)).resolves.toEqual({itemId:'0',decoderId:8,frames:61})
+    expect(commands.map(command=>command.cmd)).toEqual(['restoreProgramHold'])
+    expect(commands[0]?.item).toMatchObject({trimIn:25,trimOut:200,startOffsetFrames:61})
+    expect(transport.state()).toMatchObject({playing:false,onAir:{itemId:'0',elapsed:61},programTrim:cut})
+    expect(confirmed).not.toHaveBeenCalled()
+  })
+  it('recoverHeld refuses altered file before native command',async()=>{
+    const file=join(directory,'held.mkv');writeFileSync(file,'original')
+    const value=heldView(file);start(value);writeFileSync(file,'changed')
+    await expect(transport.recoverHeld('grade','0',61,{in:25,out:200,contentHash:value.items[0]!.asset!.contentHash!})).rejects.toThrow('versão publicada')
+    expect(commands).toHaveLength(0)
+  })
+  it('recoverHeld preserves uncertainty when file changes during native preparation',async()=>{
+    const file=join(directory,'held.mkv');writeFileSync(file,'original')
+    const value=heldView(file);const confirmed=vi.fn();start(value,confirmed)
+    event({event:'ready',channelId:channel.id,decoderIdentity:true});child.stdin.removeAllListeners('data')
+    child.stdin.on('data',(data:Buffer)=>{
+      const command=JSON.parse(data.toString());commands.push(command)
+      if(command.cmd!=='restoreProgramHold')return
+      queueMicrotask(()=>{
+        writeFileSync(file,'changed during native restoration')
+        event({event:'programHold',id:command.id,itemId:'0',decoderId:8,held:true,frames:61})
+        event({event:'state',onAir:'0',onAirDecoderId:8,programHold:{itemId:'0',decoderId:8,status:'HELD',frames:61}})
+        event({event:'ack',id:command.id,ok:true,decoderId:8})
+      })
+    })
+    await expect(transport.recoverHeld('grade','0',61,{in:25,out:200,contentHash:value.items[0]!.asset!.contentHash!})).rejects.toThrow('versão publicada')
+    expect(commands.map(command=>command.cmd)).toEqual(['restoreProgramHold'])
+    expect(transport.state().programTrim).toBeNull();expect(confirmed).not.toHaveBeenCalled()
+    expect(transport.health().ready).toBe(false)
+  })
+  it.each(['confirmed','missing','wrong-cursor','missing-state','wrong-state-decoder','wrong-state-mode','wrong-ack'] as const)('restoreProgramHold %s receipt',async(mode)=>{
+    start(view([]));event({event:'ready',channelId:channel.id,decoderIdentity:true});child.stdin.removeAllListeners('data')
+    child.stdin.on('data',(data:Buffer)=>{
+      const command=JSON.parse(data.toString());commands.push(command)
+      queueMicrotask(()=>{
+        if(mode!=='missing')event({event:'programHold',id:command.id,itemId:'vt',decoderId:8,held:true,frames:mode==='wrong-cursor'?60:61})
+        if(mode!=='missing-state')event({event:'state',onAir:'vt',onAirDecoderId:mode==='wrong-state-decoder'?9:8,programHold:{itemId:'vt',decoderId:mode==='wrong-state-decoder'?9:8,status:mode==='wrong-state-mode'?'RUNNING':'HELD',frames:mode==='wrong-state-mode'?null:61}})
+        event({event:'ack',id:command.id,ok:true,decoderId:mode==='wrong-ack'?9:8})
+      })
+    })
+    const pending=(transport as unknown as {request(command:Record<string,unknown>):Promise<void>}).request({cmd:'restoreProgramHold',item:{itemId:'vt',path:'fixture.mkv',trimIn:25,trimOut:200,startOffsetFrames:61}})
+    if(mode==='confirmed')await expect(pending).resolves.toBeUndefined()
+    else await expect(pending).rejects.toThrow('resultado inconclusivo')
+    expect(commands.map(command=>command.cmd)).toEqual(['restoreProgramHold'])
+  })
+  it('held or inconclusive telemetry cannot become a playing checkpoint',()=>{
+    start(view([]));event({event:'ready',channelId:channel.id,decoderIdentity:true})
+    for(const status of ['HELD','UNCONFIRMED','RUNNING']){
+      event({event:'state',onAir:'vt',onAirDecoderId:7,programHold:{itemId:'vt',decoderId:7,status,frames:status==='HELD'?36:null}})
+      event({event:'position',itemId:'vt',decoderId:7,frames:36,duration:200})
+      expect(transport.health().programHold?.status).toBe(status)
+      if(status==='RUNNING')expect(transport.programPositionEvidence()?.frames).toBe(36)
+      else expect(transport.programPositionEvidence()).toBeNull()
+      event({event:'state',onAir:'vt',onAirDecoderId:7})
+      expect(transport.health().programHold?.status).toBe(status)
+      if(status!=='RUNNING')expect(transport.programPositionEvidence()).toBeNull()
+    }
+    event({event:'state',onAir:'vt',onAirDecoderId:8,programHold:{itemId:'vt',decoderId:7,status:'HELD',frames:36}})
+    event({event:'position',itemId:'vt',decoderId:8,frames:40,duration:200})
+    expect(transport.health().programHold).toBeNull();expect(transport.programPositionEvidence()).toBeNull()
+    transport.close();expect(transport.health().programHold).toBeNull()
+  })
+  const requestHold=()=> (transport as unknown as {request(command:Record<string,unknown>):Promise<void>}).request({cmd:'programHold',itemId:'vt',decoderId:7,on:true})
+  function prepare(){
+    start(view([]));event({event:'ready',channelId:channel.id,decoderIdentity:true});event({event:'state',onAir:'vt',onAirDecoderId:7})
+    child.stdin.removeAllListeners('data')
+  }
+  it.each(['confirmed','missing','wrong-request','wrong-decoder','changed-program','wrong-ack'] as const)('programHold %s receipt',async(mode)=>{
+    prepare()
+    child.stdin.on('data',(data:Buffer)=>{
+      const command=JSON.parse(data.toString());commands.push(command)
+      queueMicrotask(()=>{
+        if(mode!=='missing')event({event:'programHold',id:mode==='wrong-request'?command.id+1:command.id,itemId:'vt',decoderId:mode==='wrong-decoder'?8:7,held:true,frames:36})
+        if(mode==='changed-program')event({event:'state',onAir:'next',onAirDecoderId:8})
+        event({event:'ack',id:command.id,ok:true,decoderId:mode==='wrong-ack'?8:7})
+      })
+    })
+    const pending=requestHold()
+    if(mode==='confirmed')await expect(pending).resolves.toBeUndefined()
+    else await expect(pending).rejects.toThrow('resultado inconclusivo')
+    expect(commands.map(command=>command.cmd)).toEqual(['programHold'])
+  })
+  it('programHold receipt alone does not complete ACK or retry on timeout',async()=>{
+    vi.useFakeTimers();prepare()
+    child.stdin.on('data',(data:Buffer)=>{
+      const command=JSON.parse(data.toString());commands.push(command)
+      event({event:'programHold',id:command.id,itemId:'vt',decoderId:7,held:true,frames:36})
+    })
+    const rejected=expect(requestHold()).rejects.toThrow('não confirmou programHold')
+    await vi.advanceTimersByTimeAsync(30001);await rejected
+    expect(commands.map(command=>command.cmd)).toEqual(['programHold'])
+    expect(child.kill).toHaveBeenCalled()
+  })
+})
+it('sonda de incidentes expira telemetria PGM e limpa leitura ao fechar',()=>{
+  start(view([]))
+  expect(transport.signalSample()).toEqual({meter:null,videoProbe:null})
+  event({event:'videoProbe',luma:0,black:true,freeze:false})
+  const now=Date.now();expect(transport.signalSample(now).videoProbe?.black).toBe(true)
+  expect(transport.signalSample(now+1501)).toEqual({meter:null,videoProbe:null})
+  expect(transport.signalSample(now-1000)).toEqual({meter:null,videoProbe:null})
+  transport.close();expect(transport.signalSample()).toEqual({meter:null,videoProbe:null})
+})
 function view(paths: string[], loop = false): RundownView {
   return {
     channel, rundown: { id: 'grade', channelId: channel.id, loop },
     items: paths.map((path, index) => ({ item: { id: String(index), autoNext: true, audioTrack: 0 },
-      asset: { id: String(index), path, contentHash:existsSync(path)?createHash('sha256').update(readFileSync(path)).digest('hex'):'a'.repeat(64),kind: 'VIDEO', probeError: null }, trim: { in: 0, out: 250 }, gainDb: 0 })),
+      asset: { id: String(index), path, contentHash:existsSync(path)?createHash('sha256').update(readFileSync(path)).digest('hex'):'a'.repeat(64),kind: 'VIDEO',durationFrames:1000,durationNs:null, probeError: null }, trim: { in: 0, out: 250 }, gainDb: 0 })),
     schedule: { items: paths.map((_, index) => ({ id: String(index), state: 'SCHEDULED', duration: 250 })) },
   } as unknown as RundownView
 }
-function start(value: RundownView, onTakeConfirmed?: ConstructorParameters<typeof EngineTransport>[3]['onTakeConfirmed'], currentView = () => value, executionIdentity?: () => string | null, boundary:Pick<ConstructorParameters<typeof EngineTransport>[3],'onPlaylistEnd'|'onPreparePlaylistEnd'|'canRecoverProgram'|'canStartProgram'|'fenceLease'>={}): void {
+function heldView(path:string):RundownView{
+  const base=view([path]);return {...base,items:base.items.map(row=>({...row,trim:{in:25,out:200}}))}
+}
+it('evento novo com frame nativo antigo não comprova vídeo recente',()=>{
+  start(view([]))
+  for(const sampleAgeMs of [null,NaN,-1,2000]){
+    event({event:'videoProbe',luma:100,black:false,freeze:true,freezeDurationMs:3000,sampleAgeMs})
+    expect(transport.signalSample().videoProbe).toBeNull()
+  }
+  event({event:'videoProbe',luma:100,black:false,freeze:false,freezeDurationMs:650,sampleAgeMs:50})
+  const now=Date.now();expect(transport.signalSample(now).videoProbe?.freezeDurationMs).toBe(650)
+  expect(transport.signalSample(now+1451).videoProbe).toBeNull()
+})
+function start(value: RundownView, onTakeConfirmed?: ConstructorParameters<typeof EngineTransport>[3]['onTakeConfirmed'], currentView = () => value, executionIdentity?: () => string | null, boundary:Partial<Pick<ConstructorParameters<typeof EngineTransport>[3],'onPlaylistEnd'|'onPreparePlaylistEnd'|'canRecoverProgram'|'canStartProgram'|'fenceLease'|'assertExecutionOwned'|'beforeProcessStart'|'onProcessStarted'|'onProcessExited'|'canRestartEngine'|'onSignalObservation'|'holdProgramOutputs'|'preview'|'executionOccurrenceId'>>={}): void {
   transport = new EngineTransport(channel, currentView, () => null,
     { binary: 'fake-engine', outputs: ['null'], preview: null, bitrateKbps: 500, onLivePriority: event => priorityEvents.push(event),onTakeConfirmed, executionIdentity,...boundary })
   // A decoder ACK requires the real process to have built its pipeline first.
   // Lease-specific tests deliberately supply Ready only after FenceApplied.
   if(!boundary.fenceLease)event({event:'ready',channelId:channel.id})
 }
+// NOT_RUN: mock wire identity only; no native position/hardware qualification.
+it('checkpoint evidence requires the current decoder, not legacy or previous-decoder positions',()=>{
+  start(view([]));event({event:'ready',channelId:channel.id,decoderIdentity:true})
+  event({event:'state',onAir:'vt',onAirDecoderId:31})
+  event({event:'position',itemId:'vt',frames:73,duration:250})
+  expect(transport.programPositionEvidence()).toBeNull()
+  event({event:'position',itemId:'vt',decoderId:31,frames:73,duration:250})
+  expect(transport.programPositionEvidence()).toEqual({itemId:'vt',decoderId:31,frames:73})
+  event({event:'position',itemId:'vt',decoderId:30,frames:200,duration:250})
+  expect(transport.programPositionEvidence()?.frames).toBe(73)
+  event({event:'state',onAir:'vt',onAirDecoderId:32})
+  expect(transport.programPositionEvidence()).toBeNull()
+})
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'playout-transport-'))
   commands = []; onAir = undefined; armed = undefined; rejectLoad = null; holdLoad = false; holdLiveTake = false
   rejectTakeAck = false
   holdFileTake = false
+  holdPreview = false
+  loadDecoderId=undefined
   priorityEvents = []
   child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() })
+  vi.mocked(spawn).mockClear()
   vi.mocked(spawn).mockReturnValue(child as unknown as ReturnType<typeof spawn>)
   child.stdin.on('data', (data: Buffer) => {
     const command = JSON.parse(data.toString()) as typeof commands[number]
@@ -64,17 +228,741 @@ beforeEach(() => {
       if (command.cmd === 'load') armed = command.item?.itemId
       if (command.cmd === 'take' && holdLiveTake) { ack(command.id); return }
       if (command.cmd === 'take' && holdFileTake) return
+      if (command.cmd === 'preview' && holdPreview) return
       if (command.cmd === 'cancelTake') armed = undefined
       if (command.cmd === 'take') { onAir = armed; armed = undefined }
       if (command.cmd === 'stop') onAir = undefined
-      event({ event: 'state', onAir, armed })
+      event({ event: 'state', onAir, armed,armedDecoderId:armed?loadDecoderId:undefined,onAirDecoderId:onAir?loadDecoderId:undefined })
       ack(command.id, !(command.cmd === 'take' && rejectTakeAck))
     })
   })
 })
 afterEach(() => { transport?.close(); vi.useRealTimers(); rmSync(directory, { recursive: true, force: true }); vi.restoreAllMocks(); vi.unstubAllEnvs() })
 
+describe('confirmed alternative checkpoint recovery (mock native pipe, not media qualification)',()=>{
+  function fixture(){
+    const value=view(['unused-live-fixture']);Object.assign(value.items[0]!.item,{sourceRef:'ndi:PRINCIPAL',configuredSourceId:'primary'})
+    const generation='00000000-0000-4000-8000-000000000020',request={transactionId:'mock-replacement',engineGeneration:generation,selectionRevision:'mock-pair',itemId:'0',expectedDecoderId:7,expectedSourceId:'primary',targetSourceId:'backup',targetSource:'ndi:RESERVA',targetSourceType:'NDI' as const}
+    const {targetSource:_,targetSourceType:__,...base}=request
+    const binding=createLiveProgramBinding({channelId:channel.id,rundownId:'grade',revisionId:'rev',executionId:'exec',occurrenceId:'exec',itemId:'0',ownerRunId:'00000000-0000-4000-8000-000000000010',engineGeneration:generation,decoderId:7,sourceId:'primary',sourceConnectionSignature:nativeSourceConnectionSignature('primary','NDI','ndi:PRINCIPAL'),policySignature:'a'.repeat(64)},request,{...base,preparedDecoderId:8,phase:'COMMITTED',programFrames:143})
+    return {value,binding}
+  }
+  function ready(value:RundownView,confirmed=vi.fn()){
+    start(value,confirmed,()=>value,()=> 'rev',{executionOccurrenceId:()=> 'exec'})
+    event({event:'ready',channelId:channel.id,decoderIdentity:true,liveReplacementProtocol:1,engineGeneration:'00000000-0000-4000-8000-000000000021'})
+    loadDecoderId=77;return confirmed
+  }
+  it('loads the confirmed alternative at the exact saved cursor, not its primary or frame zero',async()=>{
+    const {value,binding}=fixture(),confirmed=ready(value)
+    await transport.recover('grade','0',200,undefined,binding)
+    expect(commands[0]).toMatchObject({cmd:'load',item:{itemId:'0',source:'ndi:RESERVA',configuredSourceId:'backup',startOffsetFrames:200}})
+    expect(commands.map(command=>command.cmd)).toEqual(['load','take'])
+    expect(transport.state().onAir).toMatchObject({itemId:'0',elapsed:200})
+    expect(transport.liveProgramBindingSnapshot()).toEqual(binding)
+    expect(confirmed).toHaveBeenCalledWith('0',200,true,null)
+  })
+  it('the same item can stay on backup in PGM and use primary in CUE without cross-attributing source identity',async()=>{
+    const {value,binding}=fixture();ready(value);await transport.recover('grade','0',200,undefined,binding)
+    child.stdin.removeAllListeners('data');child.stdin.on('data',(chunk:Buffer)=>{
+      const command=JSON.parse(chunk.toString());commands.push(command)
+      queueMicrotask(()=>event({event:'ack',id:command.id,ok:true,...(command.cmd==='preview'?{decoderId:501}:{})}))
+    })
+    await transport.cue({kind:'ITEM',id:'0'})
+    event({event:'sourceReady',itemId:'0',bus:'pgm',decoderId:77,configuredSourceId:'backup'})
+    event({event:'sourceReady',itemId:'0',bus:'pvw',decoderId:501,configuredSourceId:'primary'})
+    const signals=transport.state().liveSources!
+    expect(signals.find(source=>source.source==='ndi:RESERVA')).toMatchObject({nativeCatalogBindings:{pgm:'backup'},busStates:{pgm:'ON_PGM'}})
+    expect(signals.find(source=>source.source==='ndi:PRINCIPAL')).toMatchObject({nativeCatalogBindings:{pvw:'primary'},busStates:{pvw:'PVW_READY'}})
+    expect(transport.state().preview).toEqual({kind:'ITEM',id:'0'})
+    expect(transport.state().onAir?.elapsed).toBe(200)
+  })
+  it('a corrupt selected-source envelope cannot fall back to the primary',async()=>{
+    const {value,binding}=fixture();ready(value)
+    await expect(transport.recover('grade','0',200,undefined,{...binding,sealedSource:binding.sealedSource.slice(0,-8)+'AAAAAAAA'})).rejects.toThrow('não será selecionada por fallback')
+    expect(commands).toEqual([]);expect(transport.state().onAir).toBeNull()
+  })
+  it('legacy decoder capability does not authorize a version2 recovery',async()=>{
+    const {value,binding}=fixture();start(value,undefined,()=>value,()=> 'rev',{executionOccurrenceId:()=> 'exec'})
+    event({event:'ready',channelId:channel.id,decoderIdentity:true})
+    await expect(transport.recover('grade','0',200,undefined,binding)).rejects.toThrow('contrato/geração')
+    expect(commands).toEqual([])
+  })
+})
+
+describe('owning native replacement bridge (simulated child, no physical media claim)',()=>{
+ const generation='00000000-0000-4000-8000-000000000020'
+ async function fixture(order:'state-first'|'receipt-first'='state-first'){
+  const value=view(['live','next'])
+  for(const [index,row]of value.items.entries())Object.assign(row,{item:{...row.item,type:'LIVE',sourceRef:index?'ndi:NEXT':'ndi:PRIMARY',configuredSourceId:index?'next':'primary',durationOverride:250,autoNext:false},asset:null})
+  const confirmed=vi.fn(),owned=vi.fn()
+  start(value,confirmed,()=>value,()=> 'rev',{executionOccurrenceId:()=> 'exec',assertExecutionOwned:owned})
+  Object.assign(child,{pid:4321})
+  event({event:'ready',channelId:channel.id,decoderIdentity:true,liveReplacementProtocol:1,engineGeneration:generation})
+  loadDecoderId=7;await transport.take('grade','0');confirmed.mockClear()
+  await transport.cue({kind:'SOURCE',source:'omt:QC'})
+  const initial=transport.state().onAir!
+  event({event:'state',onAir:'0',onAirDecoderId:7,armed:'1',armedDecoderId:9})
+  vi.spyOn(transport,'fenceBinding').mockReturnValue({ownerId:'owner',term:17})
+  const selection=transport.nativeLiveSelection()
+  const request:NativeLiveReplacementRequest={transactionId:'bridge-1',engineGeneration:generation,selectionRevision:'pair-1',itemId:'0',expectedDecoderId:7,expectedSourceId:'primary',targetSourceId:'backup',targetSource:'ndi:BACKUP',targetSourceType:'NDI'}
+  const context={...selection,channelId:channel.id,rundownId:'grade',revisionId:'rev',executionId:'exec',occurrenceId:'exec',ownerRunId:'00000000-0000-4000-8000-000000000010'}
+  const persistence:NativeReplacementPersistence={validate:vi.fn(),beforeSend:vi.fn(),receipt:vi.fn((receipt,current)=>receipt.phase==='COMMITTED'&&current?createLiveProgramBinding(context,request,receipt):undefined),stopped:vi.fn()}
+  let phase:NativeLiveReplacementReceipt['phase']='READY'
+  const receipt=():NativeLiveReplacementReceipt=>{
+   const {targetSource:_,targetSourceType:__,...binding}=request
+   return {...binding,phase,preparedDecoderId:8,programFrames:phase==='COMMITTED'?143:null}
+  }
+  child.stdin.removeAllListeners('data')
+  child.stdin.on('data',(chunk:Buffer)=>{
+   const command=JSON.parse(chunk.toString());commands.push(command)
+   queueMicrotask(()=>{
+    if(command.cmd==='stop'){event({event:'state'});ack(command.id);return}
+    if(command.cmd==='commitLiveReplacement')phase='COMMITTED'
+    if(['prepareLiveReplacement','commitLiveReplacement','liveReplacementStatus','cancelLiveReplacement'].includes(command.cmd)){
+     const state=()=>event({event:'state',onAir:'0',onAirDecoderId:phase==='COMMITTED'?8:7,armed:'1',armedDecoderId:9})
+     if(order==='state-first')state()
+     event({event:'liveReplacement',id:command.id,receipt:receipt()})
+     if(order==='receipt-first')state()
+    }
+    ack(command.id)
+   })
+  })
+  commands=[]
+  return {request,persistence,confirmed,initial,owned}
+ }
+ it.each(['state-first','receipt-first'] as const)('binds the actual child/decoder while retaining CUE, next item, clock and as-run occurrence: %s',async order=>{
+  const {request,persistence,confirmed,initial}=await fixture(order)
+  await expect(transport.prepareNativeLiveReplacement(request,persistence)).resolves.toMatchObject({phase:'READY'})
+  expect(transport.state().onAir?.startedAt).toBe(initial.startedAt)
+  await expect(transport.nativeLiveReplacementCommand('COMMIT',request.transactionId)).resolves.toMatchObject({phase:'COMMITTED'})
+  expect(commands.map(value=>value.cmd)).toEqual(['prepareLiveReplacement','commitLiveReplacement'])
+  expect(transport.state()).toMatchObject({onAir:{itemId:'0',startedAt:initial.startedAt,elapsed:143},preview:{kind:'SOURCE',source:'omt:QC'}})
+  expect(transport.liveProgramBindingSnapshot()?.receipt.targetSourceId).toBe('backup')
+  expect(transport.nativeLiveSelection()).toMatchObject({sourceId:'backup',decoderId:8})
+  expect(transport.health().nativeLiveReplacement.selectionUncertain).toBe(false)
+  expect(confirmed).not.toHaveBeenCalled()
+  expect(persistence.beforeSend).toHaveBeenCalledWith('COMMIT',request)
+  event({event:'sourceReady',itemId:'0',bus:'pgm',decoderId:8,configuredSourceId:'backup'})
+  expect(transport.state().liveSources.find(row=>row.source==='ndi:BACKUP')).toMatchObject({nativeCatalogBindings:{pgm:'backup'}})
+  expect(transport.state().liveSources.find(row=>row.source==='ndi:PRIMARY')?.nativeCatalogBindings?.pgm).toBeUndefined()
+ })
+ it('SQL intent failure writes no PREPARE bytes to the actual owning pipe',async()=>{
+  const {request,persistence}=await fixture()
+  vi.mocked(persistence.beforeSend).mockImplementation(()=>{throw new Error('SQL_INTENT_REFUSED')})
+  await expect(transport.prepareNativeLiveReplacement(request,persistence)).rejects.toThrow('SQL_INTENT_REFUSED')
+  expect(commands).toEqual([]);expect(child.kill).not.toHaveBeenCalled()
+ })
+ it('failed durable cut confirmation blocks new cuts, then reconciles via STATUS without repeating COMMIT',async()=>{
+  const {request,persistence,confirmed,initial}=await fixture()
+  await transport.prepareNativeLiveReplacement(request,persistence)
+  const original=vi.mocked(persistence.receipt).getMockImplementation()!
+  vi.mocked(persistence.receipt).mockImplementation(()=>{throw new Error('SQL_RECEIPT_REFUSED')})
+  await expect(transport.nativeLiveReplacementCommand('COMMIT',request.transactionId)).rejects.toMatchObject({outcomeUnknown:true})
+  expect(transport.health()).toMatchObject({ready:false,nativeLiveReplacement:{selectionUncertain:true}})
+  expect(transport.programPositionEvidence()).toBeNull()
+  await expect(transport.take('grade','1')).rejects.toThrow('inconclusivo')
+  vi.mocked(persistence.receipt).mockImplementation(original)
+  await expect(transport.nativeLiveReplacementCommand('STATUS',request.transactionId)).resolves.toMatchObject({phase:'COMMITTED'})
+  expect(transport.state().onAir).toMatchObject({startedAt:initial.startedAt,elapsed:143})
+  expect(transport.health().nativeLiveReplacement.selectionUncertain).toBe(false)
+  expect(commands.filter(value=>value.cmd==='commitLiveReplacement')).toHaveLength(1)
+  expect(commands.some(value=>value.cmd==='load'||value.cmd==='take')).toBe(false)
+  expect(confirmed).not.toHaveBeenCalled();expect(child.kill).not.toHaveBeenCalled()
+ })
+ it('STOP remains blocked after native empty PGM until durable resolution succeeds',async()=>{
+  const {request,persistence}=await fixture()
+  await transport.prepareNativeLiveReplacement(request,persistence)
+  vi.mocked(persistence.stopped).mockImplementation(()=>{throw new Error('STOP_SQL_REFUSED')})
+  await expect(transport.stop()).rejects.toThrow('STOP_SQL_REFUSED')
+  expect(transport.health()).toMatchObject({ready:false,nativeLiveReplacement:{selectionUncertain:true}})
+  await expect(transport.take('grade','1')).rejects.toThrow('inconclusivo')
+  vi.mocked(persistence.stopped).mockReset()
+  await transport.stop()
+  expect(persistence.stopped).toHaveBeenLastCalledWith({engineGeneration:generation,nativeRequestId:expect.any(Number),previousOwnedGenerationExited:false})
+  expect(transport.state().onAir).toBeNull();expect(transport.liveProgramBindingSnapshot()).toBeNull()
+  expect(transport.health().nativeLiveReplacement.selectionUncertain).toBe(false)
+ })
+ it('a repeated COMMIT is a historical lookup and never sends a second native cut',async()=>{
+  const {request,persistence,confirmed}=await fixture()
+  await transport.prepareNativeLiveReplacement(request,persistence)
+  await transport.nativeLiveReplacementCommand('COMMIT',request.transactionId)
+  await transport.nativeLiveReplacementCommand('COMMIT',request.transactionId)
+  expect(commands.map(value=>value.cmd)).toEqual(['prepareLiveReplacement','commitLiveReplacement','liveReplacementStatus'])
+  expect(confirmed).not.toHaveBeenCalled()
+ })
+ it('a receipt without matching native selection cannot publish a successful cut or erase CUE',async()=>{
+  const {request,persistence,initial}=await fixture()
+  await transport.prepareNativeLiveReplacement(request,persistence)
+  child.stdin.removeAllListeners('data')
+  child.stdin.on('data',(chunk:Buffer)=>{
+   const command=JSON.parse(chunk.toString());commands.push(command)
+   queueMicrotask(()=>{
+    const {targetSource:_,targetSourceType:__,...binding}=request
+    event({event:'liveReplacement',id:command.id,receipt:{...binding,phase:'COMMITTED',preparedDecoderId:8,programFrames:143}})
+    ack(command.id)
+   })
+  })
+  await expect(transport.nativeLiveReplacementCommand('COMMIT',request.transactionId)).rejects.toMatchObject({outcomeUnknown:true})
+  expect(transport.health()).toMatchObject({ready:false,nativeLiveReplacement:{selectionUncertain:true}})
+  expect(transport.liveProgramBindingSnapshot()).toBeNull()
+  event({event:'state',onAir:'0',onAirDecoderId:90})
+  expect(transport.liveProgramBindingSnapshot()).toBeNull()
+  event({event:'state',onAir:'0',onAirDecoderId:8})
+  await transport.nativeLiveReplacementCommand('STATUS',request.transactionId)
+  expect(transport.liveProgramBindingSnapshot()?.receipt.targetSourceId).toBe('backup')
+  expect(transport.state()).toMatchObject({onAir:{startedAt:initial.startedAt},preview:{kind:'SOURCE',source:'omt:QC'}})
+  expect(transport.health().nativeLiveReplacement.selectionUncertain).toBe(false)
+  expect(commands.filter(row=>row.cmd==='commitLiveReplacement')).toHaveLength(1)
+ })
+ it('the owning lease is rechecked before private PREPARE and cannot be replaced by a supplied callback',async()=>{
+  const {request,persistence,owned}=await fixture()
+  owned.mockImplementation(()=>{throw new Error('OWNER_LOST')})
+  await expect(transport.prepareNativeLiveReplacement(request,persistence)).rejects.toThrow('OWNER_LOST')
+  expect(commands).toEqual([]);expect(persistence.beforeSend).not.toHaveBeenCalled()
+ })
+})
+
+describe('native live replacement capability and uncertain selector protection (mock private wire)',()=>{
+  it('legacy Ready is unsupported; capability requires protocol, generation UUID and native identities',()=>{
+    start(view([]));expect(transport.health().nativeLiveReplacement).toEqual({supported:false,engineGeneration:null,selectionUncertain:false})
+    const generation='00000000-0000-4000-8000-000000000001'
+    event({event:'ready',channelId:channel.id,decoderIdentity:true,liveReplacementProtocol:1,engineGeneration:generation})
+    expect(transport.health().nativeLiveReplacement).toEqual({supported:true,engineGeneration:generation,selectionUncertain:false})
+    event({event:'ready',channelId:channel.id,decoderIdentity:false,liveReplacementProtocol:1,engineGeneration:generation})
+    expect(transport.health().nativeLiveReplacement.supported).toBe(false)
+    event({event:'ready',channelId:channel.id,decoderIdentity:true,liveReplacementProtocol:1,engineGeneration:'not-a-generation'})
+    expect(transport.health().nativeLiveReplacement.supported).toBe(false)
+    expect(commands).toEqual([])
+  })
+  function uncertain(){
+    start(view([]));event({event:'ready',channelId:channel.id,decoderIdentity:true})
+    event({event:'state',onAir:'live',onAirDecoderId:7,programSelectionUncertain:true})
+    event({event:'position',itemId:'live',decoderId:7,frames:143,duration:1000})
+  }
+  it('uncertainty blocks checkpoint evidence and new cuts without killing an engine still producing',async()=>{
+    uncertain();expect(transport.health()).toMatchObject({ready:false,nativeLiveReplacement:{selectionUncertain:true}})
+    expect(transport.programDecoderBinding()).toBeNull();expect(transport.programPositionEvidence()).toBeNull()
+    const privateTransport=transport as unknown as {request:(command:Record<string,unknown>)=>Promise<void>}
+    await expect(privateTransport.request({cmd:'load',item:{itemId:'other'}})).rejects.toThrow('confirme STOP')
+    await expect(privateTransport.request({cmd:'take'})).rejects.toThrow('confirme STOP')
+    transport.tick();expect(commands).toEqual([]);expect(child.kill).not.toHaveBeenCalled()
+  })
+  it('later State false alone cannot erase uncertain source selection',()=>{
+    uncertain();event({event:'state',onAir:'live',onAirDecoderId:7,programSelectionUncertain:false})
+    expect(transport.health().ready).toBe(false);expect(transport.health().nativeLiveReplacement.selectionUncertain).toBe(true)
+  })
+  it('explicit STOP with ACK and empty program clears the in-process selection guard',async()=>{
+    uncertain();await transport.stop()
+    expect(commands.map(command=>command.cmd)).toEqual(['stop'])
+    expect(transport.health().nativeLiveReplacement.selectionUncertain).toBe(false)
+    expect(transport.state().onAir).toBeNull()
+  })
+  it('STOP ACK without empty native program does not release the guard',async()=>{
+    uncertain();child.stdin.removeAllListeners('data');child.stdin.on('data',(chunk:Buffer)=>{const command=JSON.parse(chunk.toString());commands.push(command);ack(command.id)})
+    await expect(transport.stop()).rejects.toThrow('STOP sem confirmação')
+    expect(transport.health().nativeLiveReplacement.selectionUncertain).toBe(true)
+  })
+  it('engine exit after uncertain selectors does not silently restore the old source',()=>{
+    uncertain();child.emit('exit',1,null)
+    const privateTransport=transport as unknown as {restore:()=>void;recoveryCursor:{programHold?:string}|null}
+    expect(privateTransport.recoveryCursor?.programHold).toBe('UNCONFIRMED')
+    privateTransport.restore();expect(commands).toEqual([])
+    expect(transport.health().error).toContain('não retomar silenciosamente')
+  })
+})
+
 describe('transporte real confirmado pelo engine', () => {
+  it('shutdown local aguarda exit zero depois de 1s sem antecipar kill e é idempotente',async()=>{
+    vi.useFakeTimers();start(view([]));Object.assign(child,{pid:4321})
+    const stopped=transport.closeGracefully(12000,5000)
+    expect(transport.closeGracefully()).toBe(stopped)
+    await vi.advanceTimersByTimeAsync(2000);expect(child.kill).not.toHaveBeenCalled()
+    expect(commands.filter(row=>row.cmd==='shutdown')).toHaveLength(1)
+    child.emit('exit',0,null)
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:true,graceful:true,forceRequested:false})
+    await vi.advanceTimersByTimeAsync(20000);expect(child.kill).not.toHaveBeenCalled()
+  })
+  it('shutdown sobre handle próprio independe do banco perdido e não libera novo TAKE',async()=>{
+    let lost=false;const authority=vi.fn(()=>{if(lost)throw new Error('STORAGE_LOST')})
+    start(view([]),undefined,undefined,undefined,{assertExecutionOwned:authority});Object.assign(child,{pid:4321})
+    const before=authority.mock.calls.length;lost=true
+    const stopped=transport.closeGracefully()
+    expect(authority.mock.calls.length).toBe(before);expect(commands.filter(row=>row.cmd==='shutdown')).toHaveLength(1);expect(child.kill).not.toHaveBeenCalled()
+    await expect(transport.take('rd','new')).rejects.toThrow('indisponível');expect(commands.some(row=>row.cmd==='take')).toBe(false)
+    child.emit('exit',0,null);await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:true,graceful:true,forceRequested:false})
+  })
+  it('prazo normal força somente handles próprios, mas espera exit antes de confirmar parada',async()=>{
+    vi.useFakeTimers();start(view([]));Object.assign(child,{pid:4321})
+    let settled=false;const stopped=transport.closeGracefully(50,100).then(value=>{settled=true;return value})
+    await vi.advanceTimersByTimeAsync(50);expect(child.kill).toHaveBeenCalledWith('SIGKILL');expect(settled).toBe(false)
+    child.emit('exit',0,null)
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:true,graceful:false,forceRequested:true})
+  })
+  it('ausência de exit ou erro com PID conserva incerteza após prazo total',async()=>{
+    vi.useFakeTimers();start(view([]));Object.assign(child,{pid:4321})
+    const stopped=transport.closeGracefully(50,100);child.emit('error',new Error('kill recusado'))
+    await vi.advanceTimersByTimeAsync(150)
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:false,graceful:false,forceRequested:true})
+  })
+  it('cleanup de segurança interrompe imediatamente a espera normal, sem certificar finalização',async()=>{
+    vi.useFakeTimers();start(view([]));Object.assign(child,{pid:4321})
+    const normal=transport.closeGracefully(),forced=transport.closeConfirmed()
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');child.emit('exit',null,'SIGKILL')
+    await expect(forced).resolves.toEqual({ownedNativeProcessesStopped:true})
+    await expect(normal).resolves.toEqual({ownedNativeProcessesStopped:true,graceful:false,forceRequested:true})
+  })
+  it('um close rápido já pedido não ganha mais tempo por chamada posterior de grace',async()=>{
+    vi.useFakeTimers();start(view([]));Object.assign(child,{pid:4321})
+    transport.close();const stopped=transport.closeGracefully()
+    await vi.advanceTimersByTimeAsync(1000);expect(child.kill).toHaveBeenCalledWith()
+    child.emit('exit',null,'SIGTERM')
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:true,graceful:false,forceRequested:true})
+  })
+  it('geração cercada não entra em grace, mesmo se caller pedir encerramento normal',async()=>{
+    start(view([]),undefined,undefined,undefined,{fenceLease:async()=>({term:1,ttlMs:5000})});Object.assign(child,{pid:4321})
+    const stopped=transport.closeGracefully();expect(child.kill).toHaveBeenCalledWith('SIGKILL')
+    child.emit('exit',0,null)
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:true,graceful:false,forceRequested:true})
+  })
+  it('exit não zero sem força é parada observada, mas não finalização normal',async()=>{
+    start(view([]));Object.assign(child,{pid:4321})
+    const stopped=transport.closeGracefully();child.emit('exit',1,null)
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:true,graceful:false,forceRequested:false})
+  })
+  it('prazo inválido não fecha transporte ou envia shutdown',async()=>{
+    start(view([]))
+    for(const value of[0,-1,NaN,1.5,30001])await expect(transport.closeGracefully(value)).rejects.toThrow('Prazo')
+    await expect(transport.closeGracefully(100,0)).rejects.toThrow('Prazo')
+    expect(commands.some(row=>row.cmd==='shutdown')).toBe(false);expect(child.kill).not.toHaveBeenCalled()
+  })
+  it('parada confirmada depende de exit, não de kill ou fechamento do transporte',async()=>{
+    start(view([]));Object.assign(child,{pid:4321})
+    let settled=false
+    const stopped=transport.closeConfirmed(1000).then(result=>{settled=true;return result})
+    await Promise.resolve();expect(settled).toBe(false)
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL')
+    child.emit('exit',null,'SIGKILL')
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:true})
+  })
+  it('timeout de parada conserva incerteza mesmo com kill aceito',async()=>{
+    vi.useFakeTimers();start(view([]));Object.assign(child,{pid:4321})
+    const stopped=transport.closeConfirmed(250)
+    await vi.advanceTimersByTimeAsync(250)
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:false})
+    expect(transport.closeConfirmed(250)).toBe(stopped)
+  })
+  it('erro de processo com PID não prova término',async()=>{
+    vi.useFakeTimers();start(view([]));Object.assign(child,{pid:4321})
+    const stopped=transport.closeConfirmed(250);child.emit('error',new Error('kill recusado'))
+    await vi.advanceTimersByTimeAsync(250)
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:false})
+  })
+  it('erro de spawn sem PID confirma que nenhum processo foi aberto',async()=>{
+    start(view([]));child.emit('error',new Error('spawn ENOENT'))
+    await expect(transport.closeConfirmed()).resolves.toEqual({ownedNativeProcessesStopped:true})
+  })
+  it('cleanup aguarda também geração anterior cuja morte não foi observada',async()=>{
+    vi.useFakeTimers();start(view([]));const previous=child;Object.assign(previous,{pid:4321})
+    previous.emit('error',new Error('IPC indisponível'))
+    const replacement=Object.assign(new EventEmitter(),{pid:4322,stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),kill:vi.fn()})
+    vi.mocked(spawn).mockReturnValue(replacement as unknown as ReturnType<typeof spawn>)
+    transport.watchdog();await vi.advanceTimersByTimeAsync(1000);transport.watchdog()
+    expect(vi.mocked(spawn)).toHaveBeenCalledTimes(2)
+    let settled=false;const stopped=transport.closeConfirmed(1000).then(value=>{settled=true;return value})
+    replacement.emit('exit',0,null);await Promise.resolve();expect(settled).toBe(false)
+    expect(previous.kill).toHaveBeenCalledWith('SIGKILL');expect(replacement.kill).toHaveBeenCalledWith('SIGKILL')
+    previous.emit('exit',0,null)
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:true})
+  })
+  it('gerações sobrepostas mantêm força imediata, não grace que poderia deixar antecessor vivo',async()=>{
+    vi.useFakeTimers();start(view([]));const previous=child;Object.assign(previous,{pid:4321})
+    previous.emit('error',new Error('IPC indisponível'))
+    const replacement=Object.assign(new EventEmitter(),{pid:4322,stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough(),kill:vi.fn()})
+    vi.mocked(spawn).mockReturnValue(replacement as unknown as ReturnType<typeof spawn>)
+    transport.watchdog();await vi.advanceTimersByTimeAsync(1000);transport.watchdog()
+    const stopped=transport.closeGracefully()
+    expect(previous.kill).toHaveBeenCalledWith('SIGKILL');expect(replacement.kill).toHaveBeenCalledWith('SIGKILL')
+    replacement.emit('exit',0,null);previous.emit('exit',0,null)
+    await expect(stopped).resolves.toEqual({ownedNativeProcessesStopped:true,graceful:false,forceRequested:true})
+  })
+  it('exit já observado permite cleanup sem inventar nova geração',async()=>{
+    start(view([]));child.emit('exit',0,null)
+    await expect(transport.closeConfirmed()).resolves.toEqual({ownedNativeProcessesStopped:true})
+    expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1)
+  })
+  // Batch fixtures only: NOT_RUN. Fake pipe is not native/physical evidence.
+  function heldEngine(value:RundownView=view([]),preview=false){
+    const startup:Array<Record<string,unknown>>=[]
+    child.stdin.on('data',data=>startup.push(JSON.parse(data.toString())))
+    Object.assign(child,{pid:4321})
+    start(value,undefined,undefined,undefined,{holdProgramOutputs:true,fenceLease:async()=>({term:7,ttlMs:5000}),assertExecutionOwned:()=>{},canRestartEngine:()=>false,...(preview?{preview:JSON.stringify({id:'local-preview',kind:'srt',target:'srt://127.0.0.1:8890?streamid=publish:reserve',width:426,height:240,rateNum:15,rateDen:1,bitrateKbps:450})}:{})})
+    event({event:'fenceApplied',nonce:1,term:7})
+    event({event:'ready',channelId:channel.id,decoderIdentity:true,programAdmission:true,programOutputsHeld:true,previewAdmission:true})
+    return startup[0]!.fenceOwner as string
+  }
+  it('backup paused admission keeps explicit mode and refuses normal release before dispatch',async()=>{
+    const file=join(directory,'paused-admission.mkv');writeFileSync(file,'MOCK_NATIVE_FRAME_NOT_VIDEO')
+    const value=view([file]);heldEngine(value);child.stdin.removeAllListeners('data')
+    child.stdin.on('data',(data:Buffer)=>{
+      const command=JSON.parse(data.toString());commands.push(command)
+      queueMicrotask(()=>{
+        if(command.cmd==='restoreProgramHold'){
+          event({event:'programHold',id:command.id,itemId:'0',decoderId:31,held:true,frames:73})
+          event({event:'state',onAir:'0',onAirDecoderId:31,programHold:{itemId:'0',decoderId:31,status:'HELD',frames:73}})
+        }
+        if(command.cmd==='releaseProgramOutputs')event({event:'programOutputs',held:false,ownerId:command.ownerId,term:command.term,itemId:'0',decoderId:31,cursor:{elapsed:73,firstVideoConfirmed:true,trim:{in:0,out:250},paused:true}})
+        event({event:'ack',id:command.id,ok:true,decoderId:31})
+      })
+    })
+    const trim={in:0,out:250,contentHash:value.items[0]!.asset!.contentHash!}
+    await transport.recoverHeld('grade','0',73,trim)
+    expect(transport.health().programAdmission.held).toBe(true)
+    await expect(transport.releaseProgramOutputs(async()=>{})).rejects.toThrow('admitido como reprodução')
+    expect(commands.map(command=>command.cmd)).toEqual(['restoreProgramHold'])
+    await expect(transport.releaseProgramOutputs(async()=>{},true)).resolves.toMatchObject({itemId:'0',decoderId:31,elapsed:73,paused:true,programTrim:trim})
+    expect(transport.health().programAdmission.held).toBe(false);expect(transport.state().playing).toBe(false)
+  })
+  it('preparo retido de VT arma corte/offset exatos sem TAKE ou liberação',async()=>{
+    const path=join(directory,'prepared.mp4');writeFileSync(path,'MOCK_VIDEO_BYTES_NOT_NATIVE_FRAME')
+    const value=view([path]);heldEngine(value);loadDecoderId=31
+    const trim={in:0,out:250,contentHash:createHash('sha256').update(readFileSync(path)).digest('hex')}
+    await expect(transport.prepareHeldDecoder('0',73,trim,async()=>{})).resolves.toEqual({itemId:'0',decoderId:31,firstVideoConfirmed:true})
+    expect(commands.filter(command=>command.cmd==='load')).toEqual([expect.objectContaining({item:expect.objectContaining({itemId:'0',trimIn:0,trimOut:250,startOffsetFrames:73})})])
+    expect(commands.some(command=>['take','releaseProgramOutputs'].includes(command.cmd))).toBe(false)
+    expect(transport.state().onAir).toBeNull();expect(transport.health().programAdmission.held).toBe(true)
+  })
+  it('preparo idle não abre decoder nem inventa quadro',async()=>{
+    heldEngine()
+    await expect(transport.prepareHeldDecoder(null,0,undefined,async()=>{})).resolves.toEqual({itemId:null,decoderId:null,firstVideoConfirmed:false})
+    expect(commands.filter(command=>['load','take','releaseProgramOutputs'].includes(command.cmd))).toHaveLength(0)
+    await expect(transport.prepareHeldDecoder(null,73,undefined,async()=>{})).rejects.toThrow('idle')
+  })
+  // NOT_RUN: mocked wire/cursor only, not proof of native frames or publishing.
+  it('retoma VT somente no programa interno retido, sem liberar publicadores',async()=>{
+    const path=join(directory,'resume.mp4');writeFileSync(path,'MOCK_VIDEO_BYTES_NOT_NATIVE_FRAME')
+    heldEngine(view([path]));loadDecoderId=33
+    const trim={in:0,out:250,contentHash:createHash('sha256').update(readFileSync(path)).digest('hex')}
+    await transport.prepareHeldDecoder('0',73,trim,async()=>{})
+    await transport.resumeHeldProgram('grade','0',73,trim,async()=>{})
+    expect(transport.state()).toMatchObject({onAir:{itemId:'0',elapsed:73}})
+    expect(transport.health().programAdmission.held).toBe(true)
+    expect(commands.filter(command=>command.cmd==='take')).toHaveLength(1)
+    expect(commands.some(command=>command.cmd==='releaseProgramOutputs')).toBe(false)
+    await expect(transport.resumeHeldProgram('grade','0',73,trim,async()=>{})).rejects.toThrow('sem programa anterior')
+  })
+  it('retomada interna retida não envia TAKE quando autorização é recusada',async()=>{
+    const path=join(directory,'refused-resume.mp4');writeFileSync(path,'MOCK_VIDEO_BYTES_NOT_NATIVE_FRAME')
+    heldEngine(view([path]));loadDecoderId=34
+    const trim={in:0,out:250,contentHash:createHash('sha256').update(readFileSync(path)).digest('hex')}
+    await expect(transport.resumeHeldProgram('grade','0',73,trim,async()=>{throw new Error('admissão recusada')})).rejects.toThrow('admissão recusada')
+    expect(commands.some(command=>command.cmd==='take')).toBe(false)
+    expect(transport.health().programAdmission.held).toBe(true)
+  })
+  function confirmRelease(decoderId:number|null=null){
+    child.stdin.on('data',data=>{
+      const command=JSON.parse(data.toString())
+      if(command.cmd==='releaseProgramOutputs')event({event:'programOutputs',held:false,ownerId:command.ownerId,term:command.term,itemId:command.itemId,decoderId,cursor:{elapsed:0,firstVideoConfirmed:false,trim:null}})
+    })
+  }
+  // NOT_RUN: mocked ACK/order only, no encoder/network/physical qualification.
+  it('preview release requires admitted program and carries no replacement address',async()=>{
+    const owner=heldEngine(view([]),true);confirmRelease()
+    await expect(transport.releasePreviewOutput(async()=>{})).rejects.toThrow('admissão de PGM')
+    expect(commands.some(command=>command.cmd==='releasePreviewOutput')).toBe(false)
+    await transport.releaseProgramOutputs(async()=>{})
+    await transport.releasePreviewOutput(async()=>{})
+    expect(commands.filter(command=>command.cmd==='releasePreviewOutput')).toEqual([expect.objectContaining({ownerId:owner,term:7})])
+    expect(commands.find(command=>command.cmd==='releasePreviewOutput')).not.toHaveProperty('target')
+    await expect(transport.releasePreviewOutput(async()=>{})).rejects.toThrow('ainda não enviada')
+  })
+  it('preparação recusa binário sem confirmação de retenção/decoder',()=>{
+    start(view([]),undefined,undefined,undefined,{holdProgramOutputs:true,canRestartEngine:()=>false})
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');expect(transport.health().ready).toBe(false)
+  })
+  it('liberação exige pedido, concessão, evento nativo e ACK da mesma geração',async()=>{
+    const owner=heldEngine();confirmRelease()
+    const authorize=vi.fn(async()=>{})
+    await expect(transport.releaseProgramOutputs(authorize)).resolves.toEqual({channelId:channel.id,ownerId:owner,term:7,itemId:null,decoderId:null,elapsed:0,firstVideoConfirmed:false})
+    expect(authorize).toHaveBeenCalledTimes(2)
+    expect(commands.filter(command=>command.cmd==='releaseProgramOutputs')).toEqual([expect.objectContaining({ownerId:owner,term:7,itemId:null,decoderId:null})])
+    expect(transport.health().programAdmission).toEqual({supported:true,held:false})
+    await expect(transport.releaseProgramOutputs(authorize)).rejects.toThrow('saídas retidas')
+    expect(commands.filter(command=>command.cmd==='releaseProgramOutputs')).toHaveLength(1)
+  })
+  it('ACK sozinho não prova liberação e encerra somente o filho próprio',async()=>{
+    heldEngine()
+    await expect(transport.releaseProgramOutputs(async()=>{})).rejects.toThrow('confirmação nativa')
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');expect(transport.health().ready).toBe(false)
+    expect(commands.filter(command=>command.cmd==='releaseProgramOutputs')).toHaveLength(1)
+  })
+  it('evento de liberação sem posição/corte nativos não confirma admissão',async()=>{
+    heldEngine()
+    child.stdin.on('data',data=>{
+      const command=JSON.parse(data.toString())
+      if(command.cmd==='releaseProgramOutputs')event({event:'programOutputs',held:false,ownerId:command.ownerId,term:command.term,itemId:command.itemId,decoderId:command.decoderId})
+    })
+    await expect(transport.releaseProgramOutputs(async()=>{})).rejects.toThrow()
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');expect(transport.health().programAdmission.held).toBe(true)
+  })
+  it('perda de autorização antes do envio mantém saídas retidas',async()=>{
+    heldEngine()
+    await expect(transport.releaseProgramOutputs(async()=>{throw new Error('SESSION_REVOKED')})).rejects.toThrow('SESSION_REVOKED')
+    expect(commands.filter(command=>command.cmd==='releaseProgramOutputs')).toHaveLength(0)
+    expect(child.kill).not.toHaveBeenCalled();expect(transport.health().programAdmission.held).toBe(true)
+  })
+  it('perda de autorização após liberação preserva incerteza e impede replay',async()=>{
+    heldEngine();confirmRelease();let calls=0
+    await expect(transport.releaseProgramOutputs(async()=>{if(++calls===2)throw new Error('SESSION_REVOKED')})).rejects.toThrow('SESSION_REVOKED')
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');expect(transport.fenceBinding()).toBeNull()
+    await expect(transport.releaseProgramOutputs(async()=>{})).rejects.toThrow()
+    expect(commands.filter(command=>command.cmd==='releaseProgramOutputs')).toHaveLength(1)
+  })
+  it('evento sem pedido e evento de decoder distinto não liberam PGM',async()=>{
+    const owner=heldEngine()
+    event({event:'programOutputs',held:false,ownerId:owner,term:7,itemId:null,decoderId:null})
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');expect(transport.health().programAdmission.held).toBe(true)
+  })
+  it('decoder divergente durante liberação encerra a preparação',async()=>{
+    heldEngine();confirmRelease(99)
+    await expect(transport.releaseProgramOutputs(async()=>{})).rejects.toThrow()
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');expect(transport.health().programAdmission.held).toBe(true)
+  })
+  it('grafismo confirmado reconfere autoridade na fila nativa antes de enviar',async()=>{
+    start(view([]));const before=commands.length
+    await expect(transport.graphicConfirmed('<svg/>',0,()=>{throw new Error('SESSION_REVOKED')})).rejects.toThrow('SESSION_REVOKED')
+    expect(commands).toHaveLength(before)
+    await transport.graphicConfirmed('<svg/>',0)
+    expect(commands.filter(command=>command.cmd==='graphic')).toHaveLength(1)
+  })
+  it('geração do publisher atravessa transporte e saída nativa notifica sem fontes',()=>{
+    const snapshots:Array<{ready:boolean;count:number;generation?:number}>=[]
+    start(view([]),undefined,undefined,undefined,{canRestartEngine:()=>false,onSignalObservation:()=>snapshots.push({ready:transport.health().ready,count:transport.publishers().length,generation:transport.publishers()[0]?.generation})})
+    event({event:'publisher',outputId:'primary',url:'srt://private',health:'failed',attempts:1,delivered:100000,generation:10})
+    event({event:'publisher',outputId:'primary',url:'srt://private',health:'onAir',attempts:0,delivered:1,generation:11})
+    expect(snapshots.map(row=>row.generation)).toEqual([10,11])
+    for(const generation of [-1,0.5,Number.MAX_SAFE_INTEGER+1]){
+      event({event:'publisher',outputId:'primary',url:'srt://private',health:'onAir',attempts:0,delivered:1,generation})
+      expect(transport.publishers()[0]?.generation).toBeUndefined()
+    }
+    expect(transport.state().liveSources).toEqual([])
+    child.emit('exit',1,null)
+    expect(snapshots.at(-1)).toEqual({ready:false,count:0,generation:undefined})
+  })
+  it('observação nativa captura publisher failed/onAir síncronos sem esperar polling',()=>{
+    const states:string[]=[]
+    start(view([]),undefined,undefined,undefined,{onSignalObservation:()=>states.push(transport.publishers()[0]!.health)})
+    event({event:'publisher',outputId:'primary',url:'srt://private',health:'failed',attempts:1,delivered:10})
+    event({event:'publisher',outputId:'primary',url:'srt://private',health:'onAir',attempts:0,delivered:11})
+    expect(states).toEqual(['failed','onAir'])
+  })
+  it('callback usa telemetria aceita da fonte selecionada e rejeita evento de item antigo',async()=>{
+    const value=view(['live']),states:string[]=[]
+    Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250},asset:null})
+    start(value,undefined,undefined,undefined,{onSignalObservation:()=>states.push(transport.state().liveSources[0]?.busSignals?.pgm?.status??'UNKNOWN')})
+    await transport.take('grade','0');states.length=0
+    const signal={width:320,height:180,rateNum:25,rateDen:1,interlaceMode:'progressive',audioChannels:2,sampleRate:48000,videoAgeMs:0,audioAgeMs:0,videoPresent:true,audioPresent:true,receivedFrames:100,arrivalJitterMs:1}
+    event({event:'sourceTelemetry',itemId:'discarded-item',bus:'pgm',signal});expect(states).toEqual([])
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',signal:{...signal,videoPresent:false,videoAgeMs:2500}})
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',signal})
+    expect(states).toEqual(['NO_VIDEO','SIGNAL_OK']);expect(transport.state().onAir?.itemId).toBe('0')
+    states.length=0
+    event({event:'sourceLost',itemId:'0',reason:'fixture loss'})
+    event({event:'sourceReady',itemId:'0',bus:'pgm'})
+    expect(states).not.toContain('SIGNAL_OK');expect(states.at(-1)).toBe('UNKNOWN')
+    expect(transport.state().liveSources[0]?.measurements?.pgm).toBeUndefined()
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',signal});expect(states.at(-1)).toBe('SIGNAL_OK')
+  })
+  it('preserva identidade de publishers distintos no mesmo destino',()=>{
+    start(view([]))
+    for(const outputId of ['primary','backup'])event({event:'publisher',outputId,url:'rtmp://host/shared',health:'onAir',attempts:0,delivered:1})
+    expect(transport.publishers().map(row=>row.outputId)).toEqual(['primary','backup'])
+    event({event:'publisher',outputId:'primary',url:'rtmp://host/new-target',health:'retrying',attempts:1,delivered:0})
+    expect(transport.publishers()).toHaveLength(2)
+    expect(transport.publishers()[0]).toMatchObject({outputId:'primary',url:'rtmp://host/new-target',health:'retrying'})
+  })
+  it('recuperação exata conserva classe de recusa nativa, sem transformar em timeout genérico',async()=>{
+    const file=join(directory,'refused-live-fixture.mkv');writeFileSync(file,'unit fixture, not decoded')
+    const value=view([file])
+    Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:CAM',autoNext:false},asset:null})
+    start(value);rejectTakeAck=true
+    const recovery=transport.recover('grade','0',49)
+    await expect(recovery).rejects.toBeInstanceOf(EngineCommandRejected)
+    await expect(recovery).rejects.toThrow('Nenhum item reproduzível')
+    expect(commands.filter(command=>command.cmd==='take')).toHaveLength(1)
+  })
+  it('recuperação live comunica recusa tardia apenas do decoder PGM desta tentativa',async()=>{
+    const file=join(directory,'late-live-fixture.mkv');writeFileSync(file,'unit fixture, not decoded')
+    const value=view([file]),rejected=vi.fn()
+    Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:CAM'},asset:null})
+    start(value)
+    Object.assign((transport as unknown as {options:object}).options,{onRecoveryRejected:rejected})
+    event({event:'ready',channelId:channel.id,decoderIdentity:true})
+    holdLoad=true;holdLiveTake=true
+    const recovery=transport.recover('grade','0',49)
+    await vi.waitFor(()=>expect(commands.at(-1)?.cmd).toBe('load'))
+    event({event:'state',armed:'0',armedDecoderId:77});ack(commands.at(-1)!.id)
+    await recovery
+    for(const fault of [{bus:'pvw',decoderId:77},{bus:'pgm',decoderId:78}])event({event:'itemError',itemId:'0',message:'refused',...fault})
+    expect(rejected).not.toHaveBeenCalled()
+    event({event:'itemError',itemId:'0',bus:'pgm',decoderId:77,message:'definitive refusal'})
+    expect(rejected).toHaveBeenCalledWith({rundownId:'grade',itemId:'0',frames:49},expect.any(EngineCommandRejected))
+    event({event:'itemError',itemId:'0',bus:'pgm',decoderId:77,message:'duplicate'})
+    expect(rejected).toHaveBeenCalledTimes(1)
+    expect(commands.filter(command=>command.cmd==='take')).toHaveLength(1)
+  })
+  it('recuperação live conserva identidade após ACK até o primeiro PGM confirmado',async()=>{
+    const file=join(directory,'live-recovery-fixture.mkv');writeFileSync(file,'unit fixture, not decoded')
+    const value=view([file]),confirmed=vi.fn()
+    Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:CAM'},asset:null})
+    start(value,confirmed);holdLiveTake=true
+    await transport.recover('grade','0',49)
+    expect(confirmed).not.toHaveBeenCalled();expect(transport.health().ready).toBe(false)
+    onAir='0';event({event:'state',onAir})
+    expect(confirmed).toHaveBeenCalledWith('0',49,true,null)
+    expect(transport.state().onAir?.elapsed).toBe(49);expect(transport.health().ready).toBe(true)
+  })
+  it('estado nativo publica duração montada sem retornar ao nominal do item',async()=>{
+    const file=join(directory,'mounted-duration.mp4');writeFileSync(file,'video');const value=view([file]);Object.assign(value.schedule.items[0]!,{duration:75});start(value)
+    await transport.take('grade','0');Object.assign(value.schedule.items[0]!,{duration:250,state:'ON_AIR'})
+    event({event:'position',itemId:'0',frames:50,duration:75})
+    expect(transport.state().onAir).toMatchObject({elapsed:50,mountedDuration:75})
+  })
+  it('cópia por SHA durante recuperação conserva corte salvo e cursor no novo preroll',async()=>{
+    const original=join(directory,'saved-original.mkv'),cached=join(directory,'saved-copy.mkv');writeFileSync(original,'video');writeFileSync(cached,'video')
+    const value=view([original]);start(value);holdLoad=true
+    const saved={in:0,out:75,contentHash:value.items[0]!.asset!.contentHash!},recovery=transport.recover('grade','0',25,saved)
+    await vi.waitFor(()=>expect(commands.at(-1)?.cmd).toBe('load'))
+    Object.assign(value.items[0]!.asset!,{path:cached});holdLoad=false;armed='0';event({event:'state',onAir,armed});ack(commands.at(-1)!.id)
+    await recovery
+    expect(commands.filter(row=>row.cmd==='load').map(row=>({path:row.item?.path,trimOut:row.item?.trimOut}))).toEqual([{path:original,trimOut:75},{path:cached,trimOut:75}])
+    expect(commands.filter(row=>row.cmd==='take')).toHaveLength(1)
+    expect(transport.state()).toMatchObject({programTrim:saved,onAir:{itemId:'0',elapsed:25}})
+  })
+  it('restaura corte salvo mesmo quando o timing atual calculou outra duração',async()=>{
+    const file=join(directory,'saved-crop.mp4');writeFileSync(file,'video');const value=view([file]);start(value)
+    const saved={in:0,out:75,contentHash:value.items[0]!.asset!.contentHash!}
+    await transport.recover('grade','0',25,saved)
+    expect(commands.find(row=>row.cmd==='load')?.item).toMatchObject({trimIn:0,trimOut:75,startOffsetFrames:25})
+    expect(transport.state().programTrim).toEqual(saved)
+  })
+  it('recuperação não calcula novo corte quando não há corte confirmado',async()=>{
+    const file=join(directory,'no-saved-crop.mp4');writeFileSync(file,'video');start(view([file]))
+    await expect(transport.recover('grade','0',25)).rejects.toThrow('Não há corte confirmado')
+    expect(commands.some(row=>row.cmd==='load'||row.cmd==='take')).toBe(false)
+  })
+  it('checkpoint com cursor fora do corte ou SHA trocado não envia LOAD/TAKE',async()=>{
+    const file=join(directory,'bad-saved-crop.mp4');writeFileSync(file,'video');const value=view([file]);start(value)
+    const saved={in:0,out:75,contentHash:value.items[0]!.asset!.contentHash!}
+    await expect(transport.recover('grade','0',75,saved)).rejects.toThrow('Cursor fora')
+    await expect(transport.recover('grade','0',25,{...saved,contentHash:'b'.repeat(64)})).rejects.toThrow('versão da mídia')
+    expect(commands.some(row=>row.cmd==='load'||row.cmd==='take')).toBe(false)
+  })
+  it('reprojeção pelo relógio durante preroll não invalida corte preparado',async()=>{
+    const file=join(directory,'clock-preroll.mp4');writeFileSync(file,'video');const value=view([file]);Object.assign(value.schedule.items[0]!,{duration:75})
+    start(value)
+    child.stdin.on('data',(data:Buffer)=>{if(JSON.parse(data.toString()).cmd==='load')Object.assign(value.schedule.items[0]!,{duration:50})})
+    await transport.take('grade','0')
+    expect(transport.state().onAir?.itemId).toBe('0')
+    expect(commands.find(row=>row.cmd==='load')?.item?.trimOut).toBe(75)
+  })
+  it('TAKE executa corte visto no CUE mesmo após relógio reprojetar duração',async()=>{
+    const file=join(directory,'clock-cue.mp4');writeFileSync(file,'video');const value=view([file]);Object.assign(value.schedule.items[0]!,{duration:75});start(value)
+    await transport.cue({kind:'ITEM',id:'0'})
+    Object.assign(value.schedule.items[0]!,{duration:50})
+    await transport.take('grade','0')
+    expect(commands.find(row=>row.cmd==='load')?.item?.trimOut).toBe(75)
+    expect(transport.state().onAir?.itemId).toBe('0')
+  })
+  it('envia duração resolvida ao decoder sem reescrever corte nominal',async()=>{
+    const file=join(directory,'auto-trim.mp4');writeFileSync(file,'video');const value=view([file])
+    Object.assign(value.schedule.items[0]!,{duration:75});start(value)
+    await transport.take('grade','0')
+    expect(commands.find(row=>row.cmd==='load')?.item).toMatchObject({trimIn:0,trimOut:75})
+    expect(value.items[0]!.trim.out).toBe(250)
+  })
+  it('filler expandido monta duração do timing, não o nominal',async()=>{
+    const file=join(directory,'auto-stretch.mp4');writeFileSync(file,'video');const value=view([file])
+    Object.assign(value.schedule.items[0]!,{duration:300});start(value);await transport.take('grade','0')
+    expect(commands.find(row=>row.cmd==='load')?.item?.trimOut).toBe(300)
+  })
+  it('corte montado do PGM permanece fixo quando a projeção é recalculada',async()=>{
+    const file=join(directory,'pin.mp4');writeFileSync(file,'video');const value=view([file]);Object.assign(value.schedule.items[0]!,{duration:75})
+    start(value);await transport.take('grade','0')
+    Object.assign(value.schedule.items[0]!,{state:'ON_AIR',duration:250})
+    await transport.cue({kind:'ITEM',id:'0'})
+    expect([...commands].reverse().find(row=>row.cmd==='preview')?.item?.trimOut).toBe(75)
+  })
+  it('horário de início permanece fixo enquanto relógio e posição avançam',async()=>{
+    const file=join(directory,'stable-start.mp4');writeFileSync(file,'video');start(view([file]))
+    await transport.take('grade','0');const origin=transport.state().onAir!.startedAt,instant=Date.now()
+    vi.useFakeTimers({toFake:['Date']})
+    try{
+      vi.setSystemTime(instant+251);event({event:'position',itemId:'0',frames:6})
+      expect(transport.state().onAir).toMatchObject({startedAt:origin,elapsed:6})
+      vi.setSystemTime(instant+1251);event({event:'position',itemId:'0',frames:31});transport.tick()
+      expect(transport.state().onAir).toMatchObject({startedAt:origin,elapsed:31})
+    }finally{vi.useRealTimers()}
+  })
+  it('seek explícito recalcula origem uma vez e novo TAKE cria outra ocorrência',async()=>{
+    const file=join(directory,'seek-start.mp4');writeFileSync(file,'video');start(view([file]))
+    await transport.take('grade','0');const instant=Date.now()
+    vi.useFakeTimers({toFake:['Date']})
+    try{
+      vi.setSystemTime(instant+1000);await transport.seek('pgm',125)
+      const origin=framesSinceMidnight(new Date(),channel.rate)-125
+      expect(transport.state().onAir!.startedAt).toBe(origin)
+      vi.setSystemTime(instant+2001);event({event:'position',itemId:'0',frames:150})
+      expect(transport.state().onAir!.startedAt).toBe(origin)
+      await transport.take('grade','0')
+      expect(transport.state().onAir!.startedAt).toBe(framesSinceMidnight(new Date(),channel.rate))
+      expect(transport.state().onAir!.startedAt).not.toBe(origin)
+    }finally{vi.useRealTimers()}
+  })
+  it('posse recusada antes de spawn não abre processo nem envia configuração privada',()=>{
+    const reserve=vi.fn();expect(()=>start(view([]),undefined,undefined,undefined,{assertExecutionOwned:()=>{throw new Error('NOT_OWNER')},beforeProcessStart:reserve})).toThrow('NOT_OWNER')
+    expect(spawn).not.toHaveBeenCalled();expect(reserve).not.toHaveBeenCalled();expect(commands).toHaveLength(0)
+  })
+  it('rejeição síncrona do spawn libera somente a reserva desta geração',()=>{
+    const reserve=vi.fn(),exit=vi.fn();vi.mocked(spawn).mockImplementationOnce(()=>{throw new Error('INVALID_SPAWN')})
+    expect(()=>start(view([]),undefined,undefined,undefined,{beforeProcessStart:reserve,onProcessExited:exit})).toThrow('INVALID_SPAWN')
+    expect(reserve).toHaveBeenCalledTimes(1);expect(exit).toHaveBeenCalledWith(null,reserve.mock.calls[0]![0])
+  })
+  it('falha na confirmação de PID mantém listener de saída e não envia configuração',()=>{
+    Object.assign(child,{pid:501});const exit=vi.fn(),reserve=vi.fn(),startup=vi.fn();child.stdin.on('data',startup)
+    expect(()=>start(view([]),undefined,undefined,undefined,{beforeProcessStart:reserve,onProcessStarted:()=>{throw new Error('PID_LEDGER_FAILURE')},onProcessExited:exit})).toThrow('PID_LEDGER_FAILURE')
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');expect(startup).not.toHaveBeenCalled();expect(exit).not.toHaveBeenCalled()
+    child.emit('exit',1,null);expect(exit).toHaveBeenCalledWith(501,reserve.mock.calls[0]![0])
+  })
+  it('erro com PID não comprova morte; saída real após close mantém token desta geração',()=>{
+    Object.assign(child,{pid:501});const reserve=vi.fn(),exit=vi.fn()
+    start(view([]),undefined,undefined,undefined,{beforeProcessStart:reserve,onProcessExited:exit,canRestartEngine:()=>false})
+    child.emit('error',new Error('IPC_FAILURE'));transport.watchdog();expect(exit).not.toHaveBeenCalled();expect(spawn).toHaveBeenCalledTimes(1)
+    transport.close();child.emit('exit',1,null);expect(exit).toHaveBeenCalledWith(501,reserve.mock.calls[0]![0])
+  })
+  it('posse perdida enquanto espera Ready não envia comando após a confirmação',async()=>{
+    let owned=true;transport=new EngineTransport(channel,()=>view([]),()=>null,{binary:'fake-engine',outputs:['null'],preview:null,bitrateKbps:500,assertExecutionOwned:()=>{if(!owned)throw new Error('OWNER_CHANGED')}})
+    const pending=transport.reconfigureOutput({id:'out',kind:'srt',target:'srt://localhost:9000'}),rejected=expect(pending).rejects.toThrow('OWNER_CHANGED')
+    await new Promise(resolve=>setTimeout(resolve,10));owned=false;event({event:'ready',channelId:channel.id});await rejected;expect(commands).toHaveLength(0)
+  })
+  it('posse perdida após preroll impede TAKE e mantém programa anterior',async()=>{
+    let owned=true;const path=join(directory,'owned.mp4');writeFileSync(path,'video')
+    start(view([path]),undefined,undefined,undefined,{assertExecutionOwned:()=>{if(!owned)throw new Error('OWNER_CHANGED')}})
+    holdLoad=true;const taking=transport.take('grade','0'),rejected=expect(taking).rejects.toThrow('OWNER_CHANGED')
+    await vi.waitFor(()=>expect(commands.at(-1)?.cmd).toBe('load'));owned=false;armed='0';event({event:'state',onAir,armed});ack(commands.at(-1)!.id);await rejected
+    expect(commands.some(command=>command.cmd==='take')).toBe(false);expect(transport.state().onAir).toBeNull()
+  })
+  it('fila reserva comando antes do primeiro microtask e libera após sucesso/erro',async()=>{
+    start(view([]))
+    const before=transport.commandRevision(),first=transport.cue(null),second=transport.cue(null)
+    expect(transport.hasPendingCommand()).toBe(true)
+    expect(transport.commandRevision()).toBe(before+2)
+    await Promise.all([first,second]);expect(transport.hasPendingCommand()).toBe(false)
+    transport.close()
+    const failed=transport.cue(null)
+    expect(transport.hasPendingCommand()).toBe(true)
+    await expect(failed).rejects.toThrow('indisponível')
+    expect(transport.hasPendingCommand()).toBe(false);expect(transport.commandRevision()).toBe(before+3)
+  })
   it('qualidade do QC usa somente comando ligado à fonte vigente, sem LOAD/TAKE ou outro CUE',async()=>{
     transport=new EngineTransport(channel,()=>view([]),()=>null,{binary:'fake-engine',outputs:['null'],preview:'srt://local/pvw',qcPreview:'srt://local/qc',bitrateKbps:500})
     event({event:'ready',channelId:channel.id})
@@ -428,7 +1316,7 @@ describe('transporte real confirmado pelo engine', () => {
     let revision = 'rev1'; const value = view([first, second])
     start(value, undefined, () => value, () => revision); await transport.take('grade', '0')
     holdLoad = true; const take = transport.take('grade', '1')
-    const result = expect(take).rejects.toThrow('revisão ou a mídia mudou')
+    const result = expect(take).rejects.toMatchObject({statusCode:409,message:expect.stringContaining('revisão ou a mídia mudou')})
     await vi.waitFor(() => expect(commands.at(-1)?.cmd).toBe('load'))
     revision = 'rev2'; armed = '1'; event({ event: 'state', onAir, armed }); ack(commands.at(-1)!.id)
     await result
@@ -767,6 +1655,35 @@ describe('transporte real confirmado pelo engine', () => {
     event({ event: 'previewPosition', itemId: '0', frames: 50, duration: 250 })
     expect(transport.state().previewPosition).toEqual({ frames: 50, duration: 250 })
   })
+  it('estado PVW não certifica frame sem identidade de decoder no ACK legado',async()=>{
+    const good=join(directory,'pvw.mkv');writeFileSync(good,'video')
+    start(view([good]));await transport.cue({kind:'ITEM',id:'0'})
+    event({event:'previewFrame',itemId:'0',decoderId:7,delivered:true,ageMs:0,pausedFile:true})
+    expect(transport.state().previewFrame).toBeNull()
+  })
+  it('estado PVW vincula geração, recusa antiga e expira sem novos eventos',async()=>{
+    const good=join(directory,'pvw-identity.mkv');writeFileSync(good,'video')
+    start(view([good]));event({event:'ready',channelId:channel.id,decoderIdentity:true});holdPreview=true
+    let now=1000;vi.spyOn(performance,'now').mockImplementation(()=>now)
+    const first=transport.cue({kind:'ITEM',id:'0'})
+    await vi.waitFor(()=>expect(commands.filter(c=>c.cmd==='preview')).toHaveLength(1))
+    event({event:'ack',id:commands.at(-1)!.id,ok:true,decoderId:7});await first
+    event({event:'previewFrame',itemId:'0',decoderId:7,delivered:true,ageMs:10,pausedFile:false})
+    expect(transport.state().previewFrame).toMatchObject({decoderId:7,delivered:true})
+    now=3001;expect(transport.state().previewFrame).toBeNull()
+    const clear=transport.cue(null)
+    await vi.waitFor(()=>expect(commands.filter(c=>c.cmd==='preview')).toHaveLength(2))
+    ack(commands.at(-1)!.id);await clear
+    event({event:'previewFrame',itemId:'0',decoderId:7,delivered:true,ageMs:0,pausedFile:false})
+    expect(transport.state().previewFrame).toBeNull()
+    const reopened=transport.cue({kind:'ITEM',id:'0'})
+    await vi.waitFor(()=>expect(commands.filter(c=>c.cmd==='preview')).toHaveLength(3))
+    event({event:'ack',id:commands.at(-1)!.id,ok:true,decoderId:8});await reopened
+    event({event:'previewFrame',itemId:'0',decoderId:7,delivered:true,ageMs:0,pausedFile:false})
+    expect(transport.state().previewFrame).toBeNull()
+    event({event:'previewFrame',itemId:'0',decoderId:8,delivered:true,ageMs:0,pausedFile:false})
+    expect(transport.state().previewFrame).toMatchObject({decoderId:8,delivered:true})
+  })
 
   it('recupera cursor antes do TAKE e conserva os cortes originais', async () => {
     const good = join(directory, 'bom.mkv'); writeFileSync(good, 'video')
@@ -901,10 +1818,22 @@ describe('transporte real confirmado pelo engine', () => {
       source: 'ndi:ESTUDIO', state: 'PVW_READY', message: null,
     })
 
-    event({ event: 'sourceLost', itemId: 'source:ndi:ESTUDIO', reason: 'sem pacotes por 2 s' })
+    event({ event: 'itemError', itemId: 'source:ndi:ESTUDIO', bus:'pvw', message: 'sem pacotes por 2 s' })
     expect(transport.state().liveSources[0]).toMatchObject({
-      state: 'LOST', message: 'sem pacotes por 2 s',
+      state: 'FAILED', message: 'sem pacotes por 2 s',
     })
+  })
+  it('mantém CUEING antes do primeiro quadro, sem esconder ausência medida nem declarar pronto', async () => {
+    start(view([]))
+    await transport.cue({kind:'SOURCE',source:'ndi:ESTUDIO',title:'Estúdio'})
+    const signal={width:null,height:null,rateNum:null,rateDen:null,interlaceMode:null,audioChannels:null,sampleRate:null,videoAgeMs:null,audioAgeMs:null,videoPresent:false,audioPresent:false,receivedFrames:0,arrivalJitterMs:null}
+    event({event:'sourceTelemetry',itemId:'source:ndi:ESTUDIO',bus:'pvw',signal})
+    expect(transport.state().liveSources[0]).toMatchObject({state:'CUEING',busStates:{pvw:'CUEING'},busSignals:{pvw:{status:'NO_VIDEO',videoRecent:false,audioRecent:false}}})
+    expect(transport.state().onAir).toBeNull()
+    event({event:'sourceReady',itemId:'source:ndi:ESTUDIO',bus:'pvw'})
+    expect(transport.state().liveSources[0]).toMatchObject({state:'LOST',busStates:{pvw:'LOST'},busSignals:{pvw:{status:'NO_VIDEO',videoRecent:false}}})
+    event({event:'itemError',itemId:'source:ndi:ESTUDIO',bus:'pvw',message:'Falha real'})
+    expect(transport.state().liveSources[0]).toMatchObject({state:'FAILED',message:'Falha real'})
   })
   it('não deixa sinal verde de PVW antigo nem PGM depois de STOP ou queda do engine', async () => {
     const value = view(['live'])
@@ -943,6 +1872,26 @@ describe('transporte real confirmado pelo engine', () => {
     expect(transport.state().liveSources[0]?.state).toBe('LOST')
   })
 
+  it('soma idade da medição à do buffer e recupera sem trocar o item de PGM', async () => {
+    const value=view(['live'])
+    Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250},asset:null})
+    start(value);await transport.take('grade','0')
+    const signal={width:1920,height:1080,rateNum:25,rateDen:1,interlaceMode:'progressive',audioChannels:2,sampleRate:48000,videoAgeMs:1500,audioAgeMs:0,videoPresent:true,audioPresent:true,receivedFrames:25,arrivalJitterMs:0}
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',signal})
+    expect(transport.state().liveSources[0]?.state).toBe('ON_PGM')
+    const captured=Date.parse(transport.state().liveSources[0]!.measurements!.pgm!.sampledAt)
+    vi.spyOn(Date,'now').mockReturnValue(captured+600)
+    expect(transport.state().liveSources[0]?.state).toBe('LOST')
+    expect(transport.state().onAir?.itemId).toBe('0')
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',signal:{...signal,videoAgeMs:0}})
+    const recovered=Date.parse(transport.state().liveSources[0]!.measurements!.pgm!.sampledAt)
+    vi.mocked(Date.now).mockReturnValue(recovered)
+    expect(transport.state().liveSources[0]?.state).toBe('ON_PGM')
+    expect(transport.state().onAir?.itemId).toBe('0')
+    vi.mocked(Date.now).mockReturnValue(recovered-1)
+    expect(transport.state().liveSources[0]?.state).toBe('LOST')
+  })
+
   it('troca somente o publisher de uma saída de rede sem comandar stop ou load', async () => {
     start(view([]))
     await transport.reconfigureOutput({
@@ -953,6 +1902,246 @@ describe('transporte real confirmado pelo engine', () => {
       cmd: 'replaceOutput', outputId: 'destino-rtmp',
       output: { id: 'destino-rtmp', kind: 'rtmp', target: 'rtmp://cdn.example/live' },
     })
+  })
+
+  it('descarta ready/telemetria de QC antigo quando outro item da mesma fonte ocupa PVW', async () => {
+    const value=view(['live'])
+    Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250},asset:null})
+    start(value)
+    await transport.cue({kind:'SOURCE',source:'ndi:ESTUDIO'})
+    const signal={width:1920,height:1080,rateNum:25,rateDen:1,interlaceMode:'progressive',audioChannels:2,sampleRate:48000,videoAgeMs:0,audioAgeMs:0,videoPresent:true,audioPresent:true,receivedFrames:25,arrivalJitterMs:0}
+    event({event:'sourceReady',itemId:'source:ndi:ESTUDIO',bus:'pvw'})
+    event({event:'sourceTelemetry',itemId:'source:ndi:ESTUDIO',bus:'pvw',signal})
+    await transport.cue({kind:'ITEM',id:'0'})
+    event({event:'sourceReady',itemId:'source:ndi:ESTUDIO',bus:'pvw'})
+    event({event:'sourceTelemetry',itemId:'source:ndi:ESTUDIO',bus:'pvw',signal})
+    expect(transport.state().liveSources[0]).toMatchObject({busStates:{pvw:'CUEING'},busSignals:{pvw:{status:'CONNECTING',videoRecent:false}}})
+    expect(transport.state().liveSources[0]!.measurements!.pvw).toBeUndefined()
+    event({event:'sourceReady',itemId:'0',bus:'pvw'})
+    event({event:'sourceTelemetry',itemId:'0',bus:'pvw',signal})
+    expect(transport.state().liveSources[0]).toMatchObject({busSignals:{pvw:{status:'SIGNAL_OK',videoRecent:true,audioRecent:true}}})
+  })
+  it('perfil live atualizado na visão muda aviso sem reabrir decoder ou alterar PVW',async()=>{
+    const value=view([])
+    start(value)
+    await transport.cue({kind:'SOURCE',source:'ndi:ESTUDIO'})
+    event({event:'sourceReady',itemId:'source:ndi:ESTUDIO',bus:'pvw'})
+    event({event:'sourceTelemetry',itemId:'source:ndi:ESTUDIO',bus:'pvw',signal:{width:1920,height:1080,rateNum:25,rateDen:1,interlaceMode:'progressive',audioChannels:2,sampleRate:48000,videoAgeMs:0,audioAgeMs:0,videoPresent:true,audioPresent:true,receivedFrames:100,arrivalJitterMs:150}})
+    expect(transport.state().liveSources[0]).toMatchObject({busSignals:{pvw:{status:'UNSTABLE'}}})
+    const before=commands.length
+    Object.assign(value,{channel:{...value.channel,qcProfile:{...DEFAULT_QC_PROFILE,liveSignalPolicy:{arrivalWarningEnabled:true,warningFrameIntervals:5,minimumReceivedFrames:50}}}})
+    expect(transport.state()).toMatchObject({preview:{kind:'SOURCE',source:'ndi:ESTUDIO'},liveSources:[{busSignals:{pvw:{status:'SIGNAL_OK'}}}]})
+    expect(commands).toHaveLength(before)
+  })
+
+  it('TAKE pendente da mesma fonte preserva medição do PGM anterior até confirmação nativa', async () => {
+    const value=view(['a','b'])
+    for(const row of value.items)Object.assign(row,{item:{...row.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250},asset:null})
+    start(value);await transport.take('grade','0')
+    const signal={width:1920,height:1080,rateNum:25,rateDen:1,interlaceMode:'progressive',audioChannels:2,sampleRate:48000,videoAgeMs:0,audioAgeMs:0,videoPresent:true,audioPresent:true,receivedFrames:25,arrivalJitterMs:0}
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',signal})
+    holdLiveTake=true;await transport.take('grade','1')
+    event({event:'sourceTelemetry',itemId:'1',bus:'pgm',signal:{...signal,width:640,videoPresent:false}})
+    expect(transport.state()).toMatchObject({onAir:{itemId:'0'},liveSources:[{busStates:{pgm:'ON_PGM'},busItemIds:{pgm:'0'},measurements:{pgm:{width:1920}},busSignals:{pgm:{status:'SIGNAL_OK'}}}]})
+    event({event:'state',onAir:'1'})
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',signal})
+    expect(transport.state().liveSources[0]!.measurements!.pgm).toBeUndefined()
+    event({event:'sourceTelemetry',itemId:'1',bus:'pgm',signal:{...signal,audioPresent:false}})
+    expect(transport.state()).toMatchObject({onAir:{itemId:'1'},liveSources:[{busSignals:{pgm:{status:'NO_AUDIO',videoRecent:true}}}]})
+  })
+
+  it('erro/perda atrasados de QC descartado não alteram novo PVW nem o PGM da mesma fonte',async()=>{
+    const value=view(['a','b'])
+    for(const row of value.items)Object.assign(row,{item:{...row.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250},asset:null})
+    start(value);await transport.take('grade','0')
+    await transport.cue({kind:'SOURCE',source:'ndi:ESTUDIO'})
+    await transport.cue({kind:'ITEM',id:'1'})
+    event({event:'sourceReady',itemId:'1',bus:'pvw'})
+    const before=transport.state(),health=transport.health(),count=commands.length
+    event({event:'itemError',itemId:'source:ndi:ESTUDIO',bus:'pvw',message:'decoder anterior caiu'})
+    event({event:'sourceLost',itemId:'source:ndi:ESTUDIO',reason:'fonte anterior encerrou'})
+    event({event:'itemError',itemId:'1',bus:'pgm',message:'erro no bus errado'})
+    expect(transport.state()).toEqual(before);expect(transport.health()).toEqual(health)
+    expect(commands).toHaveLength(count)
+    event({event:'sourceLost',itemId:'0',reason:'PGM perdeu pacotes'})
+    expect(transport.state()).toMatchObject({onAir:{itemId:'0'},preview:{kind:'ITEM',id:'1'},liveSources:[{busStates:{pgm:'LOST',pvw:'PVW_READY'}}]})
+    expect(commands).toHaveLength(count) // Loss diagnosis never performs automatic TAKE.
+  })
+
+  it('falha do novo TAKE na mesma fonte não atribui FAILED ao PGM anterior',async()=>{
+    const value=view(['a','b'])
+    for(const row of value.items)Object.assign(row,{item:{...row.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250},asset:null})
+    start(value);await transport.take('grade','0');holdLiveTake=true
+    await transport.take('grade','1')
+    event({event:'itemError',itemId:'1',bus:'pgm',message:'novo decoder recusado'})
+    expect(transport.hasPendingCommand()).toBe(false)
+    expect(transport.state()).toMatchObject({onAir:{itemId:'0'},liveSources:[{busStates:{pgm:'ON_PGM'},busItemIds:{pgm:'0'}}]})
+    expect(transport.health().error).toContain('novo decoder recusado')
+    expect(child.kill).not.toHaveBeenCalled()
+  })
+  it('timeout de outra abertura do mesmo ID não encerra o PGM nem avança para Próximo',async()=>{
+    const value=view(['live','next'])
+    for(const row of value.items)Object.assign(row,{item:{...row.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250,autoNext:true},asset:null})
+    start(value);event({event:'ready',channelId:channel.id,decoderIdentity:true});loadDecoderId=201
+    await transport.take('grade','0')
+    event({event:'state',onAir:'0',onAirDecoderId:201})
+    const signal={width:640,height:360,rateNum:25,rateDen:1,interlaceMode:'progressive',audioChannels:2,sampleRate:48000,videoAgeMs:0,audioAgeMs:0,videoPresent:true,audioPresent:true,receivedFrames:25,arrivalJitterMs:0}
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',decoderId:201,signal})
+    // The general fake uses one ID for both slots. Keep the actual PGM's
+    // decoder stable while a DIFFERENT opening of the same item is armed.
+    child.stdin.removeAllListeners('data')
+    child.stdin.on('data',(data:Buffer)=>{
+      const command=JSON.parse(data.toString());commands.push(command)
+      queueMicrotask(()=>{
+        if(command.cmd==='load')event({event:'state',onAir:'0',onAirDecoderId:201,armed:command.item?.itemId,armedDecoderId:202})
+        ack(command.id)
+      })
+    })
+    holdLiveTake=true;await transport.take('grade','0')
+    event({event:'state',onAir:'0',onAirDecoderId:201,armed:'0',armedDecoderId:202})
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',decoderId:201,signal})
+    expect(transport.state().liveSources[0]).toMatchObject({busStates:{pgm:'ON_PGM'},busSignals:{pgm:{status:'SIGNAL_OK'}}})
+    const before=transport.state(),count=commands.length
+    event({event:'itemError',itemId:'0',bus:'pgm',decoderId:202,message:'TAKE cancelado após 10 segundos'})
+    await vi.waitFor(()=>expect(transport.hasPendingCommand()).toBe(false))
+    expect(commands).toHaveLength(count)
+    expect(transport.state()).toMatchObject({onAir:before.onAir,liveSources:[{busStates:{pgm:'ON_PGM'},busSignals:{pgm:{status:'SIGNAL_OK'}}}]})
+    expect(transport.health().error).toContain('10 segundos');expect(child.kill).not.toHaveBeenCalled()
+  })
+  it.each(['manual-in-progress','automatic-already-queued'])('Próximo não enfileira LOAD sobre TAKE manual: %s',async mode=>{
+    const value=view(['live','next'])
+    for(const row of value.items)Object.assign(row,{item:{...row.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250},asset:null})
+    start(value);event({event:'ready',channelId:channel.id,decoderIdentity:true});loadDecoderId=201
+    await transport.take('grade','0')
+    child.stdin.removeAllListeners('data')
+    child.stdin.on('data',(data:Buffer)=>{
+      const command=JSON.parse(data.toString());commands.push(command)
+      if(command.cmd==='load'&&holdLoad)return
+      queueMicrotask(()=>ack(command.id))
+    })
+    holdLoad=true;holdLiveTake=true
+    if(mode==='automatic-already-queued')transport.tick()
+    const taking=transport.take('grade','0')
+    await vi.waitFor(()=>expect(commands.at(-1)?.cmd).toBe('load'))
+    const opening=commands.at(-1)!,count=commands.length
+    transport.tick()
+    expect(transport.state().preparingItemId).toBeNull()
+    holdLoad=false;event({event:'state',onAir:'0',onAirDecoderId:201,armed:'0',armedDecoderId:202});ack(opening.id);await taking
+    await Promise.resolve();await Promise.resolve()
+    expect(commands.slice(count).map(command=>command.cmd)).toEqual(['take'])
+    expect(transport.hasPendingCommand()).toBe(true)
+    transport.tick();expect(commands.filter(command=>command.cmd==='load'&&command.item?.itemId==='1')).toHaveLength(0)
+  })
+
+  it('PVW pertence ao comando atual antes do ACK, não ao binding histórico de outra fonte',async()=>{
+    start(view([]))
+    await transport.cue({kind:'SOURCE',source:'ndi:ANTIGA'})
+    event({event:'sourceReady',itemId:'source:ndi:ANTIGA',bus:'pvw'})
+    holdPreview=true
+    const opening=transport.cue({kind:'SOURCE',source:'omt:NOVA'})
+    await vi.waitFor(()=>expect(commands.at(-1)?.item?.itemId).toBe('source:omt:NOVA'))
+    const command=commands.at(-1)!,health=transport.health()
+    event({event:'itemError',itemId:'source:ndi:ANTIGA',bus:'pvw',message:'erro antigo'})
+    event({event:'sourceReady',itemId:'source:ndi:ANTIGA',bus:'pvw'})
+    const signal={width:640,height:360,rateNum:25,rateDen:1,interlaceMode:'progressive',audioChannels:2,sampleRate:48000,videoAgeMs:0,audioAgeMs:0,videoPresent:true,audioPresent:true,receivedFrames:25,arrivalJitterMs:0}
+    event({event:'sourceTelemetry',itemId:'source:ndi:ANTIGA',bus:'pvw',signal})
+    expect(transport.health()).toEqual(health)
+    expect(transport.state().liveSources.find(row=>row.source==='ndi:ANTIGA')).toMatchObject({state:'IDLE',busSignals:{pvw:{status:'UNMONITORED'}}})
+    event({event:'sourceReady',itemId:'source:omt:NOVA',bus:'pvw'})
+    event({event:'sourceTelemetry',itemId:'source:omt:NOVA',bus:'pvw',signal})
+    ack(command.id);await opening
+    expect(transport.state()).toMatchObject({preview:{kind:'SOURCE',source:'omt:NOVA'}})
+    expect(transport.state().liveSources.find(row=>row.source==='omt:NOVA')).toMatchObject({busSignals:{pvw:{status:'SIGNAL_OK'}}})
+    const clearing=transport.cue(null)
+    await vi.waitFor(()=>expect(commands.at(-1)?.item).toBeNull())
+    const clear=commands.at(-1)!,before=transport.health()
+    event({event:'itemError',itemId:'source:omt:NOVA',bus:'pvw',message:'já descartada'})
+    event({event:'sourceTelemetry',itemId:'source:omt:NOVA',bus:'pvw',signal})
+    expect(transport.health()).toEqual(before)
+    ack(clear.id);await clearing
+    expect(transport.state().preview).toBeNull()
+  })
+
+  it('park de live instala a mesma posse de PVW e não depende de CUE anterior',async()=>{
+    const value=view(['live'])
+    Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250},asset:null})
+    start(value);await transport.park('0')
+    event({event:'sourceReady',itemId:'0',bus:'pvw'})
+    expect(transport.state()).toMatchObject({preview:{kind:'ITEM',id:'0'},liveSources:[{busStates:{pvw:'PVW_READY'},busItemIds:{pvw:'0'}}]})
+    expect(transport.state().onAir).toBeNull()
+  })
+
+  it('cadastro selecionado só é confirmado pelo decoder atual e é limpo ao reabrir',async()=>{
+    const value=view(['live'])
+    Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',configuredSourceId:'selected',durationOverride:250},asset:null})
+    start(value);event({event:'ready',channelId:channel.id,decoderIdentity:true});holdPreview=true
+    const first=transport.cue({kind:'ITEM',id:'0'})
+    await vi.waitFor(()=>expect(commands.at(-1)?.cmd).toBe('preview'))
+    expect(commands.at(-1)).toMatchObject({item:{configuredSourceId:'selected'}})
+    event({event:'ack',id:commands.at(-1)!.id,ok:true,decoderId:101});await first
+    event({event:'sourceReady',itemId:'0',bus:'pvw',decoderId:101,configuredSourceId:'other'})
+    expect(transport.state().liveSources[0]?.nativeCatalogBindings?.pvw).toBeUndefined()
+    event({event:'sourceReady',itemId:'0',bus:'pvw',decoderId:101,configuredSourceId:'selected'})
+    expect(transport.state().liveSources[0]?.nativeCatalogBindings?.pvw).toBe('selected')
+    holdPreview=false;await transport.cue(null);holdPreview=true
+    const count=commands.length,second=transport.cue({kind:'ITEM',id:'0'})
+    await vi.waitFor(()=>expect(commands.length).toBeGreaterThan(count))
+    event({event:'ack',id:commands.at(-1)!.id,ok:true,decoderId:102});await second
+    event({event:'sourceReady',itemId:'0',bus:'pvw',decoderId:101,configuredSourceId:'selected'})
+    expect(transport.state().liveSources[0]?.nativeCatalogBindings?.pvw).toBeUndefined()
+    event({event:'sourceReady',itemId:'0',bus:'pvw',decoderId:102,configuredSourceId:'selected'})
+    expect(transport.state().liveSources[0]?.nativeCatalogBindings?.pvw).toBe('selected')
+  })
+
+  it('mesmo ID reaberto rejeita eventos da encarnação anterior e sem identidade',async()=>{
+    start(view([]));event({event:'ready',channelId:channel.id,decoderIdentity:true})
+    holdPreview=true
+    const first=transport.cue({kind:'SOURCE',source:'ndi:ESTUDIO'})
+    await vi.waitFor(()=>expect(commands.at(-1)?.cmd).toBe('preview'))
+    event({event:'ack',id:commands.at(-1)!.id,ok:true,decoderId:101});await first
+    event({event:'sourceReady',itemId:'source:ndi:ESTUDIO',bus:'pvw',decoderId:101})
+    expect(transport.state().liveSources[0]?.state).toBe('PVW_READY')
+    const count=commands.length,second=transport.cue({kind:'SOURCE',source:'ndi:ESTUDIO'})
+    await vi.waitFor(()=>expect(commands.length).toBeGreaterThan(count))
+    const opening=commands.at(-1)!
+    const signal={width:640,height:360,rateNum:25,rateDen:1,interlaceMode:'progressive',audioChannels:2,sampleRate:48000,videoAgeMs:0,audioAgeMs:0,videoPresent:true,audioPresent:true,receivedFrames:25,arrivalJitterMs:0}
+    for(const decoderId of [undefined,101,102]) {
+      event({event:'sourceReady',itemId:'source:ndi:ESTUDIO',bus:'pvw',decoderId})
+      event({event:'sourceTelemetry',itemId:'source:ndi:ESTUDIO',bus:'pvw',decoderId,signal})
+    }
+    expect(transport.state().liveSources[0]?.state).toBe('CUEING')
+    event({event:'ack',id:opening.id,ok:true,decoderId:102});await second
+    event({event:'itemError',itemId:'source:ndi:ESTUDIO',bus:'pvw',decoderId:101,message:'decoder anterior'})
+    event({event:'sourceReady',itemId:'source:ndi:ESTUDIO',bus:'pvw',decoderId:101})
+    event({event:'sourceTelemetry',itemId:'source:ndi:ESTUDIO',bus:'pvw',decoderId:101,signal})
+    expect(transport.state().liveSources[0]?.state).toBe('CUEING')
+    event({event:'sourceReady',itemId:'source:ndi:ESTUDIO',bus:'pvw',decoderId:102})
+    event({event:'sourceTelemetry',itemId:'source:ndi:ESTUDIO',bus:'pvw',decoderId:102,signal})
+    expect(transport.state().liveSources[0]).toMatchObject({state:'PVW_READY',busSignals:{pvw:{status:'SIGNAL_OK'}}})
+  })
+
+  it('nova encarnação do PGM rejeita perda/medição antiga e falha legítima do TAKE permanece válida',async()=>{
+    const value=view(['a','b'])
+    for(const row of value.items)Object.assign(row,{item:{...row.item,type:'LIVE',sourceRef:'ndi:ESTUDIO',durationOverride:250},asset:null})
+    start(value);event({event:'ready',channelId:channel.id,decoderIdentity:true})
+    await transport.take('grade','0')
+    event({event:'state',onAir:'0',onAirDecoderId:201})
+    const signal={width:640,height:360,rateNum:25,rateDen:1,interlaceMode:'progressive',audioChannels:2,sampleRate:48000,videoAgeMs:0,audioAgeMs:0,videoPresent:true,audioPresent:true,receivedFrames:25,arrivalJitterMs:0}
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',decoderId:201,signal})
+    event({event:'state',onAir:'0',onAirDecoderId:202})
+    expect(transport.state().liveSources[0]!.measurements!.pgm).toBeUndefined()
+    const health=transport.health()
+    event({event:'sourceLost',itemId:'0',decoderId:201,reason:'perda anterior'})
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',decoderId:201,signal:{...signal,videoPresent:false}})
+    expect(transport.health()).toEqual(health)
+    event({event:'sourceTelemetry',itemId:'0',bus:'pgm',decoderId:202,signal})
+    holdLiveTake=true;await transport.take('grade','1')
+    event({event:'state',onAir:'0',onAirDecoderId:202,armed:'1',armedDecoderId:203})
+    event({event:'itemError',itemId:'1',bus:'pgm',decoderId:199,message:'tentativa antiga'})
+    expect(transport.hasPendingCommand()).toBe(true)
+    event({event:'itemError',itemId:'1',bus:'pgm',decoderId:203,message:'tentativa atual recusada'})
+    expect(transport.hasPendingCommand()).toBe(false)
+    expect(transport.state().onAir?.itemId).toBe('0')
   })
   it('inspeção pode abrir mídia pendente de QC, mas PGM continua bloqueado', async () => {
     const good = join(directory, 'pendente.mkv'); writeFileSync(good, 'video')
@@ -975,7 +2164,7 @@ describe('transporte real confirmado pelo engine', () => {
       { binary: 'fake-engine', outputs: ['null'], preview: null, bitrateKbps: 500 })
     event({ event: 'ready', channelId: channel.id }); await transport.take('grade', '0')
     transport.tick(); await vi.waitFor(() => expect(transport.state().preparedItemId).toBe('1'))
-    current = { ...current, items: [current.items[0]!, { ...current.items[1]!, trim: { in: 50, out: 200 } }] }
+    current = { ...current, items: [current.items[0]!, { ...current.items[1]!, trim: { in: 50, out: 200 } }],schedule:{...current.schedule,items:current.schedule.items.map(row=>row.id==='1'?{...row,duration:150}:row)} }
     event({ event: 'eos', itemId: '0' })
     await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('1'))
     const loaded = commands.filter((command) => command.cmd === 'load')

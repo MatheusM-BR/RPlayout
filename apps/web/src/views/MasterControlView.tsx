@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
-import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags } from '@rplayout/protocol'
-import { qcApproved } from '@rplayout/protocol'
+import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags,LiveSourceReview,RootCatalogReview,RootAddReview } from '@rplayout/protocol'
+import { qcApproved,programDurationFrames } from '@rplayout/protocol'
 import { clock, dur, formatStandardRate } from '../format.js'
+import {PreviewFrameStatus} from '../components/broadcast/PreviewFrameStatus.js'
 import type {
   Categoria,
   ItemView,
@@ -16,6 +17,7 @@ import type {
 } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { api } from '../api.js'
+import {commandRequestId} from '../domain/request-id.js'
 import { canonicalLiveSourceRef, sameLiveSource } from '../liveSource.js'
 import { Whep } from '../components/Whep.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
@@ -38,6 +40,7 @@ interface Props {
   view: RundownView
   live: Live
   folders: LibraryFolder[]
+  libraryLoaded?: boolean
   scan: ScanStatus | null
   categorias: Categoria[]
   monitors: MonitorFeeds | null
@@ -78,7 +81,6 @@ interface Props {
       timingFlags?: TimingFlags
     },
   ) => void
-  onOpenConflicts?: () => void
   onOpenLiveInput?: () => void
 }
 
@@ -102,6 +104,7 @@ export function MasterControlView({
   view,
   live,
   folders,
+  libraryLoaded = true,
   scan,
   categorias,
   monitors,
@@ -133,7 +136,6 @@ export function MasterControlView({
   onPreviewAsset,
   onPreviewLiveSource,
   onInsertAsset,
-  onOpenConflicts,
   onOpenLiveInput,
 }: Props) {
   const publicationRequired=Boolean(view.rundown.publicationRequired)
@@ -142,6 +144,16 @@ export function MasterControlView({
   const [selectedTag, setSelectedTag] = useState<'TODOS' | 'VT' | 'JORNAL' | 'AO VIVO'>('TODOS')
   const [transitionMode, setTransitionMode] = useState<'CUT' | 'MIX' | 'WIPE'>('CUT')
   const [adjustingLive, setAdjustingLive] = useState(false)
+  const liveAdjustmentLock=useRef(false)
+  const [pendingLiveAdjustment,setPendingLiveAdjustment]=useState<{channelId:string;body:Parameters<typeof api.adjustLiveDuration>[1]}|null>(null)
+  const submitLiveAdjustment=async(operation:{channelId:string;body:Parameters<typeof api.adjustLiveDuration>[1]})=>{
+    try{
+      const result=await api.adjustLiveDuration(operation.channelId,operation.body)
+      setPendingLiveAdjustment(null)
+      setLiveTimingMessage(result.refreshError??`Duração ajustada; revisão ${result.revision}${result.deduplicated?' (solicitação já aplicada)':''}. Conflitos recalculados.`)
+    }catch(error){setLiveTimingMessage(`${error instanceof Error?error.message:'Resposta não confirmada.'} Reenvie a mesma solicitação para conferir, sem aplicar o ajuste duas vezes.`)}
+    finally{liveAdjustmentLock.current=false;setAdjustingLive(false)}
+  }
   const [liveTimingMessage, setLiveTimingMessage] = useState<string | null>(null)
 
   // Drag & drop dropzone target
@@ -169,76 +181,110 @@ export function MasterControlView({
   const [newFolderLabel, setNewFolderLabel] = useState('')
   const [isFolderLoading, setIsFolderLoading] = useState(false)
   const [folderActionMsg, setFolderActionMsg] = useState<string | null>(null)
+  const [folderReview,setFolderReview]=useState<RootCatalogReview|null>(null),[folderAddReview,setFolderAddReview]=useState<RootAddReview|null>(null)
+  const folderPending=useRef(false),folderEpoch=useRef(0),folderLive=useRef(true)
+  useEffect(()=>{folderLive.current=true;return()=>{folderLive.current=false;++folderEpoch.current}},[])
+  const folderCurrent=(run:number)=>folderLive.current&&folderEpoch.current===run
 
   const loadMamRoots = async () => {
+    const run=folderEpoch.current
     try {
-      const res = await api.mediaRoots()
-      setMamRoots(res.roots)
+      const res = await api.rootCatalogReview()
+      if(folderCurrent(run)){setMamRoots(res.roots);setFolderReview(res)}
     } catch (err) {
-      console.error('Falha ao carregar pastas:', err)
+      if(folderCurrent(run)){setFolderReview(null);setFolderActionMsg('Lista indisponível; não é confirmação de lista vazia. '+String(err))}
     }
   }
 
   useEffect(() => {
+    ++folderEpoch.current;setFolderReview(null);setFolderAddReview(null);folderPending.current=false;setIsFolderLoading(false)
     if (!folderModalOpen) return
     void loadMamRoots()
     void browseServerFolders()
   }, [folderModalOpen])
 
   const browseServerFolders = async (path?: string) => {
+    if(folderPending.current)return
+    folderPending.current=true;const run=folderEpoch.current
     setIsFolderLoading(true)
     setFolderActionMsg('Lendo pastas no servidor...')
     try {
       const browser = await api.browseMediaRoot(path)
+      if(!folderCurrent(run))return
       setServerBrowser(browser)
+      setFolderAddReview(null)
       setNewFolderPath(browser.path)
       setFolderActionMsg('Escolha uma pasta neste painel. A navegação ocorre no servidor do playout.')
     } catch (err: any) {
-      setFolderActionMsg(`Erro: ${err.message}`)
+      if(folderCurrent(run))setFolderActionMsg(`Erro: ${err.message}`)
     } finally {
-      setIsFolderLoading(false)
+      if(folderCurrent(run)){folderPending.current=false;setIsFolderLoading(false)}
     }
   }
 
   const handleAddFolderManual = async () => {
     const path = newFolderPath.trim()
-    if (!path) return
+    if (!path||!folderAddReview||folderPending.current) return
+    folderPending.current=true;const run=folderEpoch.current
     setIsFolderLoading(true)
     setFolderActionMsg('Cadastrando pasta...')
     try {
       const label = newFolderLabel.trim() || undefined
-      const res = await api.addMediaRoot(path, label)
-      setFolderActionMsg(`Pasta "${res.root.label}" cadastrada com sucesso!`)
+      const res = await api.addMediaRoot(path, label,folderAddReview)
+      if(!folderCurrent(run))return
+      setFolderActionMsg(res.scanBatchId?`Pasta "${res.root.label}" cadastrada. Pedido ${res.scanBatchId}: ${res.scanState}. ${res.scanError??'Registro não significa leitura concluída.'}`:`Pasta "${res.root.label}" cadastrada. ${res.scanError??'Sonda indisponível; procure quando estiver disponível.'}`)
+      setFolderAddReview(null);setFolderReview(res.review);setMamRoots(res.review.roots)
       setNewFolderPath('')
       setNewFolderLabel('')
-      await loadMamRoots()
-      onStartScan(false)
     } catch (err: any) {
-      setFolderActionMsg(`Erro: ${err.message}`)
+      if(folderCurrent(run)){setFolderActionMsg(`Erro: ${err.message}. Campos preservados; confira novamente.`);setFolderAddReview(null);setFolderReview(null)}
     } finally {
-      setIsFolderLoading(false)
+      if(folderCurrent(run)){folderPending.current=false;setIsFolderLoading(false)}
     }
   }
 
+  const conferFolderAdd = async () => {
+    if(folderPending.current)return
+    folderPending.current=true;setIsFolderLoading(true);const run=folderEpoch.current
+    try{const review=await api.rootAddReview(newFolderPath);if(folderCurrent(run)){setFolderAddReview(review);setFolderReview(review);setMamRoots(review.roots);setFolderActionMsg('Pasta e lista conferidas. Confirme o cadastro; qualquer alteração posterior será recusada.')}}
+    catch(cause){if(folderCurrent(run)){setFolderAddReview(null);setFolderActionMsg(String(cause))}}
+    finally{if(folderCurrent(run)){folderPending.current=false;setIsFolderLoading(false)}}
+  }
+
   const handleRemoveFolder = async (root: MediaRoot) => {
+    if(!folderReview||folderPending.current)return
     if (!window.confirm(`Remover pasta "${root.label}" do acervo? Os arquivos já na grade continuam.`)) return
     setIsFolderLoading(true)
+    folderPending.current=true;const run=folderEpoch.current
     try {
-      await api.removeMediaRoot(root.id)
+      const result=await api.removeMediaRoot(root.id,folderReview)
+      if(!folderCurrent(run))return
+      setFolderReview(result.review);setMamRoots(result.review.roots);setFolderAddReview(null)
       setFolderActionMsg(`Pasta "${root.label}" removida.`)
-      await loadMamRoots()
     } catch (err: any) {
-      setFolderActionMsg(`Erro: ${err.message}`)
+      if(folderCurrent(run)){setFolderActionMsg(`Erro: ${err.message}. Reabra a conferência.`);setFolderReview(null);setFolderAddReview(null)}
     } finally {
-      setIsFolderLoading(false)
+      if(folderCurrent(run)){folderPending.current=false;setIsFolderLoading(false)}
     }
   }
 
   // O MAM só mostra entradas efetivamente cadastradas para o canal. Não há
   // fontes demonstrativas nem cache local que possa divergir das Configurações.
   const [customSources, setCustomSources] = useState<CustomLiveSource[]>([])
+  const [sourceListReview,setSourceListReview]=useState<LiveSourceReview|null>(null)
+  const [sourceFormReview,setSourceFormReview]=useState<LiveSourceReview|null>(null)
+  const [sourceSaveBusy,setSourceSaveBusy]=useState(false)
+  const [sourceSaveMessage,setSourceSaveMessage]=useState<string|null>(null)
+  const [sourceNeedsReopen,setSourceNeedsReopen]=useState(false)
+  const sourcePending=useRef(false),sourceGeneration=useRef(0),sourceChannel=useRef(channel.id),sourceMounted=useRef(true)
+  sourceChannel.current=channel.id
+  useEffect(()=>{sourceMounted.current=true;return()=>{sourceMounted.current=false;sourceGeneration.current++}},[])
   const loadLiveSources = async () => {
-    const sources = await api.liveSources(channel.id)
+    const run=++sourceGeneration.current,id=channel.id
+    const review = await api.liveSourceReview(id)
+    if(!sourceMounted.current||sourceChannel.current!==id||run!==sourceGeneration.current)return
+    setSourceListReview(review)
+    const sources=review.sources
     const defaultDuration = Math.round(15 * 60 * (rate.num / rate.den))
     setCustomSources(sources.filter((source) => source.enabled).map((source: ManagedLiveSource) => ({
       id: source.id,
@@ -247,17 +293,34 @@ export function MasterControlView({
       family: source.kind,
       durationFrames: defaultDuration,
     })))
+    return review
   }
-  useEffect(() => { void loadLiveSources().catch(() => setCustomSources([])) }, [channel.id])
+  useEffect(() => {
+    setCustomSources([]);setSourceListReview(null);setSourceFormReview(null)
+    void loadLiveSources().catch(() => {if(sourceMounted.current&&sourceChannel.current===channel.id)setCustomSources([])})
+  }, [channel.id])
 
   const saveCustomSource = async (source: Omit<CustomLiveSource, 'id'>) => {
+    if(sourcePending.current||sourceNeedsReopen)throw new Error('Confira novamente a lista antes de salvar.')
+    sourcePending.current=true;setSourceSaveBusy(true)
+    const id=channel.id
+    try{
     const created = await api.createLiveSource({
       channelId: channel.id,
       name: source.title,
       kind: source.family === 'WEBRTC' ? 'RTMP' : source.family,
       targetUrl: source.sourceRef,
-    })
+    },sourceFormReview)
+    if(!sourceMounted.current||sourceChannel.current!==id)return
+    setSourceSaveMessage(created.refreshError??'Cadastro gravado; não houve CUE ou TAKE automático.')
+    setSourceFormReview(null);setSourceNeedsReopen(true)
     setCustomSources((previous) => [...previous, { ...source, id: created.id, sourceRef: canonicalLiveSourceRef(created) }])
+    // Refresh only the list; never replace the proof attached to another draft.
+    await loadLiveSources().catch(()=>setSourceSaveMessage('Cadastro gravado; falha ao atualizar a lista. Reabra antes de repetir.'))
+    }catch(error){
+      if(sourceMounted.current&&sourceChannel.current===id){setSourceNeedsReopen(true);setSourceSaveMessage(error instanceof Error?error.message:'Cadastro não confirmado. Rascunho preservado.')}
+      throw error
+    }finally{sourcePending.current=false;if(sourceMounted.current&&sourceChannel.current===id)setSourceSaveBusy(false)}
   }
 
   // Estados locais dos modais de Ingestão e Linha
@@ -276,6 +339,15 @@ export function MasterControlView({
   const resetLiveInput = () => {
     setNewLiveTitle(''); setNewLiveNameEdited(false); setNewLiveRef(''); setNewLiveValid(false)
     setNewLiveFamily('NDI')
+    setSourceFormReview(sourceListReview);setSourceNeedsReopen(false);setSourceSaveMessage(null)
+  }
+  const reopenSourceList=async()=>{
+    if(sourcePending.current||!window.confirm('Descartar o rascunho de entrada e conferir novamente a lista?'))return
+    resetLiveInput();setSourceFormReview(null);setSourceNeedsReopen(true)
+    try{
+      const next=await loadLiveSources()
+      if(next){setSourceFormReview(next);setSourceNeedsReopen(false);setSourceSaveMessage('Lista conferida. Selecione a entrada novamente; não houve CUE/TAKE.')}
+    }catch{setSourceSaveMessage('Falha ao consultar as entradas. Nenhuma ação enviada.')}
   }
 
   const [addLineTab, setAddLineTab] = useState<'library' | 'live'>('library')
@@ -539,7 +611,7 @@ export function MasterControlView({
   // Cálculo de temporizações e quadros
   const rate = channel.rate
   const fps = rate.num / rate.den
-  const onAirDurationFrames = getItemDuration(onAirItem)
+  const onAirDurationFrames = programDurationFrames(live.transport.onAir,getItemDuration(onAirItem))
   const elapsedFrames = live?.transport?.onAir?.elapsed ?? 0
   const remainingFrames = Math.max(0, onAirDurationFrames - elapsedFrames)
   const progressPercent =
@@ -752,13 +824,21 @@ export function MasterControlView({
                   {onAirItem?.item.type === 'LIVE' && <div className="mt-2 border-t border-border-subtle pt-2">
                     <div className="text-[9px] text-outline mb-1">AJUSTAR ESTIMATIVA DO AO VIVO</div>
                     <div className="flex flex-wrap justify-center gap-1">
-                      {[-60, -30, -5, 5, 30, 60].map(seconds => <button key={seconds} disabled={adjustingLive} className="px-2 py-1 rounded border border-border-subtle text-[10px] hover:border-primary disabled:opacity-40" onClick={() => {
+                      {[-60, -30, -5, 5, 30, 60].map(seconds => <button key={seconds} disabled={adjustingLive||Boolean(pendingLiveAdjustment)} className="px-2 py-1 rounded border border-border-subtle text-[10px] hover:border-primary disabled:opacity-40" onClick={() => {
+                        if(liveAdjustmentLock.current)return
+                        liveAdjustmentLock.current=true
                         setAdjustingLive(true)
-                        void api.adjustLiveDuration(channel.id, seconds).then(result => setLiveTimingMessage(`Duração ajustada; revisão ${result.revision}. Conflitos recalculados.`))
-                          .catch(error => setLiveTimingMessage(error instanceof Error ? error.message : 'Não foi possível ajustar o ao vivo.'))
-                          .finally(() => setAdjustingLive(false))
+                        const input={itemId:onAirItem.item.id,expectedFrames:onAirItem.item.liveConfig?.estimatedDuration??onAirItem.item.liveEstimatedDuration??onAirItem.item.durationOverride??0,deltaSeconds:seconds}
+                        void api.reviewLiveDuration(channel.id,input).then(review=>{
+                          const operation={channelId:channel.id,body:{input:review.input,reviewToken:review.reviewToken,requestId:commandRequestId()}}
+                          setPendingLiveAdjustment(operation);return submitLiveAdjustment(operation)
+                        }).catch(error=>{setLiveTimingMessage(error instanceof Error?error.message:'Não foi possível conferir o ajuste.');liveAdjustmentLock.current=false;setAdjustingLive(false)})
                       }}>{seconds > 0 ? '+' : ''}{seconds}s</button>)}
                     </div>
+                    {pendingLiveAdjustment&&<div className="flex justify-center gap-2 mt-1">
+                      <button disabled={adjustingLive} onClick={()=>{if(liveAdjustmentLock.current)return;liveAdjustmentLock.current=true;setAdjustingLive(true);void submitLiveAdjustment(pendingLiveAdjustment)}}>Conferir solicitação</button>
+                      <button disabled={adjustingLive} onClick={()=>{setPendingLiveAdjustment(null);setLiveTimingMessage('Solicitação dispensada na tela; isso não desfaz um ajuste já gravado. Confira a duração antes de outro ajuste.')}}>Dispensar aviso</button>
+                    </div>}
                     <div className="text-[9px] text-outline mt-1">{onAirItem.item.liveConfig?.autoFollowOnEnd ?? onAirItem.item.liveAutoFollowOnEnd ? 'Saída automática ao fim da duração configurada.' : 'Saída manual: a estimativa não dispara TAKE.'}</div>
                     {liveTimingMessage && <div role="status" className="text-[10px] text-primary mt-1">{liveTimingMessage}</div>}
                   </div>}
@@ -834,6 +914,7 @@ export function MasterControlView({
               >
                 LIMPAR CUE / PVW
               </button>
+              {live.transport.preview&&<PreviewFrameStatus sample={live.transport.previewFrame}/>}
             </div>
 
             {/* COLUNA 4: PAINEL TÁTICO + CARD PRÓXIMO [PVW] */}
@@ -1020,7 +1101,7 @@ export function MasterControlView({
                     + Ao Vivo
                   </button>
                   <span className="font-label-mono text-label-mono text-outline">
-                    {allAssetsWithLive.length} ITENS
+                    {libraryLoaded ? `${allAssetsWithLive.length} ITENS` : 'ACERVO NÃO CONFERIDO'}
                   </span>
                 </div>
               </div>
@@ -1060,7 +1141,7 @@ export function MasterControlView({
               <div className="flex flex-col gap-2 max-h-[460px] overflow-y-auto pr-1.5 flex-1 broadcast-scroll">
                 {filteredAssets.length === 0 ? (
                   <div className="p-4 text-center text-outline font-body-sm">
-                    Nenhuma mídia encontrada no filtro.
+                    {libraryLoaded ? 'Nenhuma mídia encontrada no filtro.' : 'Acervo ainda não conferido. A ausência de resultados não confirma acervo vazio.'}
                   </div>
                 ) : (
                   filteredAssets.map((asset) => {
@@ -1210,10 +1291,7 @@ export function MasterControlView({
                       <span className="material-symbols-outlined text-[16px]">sync</span> EPG / Autofill
                     </button>
                     <button
-                      onClick={() => {
-                        onOpenConflicts?.()
-                        setIsConflictDrawerOpen(true)
-                      }}
+                      onClick={() => setIsConflictDrawerOpen(true)}
                       className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-armed-amber font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
                       title="Verificar Conflitos da Grade (Conflict Drawer)"
                     >
@@ -1680,7 +1758,7 @@ export function MasterControlView({
       {liveInputModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
-          onClick={() => setLiveInputModalOpen(false)}
+          onClick={() => {if(!sourcePending.current)setLiveInputModalOpen(false)}}
         >
           <div
             className="bg-surface-card border border-border-subtle rounded-xl max-w-lg w-full p-6 shadow-2xl flex flex-col gap-4 text-on-surface animate-in fade-in zoom-in-95 duration-150"
@@ -1699,7 +1777,7 @@ export function MasterControlView({
                 </div>
               </div>
               <button
-                onClick={() => setLiveInputModalOpen(false)}
+                onClick={() => {if(!sourcePending.current)setLiveInputModalOpen(false)}}
                 className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>
@@ -1738,8 +1816,12 @@ export function MasterControlView({
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-subtle">
+              <div className="mr-auto text-xs text-outline">
+                <p>{sourceSaveMessage??'Cadastro não muda PGM/PVW; sinal só é conferido no CUE.'}</p>
+                <button type="button" disabled={sourceSaveBusy} className="text-primary" onClick={()=>void reopenSourceList()}>Reabrir lista de entradas</button>
+              </div>
               <button
-                onClick={() => setLiveInputModalOpen(false)}
+                onClick={() => {if(!sourcePending.current)setLiveInputModalOpen(false)}}
                 className="px-4 py-2 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline hover:text-on-surface font-body-sm cursor-pointer"
               >
                 Cancelar
@@ -1756,10 +1838,10 @@ export function MasterControlView({
                     durationFrames: durFrames,
                   }
                   void saveCustomSource(newSource)
-                    .then(() => setLiveInputModalOpen(false))
-                    .catch(() => window.alert('Não foi possível cadastrar a fonte ao vivo.'))
+                    .then(() => {if(sourceChannel.current===channel.id)setLiveInputModalOpen(false)})
+                    .catch(error => {if(sourceChannel.current===channel.id)window.alert(`Cadastro não confirmado. Rascunho preservado: ${error instanceof Error?error.message:'Reabra a lista.'}`)})
                 }}
-                disabled={!newLiveValid || !newLiveTitle.trim()}
+                disabled={sourceSaveBusy||sourceNeedsReopen||!sourceFormReview||!newLiveValid || !newLiveTitle.trim()}
                 className="px-4 py-2 rounded-lg bg-primary hover:bg-accent-ice text-surface-base font-body-sm font-bold shadow transition-all cursor-pointer"
               >
                 Salvar na Biblioteca MAM
@@ -2104,6 +2186,10 @@ export function MasterControlView({
 
             {/* Modal Actions Footer */}
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-subtle">
+              {addLineTab==='live'&&addLineSaveToLibrary&&!editingItemView&&<div className="mr-auto text-xs text-outline">
+                <p>{sourceSaveMessage??'Cadastro usa a revisão aberta; não troca PGM/PVW.'}</p>
+                <button type="button" disabled={sourceSaveBusy} className="text-primary" onClick={()=>void reopenSourceList()}>Reabrir lista de entradas</button>
+              </div>}
               <button
                 onClick={() => {
                   setAddLineModalOpen(false)
@@ -2125,6 +2211,7 @@ export function MasterControlView({
                 </button>
               ) : (
                 <button
+                  disabled={sourceSaveBusy||(addLineTab==='live'&&addLineSaveToLibrary&&(sourceNeedsReopen||!sourceFormReview))}
                   onClick={() => {
                     const targetIdx = addLineTargetMode === 'index' ? addLineTargetIndex - 1 : undefined
                     const options = {
@@ -2261,7 +2348,7 @@ export function MasterControlView({
                 <input
                   type="text"
                   value={newFolderPath}
-                  onChange={(e) => setNewFolderPath(e.target.value)}
+                  onChange={(e) => {setNewFolderPath(e.target.value);setFolderAddReview(null)}}
                   onKeyDown={(e) => { if (e.key === 'Enter') void browseServerFolders(newFolderPath) }}
                   placeholder="C:\\Midia ou \\\\NAS\\Playout"
                   className="min-w-0 flex-1 bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 text-xs text-on-surface font-label-mono focus:border-primary focus:outline-none"
@@ -2297,7 +2384,7 @@ export function MasterControlView({
                     type="text"
                     placeholder="Caminho selecionado no servidor"
                     value={newFolderPath}
-                    onChange={(e) => setNewFolderPath(e.target.value)}
+                    onChange={(e) => {setNewFolderPath(e.target.value);setFolderAddReview(null)}}
                     className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 text-xs text-on-surface font-label-mono focus:border-primary focus:outline-none"
                   />
                 </div>
@@ -2312,13 +2399,14 @@ export function MasterControlView({
                 </div>
               </div>
               <div className="flex justify-end">
+                <button className="btn small" disabled={isFolderLoading||!newFolderPath.trim()} onClick={()=>void conferFolderAdd()}>Conferir pasta e lista</button>
                 <button
                   onClick={handleAddFolderManual}
-                  disabled={isFolderLoading || !newFolderPath.trim()}
+                  disabled={isFolderLoading || !folderAddReview?.canEdit}
                   className="px-3 py-1.5 rounded bg-surface-container hover:bg-surface-container-high border border-border-subtle text-on-surface font-label-caps text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-50"
                 >
                   <span className="material-symbols-outlined text-[14px]">add</span>
-                  <span>Adicionar Pasta</span>
+                  <span>Adicionar Pasta Conferida</span>
                 </button>
               </div>
             </div>
@@ -2357,7 +2445,7 @@ export function MasterControlView({
                         )}
                         <button
                           onClick={() => handleRemoveFolder(root)}
-                          disabled={isFolderLoading || mamRoots.length <= 1}
+                          disabled={isFolderLoading || !folderReview?.canEdit || mamRoots.length <= 1}
                           className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-air-crimson cursor-pointer disabled:opacity-30"
                           title={mamRoots.length <= 1 ? 'O sistema precisa de pelo menos uma pasta' : 'Remover do acervo'}
                         >
@@ -2372,10 +2460,11 @@ export function MasterControlView({
 
             {/* Rodapé da Modal */}
             <div className="flex items-center justify-between pt-2 border-t border-border-subtle">
+              <button className="btn small" disabled={isFolderLoading} onClick={()=>void loadMamRoots()}>Reabrir conferência da lista</button>
               <button
                 onClick={() => {
                   onStartScan(false)
-                  setFolderActionMsg('Varredura do acervo iniciada!')
+                  setFolderActionMsg('Conferência de varredura aberta. Confirme o pedido; a leitura ainda não foi iniciada por este botão.')
                 }}
                 className="px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-accent-ice-bright font-label-caps text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
               >
@@ -2396,6 +2485,7 @@ export function MasterControlView({
 
       {/* 8. CONFLICT & GAP RESOLUTION DRAWER (FASE E) */}
       <ConflictDrawer
+        channelId={channel.id}
         open={isConflictDrawerOpen}
         onClose={() => setIsConflictDrawerOpen(false)}
         items={view.items}

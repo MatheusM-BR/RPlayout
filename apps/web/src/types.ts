@@ -10,6 +10,8 @@ import type {
   RundownItem,
   Trim,
   ValueSource,
+  LiveSignalAssessment,
+  OnAirState,
 } from '@rplayout/protocol'
 
 export interface ItemView {
@@ -51,9 +53,10 @@ export interface Live {
     mode?: 'NATIVE' | 'SIMULATED'
     channelId: string
     rundownId: string | null
-    onAir: { itemId: string; startedAt: Frames; elapsed: Frames } | null
+    onAir: OnAirState | null
     preview: PreviewTarget | null
     previewPosition: { frames: Frames; duration: Frames } | null
+    previewFrame?:{itemId:string;decoderId:number;delivered:boolean;ageMs:number|null;pausedFile:boolean;sampledAt:number}|null
     preparedItemId: string | null
     preparingItemId: string | null
     playing: boolean
@@ -66,6 +69,8 @@ export interface Live {
       changedAt: string
       busStates?: Partial<Record<'pgm' | 'pvw', 'IDLE' | 'CUEING' | 'PVW_READY' | 'TAKE_PENDING' | 'ON_PGM' | 'LOST' | 'FAILED'>>
       busItemIds?: Partial<Record<'pgm' | 'pvw', string>>
+      nativeCatalogBindings?: Partial<Record<'pgm' | 'pvw', string>>
+      busSignals?: Partial<Record<'pgm' | 'pvw', LiveSignalAssessment>>
       measurements?: Partial<Record<'pgm' | 'pvw', {
         width: number | null; height: number | null; rateNum: number | null; rateDen: number | null
         interlaceMode: string | null; audioChannels: number | null; sampleRate: number | null
@@ -134,6 +139,10 @@ export interface ServerFolderBrowser {
 }
 
 export interface ScanStatus {
+  globalBusy?:boolean
+  localRunning?:boolean
+  progressAvailable?:boolean
+  activeBatches?:{id:string;state:string}[]
   available: boolean
   running: boolean
   root: string | null
@@ -275,6 +284,8 @@ export interface Distribution {
 
 /** Uma fonte ao vivo que a máquina descobriu, ou que já existe como convidado. */
 export interface LiveSource {
+  configuredId?: string
+  channelId?: string
   reference: string
   label: string
   family: 'SDI' | 'NDI' | 'OMT' | 'GUEST'

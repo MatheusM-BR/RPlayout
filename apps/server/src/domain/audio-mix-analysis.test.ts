@@ -21,6 +21,89 @@ beforeEach(()=>{
 afterEach(()=>{for(const w of workers)w.close();db.$client.close()})
 const versions=()=>db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()
 describe('medição durável do mix não altera operação/editorial/QC',()=>{
+  it('TRIM congela intervalo real do item e não é aplicado como FILE/AUTO',async()=>{
+    db.update(rundownItems).set({trim:{in:25,out:75}}).where(eq(rundownItems.id,'a')).run()
+    const w=new AudioMixAnalysis(db,'fixture',async()=>'/verified.mkv',async(_path,_track,_route,trim)=>({...reading,sampleFrames:96000,trim}));workers.push(w)
+    const before=versions(),job=w.queue('a',hash,0,route,null,()=>{},'TRIM')
+    await vi.waitFor(()=>expect(w.read('a',job.id)?.state).toBe('READY'))
+    expect(w.read('a',job.id)?.measurement).toMatchObject({scope:'TRIM',input:{contentHash:hash,audioTrack:0,trim:{inNs:1e9,outNs:3e9}}})
+    expect(w.queue('a',hash,0,route,null,()=>{},'TRIM').id).toBe(job.id)
+    expect(()=>requireMixMeasurement(db,job.id,hash,0,route)).toThrow('medição salva')
+    expect(versions()).toEqual(before)
+  })
+  it('alteração do corte durante análise descarta resultado e não aprova QC',async()=>{
+    let finish!:(value:MixReading)=>void
+    db.update(rundownItems).set({trim:{in:25,out:75}}).where(eq(rundownItems.id,'a')).run()
+    const w=worker(()=>new Promise(resolve=>{finish=resolve})),job=w.queue('a',hash,0,route,null,()=>{},'TRIM')
+    await vi.waitFor(()=>expect(finish).toBeTypeOf('function'))
+    db.update(rundownItems).set({trim:{in:25,out:100}}).where(eq(rundownItems.id,'a')).run()
+    finish({...reading,sampleFrames:96000,trim:job.trim})
+    await vi.waitFor(()=>expect(w.read('a',job.id)?.state).toBe('FAILED'))
+    expect(w.read('a',job.id)?.measurement).toBeNull();expect(db.select().from(mediaAssets).get()?.qcStatus).toBe('APPROVED')
+  })
+  it('aplica TRIM ao item exato e recusa outro corte/escopo amplo sem escrita parcial',async()=>{
+    db.update(rundownItems).set({trim:{in:25,out:75}}).where(eq(rundownItems.id,'a')).run()
+    const w=new AudioMixAnalysis(db,'fixture',async()=>'/verified.mkv',async(_path,_track,_route,trim)=>({...reading,sampleFrames:96000,trim}));workers.push(w)
+    const job=w.queue('a',hash,0,route,null,()=>{},'TRIM');await vi.waitFor(()=>expect(w.read('a',job.id)?.state).toBe('READY'))
+    const audio={mode:'AUTO' as const,gainDb:20,measured:null,routing:route,analysisId:job.id}
+    const before=versions()
+    for(const scope of ['RUNDOWN','ASSET_DEFAULT'] as const)await expect(applyAudio(db,'a',audio,scope)).rejects.toThrow('medição salva')
+    expect(versions()).toEqual(before);expect(db.select().from(rundownItems).all().every(item=>item.audio===null)).toBe(true)
+    await applyAudio(db,'a',audio,'ITEM')
+    expect(db.select().from(rundownItems).where(eq(rundownItems.id,'a')).get()?.audio?.measured?.scope).toBe('TRIM')
+    const ready=w.read('a',job.id)!
+    db.update(operatorDecisions).set({payload:{...ready,measurement:{...ready.measurement!,scope:'FILE'}} as unknown as Record<string,unknown>}).where(eq(operatorDecisions.id,job.id)).run()
+    await expect(applyAudio(db,'a',audio,'ITEM')).rejects.toThrow('medição salva')
+    db.update(operatorDecisions).set({payload:ready as unknown as Record<string,unknown>}).where(eq(operatorDecisions.id,job.id)).run()
+    db.update(rundownItems).set({trim:{in:25,out:100}}).where(eq(rundownItems.id,'a')).run()
+    const changed=versions();await expect(applyAudio(db,'a',audio,'ITEM')).rejects.toThrow('medição salva');expect(versions()).toEqual(changed)
+  })
+  it('medidor não pode declarar TRIM READY sem intervalo e amostras correspondentes',async()=>{
+    const w=worker(),job=w.queue('a',hash,0,route,null,()=>{},'TRIM')
+    await vi.waitFor(()=>expect(w.read('a',job.id)?.state).toBe('FAILED'))
+    expect(w.read('a',job.id)?.measurement).toBeNull()
+  })
+  it.each(['scope','date','lra','hash','track','routing'])('AUTO recusa resultado READY adulterado no %s',async field=>{
+    const w=worker(),job=w.queue('a',hash,0,route,null,()=>{})
+    await vi.waitFor(()=>expect(w.read('a',job.id)?.state).toBe('READY'))
+    const ready=w.read('a',job.id)!,original=ready.measurement!
+    const measurement={...original,
+      ...(field==='scope'?{scope:'TRIM' as const}:{}),
+      ...(field==='date'?{measuredAt:'invalid'}:{}),
+      ...(field==='lra'?{lra:-1}:{}),
+      input:{...original.input!,
+        ...(field==='hash'?{contentHash:'b'.repeat(64)}:{}),
+        ...(field==='track'?{audioTrack:1}:{}),
+        ...(field==='routing'?{routing:{mode:'LEFT_ONLY' as const}}:{}),
+      },
+    }
+    db.update(operatorDecisions).set({payload:{...ready,measurement} as unknown as Record<string,unknown>}).where(eq(operatorDecisions.id,job.id)).run()
+    const before=versions()
+    expect(()=>requireMixMeasurement(db,job.id,hash,0,route)).toThrow('medição salva')
+    await expect(applyAudio(db,'a',{mode:'AUTO',gainDb:0,measured:null,routing:route,analysisId:job.id},'ITEM')).rejects.toThrow('medição salva')
+    expect(versions()).toEqual(before);expect(db.select().from(rundownItems).get()?.audio).toBeNull()
+  })
+  it('LRA negativo do medidor nunca vira READY',async()=>{
+    const w=worker(async()=>({...reading,lra:-1})),job=w.queue('a',hash,0,route,null,()=>{})
+    await vi.waitFor(()=>expect(w.read('a',job.id)?.state).toBe('FAILED'))
+    expect(w.read('a',job.id)?.measurement).toBeNull()
+  })
+  it('encerrar durante verificação inicial não inicia medidor atrasado',async()=>{
+    let release!:(path:string)=>void
+    const run=vi.fn(async()=>reading),w=worker(run,()=>new Promise(resolve=>{release=resolve})),job=w.queue('a',hash,0,route,null,()=>{})
+    await vi.waitFor(()=>expect(release).toBeTypeOf('function'))
+    w.close();release('/verified/ação.mkv')
+    await new Promise(resolve=>setTimeout(resolve,0))
+    expect(run).not.toHaveBeenCalled();expect(w.read('a',job.id)?.state).toBe('FAILED')
+  })
+  it('encerrar durante reverificação final não ressuscita READY',async()=>{
+    let release!:(path:string)=>void,checks=0
+    const w=worker(async()=>reading,()=>++checks===1?Promise.resolve('/verified/ação.mkv'):new Promise(resolve=>{release=resolve})),job=w.queue('a',hash,0,route,null,()=>{})
+    await vi.waitFor(()=>expect(release).toBeTypeOf('function'))
+    w.close();release('/verified/ação.mkv')
+    await new Promise(resolve=>setTimeout(resolve,0))
+    expect(w.read('a',job.id)?.state).toBe('FAILED');expect(w.read('a',job.id)?.measurement).toBeNull()
+  })
   it('conclui, reutiliza e usa só números do medidor, não do cliente',async()=>{
     const before=versions(),w=worker(),job=w.queue('a',hash,0,route,'operador',()=>{})
     await vi.waitFor(()=>expect(w.read('a',job.id)?.state).toBe('READY'))

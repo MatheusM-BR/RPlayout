@@ -14,6 +14,13 @@ describe('cadastro consistente de entradas', () => {
     expect(sourceName('ndi:host/cam', [{ reference: 'ndi:host/cam', label: 'Câmera São João' }])).toBe('Câmera São João')
     expect(sourceName('omt:HOST (PGM)', [])).toBe('HOST (PGM)')
   })
+  it('mantém o rótulo descoberto após canonicalização da referência',()=>{
+    const sources=[{reference:'NDI://HOST (CAM)',label:'Câmera São José Çãó'},
+      {reference:'omt://HOST (CAM)',label:'Estúdio OMT'}]
+    expect(sourceName('ndi:HOST (CAM)',sources)).toBe('Câmera São José Çãó')
+    expect(sourceName('omt:HOST (CAM)',sources)).toBe('Estúdio OMT')
+    expect(sourceName('ndi:host (cam)',sources)).toBe('host (cam)')
+  })
   it('restaura fonte e parâmetros ao editar, em vez de sobrescrever pelo primeiro anúncio', () => {
     expect(initialProtocolConfig('ndi:ESTÚDIO (CAM 2)').name).toBe('ESTÚDIO (CAM 2)')
     expect(initialProtocolConfig('omt:SERVIDOR (PGM)').name).toBe('SERVIDOR (PGM)')

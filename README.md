@@ -144,6 +144,18 @@ O servidor escuta em todas as interfaces (`HOST` e `PORT` mudam isso), então
 outro operador na mesma rede abre a mesma tela -- o estado ao vivo é o mesmo
 para todos.
 
+Na própria máquina, abra `http://localhost:4000` (ou a porta configurada).
+Na estação de controle, use `http://IP_DO_SERVIDOR:4000` (por exemplo,
+`http://192.168.42.172:4000`, se esse for o IP atual do servidor); ajuste a porta
+se necessário, sem fixar esse endereço no código. `localhost` sempre
+aponta para a máquina de quem abriu o navegador. A interface usa a API/WS do
+endereço da página, sem fixar o servidor em localhost. IPs das interfaces e
+nome real do servidor são admitidos na porta de escuta; um nome personalizado
+exige `RPLAYOUT_ALLOWED_HOSTS=playout.example` (ou `playout.example:8443` para
+porta externa explícita). Não use protocolo, caminho, senha ou curingas nessa
+lista. Isso não dispensa autenticação, regras de origem ou configuração segura
+de HTTPS/proxy. Não é necessário cadastrar todos os IPs da rede.
+
 `pnpm test` roda a suíte; `pnpm typecheck` e `pnpm lint` cobrem o resto.
 A grade semeada nasce a partir do relógio da máquina, então as âncoras fecham a
 qualquer hora do dia.

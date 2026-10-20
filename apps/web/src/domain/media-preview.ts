@@ -10,6 +10,14 @@ export function qcQualitySelected(selection:{id:string;hash:string;channelId:str
 export function qcInspectionUsesFrames(playbackUrl:string|null,videoError:boolean):boolean{
   return videoError || !playbackUrl
 }
+/** Only a failed, actually requested original JPEG can invalidate file QC.
+ * Live WHEP has no JPEG URL: two nulls are not evidence of a failed frame. */
+export function qcQualityFrameFailed(live:boolean,qualityFrames:boolean,requestedUrl:string|null,failedUrl:string|null):boolean{
+  return !live&&qualityFrames&&Boolean(requestedUrl)&&requestedUrl===failedUrl
+}
+export function qcInspectionVideoHasPicture(width:number,height:number):boolean{
+  return Number.isFinite(width)&&Number.isFinite(height)&&width>0&&height>0
+}
 /** Describe the mounted player, not a certification of original color/audio. */
 export function qcMonitorLabels(live:boolean,quality:boolean,framesOnly:boolean):{image:string;audio:string}{
   if(live)return quality?{image:'inspeção ao vivo codificada',audio:'PICOS DA INSPEÇÃO'}:{image:'preview ao vivo',audio:'PICOS DO PREVIEW'}
@@ -21,4 +29,13 @@ export function qcOriginalUrl(asset:{id:string;contentHash:string}):string{
 }
 export function qcQualityFrameUrl(asset:{id:string;contentHash:string},position:number):string{
   return `/api/assets/${encodeURIComponent(asset.id)}/frame/${position}.jpg?total=24&quality=original&hash=${encodeURIComponent(asset.contentHash)}`
+}
+/** Match the finite navigation strip without passing NaN/Infinity to its URL. */
+export function qcInspectionFrameAtTime(seconds:number,duration:number,total=24,original=false):number{
+  if(!Number.isSafeInteger(total)||total<1)return 0
+  if(!Number.isFinite(seconds)||!Number.isFinite(duration)||duration<=0)return 0
+  // Native original extraction uses i/(total-1); navigation thumbnails use
+  // bin midpoints. Choose the closest original point, not a thumbnail bin.
+  const index=original?Math.round(seconds/duration*(total-1)):Math.floor(seconds/duration*total)
+  return Math.max(0,Math.min(total-1,index))
 }

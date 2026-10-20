@@ -6,6 +6,7 @@ import { CategoriasPanel } from './CategoriasPanel.js'
 import { PastasPanel } from './PastasPanel.js'
 import { UsersPanel } from './UsersPanel.js'
 import { IntegrationsPanel } from './IntegrationsPanel.js'
+import {OwnershipDiagnosticsPanel} from './OwnershipDiagnosticsPanel.js'
 
 interface Props {
   channel: Channel
@@ -162,6 +163,7 @@ export function SettingsDialog({
           <div className="settings-section-title">USUÁRIOS E ACESSO</div>
           <UsersPanel onMessage={onMessage} />
           <IntegrationsPanel channelId={channel.id} onMessage={onMessage} />
+          <OwnershipDiagnosticsPanel channelId={channel.id}/>
           {onOpenAudit && <div className="field"><button className="btn" onClick={onOpenAudit}>auditoria de operações</button></div>}
           <div className="field"><button className="btn" onClick={() => void api.logout().then(() => window.location.reload())}>sair da sessão</button></div>
 

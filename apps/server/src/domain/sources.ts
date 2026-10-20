@@ -5,9 +5,12 @@ import { eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import { guestKeys, liveSources } from '../db/schema.js'
 import { mediaProcessEnvironment } from './media-process-environment.js'
+import {configuredSourceEndpoint} from './item-source-binding.js'
 
 /** Uma fonte ao vivo que o operador pode pôr na grade. */
 export interface LiveSource {
+  readonly configuredId?: string
+  readonly channelId?: string
   /** Referência que vai no item: `sdi:0`, `ndi:Estúdio`, `guest:<chave>`. */
   readonly reference: string
   readonly label: string
@@ -28,6 +31,12 @@ export interface SourceList {
   readonly ndi: SourceFamily
   readonly omt: SourceFamily
   readonly guests: SourceFamily
+}
+/** Request-local filtering; never alter discovery's shared cache. Hardware
+ * discoveries are host-wide; configured sources and guests belong to channels. */
+export function scopedSourceList(list:SourceList,allowed:(channelId:string)=>boolean,channelId?:string):SourceList{
+  const family=(value:SourceFamily):SourceFamily=>({...value,sources:value.sources.filter(source=>source.channelId!==undefined?allowed(source.channelId)&&(!channelId||source.channelId===channelId):source.discovery!=='CONFIGURED'&&source.family!=='GUEST')})
+  return {sdi:family(list.sdi),sdiOutputs:family(list.sdiOutputs),ndi:family(list.ndi),omt:family(list.omt),guests:family(list.guests)}
 }
 
 /**
@@ -148,22 +157,16 @@ export class Sources {
 
     const mergedSdiSources = [...sdiFamily.sources]
     for (const saved of savedSdi) {
-      if (!mergedSdiSources.some((s) => s.reference === saved.reference)) {
-        mergedSdiSources.push(saved)
-      }
+      mergedSdiSources.push(saved)
     }
 
     const mergedNdiSources = [...ndiFamily.sources]
     for (const saved of savedNdi) {
-      if (!mergedNdiSources.some((s) => s.reference === saved.reference)) {
-        mergedNdiSources.push(saved)
-      }
+      mergedNdiSources.push(saved)
     }
     const mergedOmtSources = [...omtFamily.sources]
     for (const saved of savedOmt) {
-      if (!mergedOmtSources.some((s) => s.reference === saved.reference)) {
-        mergedOmtSources.push(saved)
-      }
+      mergedOmtSources.push(saved)
     }
 
     const list: SourceList = {
@@ -204,15 +207,9 @@ export class Sources {
       return rows
         .filter((row) => row.kind === 'SDI' || row.kind === 'NDI' || row.kind === 'OMT')
         .map((row) => ({
-        reference: row.targetUrl.startsWith('ndi:') || row.targetUrl.startsWith('sdi:')
-          ? row.targetUrl
-          : row.kind === 'NDI'
-            ? `ndi:${row.targetUrl}`
-          : row.kind === 'SDI'
-              ? `sdi:${row.targetUrl}`
-              : row.kind === 'OMT' && !row.targetUrl.startsWith('omt:')
-                ? `omt:${row.targetUrl}`
-                : row.targetUrl,
+        configuredId: row.id,
+        channelId: row.channelId,
+        reference: configuredSourceEndpoint(row),
         label: row.name,
         discovery: 'CONFIGURED' as const,
         family: (row.kind === 'NDI' ? 'NDI' : row.kind === 'OMT' ? 'OMT' : 'SDI') as 'SDI' | 'NDI' | 'OMT',
@@ -229,6 +226,7 @@ export class Sources {
       available: true,
       reason: null,
       sources: rows.map((row) => ({
+        channelId: row.channelId,
         reference: `guest:${row.streamKey}`,
         label: row.label,
         family: 'GUEST' as const,

@@ -1,9 +1,15 @@
 import {
   effectiveGainDb,
+  durationIn,
+  isStill,
+  secondsToFrames,
+  STILL_DEFAULT_SECONDS,
   qcApproved,
   assessQc,
   inferLiveSourceType,
   resolveAudio,
+  audioCutIdentity,
+  hasMatchingAudioMeasurement,
   resolveTrim,
   trimDuration,
   type AudioLevel,
@@ -17,8 +23,10 @@ import {
   type RundownItem,
   type Trim,
   type ValueSource,
+  type OnAirState,
 } from '@rplayout/protocol'
 import { resolve } from '@rplayout/scheduler'
+import {executionTrim,declaredFileTrim} from './execution-trim.js'
 
 /**
  * Duração no ar do item: o corte manda quando existe arquivo; sem arquivo,
@@ -37,6 +45,7 @@ export function itemDuration(
   }
   if (!asset) return item.durationOverride ?? 0
   if (item.durationOverride !== null) return item.durationOverride
+  if (isStill(asset)) return secondsToFrames(STILL_DEFAULT_SECONDS,rate)
   return trimDuration(resolveTrim(item.trim, asset, rate).value)
 }
 
@@ -117,6 +126,10 @@ export interface RundownView {
   readonly items: readonly ItemView[]
   readonly schedule: ResolveResult
 }
+export function assertTrimAudio(entry:Pick<ItemView,'item'|'asset'|'audio'>,cut:Trim,rate:Rate):void {
+  const level=entry.item.audio??entry.asset?.defaultAudio
+  if(level?.mode==='AUTO'&&level.measured?.scope==='TRIM'&&!hasMatchingAudioMeasurement(level,entry.asset?.contentHash,entry.item.audioTrack??0,audioCutIdentity(cut,rate)))throw new Error('O corte operacional não corresponde à medição de áudio. Meça este trecho novamente ou use ganho manual; o PGM será preservado.')
+}
 
 export function buildView(
   rundown: Rundown,
@@ -124,7 +137,7 @@ export function buildView(
   items: readonly RundownItem[],
   assets: ReadonlyMap<string, MediaAsset>,
   now: Frames | null,
-  onAir: { itemId: string; startedAt: Frames; elapsed: Frames } | null,
+  onAir: OnAirState | null,
 ): RundownView {
   const ordered = [...items].sort((a, b) => a.order - b.order)
 
@@ -151,7 +164,9 @@ export function buildView(
     }
 
     const trim = resolveTrim(item.trim, asset, channel.rate)
-    const audio = resolveAudio(item.audio, asset,item.audioTrack??0)
+    let boundCut:ReturnType<typeof audioCutIdentity>|undefined
+    try{boundCut=audioCutIdentity(isStill(asset)?trim.value:declaredFileTrim(item,asset,channel.rate),channel.rate)}catch{}
+    const audio = resolveAudio(item.audio, asset,item.audioTrack??0,boundCut)
     return {
       item,
       asset,
@@ -181,13 +196,29 @@ export function buildView(
     return rundown.plannedStart
   })()
 
+  // Invalid declared cuts reserve no time. Elastic growth is bounded by actual
+  // file capacity, so unfillable gaps remain visible instead of fabricated.
+  const timingUnavailable=views.flatMap(entry=>{
+    if(!entry.asset||entry.item.sourceRef||entry.item.liveEndpoint||entry.item.type==='LIVE'||entry.item.id===onAir?.itemId)return []
+    try{
+      const cut=executionTrim(entry,undefined,channel.rate)
+      assertTrimAudio(entry,cut,channel.rate)
+      if(!isStill(entry.asset)&&entry.item.elastic&&entry.item.elastic.min>durationIn(entry.asset,channel.rate)-cut.in)throw new Error('O mínimo elástico excede os quadros disponíveis no arquivo.')
+      return []
+    }catch(error){return [{entry,message:error instanceof Error?error.message:'Corte operacional inválido.'}]}
+  })
+  const invalidCuts=new Set(timingUnavailable.map(row=>row.entry.item.id))
   const schedule = resolve({
     rate: channel.rate,
     items: ordered.map((item) => {
       const asset = item.mediaId ? assets.get(item.mediaId) : undefined
       const plan = toPlanItem(item, asset, channel.rate)
-      if (item.id !== onAir?.itemId && item.mediaId && (!asset || asset.probeError || asset.ignored || !qcApproved(asset.qcStatus ?? 'APPROVED') || (channel.qcProfile && !assessQc(asset, channel.qcProfile).playable))) {
-        return { ...plan, duration: 0, minDuration: 0, anchor: { kind: 'FLOW' as const }, locked: false }
+      if (item.id !== onAir?.itemId && item.mediaId && (invalidCuts.has(item.id)||!asset || asset.probeError || asset.ignored || !qcApproved(asset.qcStatus ?? 'APPROVED') || (channel.qcProfile && !assessQc(asset, channel.qcProfile).playable))) {
+        return { ...plan, duration: 0, minDuration: 0, elastic:null, anchor: { kind: 'FLOW' as const }, locked: false }
+      }
+      if(asset&&!isStill(asset)&&plan.elastic){
+        const available=durationIn(asset,channel.rate)-resolveTrim(item.trim,asset,channel.rate).value.in
+        if(Number.isFinite(available))return {...plan,elastic:{...plan.elastic,max:Math.min(plan.elastic.max,available)}}
       }
       return plan
     }),
@@ -200,11 +231,16 @@ export function buildView(
 
   const unavailable = views.filter((entry) => entry.item.id !== onAir?.itemId &&
     entry.item.mediaId && (!entry.asset || entry.asset.probeError || entry.asset.ignored || !qcApproved(entry.asset.qcStatus ?? 'APPROVED') || (channel.qcProfile && !assessQc(entry.asset, channel.qcProfile).playable)))
-  const unavailableIds = new Set(unavailable.map((entry) => entry.item.id))
+  for(const entry of views){
+    const level=entry.item.audio??entry.asset?.defaultAudio
+    if(!entry.asset||level?.mode!=='AUTO'||level.measured?.scope!=='TRIM'||invalidCuts.has(entry.item.id)||entry.item.id===onAir?.itemId)continue
+    try{assertTrimAudio(entry,executionTrim(entry,schedule.items.find(row=>row.id===entry.item.id),channel.rate,{items:views,schedule}),channel.rate)}catch(error){timingUnavailable.push({entry,message:error instanceof Error?error.message:'Corte de áudio inválido.'})}
+  }
+  const unavailableIds = new Set([...unavailable.map((entry) => entry.item.id),...timingUnavailable.map(row=>row.entry.item.id)])
   return { rundown, channel, items: views, schedule: {
     ...schedule,
     items: schedule.items.map((entry) => unavailableIds.has(entry.id) ? { ...entry, state: 'DROPPED' as const } : entry),
-    conflicts: [...schedule.conflicts, ...unavailable.map((entry) => ({
+    conflicts: [...schedule.conflicts,...timingUnavailable.map(({entry,message})=>({kind:'MEDIA_UNAVAILABLE' as const,itemId:entry.item.id,frames:0,severity:'ERROR' as const,message:`Será pulado: ${message}`})), ...unavailable.map((entry) => ({
       kind: 'MEDIA_UNAVAILABLE' as const, itemId: entry.item.id, frames: 0,
       severity: 'ERROR' as const, message: `Será pulado: ${(entry.asset?.probeError ?? (entry.asset && channel.qcProfile && assessQc(entry.asset, channel.qcProfile).errors.join(' '))) || (!qcApproved(entry.asset?.qcStatus ?? 'APPROVED') ? 'arquivo sem aprovação de QC' : 'arquivo removido do acervo')}`,
     }))],

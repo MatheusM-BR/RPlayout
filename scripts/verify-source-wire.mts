@@ -29,8 +29,8 @@ async function wait(description: string, check: () => boolean | Promise<boolean>
   while (performance.now() < end) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 100)) }
   throw new Error(description)
 }
-async function api(path: string, body?: object, method = body ? 'POST' : 'GET', expected = 200) {
-  const response = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(5000) })
+async function api(path: string, body?: object, method = body ? 'POST' : 'GET', expected = 200,headers:Record<string,string>={}) {
+  const response = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json',...headers }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(5000) })
   const text = await response.text(); assert.ok(!text.includes(privateMarker), 'Credencial vazou na resposta HTTP')
   assert.equal(response.status, expected, `${method} ${path}: ${response.status}`)
   return JSON.parse(text) as any
@@ -68,7 +68,8 @@ try {
   await database.db.insert(rundownItems).values({ id: 'live', rundownId: 'rd', sortOrder: 0, title: 'Entrada protegida', type: 'LIVE', sourceRef: raw, liveEndpoint: raw, durationOverride: 1500, minDuration: 0, anchor: { kind: 'FLOW' }, onOverrun: 'PUSH', autoNext: false, loop: false, locked: false })
   start()
   await wait('Servidor compilado não iniciou', async () => { try { return (await api('/api/health')).ok === true } catch { return false } })
-  const source = await api('/api/sources/live', { channelId: 'wire', kind: 'SRT', name: 'EXTERNA ÇÃO', targetUrl: raw }, 'POST', 201)
+  const sourceReview=await api('/api/channels/wire/live-source-review')
+  const source = await api('/api/sources/live', { channelId: 'wire', kind: 'SRT', name: 'EXTERNA ÇÃO', targetUrl: raw }, 'POST', 201,{'if-match':`"sources:wire:${sourceReview.revision}"`})
   assert.equal(source.credentialProtected, true); const reference = source.controlRef
   assert.match(reference, /^srt:protected:v1:/)
   await connect()
@@ -78,7 +79,8 @@ try {
   assert.equal(cue.live.transport.preview.source, reference)
   await wait('Tick WebSocket não refletiu o CUE protegido', () => messages.some(entry => entry.value.type === 'live' && entry.value.transport?.preview?.source === reference))
   assert.ok(messages.every(entry => !entry.leak))
-  await api(`/api/sources/live/${source.id}`, { name: 'APELIDO ÇÃO', targetUrl: reference }, 'PUT')
+  const renameReview=await api('/api/channels/wire/live-source-review')
+  await api(`/api/sources/live/${source.id}`, { name: 'APELIDO ÇÃO', targetUrl: reference }, 'PUT',200,{'if-match':`"sources:wire:${renameReview.revision}"`})
   assert.equal((await getLiveSource(database.db, source.id, true))?.targetUrl, raw)
   await api('/api/channels/wire/transport', { action: 'take' })
   await api('/api/channels/wire/transport', { action: 'stop' })

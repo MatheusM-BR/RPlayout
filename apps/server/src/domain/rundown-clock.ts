@@ -1,4 +1,4 @@
-import { msToFrames, type Rate } from '@rplayout/protocol'
+import { msToFrames, type Rate,type OnAirState } from '@rplayout/protocol'
 
 export const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 
@@ -22,7 +22,7 @@ export function rundownFrames(date: string, rate: Rate, now = new Date()): numbe
 /** Transport elapsed is authoritative. Rebase only the planner's copy;
  * never reset a decoder, seek PGM, or rewrite its transport/checkpoint clock. */
 export function rundownClock(date: string, rate: Rate, now: Date,
-  onAir: { itemId: string; startedAt: number; elapsed: number } | null) {
+  onAir: OnAirState | null) {
   const frames = rundownFrames(date, rate, now)
   return { now: frames, onAir: frames === null || !onAir ? null : { ...onAir, startedAt: frames - onAir.elapsed } }
 }

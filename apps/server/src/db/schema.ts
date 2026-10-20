@@ -30,6 +30,21 @@ export const channelConfigurationVersions=sqliteTable('channel_configuration_ver
 export const qcReviewVersions=sqliteTable('qc_review_versions',{
   assetId:text('asset_id').primaryKey(),version:integer('version').notNull(),
 })
+export const channelProjectVersions=sqliteTable('channel_project_versions',{
+  channelId:text('channel_id').primaryKey(),version:integer('version').notNull(),
+})
+export const liveSourceVersions=sqliteTable('live_source_versions',{
+  channelId:text('channel_id').primaryKey(),version:integer('version').notNull(),
+})
+export const multiviewVersions=sqliteTable('multiview_versions',{
+  scope:text('scope').primaryKey(),version:integer('version').notNull(),
+})
+export const scheduleRuleVersions=sqliteTable('schedule_rule_versions',{
+  channelId:text('channel_id').primaryKey(),version:integer('version').notNull(),
+})
+export const graphicsVersions=sqliteTable('graphics_versions',{
+  scope:text('scope').primaryKey(),version:integer('version').notNull(),
+})
 export const channels = sqliteTable('channels', {
   archivedAt: text('archived_at'),
   qcProfile: text('qc_profile', { mode: 'json' }).$type<import('@rplayout/protocol').QcProfile | null>(),
@@ -218,6 +233,9 @@ export const healthEvents = sqliteTable('health_events', {
   message: protectedDiagnosticText('message', 'health_events.message'),
   occurredAt: text('occurred_at').notNull(),
   acknowledgedAt: text('acknowledged_at'),
+  resolvedAt: text('resolved_at'),
+  observationEndedAt: text('observation_ended_at'),
+  context: protectedJson<import('@rplayout/protocol').IncidentContext>('context','health_events.context'),
 })
 
 export const integrations = sqliteTable('integrations', {
@@ -246,6 +264,7 @@ export const secondaryEventRuns = sqliteTable('secondary_event_runs', {
 
 /** At-least-once deliveries. The receiver can deduplicate with the stable ID. */
 export const integrationDeliveries = sqliteTable('integration_deliveries', {
+  ownerHost:text('owner_host'),ownerPid:integer('owner_pid'),ownerBoot:text('owner_boot'),manualTest:integer('manual_test',{mode:'boolean'}).notNull().default(false),
   id: text('id').primaryKey(), integrationId: text('integration_id').notNull(), channelId: text('channel_id'),
   event: text('event').notNull(), target: protectedText('target','integration_deliveries.target').notNull(),
   payload: protectedJson<Record<string, unknown>>('payload','integration_deliveries.payload').notNull(),
@@ -274,6 +293,7 @@ export const rundownItems = sqliteTable('rundown_items', {
   title: text('title').notNull(),
   mediaId: text('media_id'),
   sourceRef: protectedText('source_ref', 'rundown_items.source_ref'),
+  configuredSourceId: text('configured_source_id'),
   trimmable: integer('trimmable', { mode: 'boolean' }).notNull().default(false),
   optional: integer('optional', { mode: 'boolean' }).notNull().default(false),
   protected: integer('protected', { mode: 'boolean' }).notNull().default(false),

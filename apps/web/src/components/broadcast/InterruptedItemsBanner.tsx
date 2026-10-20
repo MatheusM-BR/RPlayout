@@ -2,6 +2,7 @@ import { useEffect, useState,useRef } from 'react'
 import { api } from '../../api'
 import { formatTimecode, type Rate } from '@rplayout/protocol'
 import {commandRequestId} from '../../domain/request-id.js'
+import {interruptionResultMessage,interruptionFailureMessage} from '../../domain/interruption-feedback.js'
 
 export function InterruptedItemsBanner({ channelId, rate }: { channelId: string; rate: Rate }) {
   return <InterruptedItemsContent key={channelId} channelId={channelId} rate={rate}/>
@@ -24,17 +25,20 @@ function InterruptedItemsContent({channelId,rate}:{channelId:string;rate:Rate}){
     if(action==='ACKNOWLEDGE' && !window.confirm('Encerrar esta pendência sem confirmar sucesso nem repetir o retorno? PGM deve estar parado e CUE limpo.'))return
     if(action==='DISCARD' && !window.confirm('Descartar apenas o retorno deste VT, preservando o histórico e o PGM atual?'))return
     busyRef.current=true;setBusy(true); setMessage(null)
+    let sent=false
     try {
       if(action==='ACKNOWLEDGE'){
         if(!item.operation)return
+        sent=true
         await api.acknowledgeInterruption(channelId,item.id,item.operation.requestId,item.reviewToken)
         if(mounted.current)setMessage('Pendência encerrada sem novo TAKE ou confirmação física. Cursor não foi reaberto para repetição.')
       }else{
-        const result=await api.resolveInterruption(channelId,item.id,action,commandRequestId(),item.reviewToken)
-        if(mounted.current)setMessage(action==='DISCARD'?'Retorno descartado; histórico e PGM preservados.':result.run.message??(result.run.nativeProgramConfirmed?'Retorno confirmado pelo engine; confira o sinal no destino.':'Retorno somente simulado; não confirma programa nativo.'))
+        const requestId=commandRequestId();sent=true
+        const result=await api.resolveInterruption(channelId,item.id,action,requestId,item.reviewToken)
+        if(mounted.current)setMessage(interruptionResultMessage(action,result.run))
       }
       if(mounted.current)await refresh()
-    } catch (error) {if(mounted.current){setMessage(error instanceof Error ? error.message : 'Não foi possível resolver a interrupção.');await refresh()}}
+    } catch (error) {if(mounted.current){setMessage(interruptionFailureMessage(error,sent));await refresh()}}
     finally {busyRef.current=false;if(mounted.current)setBusy(false)}
   }
   if (!items.length && !message) return null

@@ -5,6 +5,8 @@ import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { installationVault } from './secret-vault.js'
+import type {OperationalMetricFrame} from './operational-metrics.js'
+import {persistMetricHistory} from './metric-history-store.js'
 const run = promisify(execFile)
 type CpuCounters = { idle: number; total: number }
 export function cpuUtilization(previous: CpuCounters | null, current: CpuCounters): number | null {
@@ -12,6 +14,7 @@ export function cpuUtilization(previous: CpuCounters | null, current: CpuCounter
   return Math.max(0, Math.min(100, Math.round((1-(current.idle-previous.idle)/(current.total-previous.total))*1000)/10))
 }
 export interface HostMetricSample {
+  operations?:OperationalMetricFrame
   generatedAt: string; sampleIntervalSeconds: number
   cpu: { percent: number | null; cores: number }
   memory: { totalBytes: number; usedBytes: number; freeBytes: number; percent: number | null }
@@ -24,6 +27,7 @@ export interface HostMetricSample {
 /** A single collector per host, shared by all clients. Absent counters stay
  * null. It runs independently of browser attendance and persists its samples. */
 export class HostMetrics {
+  onCapture:(()=>Promise<OperationalMetricFrame>)|null=null
   onIncident: ((state: 'degraded' | 'running',message:string,sample:HostMetricSample) => void) | null = null
   private previousCpu: CpuCounters | null = null
   private previousNetwork: { received: number; sent: number; at: number } | null = null
@@ -50,6 +54,13 @@ export class HostMetrics {
   }
   historyCount(since: string): number {
     return (this.sqlite.prepare('SELECT COUNT(*) AS count FROM host_metric_samples WHERE sampled_at>=?').get(since) as { count: number }).count
+  }
+  historyPage(since:string,until:string,before:string|undefined,limit:number){
+    const size=Math.max(1,Math.min(5000,limit))
+    const rows=this.sqlite.prepare('SELECT sampled_at,payload FROM host_metric_samples WHERE sampled_at>=? AND sampled_at<=? AND sampled_at<? ORDER BY sampled_at DESC LIMIT ?').all(since,until,before??'9999',size+1) as Array<{sampled_at:string;payload:string}>
+    const selected=rows.slice(0,size)
+    const totalSamples=(this.sqlite.prepare('SELECT COUNT(*) AS count FROM host_metric_samples WHERE sampled_at>=? AND sampled_at<=?').get(since,until) as {count:number}).count
+    return {totalSamples,nextBefore:rows.length>size?selected.at(-1)!.sampled_at:null,samples:selected.map(row=>({sampledAt:row.sampled_at,sample:JSON.parse(row.payload) as HostMetricSample}))}
   }
   private async collect(): Promise<HostMetricSample> {
     const cores = cpus()
@@ -106,17 +117,19 @@ export class HostMetrics {
         } catch { sample.network.error = 'Contadores de rede indisponíveis; tráfego não estimado.' }
       })(),
     ])
-    this.cached = sample
+    if(this.onCapture&&!this.closed){
+      try{sample.operations=await this.onCapture()}catch{sample.operations={version:1,capturedAt:new Date().toISOString(),available:false,channelsTruncated:false,channels:[]}}
+    }
     if (!this.closed) {
-      this.sqlite.prepare('INSERT OR REPLACE INTO host_metric_samples VALUES (?,?)').run(sample.generatedAt, JSON.stringify(sample))
-      this.sqlite.prepare('DELETE FROM host_metric_samples WHERE sampled_at<?').run(new Date(Date.now()-14*86400_000).toISOString())
       const risks = [percent !== null && percent > 90 ? 'CPU acima de 90%' : '', sample.memory.percent !== null && sample.memory.percent > 90 ? 'RAM acima de 90%' : '', sample.disk.percentUsed !== null && sample.disk.percentUsed > 90 ? 'Volume do acervo acima de 90%' : '', sample.disk.error ?? ''].filter(Boolean)
       const state = risks.join('; ') || 'healthy'
-      if (state !== this.state) {
-        this.state = state
-        this.sqlite.prepare('INSERT INTO health_events (id,component,state,severity,message,occurred_at) VALUES (?,?,?,?,?,?)').run(randomUUID(),'HOST',risks.length ? 'degraded' : 'running',risks.length ? 'WARN' : 'INFO',installationVault().encrypt(risks.join('; ') || 'Recursos do servidor dentro dos limites monitorados.', 'health_events.message'),sample.generatedAt)
-        this.onIncident?.(risks.length ? 'degraded' : 'running',risks.join('; ') || 'Recursos recuperados.',sample)
-      }
+      const changed=state!==this.state
+      persistMetricHistory(this.sqlite,sample,Date.now(),()=>{
+        if(changed)this.sqlite.prepare('INSERT INTO health_events (id,component,state,severity,message,occurred_at) VALUES (?,?,?,?,?,?)').run(randomUUID(),'HOST',risks.length ? 'degraded' : 'running',risks.length ? 'WARN' : 'INFO',installationVault().encrypt(risks.join('; ') || 'Recursos do servidor dentro dos limites monitorados.', 'health_events.message'),sample.generatedAt)
+      })
+      this.cached=sample
+      this.state=state
+      if(changed)this.onIncident?.(risks.length ? 'degraded' : 'running',risks.join('; ') || 'Recursos recuperados.',sample)
     }
     return sample
   }

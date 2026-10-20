@@ -14,7 +14,8 @@ import {
   type SrtTelemetry,
 } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
-import { liveSources, multiviewConfigs } from '../db/schema.js'
+import { liveSources } from '../db/schema.js'
+import {storedMultiview,writeMultiview} from './multiview-edit.js'
 import { sourceWire } from './source-wire.js'
 
 export {
@@ -93,7 +94,8 @@ export interface FailoverEvent {
 }
 
 /**
- * Gerenciador de Failover e Redundância Primário/Backup com comutação limpa (glitch-free hold).
+ * Seleção de papel/telemetria Primary/Backup. A decisão em memória e seus
+ * listeners não comprovam comutação nativa, imagem sem falhas ou saída física.
  */
 export class FailoverManager {
   private activeRoles = new Map<string, RedundancyRole>() // sourceId ou pairId -> role
@@ -198,7 +200,6 @@ export class FailoverManager {
     options: { operator?: string; automatic?: boolean } = {},
   ): FailoverEvent {
     const fromRole = this.getActiveRole(source.id, source.role)
-    this.setActiveRole(source.id, targetRole)
 
     const event: FailoverEvent = {
       sourceId: source.id,
@@ -211,6 +212,13 @@ export class FailoverManager {
       automatic: options.automatic ?? false,
     }
 
+    return this.applyRecordedDecision(event)
+  }
+
+  /** Apply only after the caller's durable decision has committed. This
+   * method updates local metadata; it is not an engine publication command. */
+  applyRecordedDecision(event:FailoverEvent):FailoverEvent {
+    this.setActiveRole(event.sourceId,event.toRole)
     for (const listener of this.listeners) {
       try {
         listener(event)
@@ -324,6 +332,13 @@ export async function createLiveSource(
   db: Db,
   input: CreateLiveSourceInput,
 ): Promise<LiveSourceRecord> {
+  const record=buildLiveSourceRecord(input)
+  await db.insert(liveSources).values(record)
+  return getLiveSource(db, record.id, false) as Promise<LiveSourceRecord>
+}
+
+/** Pure preparation; guarded HTTP writes use this inside their own transaction. */
+export function buildLiveSourceRecord(input:CreateLiveSourceInput):typeof liveSources.$inferInsert & {id:string} {
   const id = `live-${randomUUID()}`
   let targetUrl = sourceWire().resolve(input.targetUrl ?? '')
 
@@ -355,8 +370,7 @@ export async function createLiveSource(
     createdAt: now,
   }
 
-  await db.insert(liveSources).values(record)
-  return getLiveSource(db, id, false) as Promise<LiveSourceRecord>
+  return {...record,id}
 }
 
 export async function updateLiveSource(
@@ -366,6 +380,13 @@ export async function updateLiveSource(
 ): Promise<LiveSourceRecord | null> {
   const existing = await getLiveSource(db, id, true)
   if (!existing) return null
+
+  const updates=buildLiveSourceUpdates(existing,input)
+  await db.update(liveSources).set(updates).where(eq(liveSources.id, id))
+  return getLiveSource(db, id, false)
+}
+
+export function buildLiveSourceUpdates(existing:LiveSourceRecord,input:UpdateLiveSourceInput):Partial<typeof liveSources.$inferInsert> {
 
   const updates: Partial<typeof liveSources.$inferInsert> = {}
   if (input.name !== undefined) updates.name = input.name
@@ -397,8 +418,7 @@ export async function updateLiveSource(
       : null
   }
 
-  await db.update(liveSources).set(updates).where(eq(liveSources.id, id))
-  return getLiveSource(db, id, false)
+  return updates
 }
 
 export async function deleteLiveSource(db: Db, id: string): Promise<boolean> {
@@ -410,9 +430,7 @@ export async function getMultiviewConfig(
   db: Db,
   channelId?: string,
 ): Promise<{ id: string; channelId: string | null; layout: MultiviewLayout; cells: MultiviewCell[]; updatedAt: string }> {
-  const targetId = channelId ? `mv-${channelId}` : 'mv-default'
-  const rows = await db.select().from(multiviewConfigs).where(eq(multiviewConfigs.id, targetId))
-  const row = rows[0]
+  const row = storedMultiview(db,channelId??null)
 
   if (row) {
     return {
@@ -425,11 +443,11 @@ export async function getMultiviewConfig(
   }
 
   return {
-    id: targetId,
+    id: '',
     channelId: channelId ?? null,
     layout: 'GRID_2X2',
     cells: [],
-    updatedAt: new Date().toISOString(),
+    updatedAt: '1970-01-01T00:00:00.000Z',
   }
 }
 
@@ -439,34 +457,5 @@ export async function saveMultiviewConfig(
   layout: MultiviewLayout,
   cells: MultiviewCell[],
 ): Promise<{ id: string; channelId: string | null; layout: MultiviewLayout; cells: MultiviewCell[]; updatedAt: string }> {
-  const targetId = channelId ? `mv-${channelId}` : 'mv-default'
-  const now = new Date().toISOString()
-
-  const existing = await db.select().from(multiviewConfigs).where(eq(multiviewConfigs.id, targetId))
-  if (existing.length > 0) {
-    await db
-      .update(multiviewConfigs)
-      .set({
-        layout,
-        cells,
-        updatedAt: now,
-      })
-      .where(eq(multiviewConfigs.id, targetId))
-  } else {
-    await db.insert(multiviewConfigs).values({
-      id: targetId,
-      channelId: channelId ?? null,
-      layout,
-      cells,
-      updatedAt: now,
-    })
-  }
-
-  return {
-    id: targetId,
-    channelId: channelId ?? null,
-    layout,
-    cells,
-    updatedAt: now,
-  }
+  return db.transaction(tx=>writeMultiview(tx,channelId??null,layout,cells),{behavior:'immediate'})
 }

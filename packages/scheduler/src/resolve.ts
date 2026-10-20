@@ -30,6 +30,7 @@ interface Work {
   referenceEnd: Frames
   readonly item: PlanItem
   duration: Frames
+  readonly mountedDuration:Frames|null
   dropped: boolean
   start: Frames
   end: Frames
@@ -60,7 +61,7 @@ function matchingZones(w: Work): readonly ProtectedTimingZone[] {
     (w.start < zone.to && w.end > zone.from))
 }
 function isProtected(w: Work, anchored?: Work): boolean {
-  return w.item.timingFlags?.protected === true || w.item.locked === true ||
+  return w.mountedDuration!==null || w.item.timingFlags?.protected === true || w.item.locked === true ||
     matchingZones(w).some(zone => zone.priority >= (anchored ? anchorPriority(anchored.item.anchor) : 1))
 }
 
@@ -410,6 +411,9 @@ function recoverTime(
       const w = work[k]
       if (!w || w.dropped) continue
       if (w.start >= windowTo) {
+        // A missed deadline cannot erase the native PGM from the plan. A
+        // confirmed priority TAKE, not this calculation, changes the tally.
+        if(w.mountedDuration!==null)continue
         const cut = w.duration
         w.dropped = true
         w.duration = 0
@@ -540,6 +544,8 @@ export function resolve(input: ResolveInput): ResolveResult {
   if (zones.some(zone => !Number.isSafeInteger(zone.from) || !Number.isSafeInteger(zone.to) || zone.from < 0 || zone.to <= zone.from || ![1,2,3,4,5].includes(zone.priority))) throw new Error('Zona protegida inválida.')
 
   const work: Work[] = items.map((item) => {
+    const mountedDuration=input.onAir?.itemId===item.id?input.onAir.mountedDuration??null:null
+    if(mountedDuration!==null&&(!Number.isSafeInteger(mountedDuration)||mountedDuration<=0))throw new Error('Duração montada do PGM inválida.')
     // Suporte a items LIVE: utiliza estimatedDuration de liveConfig se configurado
     const baseDuration =
       item.liveConfig?.estimatedDuration && item.liveConfig.estimatedDuration > 0
@@ -549,7 +555,8 @@ export function resolve(input: ResolveInput): ResolveResult {
     return {
       zones, referenceStart: 0, referenceEnd: 0,
       item,
-      duration: baseDuration,
+      duration: mountedDuration??baseDuration,
+      mountedDuration,
       dropped: false,
       start: 0,
       end: 0,
@@ -617,7 +624,7 @@ export function resolve(input: ResolveInput): ResolveResult {
     w.pinnedStart = onAir.startedAt
     // Se estiver no ar e exceder a duração planejada (ex: LIVE ou atraso VT), estende a duração no cálculo
     const currentAired = onAir.elapsed
-    if (currentAired > w.duration) {
+    if (w.mountedDuration===null&&currentAired > w.duration) {
       w.duration = currentAired
     }
     w.aired = Math.min(currentAired, w.duration)
@@ -758,6 +765,7 @@ export function resolve(input: ResolveInput): ResolveResult {
     end: w.end,
     duration: w.duration,
     plannedDuration: w.item.duration,
+    ...(w.mountedDuration===null?{}:{mountedDuration:w.mountedDuration}),
     state: w.dropped ? 'DROPPED' : w.state,
     adjustments: w.adjustments,
     anchorHit: w.anchorHit,

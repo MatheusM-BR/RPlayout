@@ -5,7 +5,8 @@ import cors from '@fastify/cors'
 import fastifyStatic from '@fastify/static'
 import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
-import { createApp, pgmProbeFor, runtimeFor, syncDistribution } from './app.js'
+import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation } from './app.js'
+import {EngineTransport} from './domain/engine.js'
 import { BACKUP_EVERY_HOURS, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS } from './config.js'
 import { listChannels, listRundowns } from './db/repo.js'
 import { backupDatabase } from './domain/backup.js'
@@ -14,18 +15,45 @@ import { registerRoutes } from './routes.js'
 import { healthEvents } from './db/schema.js'
 import { severityOf } from './domain/health.js'
 import { emitIntegrationEvent } from './domain/integrations.js'
+import {persistPgmSignalIncidents} from './domain/pgm-signal-incidents.js'
+import {captureIncidentContext} from './domain/incident-context.js'
+import {operationalMetricLabels} from './domain/operational-metric-labels.js'
+import {pruneHealthHistory} from './domain/health-retention.js'
 import { executionHorizon, horizonWarning } from './domain/continuous.js'
 import { recordHorizonWarning } from './domain/horizon-ledger.js'
 import { AccessControl } from './domain/access.js'
+import {expireSessions} from './domain/session-expiry.js'
 import { warmChannelCache } from './domain/published-cache-plan.js'
 import { redactUrl } from './domain/relays.js'
 import { sourceWire } from './domain/source-wire.js'
+import {isRecoveryRehearsal} from './domain/recovery-rehearsal.js'
+import {createStagedRestoredApp} from './domain/staged-restored-app.js'
+import {activateRestoredApp} from './domain/activate-restored-app.js'
+import {databaseStorageStatus} from './db/process-database.js'
+import {prepareUpgradeProfileAdoption} from './domain/upgrade-profile-adoption.js'
+import {startupTrace} from './domain/startup-trace.js'
+import {BackgroundTaskGuard} from './domain/background-task-guard.js'
+import {privateHttpLogger,privateStartupDiagnostic,registerHttpPrivacy} from './domain/http-privacy.js'
+import {parseAllowedOrigins} from './domain/http-origin-policy.js'
+import {parseAllowedHosts,createHttpHostPolicy,registerHttpHostPolicy} from './domain/http-host-policy.js'
+import {registerLauncherDiscovery} from './domain/launcher-discovery.js'
 
 /** Cadência do estado ao vivo. Vinte por segundo já engana o olho no medidor. */
 const LIVE_HZ = 20
 
 async function main(): Promise<void> {
-  const app = await createApp(DB_FILE)
+  startupTrace('main entered')
+  const allowedOrigins=parseAllowedOrigins(process.env.RPLAYOUT_ALLOWED_ORIGINS)
+  const hostPolicy=createHttpHostPolicy({bindHost:HOST,listenPort:PORT,aliases:parseAllowedHosts(process.env.RPLAYOUT_ALLOWED_HOSTS)})
+  const args=process.argv.slice(2)
+  if(args.length&&(args.length!==2||!['--stage-restored','--activate-restored'].includes(args[0]!)||!args[1]||args[1].startsWith('--')))throw new Error('Use sem argumentos, --stage-restored ou --activate-restored seguido do manifesto.')
+  const activated=args[0]==='--activate-restored'
+  const adoptionFile=process.env.RPLAYOUT_ADOPT_UPGRADE_PROFILE
+  if(adoptionFile&&(!activated||!process.env.RPLAYOUT_INSTALL_ROOT))throw new Error('Adoção de perfil exige ativação restaurada explícita e instalação definida.')
+  const adopt=adoptionFile?prepareUpgradeProfileAdoption(adoptionFile,process.env.RPLAYOUT_INSTALL_ROOT!,DB_FILE):null
+  const app = activated?await activateRestoredApp(DB_FILE,args[1]!):args.length?await createStagedRestoredApp(DB_FILE,args[1]!):await createApp(DB_FILE)
+  startupTrace('application ready')
+  if(adopt)try{await adopt(app)}catch(error){await app.close();throw error}
   app.hostMetrics.onIncident = (state,message,sample) => { void emitIntegrationEvent(app.db,`host.${state}`,{message,sampledAt:sample.generatedAt,cpu:sample.cpu.percent,memory:sample.memory.percent,disk:sample.disk.percentUsed}) }
   if (app.mediaRoot) {
     try {
@@ -34,9 +62,10 @@ async function main(): Promise<void> {
       // Ignora erro se não conseguir criar pasta de mídia padrão
     }
   }
-  const server = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } })
+  const server = Fastify({ logger: privateHttpLogger(process.env.LOG_LEVEL ?? 'info') })
+  registerHttpPrivacy(server,{notFound:false})
+  registerHttpHostPolicy(server,hostPolicy)
 
-  const allowedOrigins = (process.env.RPLAYOUT_ALLOWED_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean)
   await server.register(cors, { origin: allowedOrigins.length ? allowedOrigins : false, credentials: true })
   await server.register(websocket)
 
@@ -56,6 +85,7 @@ async function main(): Promise<void> {
   const installRoot = process.env.RPLAYOUT_INSTALL_ROOT
     ?? (existsSync(resolve(process.cwd(), 'apps/web/dist')) ? process.cwd() : resolve(process.cwd(), '../..'))
   const web = resolve(installRoot, 'apps/web/dist')
+  const launcherDiscovery=registerLauncherDiscovery(server,{enabled:process.env.RPLAYOUT_LAUNCHER_DISCOVERY==='1',root:installRoot,database:DB_FILE,port:PORT})
   if (existsSync(join(web, 'index.html'))) {
     await server.register(fastifyStatic, {
       root: web,
@@ -76,10 +106,16 @@ async function main(): Promise<void> {
       return reply.sendFile('index.html')
     })
     server.log.info(`RPlayout · interface servida de ${web}`)
-  }
+  }else server.setNotFoundHandler((_,reply)=>reply.code(404).send({error:'Rota não existe.'}))
 
   const access = new AccessControl(app.sqlite)
   const sockets = new Map<{ send: (data: string) => void; close: (code?: number, reason?: string) => void }, { headers: Record<string, string | string[] | undefined>; ip: string }>()
+  const storageConnected=()=>databaseStorageStatus(app.sqlite).connected
+  const background=new BackgroundTaskGuard(storageConnected,()=>{
+    for(const socket of sockets.keys())try{socket.close(4503,'Banco indisponível; controle bloqueado. Confira o servidor.')}catch{}
+    sockets.clear()
+    server.log.error('Banco indisponível; tarefas agendadas desta instância suspensas, sem reabertura ou reenvio automático.')
+  },(task,error)=>server.log.error({err:error,task},'Falha em tarefa de segundo plano; nenhum reenvio feito por esta chamada.'))
 
   const broadcast = (payload: unknown): void => {
     const data = JSON.stringify(sourceWire().publicValue(payload))
@@ -92,6 +128,7 @@ async function main(): Promise<void> {
         if (typeof channelId === 'string' && !access.channelAllowed(request, channelId)) continue
         socket.send(data)
       } catch {
+        try{socket.close(storageConnected()?1011:4503,'Controle indisponível; confira o servidor.')}catch{}
         sockets.delete(socket)
       }
     }
@@ -125,11 +162,16 @@ async function main(): Promise<void> {
   })
 
   // O servidor de mídia sobe antes dos canais: é nele que o engine publica.
-  await syncDistribution(app)
+  try{if(!activated)await syncDistribution(app)}catch(error){
+    // Keep diagnostics/editorial access available, but runtime admission and
+    // the watchdog refuse unconfirmed media/configuration. Never load an old
+    // installation's config just because a foreign HTTP endpoint responds.
+    server.log.error({err:error},'Distribuição bloqueada na partida; nenhum canal nativo será aberto sem prontidão confirmada')
+  }
 
   // Carrega a primeira grade de cada canal para que o transporte tenha o que
   // executar assim que o servidor sobe.
-  for (const channel of await listChannels(app.db)) {
+  for (const channel of activated?[]:await listChannels(app.db)) {
     const runtime = await runtimeFor(app, channel.id)
     const [first] = await listRundowns(app.db, channel.id)
     if (runtime && !(await runtime.recoverCheckpoint()) && first) await runtime.load(first.id)
@@ -138,44 +180,49 @@ async function main(): Promise<void> {
   // Medição nova precisa chegar à grade: o nivelamento automático sai da
   // loudness do arquivo, e ela acabou de mudar.
   app.ingest.onFinished = () => {
-    void Promise.all([...app.runtimes.values()].map((runtime) => runtime.refresh())).then(
-      () => { pushViews(); broadcast({ type: 'library' }) },
-    ).catch((error: unknown) => server.log.error(error))
+    void background.run('ingest-refresh',async()=>{
+      await Promise.all([...app.runtimes.values()].map(runtime=>runtime.refresh()))
+      if(storageConnected()){pushViews();broadcast({type:'library'})}
+    })
   }
 
   let checkingLibrary = false
   let libraryClosing = false
   const updateLibrary = async (): Promise<void> => {
-    if(app.ha?.options.role==='STANDBY')return
+    if(!databaseStorageStatus(app.sqlite).connected)return
+    if(app.ha?.options.role==='STANDBY'||isRecoveryRehearsal(app.sqlite))return
     if (checkingLibrary || libraryClosing || app.ingest.status().running) return
     checkingLibrary = true
     try {
       if (await app.ingest.reconcileAvailability()) app.ingest.onFinished?.()
       if (libraryClosing) return
+      if(app.ingest.resumePending())return
       const roots = await listRoots(app.db, app.mediaRoot)
       // A procura automática é rápida. A medição completa continua disponível
       // em LER PASTA e não muda de modo quando outro operador pede uma busca.
       app.ingest.start(roots.map((root) => root.path), false)
     } catch (error) {
-      server.log.error(error)
+      server.log.error({err:error},'Falha na atualização periódica do acervo.')
     } finally {
       checkingLibrary = false
     }
   }
-  const libraryTimer = setInterval(() => void updateLibrary(), 60_000)
-  const primaryTasks=app.ha?.options.role!=='STANDBY'
-  if(primaryTasks){app.ingest.resumePending();void app.mediaWorkflow.tick();void app.audioMixAnalysis.tick().catch(error=>server.log.error(error))}
-  const audioAnalysisTimer=setInterval(()=>{if(primaryTasks)void app.audioMixAnalysis.tick().catch(error=>server.log.error(error))},2000)
-  const publishedContinuityTimer=setInterval(()=>{if(primaryTasks)void app.publishedContinuity.tick().catch(error=>server.log.error(error))},1000)
-  const schedulePublicationTimer=setInterval(()=>{if(primaryTasks)void app.schedulePublication.tick().catch(error=>server.log.error(error))},15000)
-  const haTimer=app.ha?.options.role==='PRIMARY'?setInterval(()=>void app.ha?.tick(),5000):null
-  const haMediaTimer=app.ha?.options.role==='PRIMARY'?setInterval(()=>void app.ha?.mediaTick(async asset=>{
+  const libraryTimer = setInterval(() => void background.run('library',updateLibrary), 60_000)
+  const primaryTasks=()=>storageConnected()&&app.ha?.options.role!=='STANDBY'&&!isRecoveryRehearsal(app.sqlite)
+  void background.run('startup-media',()=>{app.ingest.resumePending();return app.mediaWorkflow.tick()},primaryTasks)
+  void background.run('startup-audio',()=>app.audioMixAnalysis.tick(),primaryTasks)
+  const mediaWorkflowTimer=setInterval(()=>void background.run('media-workflow',()=>app.mediaWorkflow.tick(),primaryTasks),2000)
+  const audioAnalysisTimer=setInterval(()=>void background.run('audio-analysis',()=>app.audioMixAnalysis.tick(),primaryTasks),2000)
+  const publishedContinuityTimer=setInterval(()=>void background.run('published-continuity',()=>app.publishedContinuity.tick(),primaryTasks),1000)
+  const schedulePublicationTimer=setInterval(()=>void background.run('schedule-publication',()=>app.schedulePublication.tick(),primaryTasks),15000)
+  const haTimer=app.ha?.options.role==='PRIMARY'?setInterval(()=>void background.run('ha-state',()=>app.ha?.tick(),()=>!isRecoveryRehearsal(app.sqlite)),5000):null
+  const haMediaTimer=app.ha?.options.role==='PRIMARY'?setInterval(()=>void background.run('ha-media',()=>app.ha?.mediaTick(async asset=>{
     const archive=await app.mediaWorkflow.archived(asset.id,asset.contentHash)
     if(archive)return archive
     if(await app.continuityCache.verified(asset))return app.continuityCache.pathFor(asset)
     return asset.path
-  }),250):null
-  void updateLibrary()
+  }),()=>!isRecoveryRehearsal(app.sqlite)),250):null
+  void background.run('startup-library',updateLibrary)
 
   // Cópia de segurança periódica. Um playout que roda meses sem ninguém olhar
   // precisa de cópia sem depender de alguém lembrar de pedir.
@@ -183,11 +230,7 @@ async function main(): Promise<void> {
     BACKUP_EVERY_HOURS > 0
       ? setInterval(
           () => {
-            void backupDatabase(app.sqlite, app.backupDir)
-              .then((result) => console.log(`[rplayout] cópia de segurança em ${result.file}`))
-              .catch((failure: unknown) => {
-                console.error('[rplayout] a cópia de segurança falhou:', failure)
-              })
+            void background.run('backup',async()=>{await backupDatabase(app.sqlite,app.backupDir);server.log.info('Cópia de segurança do banco concluída.')},()=>!isRecoveryRehearsal(app.sqlite))
           },
           BACKUP_EVERY_HOURS * 3_600_000,
         )
@@ -195,45 +238,51 @@ async function main(): Promise<void> {
 
   // Retenção evita crescimento infinito em operação 24/7. Eventos não
   // reconhecidos ficam preservados até serem reconhecidos, mesmo que antigos.
-  const retentionTimer = setInterval(() => {
+  const retentionTimer = setInterval(() => void background.run('health-retention',() => {
     if (!Number.isFinite(HEALTH_RETENTION_DAYS) || HEALTH_RETENTION_DAYS <= 0) return
-    const cutoff = new Date(Date.now() - HEALTH_RETENTION_DAYS * 86_400_000).toISOString()
-    app.sqlite.prepare('DELETE FROM health_events WHERE occurred_at < ? AND acknowledged_at IS NOT NULL').run(cutoff)
-    app.sqlite.prepare('DELETE FROM sessions WHERE expires_at < ?').run(new Date().toISOString())
-  }, 6 * 60 * 60 * 1000)
+    pruneHealthHistory(app.sqlite,HEALTH_RETENTION_DAYS)
+  },()=>!isRecoveryRehearsal(app.sqlite)), 6 * 60 * 60 * 1000)
+  const expireSessionBatch=()=>{
+    if(!storageConnected())return
+    try{expireSessions(app.db)}catch(error){server.log.error({err:error},'Expiração de sessões não auditada; lote preservado para nova tentativa.')}
+  }
+  void background.run('startup-session-expiry',expireSessionBatch)
+  const sessionExpiryTimer=setInterval(()=>void background.run('session-expiry',expireSessionBatch),60_000)
 
   const recorded = new Map<string, string>()
-  const silenceSince = new Map<string, number>()
   let lastCacheWarm = 0
   let cacheWarming = false
-  const timer = setInterval(async () => {
+  let distributionChecking=false
+  // Do not run native socket/HTTP probes at the preview frame cadence. Only a
+  // freshly verified local source authorizes new/restarted relays.
+  const distributionTimer=setInterval(()=>void background.run('distribution',async()=>{
+    if(distributionChecking)return
+    distributionChecking=true
+    try{
+      app.mediamtx?.watchdog()
+      if((!app.mediamtx||await app.mediamtx.waitUntilReady(500))&&storageConnected())app.relays.tick()
+    }finally{distributionChecking=false}
+  }),1000)
+  const timer = setInterval(() => void background.run('live-cycle',() => {
+    // No new scheduled native effects from stale storage authority. Preserve
+    // existing PGM; never replay an uncertain write to reopen this connection.
     // MediaMTX é um processo único do servidor: seu watchdog deve rodar uma
     // vez por ciclo, independentemente da quantidade de canais.
-    app.mediamtx?.watchdog()
     // Reconnecta destinos externos de forma isolada e com backoff; uma queda
     // não deve criar uma tempestade de processos nem exigir reinício manual.
-    app.relays.tick()
     if (!cacheWarming && Date.now() - lastCacheWarm >= 60_000) {
       lastCacheWarm = Date.now()
       cacheWarming = true
-      void (async () => {
+      void background.run('published-cache',async () => {
         // Include published dates even when no operator has loaded the grade.
         for (const channel of await listChannels(app.db)) await warmChannelCache(app,channel.id)
-      })()
-        .catch(error => server.log.error(error,'Falha ao aquecer cache publicado')).finally(() => {cacheWarming=false})
+      }).finally(() => {cacheWarming=false})
     }
     for (const runtime of app.runtimes.values()) {
       app.continuityCache.replaceProtection(`runtime:${runtime.channel.id}`,runtime.cachePins())
-      for (const source of runtime.transport.state().liveSources) {
-        for (const [bus,state] of Object.entries(source.busStates ?? {})) {
-          const key = `source:${runtime.channel.id}:${source.source}:${bus}`
-          if (recorded.get(key) === state) continue
-          recorded.set(key,state)
-          const sourceRef = redactUrl(source.source)
-          app.db.insert(healthEvents).values({id:randomUUID(),channelId:runtime.channel.id,component:'LIVE_SOURCE',state,severity:['LOST','FAILED'].includes(state) ? 'CRITICAL' : state === 'CUEING' ? 'WARN' : 'INFO',message:`${bus.toUpperCase()} · ${sourceRef} · ${state}`,occurredAt:new Date().toISOString()}).run()
-          void emitIntegrationEvent(app.db,`source.${state.toLowerCase()}`,{source:sourceRef,bus,state,measurement:source.measurements?.[bus as 'pgm'|'pvw'] ?? null},runtime.channel.id)
-        }
-      }
+      try{runtime.reconcileSignalIncidents(false,app.paths.find(path=>path.channelId===runtime.channel.id))}
+      catch(error){server.log.error({err:error},'Incidentes de fontes/saídas não persistidos; nova tentativa sem alterar PGM.')}
+      if(!storageConnected())return
       // O canal anda com ou sem interface aberta. Amarrar isto à presença de
       // um navegador seria congelar a grade e o nivelamento no instante em que
       // o último operador fecha a aba -- num sistema que fica no ar sozinho a
@@ -245,33 +294,32 @@ async function main(): Promise<void> {
       const key = `engine:${runtime.channel.id}`
       const signature = `${state}|${health.error ?? ''}|${health.restarts}|${health.deaths}|${health.stalls}|${runtime.transport.processId() ?? ''}`
       if (recorded.get(key) !== signature) {
-        recorded.set(key, signature)
         void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'ENGINE', state, severity: severityOf('ENGINE', state, health.error), message: health.error, occurredAt: new Date().toISOString() }).run()
+        recorded.set(key, signature)
         void emitIntegrationEvent(app.db, `engine.${state}`, { message: health.error, restarts: health.restarts }, runtime.channel.id)
       }
       const videoHealthKey = `video-health:${runtime.channel.id}`
       const videoHealth = health.stalls > 0 ? 'stalled' : 'running'
       if (recorded.get(videoHealthKey) !== videoHealth) {
-        recorded.set(videoHealthKey, videoHealth)
         const message = videoHealth === 'stalled'
           ? `Engine detectou ${health.stalls} congelamento(s) de vídeo.`
           : 'Fluxo de vídeo recuperado.'
         void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'VIDEO', state: videoHealth, severity: videoHealth === 'stalled' ? 'CRITICAL' : 'INFO', message, occurredAt: new Date().toISOString() }).run()
+        recorded.set(videoHealthKey, videoHealth)
         void emitIntegrationEvent(app.db, `video.${videoHealth}`, { stalls: health.stalls, deaths: health.deaths }, runtime.channel.id)
       }
       const warning = runtime.transport.warning()
       const warningKey = `engine-warning:${runtime.channel.id}`
       if (warning && recorded.get(warningKey) !== warning) {
+        void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'ENGINE', state:'warning', severity:'WARN', message: warning, occurredAt: new Date().toISOString() }).run()
         recorded.set(warningKey, warning)
-        const black = warning.includes('preto')
-        void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'SIGNAL', state: black ? 'black' : 'warning', severity: black ? 'CRITICAL' : 'WARN', message: warning, occurredAt: new Date().toISOString() }).run()
-        void emitIntegrationEvent(app.db, black ? 'signal.black' : 'engine.warning', { message: warning }, runtime.channel.id)
+        void emitIntegrationEvent(app.db,'engine.warning', { message: warning }, runtime.channel.id)
       }
       // Silêncio sustentado no programa é uma falha operacional diferente de
       // engine parado. O medidor já vem do pipeline real (ou do simulador),
       // portanto não inferimos áudio a partir de conexão WebRTC.
-      const meter = runtime.transport.programMeter()
-      const videoProbe = runtime.transport.videoProbe()
+      const {meter,videoProbe}=runtime.transport.signalSample()
+      pgmProbeFor(app,runtime.channel.id).onContext(()=>captureIncidentContext(runtime,operationalMetricLabels(app.db,runtime.channel.id,app.paths.find(path=>path.channelId===runtime.channel.id),runtime.executionView)))
       // A sonda recebe somente leituras publicadas pelo engine: áudio BS.1770
       // e o quadro reduzido após o compositor PGM. O navegador não participa
       // desta decisão, então não cria falso black/freeze por WebRTC atrasado.
@@ -282,30 +330,12 @@ async function main(): Promise<void> {
           audioDbfs: meter ? Math.max(...meter.peakDbfs) : undefined,
           isBlack: videoProbe?.black,
           isFreeze: runtime.executionView?.items.find((entry) => entry.item.id === runtime.transport.state().onAir?.itemId)?.asset?.kind === 'STILL' ? false : videoProbe?.freeze,
+          freezeDurationMs: runtime.executionView?.items.find((entry) => entry.item.id === runtime.transport.state().onAir?.itemId)?.asset?.kind === 'STILL' ? 0 : videoProbe?.freezeDurationMs,
         })
-      } else if (!runtime.transport.state().playing) pgmProbeFor(app, runtime.channel.id).idle()
-      const silent = meter !== null && meter.momentaryLufs <= -65
-      const signalKey = `signal:${runtime.channel.id}`
-      if (silent) {
-        const started = silenceSince.get(signalKey) ?? Date.now()
-        silenceSince.set(signalKey, started)
-        const elapsed = Date.now() - started
-        const signature = elapsed >= 5000 ? 'silence' : 'ok'
-        if (elapsed >= 5000 && recorded.get(signalKey) !== signature) {
-          recorded.set(signalKey, signature)
-          const message = 'Silêncio sustentado no PGM por mais de 5 segundos.'
-          void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'SIGNAL', state: 'silence', severity: 'CRITICAL', message, occurredAt: new Date().toISOString() }).run()
-          void emitIntegrationEvent(app.db, 'signal.silence', { durationMs: elapsed }, runtime.channel.id)
-        }
-      } else {
-        silenceSince.delete(signalKey)
-        if (recorded.get(signalKey) === 'silence') {
-          recorded.set(signalKey, 'ok')
-          const message = 'Áudio do PGM voltou a apresentar nível.'
-          void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'SIGNAL', state: 'running', severity: 'INFO', message, occurredAt: new Date().toISOString() }).run()
-          void emitIntegrationEvent(app.db, 'signal.recovered', {}, runtime.channel.id)
-        }
-      }
+      } else pgmProbeFor(app, runtime.channel.id).idle()
+      try{persistPgmSignalIncidents(app.db,runtime.channel.id,pgmProbeFor(app,runtime.channel.id))}
+      catch(error){server.log.error({err:error},'Incidente PGM não persistido; transição retida para nova tentativa.')}
+      if(!storageConnected())return
       // Only the loaded execution can tell us when the channel may end.
       // Editing tomorrow's schedule neither extends today's coverage nor
       // authorizes a blind automatic fill/publication/TAKE through HTTP.
@@ -326,29 +356,23 @@ async function main(): Promise<void> {
           }
           recorded.set(horizonKey, horizonSignature)
         } catch (error: unknown) {
-          server.log.warn({ error }, `scheduler: aviso não persistido para ${runtime.channel.id}`)
+          server.log.warn({err:error},'scheduler: aviso não persistido; nova tentativa sem alterar PGM.')
         }
       }
-      for (const publisher of runtime.transport.publishers()) {
-        const outputKey = `output:${runtime.channel.id}:${publisher.url}`
-        const outputSignature = `${publisher.health}|${publisher.error ?? ''}|${publisher.attempts}`
-        if (recorded.get(outputKey) === outputSignature) continue
-        recorded.set(outputKey, outputSignature)
-        void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'OUTPUT', state: publisher.health, severity: severityOf('OUTPUT', publisher.health, publisher.error ?? null), message: publisher.error ?? null, occurredAt: new Date().toISOString() }).run()
-        void emitIntegrationEvent(app.db, `output.${publisher.health}`, { url: redactUrl(publisher.url), error: publisher.error ?? null, attempts: publisher.attempts }, runtime.channel.id)
-      }
+      if(!storageConnected())return
       if (runtime.transport.tick()) {
-        void runtime.refreshForTelemetry().then(pushViews)
+        void background.run('telemetry-refresh',async()=>{await runtime.refreshForTelemetry();if(storageConnected())pushViews()})
       }
       // Crédito que fica no ar porque ninguém lembrou de tirar é erro clássico
       // de operação: o template diz quanto dura e quem cumpre é o servidor.
-      if (!runtime.emergencyOverlay) runtime.graphics.tick()
+      runtime.expireGraphics()
       // Deixa de grafismo presa a item entra sozinha na hora marcada.
       runtime.fireDueGraphics()
       // E o que passou fica escrito: a grade diz o que era para acontecer, o
       // as-run diz o que aconteceu.
-      void runtime.followAsRun().catch((error: unknown) => server.log.error(error))
+      void background.run('as-run',()=>runtime.followAsRun())
       runtime.checkpoint()
+      if(!storageConnected())return
       // Canal vazio mostra apresentação técnica, quando há uma escolhida.
       runtime.followSlate()
       // Só o desenho depende de audiência: medir e transmitir para ninguém é
@@ -362,44 +386,66 @@ async function main(): Promise<void> {
       const state = app.mediamtx.running ? 'running' : 'stopped'
       const signature = `${state}|${app.mediamtx.processId ?? ''}|${app.mediamtx.lastError ?? ''}`
       if (recorded.get(key) !== signature) {
-        recorded.set(key, signature)
         void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: null, component: 'MEDIAMTX', state, severity: severityOf('MEDIAMTX', state, app.mediamtx.lastError), message: app.mediamtx.lastError, occurredAt: new Date().toISOString() }).run()
+        recorded.set(key, signature)
       }
     }
-  }, 1000 / LIVE_HZ)
+  }), 1000 / LIVE_HZ)
 
   let shuttingDown = false
-  const shutdown = async (): Promise<void> => {
+  const shutdown = async (exitCode=0): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
+    background.close()
     libraryClosing = true
     clearInterval(libraryTimer)
+    clearInterval(mediaWorkflowTimer)
     clearInterval(audioAnalysisTimer)
     clearInterval(publishedContinuityTimer)
     clearInterval(schedulePublicationTimer)
     if(haTimer)clearInterval(haTimer)
     if(haMediaTimer)clearInterval(haMediaTimer)
     clearInterval(timer)
+    clearInterval(distributionTimer)
     if (backupTimer) clearInterval(backupTimer)
     clearInterval(retentionTimer)
-    for (const runtime of app.runtimes.values()) { runtime.checkpoint(true); runtime.close() }
-    await app.flush()
-    await server.close()
-    app.ha?.close();await app.ha?.settled()
-    app.close()
-    process.exit(0)
+    clearInterval(sessionExpiryTimer)
+    blockRuntimeCreation(app)
+    const failures:unknown[]=[],normalClosures:Promise<void>[]=[]
+    const failed=(error:unknown)=>{failures.push(error);try{server.log.error(privateStartupDiagnostic(error),'Falha no encerramento; nenhum fechamento será anunciado como bem-sucedido.')}catch{}}
+    const attempt=async(work:()=>unknown)=>{try{await work()}catch(error){failed(error)}}
+    const ordinaryLocal=!app.ha&&!app.restoredAdmission&&!app.haExecutionAdmission
+    for (const runtime of app.runtimes.values()) {
+      try{runtime.checkpoint(true)}catch(error){failed(error)}
+      try{
+        if(ordinaryLocal&&runtime.transport instanceof EngineTransport)normalClosures.push(runtime.closeGracefully().then(proof=>{
+          if(!proof.ownedNativeProcessesStopped||!proof.graceful)failed(new Error('Engine não confirmou encerramento normal.'))
+        },failed))
+        else runtime.close()
+      }catch(error){failed(error)}
+    }
+    // A flush/HTTP/storage failure must not skip cleanup of our native handles.
+    await attempt(()=>app.flush())
+    await attempt(()=>server.close())
+    await attempt(async()=>{app.ha?.close();await app.ha?.settled()})
+    await attempt(()=>app.close())
+    await Promise.all(normalClosures)
+    process.exit(failures.length?1:exitCode)
   }
   process.on('SIGINT', () => void shutdown())
   process.on('SIGTERM', () => void shutdown())
 
+  startupTrace('HTTP listen requested')
   await server.listen({ port: PORT, host: HOST })
-  void app.ha?.tick()
+  try{await launcherDiscovery.publish()}catch(error){server.log.error(privateStartupDiagnostic(error),'Identificação privada do launcher não foi publicada; encerrando somente esta partida.');await shutdown(1)}
+  startupTrace('HTTP listening')
+  void background.run('startup-ha',()=>app.ha?.tick(),()=>!isRecoveryRehearsal(app.sqlite))
   app.hostMetrics.start()
-  if(primaryTasks)app.integrationOutbox.start()
+  if(primaryTasks())app.integrationOutbox.start()
   server.log.info(`RPlayout · banco em ${DB_FILE}`)
 }
 
 main().catch((error: unknown) => {
-  console.error(error)
+  console.error('RPlayout não iniciou:',privateStartupDiagnostic(error))
   process.exit(1)
 })

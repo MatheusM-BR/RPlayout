@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
-import type { Channel, ManagedLiveSource } from '@rplayout/protocol'
+import { useState, useEffect, useCallback,useRef } from 'react'
+import type { Channel, ManagedLiveSource,LiveSourceReview } from '@rplayout/protocol'
 import { api } from '../api.js'
 import type { SourceList } from '../types.js'
 import { CanonicalProtocolSelector, type ProtocolResult } from './broadcast/CanonicalProtocolSelector.js'
 import { inputName } from './broadcast/protocol-config.js'
+import {latestRequestGate} from '../domain/latest-request.js'
+import {SourceDiscoveryCard} from './broadcast/SourceDiscoveryCard.js'
 
 interface Props {
   channel: Channel
@@ -28,6 +30,11 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
   const [nameEdited, setNameEdited] = useState(false)
   const [selectedProtocolResult, setSelectedProtocolResult] = useState<ProtocolResult | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+  const [review,setReview]=useState<LiveSourceReview|null>(null)
+  const [formReview,setFormReview]=useState<LiveSourceReview|null>(null)
+  const [needsReopen,setNeedsReopen]=useState(false)
+  const pending=useRef(false),generation=useRef(0),mounted=useRef(true),discoveryGeneration=useRef(latestRequestGate())
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;generation.current++;discoveryGeneration.current.invalidate()}},[])
 
   const selectInput = useCallback((result: ProtocolResult) => {
     setSelectedProtocolResult(result)
@@ -40,43 +47,56 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
     setSelectedProtocolResult(null)
     setEditingSource(null)
     setKeepConnection(false)
+    setFormReview(null)
+    setNeedsReopen(false)
   }
 
   const loadSources = useCallback(async (refresh = false) => {
+    const isCurrent=discoveryGeneration.current.begin()
     setIsLoadingSources(true)
     try {
       const data = await api.sources(refresh)
+      if(!mounted.current||!isCurrent())return
       setSources(data)
       if (refresh) {
-        onMessage('Varredura de hardware e rede local concluída com sucesso.')
+        onMessage('Consulta de descoberta concluída. Confira o diagnóstico de cada runtime; cadastro e anúncio não confirmam sinal.')
       }
     } catch (err: any) {
+      if(!mounted.current||!isCurrent())return
       console.warn('Erro ao carregar fontes físicas:', err)
       onMessage('Falha ao consultar driver de captura ou serviço de descoberta.')
     } finally {
-      setIsLoadingSources(false)
+      if(mounted.current&&isCurrent())setIsLoadingSources(false)
     }
   }, [onMessage])
 
   const loadLiveSourcesList = useCallback(async () => {
+    const run=++generation.current
     setIsLoadingList(true)
     try {
-      const list = await api.liveSources(channel.id)
-      setLiveSources(list || [])
+      const next = await api.liveSourceReview(channel.id)
+      if(!mounted.current||run!==generation.current||next.channelId!==channel.id)return
+      setReview(next)
+      setLiveSources(next.sources)
+      return next
     } catch (err) {
+      if(mounted.current&&run===generation.current){setReview(null);setNeedsReopen(true)}
       console.warn('Erro ao carregar lista de fontes salvas:', err)
+      throw err
     } finally {
-      setIsLoadingList(false)
+      if(mounted.current&&run===generation.current)setIsLoadingList(false)
     }
   }, [channel.id])
 
   useEffect(() => {
     void loadSources()
-    void loadLiveSourcesList()
+    void loadLiveSourcesList().catch(()=>{if(mounted.current)onMessage('Não foi possível conferir as entradas. Reabra a lista antes de alterar.')})
   }, [loadSources, loadLiveSourcesList])
 
   const handleCreateLiveSource = async (e: React.FormEvent) => {
     e.preventDefault()
+    if(pending.current||needsReopen)return
+    if(!formReview){onMessage('Confira as entradas antes de salvar.');return}
     if (!name.trim()) {
       onMessage('Informe um nome identificador para a fonte de entrada.')
       return
@@ -86,7 +106,8 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
       return
     }
 
-    setIsSaving(true)
+    pending.current=true;setIsSaving(true)
+    let applied=false
     try {
       const body = {
         name: name.trim(),
@@ -94,27 +115,38 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
         targetUrl: selectedProtocolResult.targetUri.trim(),
       }
       if (editingSource) {
-        await api.updateLiveSource(editingSource.id, body)
-        onMessage(`✓ Fonte ao vivo "${name.trim()}" atualizada.`)
+        const result=await api.updateLiveSource(editingSource.id, body,formReview)
+        applied=true
+        if(!mounted.current)return
+        onMessage(result.refreshError??`✓ Fonte ao vivo "${name.trim()}" atualizada. PGM/PVW preservados.`)
       } else {
-        await api.createLiveSource({ channelId: channel.id, ...body })
-        onMessage(`✓ Fonte ao vivo "${name.trim()}" cadastrada com sucesso!`)
+        const result=await api.createLiveSource({ channelId: channel.id, ...body },formReview)
+        applied=true
+        if(!mounted.current)return
+        onMessage(result.refreshError??`✓ Fonte ao vivo "${name.trim()}" cadastrada. Faça CUE para verificar o sinal.`)
       }
       setName('')
       setNameEdited(false)
       setSelectedProtocolResult(null)
       setIsAdding(false)
       setEditingSource(null)
+      setFormReview(null)
       await loadLiveSourcesList()
       onChanged?.()
     } catch (err: any) {
-      onMessage(`Erro ao cadastrar entrada: ${err.message || 'Falha de requisição'}`)
+      if(!mounted.current)return
+      setNeedsReopen(true)
+      onMessage(applied?'Cadastro gravado; falha ao atualizar a lista. Reabra antes de repetir.':`Alteração não confirmada. Rascunho preservado: ${err.message || 'Falha de requisição'}`)
     } finally {
-      setIsSaving(false)
+      pending.current=false
+      if(mounted.current)setIsSaving(false)
     }
   }
 
   const beginEdit = (source: ManagedLiveSource) => {
+    if(pending.current||!review)return
+    if(isAdding&&!confirm('Descartar o rascunho e abrir esta entrada?'))return
+    setFormReview(review);setNeedsReopen(false)
     setEditingSource(source)
     setKeepConnection(Boolean(source.credentialProtected))
     setName(source.name)
@@ -129,14 +161,21 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
   }
 
   const handleDeleteLiveSource = async (id: string, sourceName: string) => {
+    if(pending.current||needsReopen||!review)return
     if (!confirm(`Deseja remover a entrada ao vivo "${sourceName}"?`)) return
+    pending.current=true;setIsSaving(true)
+    let applied=false
     try {
-      await api.deleteLiveSource(id)
-      onMessage(`Entrada "${sourceName}" removida.`)
+      const result=await api.deleteLiveSource(id,review)
+      applied=true
+      if(!mounted.current)return
+      onMessage(result.refreshError??`Entrada "${sourceName}" removida. PGM/PVW preservados.`)
       await loadLiveSourcesList()
       onChanged?.()
     } catch (err: any) {
-      onMessage(`Falha ao remover entrada: ${err.message}`)
+      if(mounted.current){setNeedsReopen(true);onMessage(applied?'Entrada removida; falha ao atualizar a lista. Reabra antes de repetir.':`Remoção não confirmada: ${err.message}`)}
+    }finally{
+      pending.current=false;if(mounted.current)setIsSaving(false)
     }
   }
 
@@ -178,90 +217,10 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Card SDI DeckLink Ingest */}
-          <div className="bg-surface-panel p-4 rounded-xl border border-border-subtle flex flex-col justify-between gap-3">
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="font-headline-md text-[14px] text-on-surface font-bold flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-accent-ice text-[18px]">cable</span>
-                  DeckLink SDI Ingest
-                </span>
-                {sources && sources.sdi.sources.length > 0 ? (
-                  <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold">
-                    {sources.sdi.sources.length} {sources.sdi.sources.length === 1 ? 'PORTA DETECTADA' : 'PORTAS DETECTADAS'}
-                  </span>
-                ) : (
-                  <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-surface-container text-outline border border-border-subtle font-bold">
-                    {isLoadingSources ? 'CONSULTANDO' : 'SEM PORTAS ENUMERADAS'}
-                  </span>
-                )}
-              </div>
-              <p className="font-body-sm text-[11.5px] text-outline mt-1 leading-snug">
-                Placas de captura Blackmagic DeckLink SDI/HDMI com leitura e controle direto pelo driver.
-              </p>
-
-              <div className="bg-surface-base p-2.5 rounded border border-border-subtle mt-2 font-label-mono text-[11px] flex flex-col gap-1.5">
-                {sources && sources.sdi.sources.length > 0 ? (
-                  sources.sdi.sources.map((s, idx) => (
-                    <div key={s.reference} className="flex justify-between items-center py-0.5">
-                      <span className="text-on-surface font-bold">
-                        Porta {idx + 1} ({s.reference}):
-                      </span>
-                      <span className="text-status-ok-bright font-semibold">
-                        {s.label || 'Disponível para CUE'}
-                      </span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-outline italic text-[10.5px] py-1">
-                    {sources?.sdi.reason || 'Aguardando a descoberta de portas DeckLink no servidor.'}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Card NDI Network Discovery */}
-          <div className="bg-surface-panel p-4 rounded-xl border border-border-subtle flex flex-col justify-between gap-3">
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="font-headline-md text-[14px] text-on-surface font-bold flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-accent-ice text-[18px]">lan</span>
-                  NDI Network Discovery
-                </span>
-                {sources && sources.ndi.sources.length > 0 ? (
-                  <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-accent-ice/20 text-accent-ice-bright border border-accent-ice/40 font-bold">
-                    {sources.ndi.sources.length} FONTES LISTADAS
-                  </span>
-                ) : (
-                  <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-surface-container text-outline border border-border-subtle font-bold">
-                    VARREDURA LOCAL
-                  </span>
-                )}
-              </div>
-              <p className="font-body-sm text-[11.5px] text-outline mt-1 leading-snug">
-                Fontes NDI anunciadas automaticamente na rede local. A descoberta confirma o anúncio; o sinal só é confirmado após CUE no PVW.
-              </p>
-
-              <div className="bg-surface-base p-2.5 rounded border border-border-subtle mt-2 font-label-mono text-[11px] flex flex-col gap-1.5">
-                {sources && sources.ndi.sources.length > 0 ? (
-                  sources.ndi.sources.map((s) => (
-                    <div key={s.reference} className="flex justify-between items-center py-0.5">
-                      <span className="text-on-surface font-bold truncate max-w-[200px]" title={s.label}>
-                        {s.label}:
-                      </span>
-                      <span className="text-status-ok-bright font-semibold">{s.reference}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-outline italic text-[10.5px] py-1">
-                    Nenhum transmissor NDI ativo enviando pacotes mDNS/Discovery na sub-rede local neste momento.
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <SourceDiscoveryCard title="DeckLink SDI Ingest" description="Portas SDI/HDMI enumeradas pelo runtime no servidor." family={sources?.sdi} loading={isLoadingSources}/>
+          <SourceDiscoveryCard title="NDI Network Discovery" description="Fontes NDI anunciadas na rede ou cadastradas manualmente." family={sources?.ndi} loading={isLoadingSources} ndi/>
+          <SourceDiscoveryCard title="OMT Network Discovery" description="Fontes OMT descobertas ou cadastradas; runtime oficial OMT, não SMPTE-2110/NMOS." family={sources?.omt} loading={isLoadingSources}/>
         </div>
       </div>
 
@@ -279,9 +238,12 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
           </div>
           <button
             type="button"
+            disabled={isSaving||isLoadingList||!review}
             onClick={() => {
+              if(pending.current)return
               setIsAdding(!isAdding)
               resetForm()
+              if(!isAdding)setFormReview(review)
             }}
             className="px-3 py-1.5 rounded bg-primary hover:bg-primary/90 text-on-primary font-label-caps text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-md transition-colors"
           >
@@ -290,6 +252,14 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
             </span>
               {isAdding ? 'Cancelar' : 'Cadastrar Nova Entrada'}
           </button>
+        </div>
+
+        <div className="flex items-center gap-3 text-xs text-outline">
+          <span>{needsReopen?'Alteração não confirmada. Reabra a lista; o rascunho está preservado.':'Cadastro não troca o PGM/PVW. Descoberta não confirma sinal.'}</span>
+          <button type="button" disabled={isSaving||isLoadingList} className="text-primary disabled:opacity-50" onClick={()=>{
+            if(pending.current||isAdding&&!confirm('Descartar o rascunho e conferir novamente as entradas?'))return
+            resetForm();setIsAdding(false);void loadLiveSourcesList().catch(()=>onMessage('Falha ao conferir as entradas. Nenhuma ação enviada.'))
+          }}>Reabrir lista</button>
         </div>
 
         {/* Modal / Formulário de Adição */}
@@ -320,10 +290,11 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
             />}
 
             <div className="flex flex-col gap-1">
-              <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
+              <label htmlFor="managed-live-input-name" className="text-[10px] font-label-caps text-outline uppercase font-semibold">
                 Nome Identificador da Entrada
               </label>
               <input
+                id="managed-live-input-name"
                 type="text"
                 required
                 value={name}
@@ -343,6 +314,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
             <div className="flex justify-end gap-2 pt-2 border-t border-border-subtle/50">
               <button
                 type="button"
+                disabled={isSaving}
                 onClick={() => { setIsAdding(false); resetForm() }}
                 className="px-3 py-1.5 rounded bg-surface-card hover:bg-surface-container text-outline hover:text-on-surface font-label-caps text-[11px] cursor-pointer"
               >
@@ -350,7 +322,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
               </button>
               <button
                 type="submit"
-                disabled={isSaving || !selectedProtocolResult?.isHardwareValid || !name.trim()}
+                disabled={isSaving || needsReopen || !formReview || !selectedProtocolResult?.isHardwareValid || !name.trim()}
                 className="px-4 py-1.5 rounded bg-primary hover:bg-primary/90 text-on-primary font-label-caps text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50"
               >
                 {isSaving ? 'Salvando...' : editingSource ? 'Salvar Alterações' : 'Salvar Entrada Ao Vivo'}
@@ -416,6 +388,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                     <td className="py-2.5 px-3 text-right">
                       <button
                         type="button"
+                        disabled={isSaving||needsReopen||!review}
                         onClick={() => beginEdit(ls)}
                         className="mr-2 px-2 py-1 rounded bg-surface-container hover:bg-surface-card text-outline hover:text-on-surface border border-border-subtle text-[10px] font-label-caps font-bold transition-colors cursor-pointer"
                         title="Editar fonte"
@@ -424,6 +397,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                       </button>
                       <button
                         type="button"
+                        disabled={isSaving||needsReopen||!review}
                         onClick={() => handleDeleteLiveSource(ls.id, ls.name)}
                         className="px-2 py-1 rounded bg-error-container/30 hover:bg-error-container text-on-error-container text-[10px] font-label-caps font-bold transition-colors cursor-pointer"
                         title="Remover fonte"

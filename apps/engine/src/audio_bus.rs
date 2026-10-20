@@ -106,8 +106,78 @@ impl AuxiliaryRouting {
     }
 }
 
+/// Actual item branch construction, shared by engine and offline bus renderer.
+/// No limiter here: the operational output applies its persistent bus limiter
+/// after item switching. Offline analysis must declare reset/transition state.
+pub struct ItemAudioBranches {
+    pub main:Vec<gst::Element>,
+    pub volume:gst::Element,
+    pub raw_tee:Option<gst::Element>,
+    pub auxiliary:Vec<gst::Element>,
+    pub auxiliary_routing:Option<AuxiliaryRouting>,
+}
+pub fn item_audio_branches(channels:usize,master_gain:f64,pairs:&[AuxiliaryPair])->Result<ItemAudioBranches>{
+    validate_pairs(pairs,channels)?;
+    if !master_gain.is_finite()||master_gain<0.0{return Err(anyhow!("ganho linear do master inválido"));}
+    let make=|factory:&str|->Result<gst::Element>{Ok(gst::ElementFactory::make(factory).build()?)};
+    let convert=make("audioconvert")?;let resample=make("audioresample")?;resample.set_property("quality",8i32);
+    let volume=make("volume")?;volume.set_property("volume",master_gain);
+    let filter=make("capsfilter")?;
+    filter.set_property("caps",gst::Caps::builder("audio/x-raw").field("rate",48000i32).field("channels",2i32).build());
+    let mut main=vec![convert,resample,volume.clone(),filter];let mut raw_tee=None;let mut auxiliary=Vec::new();let mut auxiliary_routing=None;
+    if channels>2{
+        let expand=make("audioconvert")?;expand_master(&expand,channels);
+        let master_caps=make("capsfilter")?;master_caps.set_property("caps",caps(channels));main.extend([expand,master_caps]);
+        if !pairs.is_empty(){
+            let queue=make("queue")?;let mix=make("audiomixer")?;let mixed_caps=make("capsfilter")?;mixed_caps.set_property("caps",caps(channels));main.extend([queue,mix,mixed_caps]);
+            let route=AuxiliaryRouting{pairs:pairs.to_vec(),channels};
+            let aux_queue=make("queue")?;let aux_convert=make("audioconvert")?;matrix(&aux_convert,Vec::new());
+            let aux_resample=make("audioresample")?;aux_resample.set_property("quality",8i32);
+            let aux_volume=make("volume")?;aux_volume.set_property("volume",route.gain());
+            let aux_caps=make("capsfilter")?;aux_caps.set_property("caps",caps(channels));let aux_output_queue=make("queue")?;
+            auxiliary=vec![aux_queue,aux_convert,aux_resample,aux_volume,aux_caps,aux_output_queue];auxiliary_routing=Some(route);raw_tee=Some(make("tee")?);
+        }
+    }
+    Ok(ItemAudioBranches{main,volume,raw_tee,auxiliary,auxiliary_routing})
+}
+/// Link real branches; caller adds elements, configures routing against actual
+/// caps and attaches/synchronizes the source. No invented input channels.
+pub fn link_item_audio_branches(main:&[gst::Element],raw_tee:Option<&gst::Element>,auxiliary:&[gst::Element])->Result<()>{
+    if main.is_empty(){return Err(anyhow!("ramo principal vazio"));}
+    gst::Element::link_many(main.iter())?;
+    if let Some(raw)=raw_tee{
+        raw.link(&main[0])?;
+        if auxiliary.is_empty(){return Err(anyhow!("ramo auxiliar vazio"));}
+        gst::Element::link_many(auxiliary.iter())?;raw.link(&auxiliary[0])?;
+        let mix=main.iter().find(|element|element.factory().is_some_and(|factory|factory.name()=="audiomixer")).ok_or_else(||anyhow!("mix de pares ausente"))?;
+        auxiliary.last().unwrap().link(mix)?;
+    }else if !auxiliary.is_empty(){return Err(anyhow!("ramo auxiliar sem tee de entrada"));}
+    Ok(())
+}
+
 #[cfg(test)] mod tests {
     use super::*;
+    // NOT_RUN integration fixtures: construct/inspect only, no physical output.
+    #[test] fn shared_item_branch_contract_preserves_engine_topology(){
+        gst::init().unwrap();
+        for channels in [2,8,16]{
+            let pairs=if channels>2{vec![AuxiliaryPair{output_pair:channels/2,input_pair:2,gain_db:-6.0}]}else{vec![]};
+            let branches=item_audio_branches(channels,0.5,&pairs).unwrap();
+            let factories:Vec<String>=branches.main.iter().map(|element|element.factory().unwrap().name().to_string()).collect();
+            assert_eq!(&factories[..4],&["audioconvert","audioresample","volume","capsfilter"]);
+            assert_eq!(branches.main[1].property::<i32>("quality"),8);
+            assert_eq!(branches.volume.property::<f64>("volume"),0.5);
+            assert_eq!(branches.raw_tee.is_some(),channels>2);
+            if channels>2{
+                assert_eq!(factories.iter().filter(|factory|factory.as_str()=="audiomixer").count(),1);
+                assert_eq!(branches.auxiliary.len(),6);
+                assert_eq!(branches.auxiliary[2].property::<i32>("quality"),8);
+                let route=branches.auxiliary_routing.as_ref().unwrap();
+                assert_eq!(route.channels,channels);assert!(route.coefficients(2).is_err());assert!(route.coefficients(4).is_ok());
+                assert_eq!(branches.auxiliary[3].property::<f64>("volume"),route.gain());
+            }else{assert_eq!(factories.len(),4);assert!(branches.auxiliary.is_empty());assert!(branches.auxiliary_routing.is_none());}
+        }
+    }
     #[test] fn explicit_contract_no_invented_feed() {
         for channels in [2, 8, 16] { validate_channels(channels).unwrap(); }
         for channels in [0, 1, 4, 6, 32, 64] { assert!(validate_channels(channels).is_err()); }

@@ -1,8 +1,9 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
-import type { Rate } from '@rplayout/protocol'
+import type {Rate,ScheduleRuleReview} from '@rplayout/protocol'
 import { api } from '../api.js'
 import { dur } from '../format.js'
-import type { FillPlan, FillProposal, ScheduleRule, Snapshot } from '../types.js'
+import type {FillPlan,FillProposal,Snapshot} from '../types.js'
+import {ScheduleRulesEditor} from './ScheduleRulesEditor.js'
 
 interface Props {
   rundownId: string
@@ -20,11 +21,6 @@ interface Props {
   onApplied: (snapshot: Snapshot, message: string) => void
   onMessage: (text: string) => void
 }
-
-const WEEKDAYS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb']
-
-const hhmm = (minute: number): string =>
-  `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`
 
 const parseHhmm = (text: string): number | null => {
   const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim())
@@ -83,24 +79,11 @@ export function AutoFillDialog(props:Props) {
   const [busy, setBusy] = useState(false)
   const [operationError,setOperationError]=useState<string|null>(null)
 
-  // Regras de Pauta Diária
-  const [rules, setRules] = useState<ScheduleRule[] | null>(null)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editing, setEditing] = useState({
-    name: '',
-    from: '06:00',
-    to: '12:00',
-    weekdays: '0123456',
-    categories: [] as string[],
-    avoidHours: 0,
-  })
-  const [draft, setDraft] = useState({
-    name: '',
-    from: '06:00',
-    to: '12:00',
-    weekdays: '0123456',
-    categories: [] as string[],
-  })
+  // The child owns its original draft proof; this snapshot is only for the
+  // AutoFill criteria. A list refresh cannot renew the child form.
+  const [rulesReview,setRulesReview]=useState<ScheduleRuleReview|null>(null)
+  const [rulesReady,setRulesReady]=useState(false)
+  const rules=rulesReview?.rules??null
 
   // Cálculo de minutos efetivos a preencher dependendo do modo ativo
   const calculatedMinutes = useMemo(() => {
@@ -129,16 +112,6 @@ export function AutoFillDialog(props:Props) {
     return `${h}h ${String(m).padStart(2, '0')}m (${calculatedMinutes} min)`
   }, [calculatedMinutes])
 
-  useEffect(() => {
-    let alive = true
-    api
-      .rules(channelId)
-      .then((result) => alive && setRules(result.rules))
-      .catch(() => alive && setRules([]))
-    return () => {
-      alive = false
-    }
-  }, [channelId])
 
   // Auto-propor se aberto via GAP
   const autoPreviewRanRef = useRef(false)
@@ -151,11 +124,12 @@ export function AutoFillDialog(props:Props) {
 
   // Compare every editable criterion, not just the visible duration. A changed
   // draft keeps the old review visible, but cannot apply it as a new request.
-  const criteriaKey=JSON.stringify({mode,hours,minutesInput,timeFrom,timeTo,avoidHours,insertTarget,customInsertTime,initialStart,rules:mode==='rules'?rules:null})
+  const criteriaKey=JSON.stringify({mode,hours,minutesInput,timeFrom,timeTo,avoidHours,insertTarget,customInsertTime,initialStart,rules:mode==='rules'?rulesReview:null,rulesReady:mode==='rules'?rulesReady:null})
   const proposalCurrent=proposal?.criteriaKey===criteriaKey && proposal.kind===(mode==='rules'?'DAY':'WINDOW')
 
   const run = (preview: boolean): void => {
     if(busyRef.current)return
+    if(mode==='rules'&&!rulesReady){setOperationError('Reabra a conferência das faixas antes de propor ou aplicar o dia.');return}
     if(!preview){
       if(!proposal || !proposalCurrent)return
       busyRef.current=true;setBusy(true);setOperationError(null)
@@ -198,74 +172,6 @@ export function AutoFillDialog(props:Props) {
 
   const fillDay = (): void => run(false)
 
-  const addRule = (): void => {
-    const from = parseHhmm(draft.from)
-    const to = parseHhmm(draft.to)
-    if (draft.name.trim() === '' || from === null || to === null || to <= from) {
-      onMessage('A faixa precisa de nome e de um horário que termine depois de começar.')
-      return
-    }
-    api
-      .addRule(channelId, {
-        name: draft.name.trim(),
-        weekdays: draft.weekdays,
-        startMinute: from,
-        endMinute: to,
-        categories: draft.categories,
-        avoidHours,
-      })
-      .then((result) => {
-        setRules((current) => [...(current ?? []), result.rule].sort((a, b) => a.startMinute - b.startMinute))
-        setDraft({ ...draft, name: '' })
-      })
-      .catch((failure: Error) => onMessage(failure.message))
-  }
-
-  const removeRule = (id: string): void => {
-    api
-      .removeRule(id)
-      .then(() => setRules((current) => (current ?? []).filter((rule) => rule.id !== id)))
-      .catch((failure: Error) => onMessage(failure.message))
-  }
-
-  const editRule = (rule: ScheduleRule): void => {
-    setEditingId(rule.id)
-    setEditing({
-      name: rule.name,
-      from: hhmm(rule.startMinute),
-      to: hhmm(rule.endMinute),
-      weekdays: rule.weekdays,
-      categories: rule.categories,
-      avoidHours: rule.avoidHours,
-    })
-  }
-
-  const saveRule = (): void => {
-    if (!editingId) return
-    const from = parseHhmm(editing.from)
-    const to = parseHhmm(editing.to)
-    if (!editing.name.trim() || from === null || to === null || to <= from) {
-      onMessage('A faixa precisa de nome e horário válido.')
-      return
-    }
-    api
-      .updateRule(editingId, {
-        name: editing.name.trim(),
-        startMinute: from,
-        endMinute: to,
-        weekdays: editing.weekdays,
-        categories: editing.categories,
-        avoidHours: editing.avoidHours,
-      })
-      .then((result) => {
-        setRules((current) =>
-          (current ?? []).map((rule) => (rule.id === editingId ? result.rule : rule)).sort((a, b) => a.startMinute - b.startMinute),
-        )
-        setEditingId(null)
-        onMessage('Faixa atualizada.')
-      })
-      .catch((failure: Error) => onMessage(failure.message))
-  }
 
   return (
     <div
@@ -685,173 +591,12 @@ export function AutoFillDialog(props:Props) {
             </div>
           )}
 
-          {/* ABA DE PAUTA DIÁRIA & REGRAS */}
-          {mode === 'rules' && (
-            <div className="flex flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <span className="font-label-caps text-xs text-outline font-bold uppercase">
-                  FAIXAS PROGRAMADAS DO CANAL
-                </span>
-                <button
-                  type="button"
-                  disabled={busy || !rules?.length}
-                  onClick={fillDay}
-                  className="bg-primary hover:bg-primary-fixed text-surface-base px-3 py-1.5 rounded font-label-caps text-[10px] font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer disabled:opacity-50"
-                >
-                  <span className="material-symbols-outlined text-[14px]">auto_awesome</span>
-                  MONTAR O DIA INTEIRO
-                </button>
-              </div>
-
-              {rules?.length === 0 && (
-                <div className="p-4 bg-surface-panel rounded border border-border-subtle text-center text-outline text-xs">
-                  Sem faixas configuradas. Cadastre faixas horárias abaixo para automatizar o dia inteiro da grade linear.
-                </div>
-              )}
-
-              {rules && rules.length > 0 && (
-                <div className="divide-y divide-border-subtle rounded border border-border-subtle overflow-hidden bg-surface-base">
-                  {rules.map((rule) => (
-                    <div
-                      key={rule.id}
-                      className="p-3 flex items-center justify-between hover:bg-surface-panel/50 transition-colors"
-                    >
-                      <div className="flex flex-col gap-0.5">
-                        <div className="flex items-center gap-2">
-                          <span className="font-label-mono text-xs font-bold text-primary">
-                            {hhmm(rule.startMinute)} – {hhmm(rule.endMinute)}
-                          </span>
-                          <span className="font-bold text-xs text-on-surface">{rule.name}</span>
-                        </div>
-                        <span className="text-[10px] font-label-mono text-outline">
-                          {rule.categories.length === 0 ? 'Qualquer categoria' : rule.categories.join(', ')} ·{' '}
-                          {[...rule.weekdays].map((day) => WEEKDAYS[Number(day)]).join(' ')} ·{' '}
-                          evitar {rule.avoidHours}h
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => editRule(rule)}
-                          className="px-2 py-1 rounded bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface text-[10px] font-label-caps cursor-pointer"
-                        >
-                          Editar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removeRule(rule.id)}
-                          className="px-2 py-1 rounded bg-error-container/30 hover:bg-error-container text-on-error-container text-[10px] font-label-caps cursor-pointer"
-                        >
-                          Remover
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Formulário Nova Faixa */}
-              <div className="bg-surface-panel p-3.5 rounded border border-border-subtle flex flex-col gap-3">
-                <span className="font-label-caps text-[10px] text-outline font-bold uppercase">
-                  + NOVA FAIXA PROGRAMÁTICA
-                </span>
-                <div className="grid grid-cols-3 gap-2">
-                  <input
-                    type="text"
-                    placeholder="Nome da Faixa (ex: Manhã)"
-                    value={draft.name}
-                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                    className="bg-surface-base border border-border-subtle text-xs px-2.5 py-1.5 rounded text-on-surface focus:outline-none"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Das (06:00)"
-                    value={draft.from}
-                    onChange={(e) => setDraft({ ...draft, from: e.target.value })}
-                    className="bg-surface-base border border-border-subtle text-xs font-label-mono px-2.5 py-1.5 rounded text-on-surface focus:outline-none"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Até (12:00)"
-                    value={draft.to}
-                    onChange={(e) => setDraft({ ...draft, to: e.target.value })}
-                    className="bg-surface-base border border-border-subtle text-xs font-label-mono px-2.5 py-1.5 rounded text-on-surface focus:outline-none"
-                  />
-                </div>
-
-                {categories.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1">
-                    <span className="text-[9px] font-label-caps text-outline mr-1">CATEGORIAS:</span>
-                    {categories.map((cat) => (
-                      <button
-                        key={cat}
-                        type="button"
-                        onClick={() =>
-                          setDraft({
-                            ...draft,
-                            categories: draft.categories.includes(cat)
-                              ? draft.categories.filter((c) => c !== cat)
-                              : [...draft.categories, cat],
-                          })
-                        }
-                        className={`px-2 py-0.5 rounded text-[9.5px] font-label-mono cursor-pointer border ${
-                          draft.categories.includes(cat)
-                            ? 'bg-primary text-surface-base border-primary font-bold'
-                            : 'bg-surface-container border-border-subtle text-outline hover:text-on-surface'
-                        }`}
-                      >
-                        {cat}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    onClick={addRule}
-                    className="bg-surface-container hover:bg-surface-container-high border border-border-subtle text-on-surface px-3 py-1 rounded text-xs font-label-caps cursor-pointer"
-                  >
-                    + Salvar Nova Faixa
-                  </button>
-                </div>
-              </div>
-
-              {/* Edição de Faixa Existente */}
-              {editingId && (
-                <div className="bg-surface-container p-3 rounded border border-primary/50 flex flex-col gap-2">
-                  <span className="font-label-caps text-[10px] text-primary font-bold uppercase">
-                    EDITANDO FAIXA
-                  </span>
-                  <div className="grid grid-cols-4 gap-2">
-                    <input
-                      value={editing.name}
-                      onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                      className="bg-surface-base border border-border-subtle text-xs px-2 py-1 rounded text-on-surface"
-                    />
-                    <input
-                      value={editing.from}
-                      onChange={(e) => setEditing({ ...editing, from: e.target.value })}
-                      className="bg-surface-base border border-border-subtle text-xs font-label-mono px-2 py-1 rounded text-on-surface"
-                    />
-                    <input
-                      value={editing.to}
-                      onChange={(e) => setEditing({ ...editing, to: e.target.value })}
-                      className="bg-surface-base border border-border-subtle text-xs font-label-mono px-2 py-1 rounded text-on-surface"
-                    />
-                    <button
-                      type="button"
-                      onClick={saveRule}
-                      className="bg-primary text-surface-base text-xs font-label-caps font-bold px-3 py-1 rounded cursor-pointer"
-                    >
-                      Salvar
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+          {/* Kept mounted across tabs to preserve the original draft proof. */}
+          <div hidden={mode!=='rules'}>
+            <ScheduleRulesEditor key={channelId} channelId={channelId} categories={categories} disabled={busy}
+              onReview={setRulesReview} onReadyChange={setRulesReady}
+              onBusyChange={value=>{busyRef.current=value;setBusy(value)}}/>
+          </div>
           {proposal && <div className="text-xs text-outline" role="status">
             Revisão {proposal.editorialRevision} · válida até {new Date(proposal.expiresAt).toLocaleTimeString('pt-BR')}.
             {!proposalCurrent && <p className="text-armed-amber">Os critérios mudaram. Proponha novamente antes de aplicar; a conferência anterior foi mantida.</p>}
@@ -900,10 +645,10 @@ export function AutoFillDialog(props:Props) {
 
             {mode === 'rules' && (
               <>
-              <button type="button" disabled={busy || !rules?.length} onClick={()=>run(true)} className="px-4 py-1.5 rounded border border-border-subtle text-xs cursor-pointer disabled:opacity-50">Conferir o Dia Inteiro</button>
+              <button type="button" disabled={busy || !rulesReady || !rules?.length} onClick={()=>run(true)} className="px-4 py-1.5 rounded border border-border-subtle text-xs cursor-pointer disabled:opacity-50">Conferir o Dia Inteiro</button>
               <button
                 type="button"
-                disabled={busy || !proposalCurrent || !plan?.items.length}
+                disabled={busy || !rulesReady || !proposalCurrent || !plan?.items.length}
                 onClick={fillDay}
                 className="px-4 py-1.5 rounded bg-primary hover:bg-primary-fixed text-surface-base text-xs font-label-caps font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer disabled:opacity-50"
               >

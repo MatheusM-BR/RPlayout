@@ -289,26 +289,33 @@ fn audio_bytes(frame: &Frame) -> Option<usize> {
 }
 
 #[derive(Default)]
-struct FrameClock { origin: Option<i64>, latest: i64, base: u64, video_end: u64, audio_end: u64 }
+struct FrameClock { origin: Option<i64>, latest: i64, base: u64, video_end: u64, audio_end: u64,video_discont:bool,audio_discont:bool,initialized:bool }
 impl FrameClock {
+    #[cfg(test)]
     fn pts(&mut self, timestamp: i64, video: bool, duration: u64) -> u64 {
+        self.pts_at(timestamp,video,duration,None,false).0
+    }
+    fn pts_at(&mut self,timestamp:i64,video:bool,duration:u64,running:Option<u64>,resumed:bool)->(u64,bool){
+        let reset=timestamp>=0&&self.origin.is_some()&&timestamp<self.latest.saturating_sub(10_000_000);
+        if resumed||reset||!self.initialized{
+            self.initialized=true;
+            self.origin=(timestamp>=0).then_some(timestamp);
+            self.base=self.video_end.max(self.audio_end).max(running.unwrap_or(0));
+            self.latest=timestamp.max(0);self.video_discont=true;self.audio_discont=true;
+        }
         let end = if video { self.video_end } else { self.audio_end };
-        let pts = if timestamp < 0 { end } else {
+        let pts = if timestamp < 0 { end.max(self.base) } else {
             self.origin.get_or_insert(timestamp);
             // A reconnect can restart the sender's clock. Rebase both media
             // streams together, rather than restarting either one at zero.
-            if timestamp < self.latest.saturating_sub(10_000_000) {
-                self.origin = Some(timestamp);
-                self.base = self.video_end.max(self.audio_end);
-                self.latest = timestamp;
-            }
             self.latest = self.latest.max(timestamp);
             let relative = timestamp.saturating_sub(self.origin.unwrap()).max(0) as u64;
             self.base.saturating_add(relative.saturating_mul(100)).max(end)
         };
         if video { self.video_end = pts.saturating_add(duration); }
         else { self.audio_end = pts.saturating_add(duration); }
-        pts
+        let discontinuity=if video{std::mem::replace(&mut self.video_discont,false)}else{std::mem::replace(&mut self.audio_discont,false)};
+        (pts,discontinuity)
     }
 }
 
@@ -317,6 +324,7 @@ fn receive_loop(session: ReceiverSession, video_ref: gst::glib::WeakRef<gst_app:
     let mut video_configured: Option<(i32, i32, i32, i32, i32)> = None;
     let mut audio_configured: Option<(i32, i32)> = None;
     let mut started = false;
+    let mut last_valid_frame:Option<std::time::Instant>=None;
     loop {
         let (Some(video), Some(audio)) = (video_ref.upgrade(), audio_ref.upgrade()) else { break; };
         if video.current_state() != gst::State::Null { started = true; }
@@ -360,7 +368,11 @@ fn receive_loop(session: ReceiverSession, video_ref: gst::glib::WeakRef<gst_app:
                 }
                 drop(map);
                 let duration = 1_000_000_000u64 * frame.samples_per_channel as u64 / frame.sample_rate as u64;
-                buffer.set_pts(gst::ClockTime::from_nseconds(clock.pts(frame.timestamp, false, duration)));
+                let now=std::time::Instant::now();let resumed=last_valid_frame.is_some_and(|last|now.duration_since(last)>=std::time::Duration::from_secs(2));
+                let running=audio.current_running_time().map(|time|time.nseconds());
+                let(pts,discontinuity)=clock.pts_at(frame.timestamp,false,duration,running,resumed);last_valid_frame=Some(now);
+                buffer.set_pts(gst::ClockTime::from_nseconds(pts));
+                if discontinuity{buffer.set_flags(gst::BufferFlags::DISCONT);}
                 buffer.set_duration(gst::ClockTime::from_nseconds(duration));
             }
             if audio.push_buffer(buffer).is_err() {
@@ -408,7 +420,11 @@ fn receive_loop(session: ReceiverSession, video_ref: gst::glib::WeakRef<gst_app:
             }
             drop(map);
             let duration = 1_000_000_000u64.saturating_mul(fps_d as u64) / fps_n as u64;
-            buffer.set_pts(gst::ClockTime::from_nseconds(clock.pts(frame.timestamp, true, duration)));
+            let now=std::time::Instant::now();let resumed=last_valid_frame.is_some_and(|last|now.duration_since(last)>=std::time::Duration::from_secs(2));
+            let running=video.current_running_time().map(|time|time.nseconds());
+            let(pts,discontinuity)=clock.pts_at(frame.timestamp,true,duration,running,resumed);last_valid_frame=Some(now);
+            buffer.set_pts(gst::ClockTime::from_nseconds(pts));
+            if discontinuity{buffer.set_flags(gst::BufferFlags::DISCONT);}
             buffer.set_duration(gst::ClockTime::from_nseconds(duration));
         }
         if video.push_buffer(buffer).is_err() {
@@ -450,6 +466,24 @@ mod tests {
         assert_eq!(clock.pts(0, true, 40_000_000), before);
         assert_eq!(clock.pts(100_000, false, 10_000_000), before + 10_000_000);
     }
+    // NOT_RUN in current group-2 batch. A running-time rebase is not proof of
+    // remote sender freshness, successful TAKE or physical A/V synchronization.
+    #[test]
+    fn resumed_sender_rebases_both_streams_to_running_clock_not_old_end(){
+        let mut clock=FrameClock::default();
+        assert_eq!(clock.pts_at(50_000_000,true,40_000_000,Some(5_000_000_000),false),(5_000_000_000,true));
+        assert_eq!(clock.pts_at(50_100_000,false,10_000_000,Some(5_010_000_000),false),(5_010_000_000,true));
+        assert_eq!(clock.pts_at(0,true,40_000_000,Some(8_000_000_000),true),(8_000_000_000,true));
+        assert_eq!(clock.pts_at(100_000,false,10_000_000,Some(8_010_000_000),false),(8_010_000_000,true));
+        assert_eq!(clock.pts_at(400_000,true,40_000_000,Some(8_040_000_000),false),(8_040_000_000,false));
+    }
+    #[test]
+    fn unspecified_timestamps_do_not_reset_every_packet(){
+        let mut clock=FrameClock::default();
+        assert_eq!(clock.pts_at(-1,true,40_000_000,Some(5_000_000_000),false),(5_000_000_000,true));
+        assert_eq!(clock.pts_at(-1,true,40_000_000,Some(5_040_000_000),false),(5_040_000_000,false));
+        assert_eq!(clock.pts_at(-1,false,10_000_000,Some(5_040_000_000),false),(5_000_000_000,true));
+    }
 
     #[test]
     fn aceita_codecs_raw_do_sdk() {
@@ -479,23 +513,37 @@ mod tests {
     fn native_publisher_transmits_video_and_audio_to_loopback_receiver() {
         use crate::output::{Kind, PublisherSpec};
         use std::time::{Duration, Instant};
+        // This ignored native diagnostic is run in its own test process.
+        // SDK construction/cleanup can block outside the receive-loop deadline.
+        let (_completion,completed)=std::sync::mpsc::channel::<()>();
+        let progress=Arc::new(std::sync::atomic::AtomicUsize::new(0));let observed=progress.clone();
+        std::thread::spawn(move||{
+            if matches!(completed.recv_timeout(Duration::from_secs(60)),Err(std::sync::mpsc::RecvTimeoutError::Timeout)){
+                eprintln!("OMT loopback timeout: stage={}",observed.load(Ordering::Acquire));
+                std::process::exit(124);
+            }
+        });
+        let stage=|number,label|{progress.store(number,Ordering::Release);eprintln!("OMT loopback stage={number}: {label}");};
         struct Running(gst::Pipeline);
         impl Drop for Running { fn drop(&mut self) { let _ = self.0.set_state(gst::State::Null); } }
-        gst::init().unwrap();
+        stage(1,"GStreamer init");gst::init().unwrap();
         let name = format!("RPlayout loopback {}", std::process::id());
         let spec = PublisherSpec { output_id: "omt-test".to_string(), kind: Kind::Omt, url: format!("omt:{name}"),
             video_channel: "omt-test-video".to_string(), audio_channel: "omt-test-audio".to_string(), width: 320, height: 180,
             fps_n: 25, fps_d: 1, bitrate_kbps: 450, interlaced: false, top_field_first: true,
             prefer_software: true, role: "test".to_string(), on_demand: false, opus: false };
         let delivered = Arc::new(AtomicU64::new(0));
-        let output = Running(publisher(&spec, delivered.clone()).unwrap());
+        stage(2,"publisher/runtime construction");let output = Running(publisher(&spec, delivered.clone()).unwrap());
+        stage(3,"official discovery");
         let address = crate::omt_runtime::discover().unwrap().into_iter().find(|address| address.contains(&name))
             .expect("official discovery must find the native sender");
-        let session = ReceiverSession::new(&address).unwrap();
-        let input = Running(gst::parse::launch("videotestsrc is-live=true pattern=white ! video/x-raw,width=320,height=180,framerate=25/1 ! intervideosink channel=omt-test-video audiotestsrc is-live=true wave=sine ! audio/x-raw,rate=48000,channels=2 ! interaudiosink channel=omt-test-audio")
+        stage(4,"receiver construction");let session = ReceiverSession::new(&address).unwrap();
+        let input = Running(gst::parse::launch("videotestsrc name=omt-test-picture is-live=true pattern=white ! video/x-raw,width=320,height=180,framerate=25/1 ! intervideosink channel=omt-test-video audiotestsrc is-live=true wave=sine ! audio/x-raw,rate=48000,channels=2 ! interaudiosink channel=omt-test-audio")
             .unwrap().downcast::<gst::Pipeline>().unwrap());
-        input.0.set_state(gst::State::Playing).unwrap();
+        stage(5,"input Playing");input.0.set_state(gst::State::Playing).unwrap();
+        stage(6,"output Playing");
         output.0.set_state(gst::State::Playing).unwrap();
+        stage(7,"receive video/audio");
         let deadline = Instant::now() + Duration::from_secs(8);
         let (mut video_ok, mut audio_ok) = (false, false);
         while Instant::now() < deadline && !(video_ok && audio_ok) {
@@ -529,7 +577,7 @@ mod tests {
         assert!(audio_ok, "no real sine audio received through native OMT");
         assert!(delivered.load(Ordering::Relaxed) > 0, "publisher must count actual delivered video");
         // Also exercise the engine's actual appsrc ingest, not only SDK receive.
-        let (vsrc, asrc) = receiver(&address).unwrap();
+        stage(8,"actual appsrc ingest");let (vsrc, asrc) = receiver(&address).unwrap();
         let vsink = gst_app::AppSink::builder().sync(false).max_buffers(2).drop(true).build();
         let asink = gst_app::AppSink::builder().sync(false).max_buffers(4).drop(true).build();
         vsink.set_property("async", false); asink.set_property("async", false);
@@ -558,6 +606,7 @@ mod tests {
         // Its compositor is deliberately a different size; source format must
         // not be inferred from the scaled program/preview caps.
         use crate::channel::{Channel, Config, Output, Scan};
+        stage(9,"channel construction/CUE");
         crate::limiter_element::register().unwrap();
         struct RunningChannel(Channel);
         impl Drop for RunningChannel { fn drop(&mut self) { self.0.shutdown(); } }
@@ -575,7 +624,7 @@ mod tests {
         }
         assert!(preview_ok,"CUE must independently decode OMT on PVW with received audio");
         assert!(channel.0.on_air_id().is_none(),"CUE cannot put its source on PGM");
-        channel.0.load(item).unwrap();channel.0.take().unwrap();
+        stage(10,"channel LOAD/TAKE");channel.0.load(item).unwrap();channel.0.take().unwrap();
         let deadline=Instant::now()+Duration::from_secs(8);
         let mut signal_ok=false;
         while Instant::now()<deadline && !signal_ok {
@@ -598,5 +647,32 @@ mod tests {
         channel.0.preview(None).unwrap();
         assert_eq!(channel.0.on_air_id().as_deref(),Some("omt-native-signal"));
         eprintln!("OMT channel signal telemetry: video/audio/format=PASS, compositor=640x360 source=320x180");
+        stage(11,"sender loss and native signal expiry");
+        let decoder_id=channel.0.decoder_id("pgm");
+        output.0.set_state(gst::State::Null).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(8);
+        let mut lost=false;
+        while Instant::now()<deadline && !lost {
+            lost=channel.0.live_signal_reports().iter().any(|(_,bus,signal)|*bus=="pgm" && !signal.video_present);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(lost,"stopped OMT publisher cannot remain SIGNAL_OK");
+        assert_eq!(channel.0.on_air_id().as_deref(),Some("omt-native-signal"));
+        stage(12,"sender return and running-clock rebasing");
+        input.0.by_name("omt-test-picture").unwrap().set_property_from_str("pattern","red");
+        output.0.set_state(gst::State::Playing).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(8);
+        let mut returned=false;
+        while Instant::now()<deadline && !returned {
+            let signal_ok=channel.0.live_signal_reports().iter().any(|(_,bus,signal)|*bus=="pgm" && signal.video_present && signal.audio_present);
+            let (audio,_,video)=channel.0.measure();
+            returned=signal_ok && !audio.peak_dbfs.is_empty() && audio.peak_dbfs.iter().all(|peak|*peak > -40.)
+                && video.sample_age_ms.is_some_and(|age|age<500) && (40.0..85.0).contains(&video.luma);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(returned,"new red OMT picture/audio must reach PGM after the sender clock restarts, not held white");
+        assert_eq!(channel.0.on_air_id().as_deref(),Some("omt-native-signal"));
+        assert_eq!(channel.0.decoder_id("pgm"),decoder_id,"OMT appsrc session must survive this short interruption");
+        stage(13,"cleanup");
     }
 }

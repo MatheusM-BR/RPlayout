@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type PublishedContinuityStatus, type PublishedContinuityReview } from '../../api.js'
+import {ReviewedOperationConfirm} from './ReviewedOperationConfirm.js'
 
 export function PublishedContinuityPanel({channelId}:{channelId:string}){
   const [stored,setStored]=useState<PublishedContinuityStatus|null>(null),[review,setReview]=useState<PublishedContinuityReview|null>(null)
@@ -21,7 +22,7 @@ export function PublishedContinuityPanel({channelId}:{channelId:string}){
   const execute=async(action:'REVIEW'|'ENABLE'|'DISABLE')=>{
     if(busy.current||!status)return
     const captured=ticket.current,capturedReview=review,capturedStatus=status
-    if(action==='ENABLE'&&(!matching||!window.confirm('Habilitar passagens recorrentes entre grades já publicadas, sem perguntar a cada passagem? Rascunhos não serão montados/publicados. STOP, falha ou perda de autorização suspendem a política. CUE/PGM não mudam agora.')))return
+    if(action==='ENABLE'&&!matching)return
     busy.current=true;setPending(true);setError(null)
     try{
       if(action==='REVIEW'){const result=await api.publishedContinuityReview(channelId,late);if(ticket.current===captured)setReview(result.review)}
@@ -36,10 +37,12 @@ export function PublishedContinuityPanel({channelId}:{channelId:string}){
     <label>Atraso máximo autorizado (minutos) <input type="number" min={0} max={180} step={1} value={late} disabled={pending||status?.state==='ENABLED'} onChange={event=>{setLate(Number(event.target.value));setReview(null)}} className="w-20 rounded border border-border-subtle bg-surface-card p-1"/></label>
     <div className="flex flex-wrap gap-2">
       <button type="button" disabled={pending||!status?.canConfigure||status.state==='ENABLED'||!Number.isInteger(late)||late<0||late>180} onClick={()=>void execute('REVIEW')} className="rounded border border-border-subtle p-2 disabled:opacity-40">CONFERIR CONTINUIDADE</button>
-      <button type="button" disabled={pending||!matching||!status?.canConfigure||!status.nativeEngine||status.state==='ENABLED'} onClick={()=>void execute('ENABLE')} className="rounded border border-status-ok p-2 disabled:opacity-40">HABILITAR PASSAGENS RECORRENTES</button>
       <button type="button" disabled={pending||!status?.canConfigure||status.state!=='ENABLED'} onClick={()=>void execute('DISABLE')} className="rounded border border-armed-amber p-2 disabled:opacity-40">DESLIGAR CONTINUIDADE</button>
     </div>
     {matching&&<p>Primeira passagem conferida: {review.nextName}. Próximas edições publicadas serão revalidadas; atraso máximo {review.maxLateMinutes} min.</p>}
+    <ReviewedOperationConfirm reviewKey={matching&&review?`${channelId}:${review.version}:${review.token}`:null} label="HABILITAR PASSAGENS RECORRENTES"
+      confirmation="Autorizo passagens recorrentes entre grades já publicadas, sem perguntar a cada passagem. Rascunhos não serão montados/publicados. STOP, falha ou perda de autorização suspendem a política. CUE/PGM não mudam agora."
+      disabled={pending||!matching||!status?.canConfigure||!status.nativeEngine||status.state==='ENABLED'} onConfirm={()=>execute('ENABLE')}/>
     {status&&<p>{status.state==='ENABLED'?'Habilitada':status.state==='SUSPENDED'?'Suspensa — exige nova conferência':'Desligada'} · {status.message}</p>}
     {status?.state==='ENABLED'&&status.workerState!=='CURRENT_SERVER'&&<p role="status">{status.workerState==='WAITING_RECOVERY'?'Aguardando recuperação local do dono; nenhuma passagem é presumida.':'Outro servidor ou dono desconhecido detém a política. Este host não pode anunciar continuidade nem assumir fencing remoto.'}</p>}
     {status&&!status.nativeEngine&&<p>Canal simulado: habilitação de passagem real indisponível.</p>}

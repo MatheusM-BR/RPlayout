@@ -1,31 +1,45 @@
 import { randomUUID } from 'node:crypto'
 import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
+import {GraphicCommandLedger} from './domain/graphic-command-ledger.js'
 import { setChannelArchived } from './domain/channel-archive.js'
 import {assertChannelAudioChange} from './domain/audio-bus.js'
 import {requireChannelConfiguration} from './domain/channel-configuration-guard.js'
 import {configurationRevision} from './db/channel-configuration.js'
 import {qcRevision} from './db/qc-revisions.js'
+import {editLiveSource,readLiveSourceReview} from './domain/live-source-edit.js'
+import {editMultiview,readMultiviewReview} from './domain/multiview-edit.js'
+import {editScheduleRule,readScheduleRuleReview} from './domain/schedule-rule-edit.js'
+import {editGraphicTemplate,editSlate,readGraphicsReview} from './domain/graphics-edit.js'
 import {requireQcReview} from './domain/qc-review-guard.js'
+import {assetMetadataETag,assetRemovalETag} from '@rplayout/protocol'
+import {captureAssetRemovalAuthority,readAssetRemoval,applyAssetRemoval} from './domain/asset-removal.js'
+import {captureAssetMetadataAuthority,readAssetMetadata,editAssetMetadata} from './domain/asset-metadata-edit.js'
 import {EditorialVersions} from './db/editorial-revisions.js'
 import {Interruptions,type InterruptedItem} from './domain/interruptions.js'
 import {inspectInsertion,requireInsertionReview,OperationalInsertions,type InsertionInput} from './domain/operational-insertion.js'
 import {installationVault} from './domain/secret-vault.js'
-import {Checkpoints} from './domain/checkpoints.js'
+import {inspectCompensation,commitCompensation,compensationReceipt} from './domain/operational-compensation.js'
+import {Checkpoints,stoppedCheckpoint} from './domain/checkpoints.js'
 import type {ConfigurationLease} from './domain/configuration-changes.js'
 import {applyCollaborativeEdit,CollaborativeEditError} from './domain/collaborative-edit.js'
 import {readAudit} from './domain/audit.js'
+import {acknowledgeHealthIncident,readHealthIncidents,readHealthIncidentPage,type IncidentPageQuery,IncidentError} from './domain/health-incidents.js'
 import { resolveTakeTarget, TakeTargetError } from './domain/take-target.js'
 import { and, asc, desc, eq, inArray, isNotNull,or,sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { scheduledDeviceSchema, freezeDeviceAutomation } from './domain/device-automation.js'
 import type { FastifyInstance,FastifyRequest } from 'fastify'
+import {recordManualFailover,type ManualFailoverInput} from './domain/manual-failover.js'
 import {
   resolveTrim,
   channelConfigurationETag,
+  liveSourceETag,
+  multiviewETag,
+  scheduleRuleETag,
+  graphicsETag,
   DEFAULT_QC_PROFILE, assessQc, qcApproved, type QcStatus,
   qcDecisionETag,
   inferLiveSourceType,
-  fieldsUsedIn,
   dateInName,
   formatVideoFormat,
   formatTimecode,
@@ -78,25 +92,64 @@ import { buildCommercialComplianceReport, renderCommercialCompliancePdf } from '
 import {proposeFill,applyFillProposal} from './domain/autofill-proposal.js'
 import type {Db} from './db/client.js'
 import { backupDatabase, listBackups } from './domain/backup.js'
+import {UpgradeBackups,upgradeBackupRequest} from './domain/upgrade-backups.js'
 import { pgmProbeFor, syncDistribution } from './app.js'
 import { MediaMtx, PORTS } from './domain/mediamtx.js'
 import { can, parseRole, roleLabel, type Action } from './domain/permissions.js'
 import { hashPassword, verifyPassword } from './domain/auth.js'
+import {issueLoginSession} from './domain/login-session.js'
 import { AccessControl, sessionDigest, sessionToken, trustedOrigin, secretEquals, normalizedIp } from './domain/access.js'
+import {parseAllowedOrigins} from './domain/http-origin-policy.js'
 import { applyQcDecisions,applyQcDecisionsNow } from './domain/qc-workflow.js'
 import { channelCachePlan, warmChannelCache } from './domain/published-cache-plan.js'
 import { ProcessMetrics } from './domain/process-metrics.js'
+import {scopedOperationalSample} from './domain/operational-metrics.js'
+import {parseMetricHistoryQuery} from './domain/metric-history-query.js'
 import { isIP } from 'node:net'
 import { emitIntegrationEvent } from './domain/integrations.js'
+import {readCategory,editCategory,categoryAuthority} from './domain/category-edit.js'
+import {categoryETag} from '@rplayout/protocol'
+import {integrationAuthority,readIntegration,readIntegrationCatalog,createIntegration,updateIntegration,queueIntegrationTest,readIntegrationDelivery,readIntegrationDeliveries,retryIntegrationDelivery,publicIntegration} from './domain/integration-edit.js'
+import {integrationETag,integrationCatalogETag,integrationDeliveryETag} from '@rplayout/protocol'
 import { redactUrl } from './domain/relays.js'
 import { probeN1Peer } from './domain/n1.js'
 import {HaError} from './domain/ha-replication.js'
 import {HaRecoveryError} from './domain/ha-recovery.js'
 import { createEditorialRundown, EditorialRundownError } from './domain/editorial-rundown.js'
 import { diagnosticValue, sanitizeDiagnostic } from './domain/sanitize-diagnostic.js'
+import {databaseStorageStatus} from './db/process-database.js'
+import {HaBindingError,haBindingRequest,type HaBindingInventory} from './domain/ha-bindings.js'
+import {haReturnBindingRequest,haReturnBindingReviewRequest} from './domain/ha-return-bindings.js'
+import {haReturnApplicationRequest} from './domain/ha-return-application.js'
+import {haReturnMediaReviewRequest} from './domain/ha-return-media-review.js'
+import {haReturnMediaApplicationRequest} from './domain/ha-return-media-application.js'
+import {haReturnJobRecoveryRequest} from './domain/ha-return-job-recovery.js'
+import {haReturnJobListQuery} from './domain/ha-return-job-list.js'
+import {haReturnAutoDecisionRequest} from './domain/ha-return-auto-decision.js'
+import {haReturnPostGainReviewRequest} from './domain/ha-return-postgain-review.js'
+import {haReturnBusReviewRequest} from './domain/ha-return-bus-review.js'
+import {haMonitorRequest} from './domain/ha-promotion.js'
+import {haControlRequest,haControlReviewRequest} from './domain/ha-control.js'
+import {haStopRequest} from './domain/ha-stop.js'
+import {haExportRequest} from './domain/ha-execution-export.js'
+import {haReturnSendRequest,haReturnResumeRequest} from './domain/ha-return-send.js'
+import {haReturnReviewRequest} from './domain/ha-return-store.js'
+import {haReturnSelectionRequest} from './domain/ha-return-selection.js'
+import {haReturnCandidateRequest} from './domain/ha-return-candidate-staging.js'
+import {haHistoryImportRequest} from './domain/ha-history-import.js'
+import {haHistoryVariantRequest} from './domain/ha-history-variant.js'
+import {haReturnRekeyRequest} from './domain/ha-return-rekey.js'
+const haReturnWritePaths=new Set(['/api/ha/executions/return-resume'])
+const haQuarantineWrites=new Set(['/api/ha/returns/review','/api/ha/returns/history','/api/ha/returns/variants','/api/ha/returns/rekey','/api/ha/returns/selection','/api/ha/returns/candidate','/api/ha/returns/bindings','/api/ha/returns/application','/api/ha/returns/media-review','/api/ha/returns/media-application'])
+haQuarantineWrites.add('/api/ha/returns/auto-decision')
+haQuarantineWrites.add('/api/ha/returns/postgain-review')
+haQuarantineWrites.add('/api/ha/returns/bus-review')
+import {configuredSourceEndpoint} from './domain/item-source-binding.js'
+import {isRecoveryRehearsal,rehearsalRequestAllowed} from './domain/recovery-rehearsal.js'
 import { ExternalCommandLedger, DeviceCommandConflict } from './domain/external-command-ledger.js'
 import { sourceWire, sourceAddress, credentialAddress } from './domain/source-wire.js'
-import { conflictsWithScheduleRule } from './domain/schedule-rules.js'
+import {requireItemSourceBinding} from './domain/item-source-binding.js'
+import {scopedSourceList} from './domain/sources.js'
 import { activeHorizonRule, executionHorizon } from './domain/continuous.js'
 import { localDate, rundownClock, rundownFrames, rundownMidnight } from './domain/rundown-clock.js'
 import { inspectBoundary, PlaylistBoundaryLedger } from './domain/playlist-boundary.js'
@@ -104,6 +157,12 @@ import { AUTH_PASSWORD, AUTH_USER, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from '.
 
 const execFileAsync = promisify(execFile)
 import * as Roots from './domain/roots.js'
+import {rootCatalogETag,rootAddETag} from '@rplayout/protocol'
+import {rootAuthority,readRootCatalog,readRootAdd,addRootConferred,removeRootConferred} from './domain/root-edit.js'
+import {readScanReview,queueScan} from './domain/scan-command.js'
+import {scanETag} from '@rplayout/protocol'
+import {recoverScan} from './domain/scan-recovery.js'
+import {readScanDiagnostics} from './domain/scan-diagnostic.js'
 import {
   categories,
   channels,
@@ -131,18 +190,15 @@ import {
   transmissionPresets,
   operationalPlaylistRevisions,
 } from './db/schema.js'
-import { listChannelProjects, restoreChannelProject, saveChannelProject } from './domain/channel-projects.js'
+import { listChannelProjects, restoreChannelProject, reviewChannelProject, saveChannelProject } from './domain/channel-projects.js'
+import {projectRestoreETag} from '@rplayout/protocol'
+import {accountCatalogETag,accountSessionsETag} from '@rplayout/protocol'
+import {bootstrapConfiguredAccount,captureAccountAuthority,changeAccountAccess,checkCreateAccountReview,checkUpdateAccountReview,createAccount,createAccountBody,logoutAccount,readAccountCatalog,readAccountSessions,revokeAccountSessions,updateAccount,updateAccountBody} from './domain/account-edit.js'
+import {trimSchema,audioSchema,anchorSchema,qcProfileSchema} from './domain/editorial-schemas.js'
 import {
   globalSrtManager,
   listLiveSources,
   getLiveSource,
-  createLiveSource,
-  updateLiveSource,
-  deleteLiveSource,
-  getMultiviewConfig,
-  saveMultiviewConfig,
-  type MultiviewCell,
-  type MultiviewLayout,
 } from './domain/srt.js'
 import { globalScteDispatcher } from './domain/scte.js'
 import { globalStudioAutomationGateway } from './domain/external-control.js'
@@ -168,6 +224,7 @@ import {
 import { thumbnailSvg } from './domain/thumbnail.js'
 import * as Playlists from './domain/playlists.js'
 import { buildView, type RundownView } from './domain/plan.js'
+import {executionTrim} from './domain/execution-trim.js'
 import {readEditorialState,editorialView} from './domain/editorial-state.js'
 import {mutateEditorial,requireEditorialRevision} from './domain/editorial-mutation.js'
 import {readItemAutomationState} from './domain/item-automation-state.js'
@@ -231,52 +288,6 @@ const MIME: Record<string, string> = {
   '.ogg': 'audio/ogg',
 }
 
-const trimSchema = z.object({ in: z.number().int().min(0), out: z.number().int().min(0) })
-
-const audioSchema = z.object({
-  mode: z.enum(['AUTO', 'MANUAL', 'OFF']),
-  gainDb: z.number().min(-40).max(20),
-  analysisId:z.string().uuid().optional(),
-  channelMap:z.array(z.number().int().min(0).max(31)).max(32).optional(),
-  auxiliaryPairs:z.array(z.object({outputPair:z.number().int().min(2).max(8),inputPair:z.number().int().min(1).max(32),gainDb:z.number().finite().min(-60).max(12).optional()}).strict()).max(7).optional(),
-  routing:z.object({mode:z.enum(['DEFAULT','STEREO_1_2','STEREO_3_4','DOWNMIX_MONO','LEFT_ONLY','RIGHT_ONLY','MATRIX','PAIR_MIX']),matrix:z.array(z.array(z.number().finite().min(-1).max(1)).min(1).max(64)).length(2).optional(),pairs:z.array(z.number().int().min(0).max(31)).min(1).max(32).optional()}).strict().optional(),
-  measured: z
-    .object({
-      integratedLufs: z.number(),
-      lra: z.number(),
-      truePeakDbtp: z.number(),
-      scope: z.enum(['FILE', 'TRIM']),
-      measuredAt: z.string(),
-    })
-    .nullable(),
-})
-
-/** Prioridade é 1..5, não "um número" — o tipo do domínio precisa da literal. */
-const prioritySchema = z.union([
-  z.literal(1),
-  z.literal(2),
-  z.literal(3),
-  z.literal(4),
-  z.literal(5),
-])
-
-const anchorSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('FLOW') }),
-  z.object({ kind: z.literal('FIXED'), at: z.number().int().min(0) }),
-  z.object({ kind: z.literal('HARD_TIME'), at: z.number().int().min(0) }),
-  z.object({
-    kind: z.literal('SOFT'),
-    at: z.number().int().min(0),
-    tolerance: z.number().int().min(0),
-    priority: prioritySchema,
-  }),
-  z.object({
-    kind: z.literal('WINDOW'),
-    from: z.number().int().min(0),
-    to: z.number().int().min(0),
-    priority: prioritySchema,
-  }),
-])
 
 const scopeSchema = z.enum(['ITEM', 'RUNDOWN', 'ALL_RUNDOWNS', 'ASSET_DEFAULT'])
 // Legacy collaborative editing uses the same bounded operational fields; it
@@ -327,7 +338,7 @@ async function runtimeForRundown(app: App, rundownId: string): Promise<Editorial
   const rundown = await getRundown(app.db, rundownId)
   if (!rundown) return null
   const runtime = await runtimeFor(app, rundown.channelId)
-  if (!runtime) return null
+  if (!runtime) throw Object.assign(new Error('A grade existe, mas o runtime do canal está indisponível ou protegido. Confira distribuição, posse e recuperação no Monitor; nenhum comando foi executado.'),{statusCode:409,code:'CHANNEL_RUNTIME_UNAVAILABLE'})
   // Preserve the first-load compatibility of an idle, uninitialized channel.
   if (!runtime.view) return initialRuntimeForRundown(app, rundownId)
   if (runtime.view.rundown.id === rundownId) return runtime
@@ -474,6 +485,16 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
   server.addHook('preSerialization', async (request, _reply, payload) => request.url.startsWith('/api') ? sourceWire().publicValue(payload) : payload)
   const access = new AccessControl(app.sqlite)
+  const assertTransportOwnership=(channelId:string)=>{
+    try{
+      if(app.mediamtx||app.hostFence){const global=app.distributionOwnership.status();if(global.blocked)throw new CollaborativeEditError(409,{error:global.message,distributionOwnershipBlocked:true,...(global.hostDistributionBlocked?{hostDistributionBlocked:true}:{})})}
+      const status=app.executionOwnership.status(channelId)
+      if(status.blocked)throw new CollaborativeEditError(409,{error:status.message??'A execução deste canal está protegida por outra instância ou ainda não tem parada comprovada.',executionOwnershipBlocked:true})
+    }catch(error){
+      if(error instanceof CollaborativeEditError)throw error
+      throw new CollaborativeEditError(409,{error:'Registro de posse da execução inválido. Nenhum comando foi enviado; preserve o estado e confira a recuperação.',executionOwnershipBlocked:true})
+    }
+  }
   const assertEditorialAccess=(request:FastifyRequest,channelId:string)=>{
     if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão deste canal mudou; entre novamente antes de editar.'})
   }
@@ -545,18 +566,20 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   }
   const securityAudit = (kind: string, actor: string | null, details: Record<string, unknown>) => logDecision(app, '@security', null, kind, details, actor)
   const configurationAudit = (request: any, channelId: string, kind: string, details: Record<string, unknown>) => securityAudit(kind, access.identity(request)?.username ?? null, { channelId, ...details })
-  const origins = (process.env.RPLAYOUT_ALLOWED_ORIGINS ?? '').split(',').map(value => value.trim()).filter(Boolean)
+  const origins=parseAllowedOrigins(process.env.RPLAYOUT_ALLOWED_ORIGINS)
   const publicPaths = new Set(['/api/session', '/api/auth/login', '/api/auth/logout', '/api/health'])
   const servicePaths = new Set(['/api/external/control', '/api/v1/external/control', '/api/n1/state', '/api/n1/compare'])
   server.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0]!
     if (!path.startsWith('/api') && path !== '/ws') return
+    if(!databaseStorageStatus(app.sqlite).connected)return reply.code(503).header('Cache-Control','private, no-store').send({error:'STORAGE_UNAVAILABLE',message:'Banco operacional indisponível. Controle bloqueado; nenhum comando será repetido automaticamente. Confira o servidor.'})
     if (!trustedOrigin(request.headers.origin, request.headers.host, origins)) return reply.code(403).send({ error: 'Esta origem não está autorizada a acessar o playout. Abra a página no endereço do servidor.' })
-    if(path==='/api/ha/replica'||path==='/api/ha/media'){
-      if(request.method!=='POST'||!app.ha?.authenticate(request.headers,path==='/api/ha/media'?'MEDIA':'STATE'))return reply.code(403).send({error:'Pareamento HA não autorizado.'})
+    if(isRecoveryRehearsal(app.sqlite)&&!rehearsalRequestAllowed(request.method,path))return reply.code(409).send({error:'RESTORED_REHEARSAL',message:'Cópia restaurada em conferência: mudanças e execução bloqueadas. Isso não autoriza promoção do canal.'})
+    if(path==='/api/ha/replica'||path==='/api/ha/media'||path==='/api/ha/return'){
+      if(request.method!=='POST'||!app.ha?.authenticate(request.headers,path==='/api/ha/return'?'RETURN':path==='/api/ha/media'?'MEDIA':'STATE'))return reply.code(403).send({error:'Pareamento HA não autorizado.'})
       return
     }
-    if(app.ha?.options.role==='STANDBY'&&!['GET','HEAD','OPTIONS'].includes(request.method)&&!['/api/auth/login','/api/auth/logout','/api/ha/rehearsal','/api/ha/rehearsal/reconcile'].includes(path))return reply.code(409).send({error:'Nó reserva: operação local bloqueada. Espelhar não autoriza assumir o PGM.'})
+    if(app.ha?.options.role==='STANDBY'&&!['GET','HEAD','OPTIONS'].includes(request.method)&&!haReturnWritePaths.has(path)&&!['/api/auth/login','/api/auth/logout','/api/ha/rehearsal','/api/ha/rehearsal/reconcile','/api/ha/bindings','/api/ha/prepare','/api/ha/executions/monitor','/api/ha/executions/control','/api/ha/executions/control/review','/api/ha/executions/stop','/api/ha/executions/export','/api/ha/executions/return-send','/api/ha/executions/return-inspect'].includes(path))return reply.code(409).send({error:'Nó reserva: operação local bloqueada. Espelhar não autoriza assumir o PGM.'})
     if (publicPaths.has(path) || !access.required() || access.identity(request)) return
     const bearer = request.headers.authorization?.replace(/^Bearer /i, '') ?? request.headers['x-rplayout-control-token'] ?? ''
     if (servicePaths.has(path) && EXTERNAL_CONTROL_TOKEN && typeof bearer === 'string' && secretEquals(bearer, EXTERNAL_CONTROL_TOKEN)) return
@@ -571,12 +594,54 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
   const sharedReads = new Set(['/api/state', '/api/session', '/api/health', '/api/library', '/api/assets', '/api/categories', '/api/library/scan', '/api/library/roots', '/api/library/roots/browse', '/api/sources', '/api/media/jobs', '/api/srt/telemetry', '/api/v1/srt/telemetry'])
   sharedReads.add('/api/channels/archived')
+  sharedReads.add('/api/categories/:id/review')
   sharedReads.add('/api/scheduler/status') // Its collection is filtered per authorized channel.
+  sharedReads.add('/api/health-events') // Visibility is enforced before the query limit.
+  sharedReads.add('/api/health-events.csv')
+  sharedReads.add('/api/distribution/execution-ownership') // Generic status only, no paths/process IDs.
+  sharedReads.add('/api/ha/binding-channels') // Filtered by channel authorization before response.
   const channelParameterRoutes = new Set(['/api/library', '/api/health-events', '/api/health-events.csv', '/api/sources/live', '/api/v1/sources/live', '/api/multiview/config', '/api/v1/multiview/config', '/api/v1/engineering/pgm-probe/status', '/api/v1/engineering/pgm-probe/emergency-slate', '/api/v1/engineering/pgm-probe/policy', '/api/v1/continuity/cache/status', '/api/v1/cache/status', '/api/v1/continuity/cache/warm', '/api/v1/cache/prewarm'])
   channelParameterRoutes.add('/api/integrations')
+  channelParameterRoutes.add('/api/ha/bindings')
+  channelParameterRoutes.add('/api/ha/prepare')
+  channelParameterRoutes.add('/api/ha/executions')
+  channelParameterRoutes.add('/api/ha/executions/monitor')
+  channelParameterRoutes.add('/api/ha/executions/control')
+  channelParameterRoutes.add('/api/ha/executions/control/review')
+  channelParameterRoutes.add('/api/ha/executions/stop')
+  channelParameterRoutes.add('/api/ha/executions/stop-review')
+  channelParameterRoutes.add('/api/ha/executions/return-review')
+  channelParameterRoutes.add('/api/ha/executions/export')
+  channelParameterRoutes.add('/api/ha/executions/return-send')
+  channelParameterRoutes.add('/api/ha/executions/return-inspect')
+  channelParameterRoutes.add('/api/ha/executions/return-resume')
+  channelParameterRoutes.add('/api/ha/returns')
+  channelParameterRoutes.add('/api/ha/returns/review')
+  channelParameterRoutes.add('/api/ha/returns/history')
+  channelParameterRoutes.add('/api/ha/returns/variants')
+  channelParameterRoutes.add('/api/ha/returns/rekey')
+  channelParameterRoutes.add('/api/ha/returns/selection')
+  channelParameterRoutes.add('/api/ha/returns/candidate')
+  channelParameterRoutes.add('/api/ha/returns/bindings')
+  channelParameterRoutes.add('/api/ha/returns/application')
+  channelParameterRoutes.add('/api/ha/returns/media-review')
+  channelParameterRoutes.add('/api/ha/returns/media-options')
+  channelParameterRoutes.add('/api/ha/returns/media-application')
+  channelParameterRoutes.add('/api/ha/returns/job-recovery')
+  channelParameterRoutes.add('/api/ha/returns/pending-jobs')
+  channelParameterRoutes.add('/api/ha/returns/history-job')
+  haQuarantineWrites.add('/api/ha/returns/job-recovery')
+  channelParameterRoutes.add('/api/ha/returns/auto-options')
+  channelParameterRoutes.add('/api/ha/returns/auto-decision')
+  channelParameterRoutes.add('/api/ha/returns/postgain-review')
+  channelParameterRoutes.add('/api/ha/returns/bus-review')
+  channelParameterRoutes.add('/api/sources')
+  channelParameterRoutes.add('/api/integrations/review')
   channelParameterRoutes.add('/api/audit')
   channelParameterRoutes.add('/api/integration-deliveries')
   channelParameterRoutes.add('/api/graphics')
+  channelParameterRoutes.add('/api/graphics/review')
+  sharedReads.add('/api/graphics/review') // Only global templates without a channel parameter.
   channelParameterRoutes.add('/api/v1/engineering/pgm-probe/contingency-loop')
   for (const route of ['/api/v1/graphics/layers','/api/v1/graphics/layers/:layer/trigger','/api/v1/scte/splice-insert']) channelParameterRoutes.add(route)
   server.addHook('preHandler', async (request, reply) => {
@@ -586,7 +651,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const channelIds = new Set<string>()
     for (const value of [query?.channelId, body?.channelId]) if (typeof value === 'string') channelIds.add(value)
     const route = request.routeOptions.url ?? ''
-    const scopedRoute = channelParameterRoutes.has(path) || channelParameterRoutes.has(route) || route === '/api/assets/:id/qc' || /^\/api\/(?:v1\/)?(channels\/:id|rundowns\/:id|items\/:id|sources\/live\/:id|outputs\/:id|health-events\/:id|integrations\/:id|integration-deliveries\/:id|item-graphics\/:id|graphics\/:id|guests\/:id|destinations\/:id|blocks\/:blockId|timeline\/:rundownId|tenants\/:tenantId\/channels\/:channelId)(?:\/|$)/.test(route)
+    const scopedRoute = channelParameterRoutes.has(path) || channelParameterRoutes.has(route) || route === '/api/assets/:id/qc' || /^\/api\/(?:v1\/)?(channels\/:id|rules\/:id|rundowns\/:id|items\/:id|sources\/live\/:id|outputs\/:id|health-events\/:id|integrations\/:id|integration-deliveries\/:id|item-graphics\/:id|graphics\/:id|guests\/:id|destinations\/:id|blocks\/:blockId|timeline\/:rundownId|tenants\/:tenantId\/channels\/:channelId)(?:\/|$)/.test(route)
     if (/^\/api\/(?:v1\/)?channels\/:id(?:\/|$)/.test(route) && params?.id) channelIds.add(params.id)
     const lookup = (sql: string, id: unknown) => {
       if (typeof id !== 'string') return
@@ -613,12 +678,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
        (route === '/api/graphics/:id' && (templateTarget?.channelId === null || body?.channelId === null)))
     if (/^\/api\/(?:v1\/)?sources\/live\/:id/.test(route)) lookup('SELECT channel_id AS channelId FROM live_sources WHERE id=?', params?.id)
     if (route.startsWith('/api/outputs/:id')) lookup('SELECT channel_id AS channelId FROM output_profiles WHERE id=?', params?.id)
+    if (route.startsWith('/api/rules/:id')) lookup('SELECT channel_id AS channelId FROM schedule_rules WHERE id=?',params?.id)
     if (route.startsWith('/api/health-events/:id')) lookup('SELECT channel_id AS channelId FROM health_events WHERE id=?', params?.id)
     if (route.startsWith('/api/integrations/:id')) lookup('SELECT channel_id AS channelId FROM integrations WHERE id=?',params?.id)
     if (route.startsWith('/api/integration-deliveries/:id')) lookup('SELECT channel_id AS channelId FROM integration_deliveries WHERE id=?',params?.id)
     auditChannels.set(request,[...channelIds])
     if (identity?.channelIds && [...channelIds].some(id => !identity.channelIds!.includes(id))) return reply.code(403).send({error:'Sua conta não pode acessar este canal.'})
-    if (!['GET','HEAD','OPTIONS'].includes(request.method) && route!=='/api/channels/:id/reactivate' && !(route==='/api/channels/:id' && request.method==='DELETE')) {
+    if (!['GET','HEAD','OPTIONS'].includes(request.method) && !haReturnWritePaths.has(route) && !haQuarantineWrites.has(route) && route!=='/api/ha/bindings' && route!=='/api/ha/prepare' && route!=='/api/ha/executions/monitor' && route!=='/api/ha/executions/control' && route!=='/api/ha/executions/control/review' && route!=='/api/ha/executions/stop' && route!=='/api/ha/executions/export' && route!=='/api/ha/executions/return-send' && route!=='/api/ha/executions/return-inspect' && route!=='/api/channels/:id/reactivate' && !(route==='/api/channels/:id' && request.method==='DELETE')) {
       for (const channelId of channelIds) {
         if (app.sqlite.prepare('SELECT 1 FROM channels WHERE id=? AND archived_at IS NOT NULL').get(channelId)) return reply.code(409).send({error:'Este canal está arquivado e disponível somente para histórico. Reative-o explicitamente antes de editar ou comandar a operação.'})
       }
@@ -627,11 +693,25 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (sharedTemplateMutation) return reply.code(403).send({error:'Sua conta pode usar grafismos compartilhados, mas não editar, remover ou compartilhar estes modelos.'})
     const scopedTransaction=route==='/api/items/:id/trim' || route==='/api/items/:id/audio'
     if (scopedRoute && channelIds.size && [...channelIds].every(id => identity.channelIds!.includes(id)) && (scopedTransaction || !['ALL_RUNDOWNS', 'ASSET_DEFAULT'].includes(String(body?.scope)))) return
-    if (!channelIds.size && (request.method === 'GET' || request.method === 'HEAD') && (path==='/api/audit' || path==='/api/graphics' || sharedReads.has(path) || /^\/api\/assets\/[^/]+\/(thumbnail\.svg|file|media|workflow|frame\/)/.test(path))) return
+    // Parameterized read-only entries must match the registered route too.
+    // Global writes and channel-bound reads keep the earlier scope checks.
+    if (!channelIds.size && (request.method === 'GET' || request.method === 'HEAD') && (path==='/api/audit' || path==='/api/graphics' || sharedReads.has(path) || sharedReads.has(route) || /^\/api\/assets\/[^/]+\/(thumbnail\.svg|file|media|workflow|frame\/|metadata-review$)/.test(path))) return
     if (path === '/api/auth/logout' || path === '/api/auth/login' || path === '/ws') return
     return reply.code(403).send({ error: 'Sua conta não pode acessar este canal ou alterar configurações compartilhadas. Peça ao administrador para revisar os canais permitidos.' })
   })
   const roleOf = async (request: { headers: Record<string, string | string[] | undefined> }) => access.role(request)
+  server.addHook('preHandler',async(request,reply)=>{
+    if(!(app.mediamtx||app.hostFence)||['GET','HEAD','OPTIONS'].includes(request.method)||!can(access.role(request),'OUTPUT_CONTROL'))return
+    const route=request.routeOptions.url??''
+    const distributionMutation=route==='/api/channels'||route==='/api/channels/:id'||
+      /^\/api\/channels\/:id\/(guests|destinations|outputs|reactivate|archive)(?:\/|$)/.test(route)||
+      /^\/api\/(guests|destinations|outputs)\/:id(?:\/|$)/.test(route)||
+      /^\/api\/channels\/:id\/projects\/[^/]+\/restore$/.test(route)||
+      /^\/api\/channels\/:id\/transmission-presets\/[^/]+\/apply$/.test(route)
+    if(!distributionMutation)return
+    try{app.distributionOwnership.claim();app.distributionOwnership.assertOwned()}
+    catch(error){return reply.code(409).send(error instanceof CollaborativeEditError?error.payload:{error:'Posse da distribuição inválida; nenhum recurso foi alterado.',distributionOwnershipBlocked:true})}
+  })
   const usernameOf = async (request: { headers: Record<string, string | string[] | undefined> }): Promise<string | null> => {
     return access.identity(request)?.username ?? null
   }
@@ -650,51 +730,49 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (loginAttempts.size > 1000) for (const [ip, entry] of loginAttempts) { if (entry.until <= Date.now()) loginAttempts.delete(ip) }
     if (loginAttempts.size > 2000 && !attempt) return reply.code(429).send({ error: 'Limite de tentativas de login atingido.' })
     loginAttempts.set(request.ip, attempt && attempt.until > Date.now() ? { ...attempt, count: attempt.count + 1 } : { count: 1, until: Date.now() + 900_000 })
-    const body = z.object({ username: z.string().min(1), password: z.string().min(1) }).safeParse(request.body)
+    const body = z.object({ username: z.string().min(1).max(80), password: z.string().min(1).max(1024) }).strict().safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe usuário e senha.' })
     let [user] = await app.db.select().from(users).where(eq(users.username, body.data.username)).limit(1)
     if (!user && AUTH_USER && AUTH_PASSWORD && body.data.username === AUTH_USER && secretEquals(body.data.password, AUTH_PASSWORD)) {
-      const created = { id: randomUUID(), username: AUTH_USER, passwordHash: await hashPassword(AUTH_PASSWORD), role: 'ADMIN' as const, enabled: true, createdAt: new Date().toISOString() }
-      await app.db.insert(users).values(created)
-      user = created
+      const passwordHash=await hashPassword(AUTH_PASSWORD)
+      try {user=bootstrapConfiguredAccount(app.db,AUTH_USER,passwordHash,request.ip)}
+      catch(error){return automationError(reply,error)}
     }
-    if (!user || !user.enabled || !(await verifyPassword(body.data.password, user.passwordHash))) {
+    if (!user || !user.enabled || parseRole(user.role)==='DENIED' || !(await verifyPassword(body.data.password, user.passwordHash))) {
       await securityAudit('LOGIN_FAILED', null, { username: body.data.username, station: request.ip })
       return reply.code(401).send({ error: 'Usuário ou senha inválidos.' })
     }
-    const policy = access.policy(user.id)
-    if (policy.stationIps !== null && !policy.stationIps.includes(normalizedIp(request.ip))) return reply.code(403).send({ error: 'Esta estação não está autorizada para a conta. Peça ao administrador para revisar os endereços permitidos.' })
-    const token = randomUUID() + randomUUID()
-    await app.db.insert(sessions).values({ token: sessionDigest(token), userId: user.id, expiresAt: new Date(Date.now() + 43_200_000).toISOString(), createdAt: new Date().toISOString() })
+    let issued:ReturnType<typeof issueLoginSession>
+    try{issued=issueLoginSession(app.db,user,request.ip)}catch(error){
+      if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload)
+      throw error
+    }
     loginAttempts.delete(request.ip)
-    await securityAudit('SESSION_CREATED', user.username, { userId: user.id, station: request.ip })
     const secure = request.protocol === 'https' || process.env.RPLAYOUT_SECURE_COOKIES === '1' ? '; Secure' : ''
-    return reply.header('set-cookie', `rplayout_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}`).send({ role: user.role, label: roleLabel(parseRole(user.role)) })
+    return reply.header('set-cookie', `rplayout_session=${issued.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}`).send({ role: issued.role, label: roleLabel(issued.role) })
   })
   server.post('/api/auth/logout', async (request, reply) => {
-    const token = sessionToken(request), actor = access.identity(request)?.username ?? null
-    if (token) await app.db.delete(sessions).where(eq(sessions.token, sessionDigest(token)))
-    if (actor) await securityAudit('SESSION_ENDED', actor, { station: request.ip })
-    return reply.header('set-cookie', 'rplayout_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0').send({ ok: true })
+    const result=logoutAccount(app.db,request)
+    return reply.header('set-cookie', 'rplayout_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0').send(result)
   })
-  server.get('/api/users', async (request, reply) => {
-    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
-    const rows = await app.db.select({ id: users.id, username: users.username, role: users.role, enabled: users.enabled, createdAt: users.createdAt }).from(users)
-    return { users: rows.map(row => ({ ...row, ...access.policy(row.id) })) }
-  })
+  const accountCatalogHandler=async(request:FastifyRequest,reply:any)=>{
+    try {const review=readAccountCatalog(app.db,captureAccountAuthority(app.db,request));return reply.header('Cache-Control','private, no-store').header('ETag',accountCatalogETag(review)).send(review)}
+    catch(error){return automationError(reply,error)}
+  }
+  server.get('/api/users',accountCatalogHandler)
+  server.get('/api/users/review',accountCatalogHandler)
   server.get('/api/users/:id/sessions', async (request, reply) => {
-    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem consultar sessões.' })
     const { id } = request.params as { id: string }
-    return { sessions: await app.db.select({ id: sessions.token, createdAt: sessions.createdAt, expiresAt: sessions.expiresAt }).from(sessions).where(eq(sessions.userId, id)) }
+    try {const review=readAccountSessions(app.db,id,captureAccountAuthority(app.db,request));return reply.header('Cache-Control','private, no-store').header('ETag',accountSessionsETag(review)).send(review)}
+    catch(error){return automationError(reply,error)}
   })
   server.delete('/api/users/:id/sessions', async (request, reply) => {
-    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem revogar sessões.' })
-    const { id } = request.params as { id: string }, actor = await usernameOf(request)
-    await app.db.delete(sessions).where(eq(sessions.userId, id))
-    await securityAudit('SESSIONS_REVOKED', actor, { userId: id, station: request.ip })
-    return { ok: true }
+    const { id } = request.params as { id: string }
+    try {const result=revokeAccountSessions(app.db,id,request.headers['if-match'],captureAccountAuthority(app.db,request));return reply.header('Cache-Control','private, no-store').header('ETag',result.eTag).send(result)}
+    catch(error){return automationError(reply,error)}
   })
   server.get('/api/audit', async (request, reply) => {
+    reply.header('Cache-Control','private, no-store')
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar auditoria.' })
     const query = request.query as { limit?: string;channelId?:string }
     const limit = Math.min(1000, Math.max(1, Math.trunc(Number(query.limit ?? 200) || 200)))
@@ -704,28 +782,17 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
   server.get('/api/health-events', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar saúde.' })
-    const query = request.query as { channelId?: string; limit?: string }
-    const limit = Math.min(2000, Math.max(1, Number(query.limit ?? 500) || 500))
-    const rows = await app.db
-      .select()
-      .from(healthEvents)
-      .where(query.channelId ? eq(healthEvents.channelId, query.channelId) : undefined)
-      .orderBy(desc(healthEvents.occurredAt))
-      .limit(limit)
-    return { events: rows.reverse() }
+    const query = request.query as Omit<IncidentPageQuery,'limit'> & {limit?:string}
+    try{return reply.header('Cache-Control','private, no-store').send(readHealthIncidentPage(app.db,access.identity(request)?.channelIds??null,{...query,limit:Number(query.limit??200)}))}
+    catch(error){if(error instanceof IncidentError)return reply.code(error.status).send({error:error.message});throw error}
   })
   server.get('/api/health-events.csv', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar saúde.' })
     const query = request.query as { channelId?: string; since?: string }
-    const rows = await app.db
-      .select()
-      .from(healthEvents)
-      .where(query.channelId ? eq(healthEvents.channelId, query.channelId) : undefined)
-      .orderBy(desc(healthEvents.occurredAt))
-      .limit(10_000)
-    const filtered = (query.since ? rows.filter((row) => row.occurredAt >= query.since!) : rows).reverse()
+    const filtered=readHealthIncidents(app.db,access.identity(request)?.channelIds??null,query.channelId,10000,query.since)
+    void reply.header('Cache-Control','private, no-store')
     const quote = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
-    const csv = ['horário;canal;componente;estado;severidade;mensagem;reconhecido', ...filtered.map((row) => [row.occurredAt, row.channelId, row.component, row.state, row.severity, row.message, row.acknowledgedAt].map(quote).join(';'))].join('\n')
+    const csv = ['horário;canal;componente;estado;severidade;mensagem;reconhecido;recuperado;observação encerrada', ...filtered.map((row) => [row.occurredAt, row.channelId, row.component, row.state, row.severity, row.message, row.acknowledgedAt,row.resolvedAt,row.observationEndedAt].map(quote).join(';'))].join('\n')
     void reply.header('content-type', 'text/csv; charset=utf-8')
     void reply.header('content-disposition', 'attachment; filename="rplayout-saude.csv"')
     return csv
@@ -733,15 +800,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.post('/api/health-events/:id/ack', async (request, reply) => {
     if (!(await allowed(request, 'CHANNEL_STOP'))) return reply.code(403).send({ error: 'Supervisor precisa reconhecer alertas.' })
     const { id } = request.params as { id: string }
-    await app.db.update(healthEvents).set({ acknowledgedAt: new Date().toISOString() }).where(eq(healthEvents.id, id))
-    return { ok: true }
+    try{
+      const result=acknowledgeHealthIncident(app.db,id,()=>({actor:access.identity(request)?.username??null,channelIds:access.identity(request)?.channelIds??null,canAcknowledge:can(access.role(request),'CHANNEL_STOP')}))
+      return reply.header('Cache-Control','private, no-store').send(result)
+    }catch(error){if(error instanceof IncidentError)return reply.code(error.status).send({error:error.message});return reply.code(409).send({error:'Alerta não reconhecido; registro de auditoria indisponível. Tente novamente.'})}
   })
-  const gatewayUrl = z.string().url().refine(value => { const url = new URL(value); return ['http:','https:'].includes(url.protocol) && !url.username && !url.password }, 'Use HTTP(S) sem usuário/senha na URL.')
-  const publicIntegration = (row: typeof integrations.$inferSelect) => {
-    const url = new URL(row.url)
-    // Webhook paths commonly contain bearer secrets (not just query tokens).
-    return { ...row,url:url.origin + (url.pathname !== '/' || url.search ? '/REDACTED' : '/') }
-  }
+  const integrationResult=(reply:import('fastify').FastifyReply,work:()=>unknown)=>{try{return work()}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:'Integração não alterada/agendada; conferência ou auditoria indisponível.'})}}
+  server.get('/api/integrations/review',async(request,reply)=>integrationResult(reply,()=>{const channelId=(request.query as {channelId?:string}).channelId??null;const review=readIntegrationCatalog(app.db,channelId,integrationAuthority(app.db,request));return reply.header('cache-control','private, no-store').header('etag',integrationCatalogETag(review)).send(review)}))
+  server.get('/api/integrations/:id/review',async(request,reply)=>integrationResult(reply,()=>{const review=readIntegration(app.db,(request.params as {id:string}).id,integrationAuthority(app.db,request));return reply.header('cache-control','private, no-store').header('etag',integrationETag(review)).send(review)}))
+  server.get('/api/integration-deliveries/:id/review',async(request,reply)=>integrationResult(reply,()=>{const review=readIntegrationDelivery(app.db,(request.params as {id:string}).id,integrationAuthority(app.db,request));return reply.header('cache-control','private, no-store').header('etag',integrationDeliveryETag(review)).send(review)}))
   server.get('/api/integrations', async (request, reply) => {
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
     const { channelId } = request.query as { channelId?: string }
@@ -749,47 +816,19 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { integrations: (channelId ? rows.filter((row) => row.channelId === channelId || row.channelId === null) : rows).map(publicIntegration) }
   })
   server.post('/api/integrations', async (request, reply) => {
-    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
-    const body = z.object({ channelId: z.string().nullable().optional(), name: z.string().min(1), url: gatewayUrl, events: z.array(z.string()).min(1) }).safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: 'Informe nome, URL válida e pelo menos um evento.' })
-    const row = { id: randomUUID(), channelId: body.data.channelId ?? null, name: body.data.name, url: body.data.url, events: body.data.events, enabled: false, createdAt: new Date().toISOString() }
-    await app.db.insert(integrations).values(row)
-    return { integration: publicIntegration(row) }
+    return integrationResult(reply,()=>createIntegration(app.db,request.body,request.headers['if-match'],integrationAuthority(app.db,request)))
   })
   server.patch('/api/integrations/:id', async (request, reply) => {
-    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
-    const body = z.object({ name: z.string().min(1).optional(), url: gatewayUrl.optional(), events: z.array(z.string()).min(1).optional(), enabled: z.boolean().optional() }).safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: 'Alteração inválida.' })
-    const { id } = request.params as { id: string }
-    await app.db.update(integrations).set(body.data).where(eq(integrations.id, id))
-    return { ok: true }
+    return integrationResult(reply,()=>updateIntegration(app.db,(request.params as {id:string}).id,request.body,request.headers['if-match'],integrationAuthority(app.db,request)))
   })
   server.post('/api/integrations/:id/test', async (request, reply) => {
-    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para integrações.' })
-    const { id } = request.params as { id: string }
-    const [integration] = await app.db.select().from(integrations).where(eq(integrations.id, id)).limit(1)
-    if (!integration) return reply.code(404).send({ error: 'Integração não encontrada.' })
-    try {
-      const response = await fetch(integration.url, { method: 'POST', redirect:'error',signal:AbortSignal.timeout(5000),headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'rplayout.test', sentAt: new Date().toISOString() }) })
-      await response.body?.cancel()
-      return { ok: response.ok, status: response.status }
-    } catch { return { ok: false, error: 'Gateway indisponível, redirecionamento recusado ou tempo de 5s excedido.' } }
+    return integrationResult(reply,()=>queueIntegrationTest(app.db,(request.params as {id:string}).id,request.body,request.headers['if-match'],integrationAuthority(app.db,request)))
   })
   server.get('/api/integration-deliveries',async (request,reply) => {
-    if (!(await allowed(request,'OUTPUT_CONTROL'))) return reply.code(403).send({error:'Sem permissão para consultar entregas externas.'})
-    const { channelId } = request.query as {channelId?:string}
-    const rows = await app.db.select({id:integrationDeliveries.id,integrationId:integrationDeliveries.integrationId,channelId:integrationDeliveries.channelId,event:integrationDeliveries.event,state:integrationDeliveries.state,attempts:integrationDeliveries.attempts,nextAttemptAt:integrationDeliveries.nextAttemptAt,lastError:integrationDeliveries.lastError,createdAt:integrationDeliveries.createdAt,deliveredAt:integrationDeliveries.deliveredAt})
-      .from(integrationDeliveries).where(channelId ? eq(integrationDeliveries.channelId,channelId) : undefined).orderBy(desc(integrationDeliveries.createdAt)).limit(100)
-    return { deliveries:rows,limit:100,deliverySemantics:'AT_LEAST_ONCE' }
+    return integrationResult(reply,()=>reply.header('cache-control','private, no-store').send(readIntegrationDeliveries(app.db,(request.query as {channelId?:string}).channelId??null,integrationAuthority(app.db,request))))
   })
   server.post('/api/integration-deliveries/:id/retry',async (request,reply) => {
-    if (!(await allowed(request,'OUTPUT_CONTROL'))) return reply.code(403).send({error:'Sem permissão para reenviar alertas.'})
-    const {id} = request.params as {id:string}
-    const result = app.db.update(integrationDeliveries).set({state:'QUEUED',attempts:0,nextAttemptAt:new Date().toISOString(),lastError:null})
-      .where(and(eq(integrationDeliveries.id,id),inArray(integrationDeliveries.state,['FAILED','CANCELLED']))).run()
-    if (!result.changes) return reply.code(409).send({error:'A entrega não está em falha/cancelada. Entregas em andamento ou confirmadas não serão duplicadas.'})
-    await logDecision(app,'@integrations',null,'INTEGRATION_RETRY',{deliveryId:id},await usernameOf(request))
-    return {ok:true}
+    return integrationResult(reply,()=>retryIntegrationDelivery(app.db,(request.params as {id:string}).id,request.body,request.headers['if-match'],integrationAuthority(app.db,request)))
   })
   // Entrada normalizada para automação SCTE-35/104. O playout registra a
   // intenção e distribui para os gateways configurados; a inserção física no
@@ -832,60 +871,32 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return csv
   })
   server.post('/api/users', async (request, reply) => {
-    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
-    const body = z.object({ username: z.string().min(1).max(80), password: z.string().min(8), role: z.enum(['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']) }).safeParse(request.body)
+    const body = createAccountBody.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe usuário, senha com 8 caracteres e papel.' })
-    const bootstrap = !access.required()
-    if (bootstrap && body.data.role !== 'ADMIN') return reply.code(409).send({ error: 'A primeira conta precisa ser Administrador para não bloquear a instalação.' })
-    if (bootstrap && !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.ip)) return reply.code(403).send({ error: 'Crie a primeira conta diretamente na página do servidor local; depois entre normalmente pela estação remota.' })
+    const authority=captureAccountAuthority(app.db,request)
     try {
-      const actor = await usernameOf(request)
-      const row = { id: randomUUID(), username: body.data.username, passwordHash: await hashPassword(body.data.password), role: body.data.role, enabled: true, createdAt: new Date().toISOString() }
-      await app.db.insert(users).values(row)
-      await securityAudit('USER_CREATED', actor, { userId: row.id, username: row.username, role: row.role, station: request.ip })
-      return { user: { id: row.id, username: row.username, role: row.role, enabled: true }, requiresLogin: bootstrap }
-    } catch { return reply.code(409).send({ error: 'Esse usuário já existe.' }) }
+      checkCreateAccountReview(app.db,request.headers['if-match'],authority)
+      const passwordHash=await hashPassword(body.data.password)
+      const result=createAccount(app.db,body.data,passwordHash,request.headers['if-match'],authority)
+      return reply.header('Cache-Control','private, no-store').header('ETag',result.eTag).send(result)
+    } catch(error){return automationError(reply,error)}
   })
   server.patch('/api/users/:id', async (request, reply) => {
-    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem gerenciar usuários.' })
-    const body = z.object({ password: z.string().min(8).optional(), role: z.enum(['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']).optional(), enabled: z.boolean().optional() }).safeParse(request.body)
+    const body = updateAccountBody.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Alteração inválida.' })
     const { id } = request.params as { id: string }
-    const passwordHash = body.data.password ? await hashPassword(body.data.password) : undefined
-    const actor = await usernameOf(request)
-    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'A permissão de administrador mudou durante a operação.' })
+    const authority=captureAccountAuthority(app.db,request)
     try {
-      app.db.transaction(tx => {
-        const target = tx.select().from(users).where(eq(users.id, id)).get()
-        if (!target) throw new Error('Usuário não encontrado.')
-        if (target.enabled && target.role === 'ADMIN' && (body.data.enabled === false || body.data.role && body.data.role !== 'ADMIN')) {
-          const others = tx.select({ id: users.id }).from(users).where(and(eq(users.enabled, true), eq(users.role, 'ADMIN'))).all()
-          if (!others.some(user => user.id !== id)) throw new Error('Mantenha ao menos um administrador ativo para não bloquear a instalação.')
-        }
-        tx.update(users).set({ ...(body.data.role ? { role: body.data.role } : {}), ...(body.data.enabled === undefined ? {} : { enabled: body.data.enabled }), ...(passwordHash ? { passwordHash } : {}) }).where(eq(users.id, id)).run()
-        tx.delete(sessions).where(eq(sessions.userId, id)).run()
-      })
-    } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Alteração de usuário recusada.' }) }
-    await securityAudit('USER_UPDATED_SESSIONS_REVOKED', actor, { userId: id, role: body.data.role, enabled: body.data.enabled, passwordChanged: Boolean(body.data.password), station: request.ip })
-    return { ok: true }
+      checkUpdateAccountReview(app.db,id,request.headers['if-match'],authority)
+      const passwordHash=body.data.password?await hashPassword(body.data.password):undefined
+      const result=updateAccount(app.db,id,body.data,passwordHash,request.headers['if-match'],authority)
+      return reply.header('Cache-Control','private, no-store').header('ETag',result.eTag).send(result)
+    } catch(error){return automationError(reply,error)}
   })
   server.put('/api/users/:id/access', async (request, reply) => {
-    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Apenas administradores podem definir canais e estações.' })
-    const body = z.object({ channelIds: z.array(z.string().min(1)).max(128).nullable(), stationIps: z.array(z.string().refine(value => isIP(value) > 0)).max(128).nullable() }).safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: 'Informe canais existentes e IPs válidos; vazio bloqueia, sem restrição permite todos.' })
-    const { id } = request.params as { id: string }, [user] = await app.db.select().from(users).where(eq(users.id, id)).limit(1)
-    if (!user) return reply.code(404).send({ error: 'Usuário não encontrado.' })
-    if (user.role === 'ADMIN' && body.data.channelIds !== null) return reply.code(409).send({ error: 'Administradores precisam conservar acesso a todos os canais. Use outro papel para uma conta restrita.' })
-    if (body.data.channelIds && body.data.channelIds.some(id => !app.sqlite.prepare('SELECT 1 FROM channels WHERE id=?').get(id))) return reply.code(400).send({ error: 'Um dos canais selecionados não existe.' })
-    const actor = access.identity(request)
-    if (actor?.id === id && body.data.stationIps !== null && !body.data.stationIps.map(normalizedIp).includes(normalizedIp(request.ip))) return reply.code(409).send({ error: 'Não remova sua estação atual da própria conta. Defina outro administrador antes.' })
-    app.sqlite.transaction(() => {
-      app.sqlite.prepare('INSERT INTO user_access VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET channel_ids=excluded.channel_ids, station_ips=excluded.station_ips, updated_at=excluded.updated_at')
-        .run(id, body.data.channelIds === null ? null : JSON.stringify([...new Set(body.data.channelIds)]), body.data.stationIps === null ? null : JSON.stringify([...new Set(body.data.stationIps.map(normalizedIp))]), new Date().toISOString())
-      app.sqlite.prepare('DELETE FROM sessions WHERE user_id=?').run(id)
-    })()
-    await securityAudit('USER_ACCESS_CHANGED_SESSIONS_REVOKED', actor?.username ?? null, { userId: id, channelIds: body.data.channelIds, stationIps: body.data.stationIps, station: request.ip })
-    return { ok: true }
+    const {id}=request.params as {id:string}
+    try {const result=changeAccountAccess(app.db,id,request.body,request.headers['if-match'],captureAccountAuthority(app.db,request));return reply.header('Cache-Control','private, no-store').header('ETag',result.eTag).send(result)}
+    catch(error){return automationError(reply,error)}
   })
   server.get('/api/health', async () => ({
     ok: true,
@@ -907,9 +918,430 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     try{reply.header('Cache-Control','private, no-store');return app.ha!.receive(request.body,request.headers)}
     catch(error){return reply.code(error instanceof HaError?error.status:400).send({error:error instanceof HaError?error.message:'Snapshot HA inválido. Nenhum estado local foi instalado.'})}
   })
+  server.get('/api/ha/returns/candidate',async(request,reply)=>{
+    const body=z.object({candidateId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe candidato e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnCandidate(body.data.candidateId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Candidato não confirmado; nenhuma criação repetida.'})}
+  })
+  server.post('/api/ha/returns/candidate',async(request,reply)=>{
+    const body=haReturnCandidateRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe candidato, seleção e canal.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante criação do candidato.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.stageReturnCandidate(body.data,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Candidato não confirmado; consulte sem repetir. Banco ativo e PGM preservados.'})}
+  })
+  server.get('/api/ha/returns/selection',async(request,reply)=>{
+    const body=z.object({planId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe seleção e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnSelection(body.data.planId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Seleção não confirmada neste canal; nenhuma operação iniciada.'})}
+  })
+  server.post('/api/ha/returns/selection',async(request,reply)=>{
+    const body=haReturnSelectionRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe revisão, edições, cursor e justificativa da seleção.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante seleção.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return app.ha.selectReturn(body.data,authorize,actor)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Seleção não confirmada; consulte sem repetir. Banco ativo e PGM preservados.'})}
+  })
+  server.get('/api/ha/returns/rekey',async(request,reply)=>{
+    const body=z.object({rekeyId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe reproteção e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnRekey(body.data.rekeyId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Diário indisponível; nenhuma reproteção foi repetida.'})}
+  })
+  server.post('/api/ha/returns/rekey',async(request,reply)=>{
+    const body=haReturnRekeyRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe recebimento, canal e intenção de reproteção.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante reproteção.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.rekeyReturn(body.data,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Reproteção não confirmada; preserve pedido e consulte. Banco ativo não alterado.'})}
+  })
+  server.get('/api/ha/returns/variants',async(request,reply)=>{
+    const body=z.object({decisionId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe decisão e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnVariants(body.data.decisionId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Diário indisponível; nenhuma decisão foi repetida.'})}
+  })
+  server.post('/api/ha/returns/variants',async(request,reply)=>{
+    const body=haHistoryVariantRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Decisão exige IDs, ambos os hashes e justificativa explícita.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante decisão.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.preserveReturnVariants(body.data,authorize,actor)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Decisão não confirmada; consulte. Histórico existente não foi substituído.'})}
+  })
+  server.get('/api/ha/returns/history',async(request,reply)=>{
+    const body=z.object({importId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe importação e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnHistory(body.data.importId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Diário indisponível; nenhum registro foi importado novamente.'})}
+  })
+  server.post('/api/ha/returns/history',async(request,reply)=>{
+    const body=haHistoryImportRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Selecione IDs novos e hashes identificados na revisão.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante importação.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.importReturnHistory(body.data,authorize,actor)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Importação não confirmada; consulte o pedido. Registros existentes não serão substituídos.'})}
+  })
+  server.get('/api/ha/returns/review',async(request,reply)=>{
+    const body=z.object({reviewId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe revisão e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnReview(body.data.reviewId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Revisão indisponível; nenhuma nova análise foi iniciada.'})}
+  })
+  server.post('/api/ha/returns/review',async(request,reply)=>{
+    const body=haReturnReviewRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe recebimento, canal e intenção de revisão.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante revisão.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.reviewReturn(body.data,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Revisão não confirmada; consulte o pedido. Banco operacional não alterado.'})}
+  })
+  server.get('/api/ha/returns',async(request,reply)=>{
+    const body=z.object({channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Selecione o canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return {receipts:app.ha.returnReceipts(body.data.channelId),publicationAuthorized:false}}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Quarentena indisponível neste nó; nenhuma execução alterada.'})}
+  })
+  server.post('/api/ha/return',{bodyLimit:1024*1024},async(request,reply)=>{
+    try{reply.header('Cache-Control','private, no-store');return await app.ha!.receiveReturn(request.body,request.headers)}
+    catch(error){return reply.code(error instanceof HaError?error.status:400).send({error:'Retorno recusado. Quarentena preservada; banco operacional e autoridade não alterados.'})}
+  })
   server.post('/api/ha/media',{bodyLimit:1024*1024},async(request,reply)=>{
     try{reply.header('Cache-Control','private, no-store');return await app.ha!.receiveMedia(request.body,request.headers)}
     catch(error){return reply.code(error instanceof HaError?error.status:400).send({error:error instanceof HaError?error.message:'Cópia HA recusada. Confira SHA, pasta, quota e edição; nenhum parcial está pronto para PGM.'})}
+  })
+  const bindingInventory=async(channelId:string):Promise<HaBindingInventory>=>{
+    const found=await app.sources.list(true)
+    const inputs:HaBindingInventory['inputs']=[...(found.sdi.available?found.sdi.sources:[]),...(found.ndi.available?found.ndi.sources:[]),...(found.omt.available?found.omt.sources:[]),...(found.guests.available?found.guests.sources:[])].filter(row=>row.discovery==='DISCOVERED')
+      .map(row=>({key:'discovered:'+installationVault(false).reviewIdentity(JSON.stringify([row.family,row.reference]),'ha-local-source:v1'),label:row.label,family:row.family,reference:row.reference}))
+    for(const row of app.db.select().from(liveSources).where(and(eq(liveSources.channelId,channelId),eq(liveSources.enabled,true))).all())inputs.push({key:'configured:'+row.id,label:row.name,family:row.kind,reference:configuredSourceEndpoint(row)})
+    const sdiOutputs=found.sdiOutputs.available?found.sdiOutputs.sources.filter(row=>row.discovery==='DISCOVERED').map(row=>({key:'output:'+installationVault(false).reviewIdentity(row.reference,'ha-local-output:v1'),label:row.label,family:row.family,reference:row.reference})):[]
+    return {inputs:inputs.sort((a,b)=>a.key.localeCompare(b.key)),sdiOutputs:sdiOutputs.sort((a,b)=>a.key.localeCompare(b.key))}
+  }
+  const bindingAccess=(request:FastifyRequest,channelId:string)=>{
+    if(access.role(request)!=='ADMIN'||!can(access.role(request),'OUTPUT_CONTROL')||!access.channelAllowed(request,channelId)||access.required()&&!access.identity(request))throw new HaBindingError(403,'Vínculos do reserva exigem administrador autorizado no canal.')
+  }
+  server.get('/api/ha/returns/bindings',async(request,reply)=>{
+    const body=haReturnBindingReviewRequest.safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe candidato, seleção e canal.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if((access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Sessão mudou durante conferência de retorno.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();const inventory=await bindingInventory(body.data.channelId);authorize();return await app.ha.reviewReturnBindings(body.data,inventory,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Conferência de vínculos indisponível; candidato e PGM preservados.'})}
+  })
+  server.get('/api/ha/returns/application',async(request,reply)=>{
+    const body=z.object({applicationId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe aplicação e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnApplication(body.data.applicationId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Aplicação não confirmada; nenhuma criação repetida.'})}
+  })
+  server.get('/api/ha/returns/media-review',async(request,reply)=>{
+    const body=z.object({mediaReviewId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe revisão de mídia e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnMedia(body.data.mediaReviewId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Revisão não confirmada; nenhuma análise repetida.'})}
+  })
+  server.get('/api/ha/returns/history-job',async(request,reply)=>{
+    const body=z.object({id:z.string().uuid(),channelId:z.string().min(1).max(128),kind:z.enum(['HISTORY_IMPORT','HISTORY_VARIANT'])}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe trabalho, canal e tipo de histórico.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.observeReturnHistoryJob(body.data.id,body.data.channelId,body.data.kind)}catch{return reply.code(409).send({error:'Intenção/recibo operacional indisponível; não presumir commit nem repetir.'})}
+  })
+  server.get('/api/ha/returns/pending-jobs',async(request,reply)=>{
+    const body=haReturnJobListQuery.safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe canal, tipo de pedido e cursor válido.'})
+    const actorId=access.identity(request)?.id??null,authorize=()=>{bindingAccess(request,body.data.channelId);if((access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Sessão mudou durante consulta.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();return app.ha.listReturnPendingJobs(body.data,authorize)}catch{return reply.code(409).send({error:'Listagem indisponível; nenhum pedido retomado ou encerrado.'})}
+  })
+  server.get('/api/ha/returns/job-recovery',async(request,reply)=>{
+    const body=z.object({recoveryId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe encerramento e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnJobRecovery(body.data.recoveryId,body.data.channelId)}catch{return reply.code(409).send({error:'Encerramento não confirmado; nenhuma operação repetida.'})}
+  })
+  server.post('/api/ha/returns/job-recovery',async(request,reply)=>{
+    const body=haReturnJobRecoveryRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe pedido interrompido, estado/data esperados e justificativa.'})
+    const actorId=access.identity(request)?.id??null,authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante encerramento.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha||!actorId)throw new Error();auditChannels.set(request,[body.data.channelId]);return app.ha.closeInterruptedReturnJob(body.data,actorId,authorize)}catch{return reply.code(409).send({error:'Encerramento não confirmado: pedido ativo, alterado ou processo sem encerramento comprovado. Consulte sem repetir; parciais preservados.'})}
+  })
+  server.get('/api/ha/returns/auto-options',async(request,reply)=>{
+    const body=z.object({mediaReviewId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe revisão e canal.'})
+    const actorId=access.identity(request)?.id??null,authorize=()=>{bindingAccess(request,body.data.channelId);if((access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Sessão mudou durante opções AUTO.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();return await app.ha.returnAutoOptions(body.data.mediaReviewId,body.data.channelId,authorize)}catch{return reply.code(409).send({error:'Opções AUTO indisponíveis; nenhuma medição aplicada.'})}
+  })
+  server.get('/api/ha/returns/auto-decision',async(request,reply)=>{
+    const body=z.object({decisionId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe decisão e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnAutoDecision(body.data.decisionId,body.data.channelId)}catch{return reply.code(409).send({error:'Decisão não confirmada; nenhuma gravação repetida.'})}
+  })
+  server.post('/api/ha/returns/auto-decision',async(request,reply)=>{
+    const body=haReturnAutoDecisionRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe decisão, revisão, montagens e justificativa.'})
+    const actorId=access.identity(request)?.id??null,authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante decisão AUTO.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha||!actorId)throw new Error();const inventory=await bindingInventory(body.data.channelId);authorize();auditChannels.set(request,[body.data.channelId]);return await app.ha.saveReturnAutoDecision(body.data,inventory,actorId,authorize)}catch{return reply.code(409).send({error:'Decisão AUTO não confirmada; consulte sem repetir. PGM e fonte preservados.'})}
+  })
+  server.get('/api/ha/returns/postgain-review',async(request,reply)=>{
+    const body=z.object({postGainReviewId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe revisão pós-ganho e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnPostGain(body.data.postGainReviewId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Revisão pós-ganho não confirmada; nenhuma medição repetida.'})}
+  })
+  server.post('/api/ha/returns/postgain-review',async(request,reply)=>{
+    const body=haReturnPostGainReviewRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe revisão pós-ganho, cópia de mídia e canal, sem parâmetros de áudio.'})
+    const actorId=access.identity(request)?.id??null,authorize=()=>{bindingAccess(request,body.data.channelId);if(!actorId||!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante pós-ganho.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha||!actorId)throw new Error();const inventory=await bindingInventory(body.data.channelId);authorize();auditChannels.set(request,[body.data.channelId]);return await app.ha.reviewReturnPostGain(body.data,inventory,actorId,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Pós-ganho não confirmado; consulte o mesmo pedido sem repetir. Cópia e PGM preservados.'})}
+  })
+  server.get('/api/ha/returns/bus-review',async(request,reply)=>{
+    const body=z.object({busReviewId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe revisão bus completo e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnBus(body.data.busReviewId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Revisão bus completo não confirmada; nenhuma medição repetida.'})}
+  })
+  server.post('/api/ha/returns/bus-review',async(request,reply)=>{
+    const body=haReturnBusReviewRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe revisão bus completo, cópia de mídia e canal, sem parâmetros de áudio.'})
+    const actorId=access.identity(request)?.id??null,authorize=()=>{bindingAccess(request,body.data.channelId);if(!actorId||!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante bus completo.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha||!actorId)throw new Error();const inventory=await bindingInventory(body.data.channelId);authorize();auditChannels.set(request,[body.data.channelId]);return await app.ha.reviewReturnBus(body.data,inventory,actorId,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Bus completo não confirmado; consulte o mesmo pedido sem repetir. Cópia e PGM preservados.'})}
+  })
+  server.get('/api/ha/returns/media-application',async(request,reply)=>{
+    const body=z.object({mediaApplicationId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe cópia de mídia e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnMediaApplication(body.data.mediaApplicationId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Cópia não confirmada; nenhuma criação repetida.'})}
+  })
+  server.post('/api/ha/returns/media-application',async(request,reply)=>{
+    const body=haReturnMediaApplicationRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe cópia, revisão de mídia e canal.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante criação da cópia.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();const inventory=await bindingInventory(body.data.channelId);authorize();auditChannels.set(request,[body.data.channelId]);return await app.ha.stageReturnMediaApplication(body.data,inventory,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Cópia não confirmada; consulte sem repetir. Originais e PGM preservados.'})}
+  })
+  server.get('/api/ha/returns/media-options',async(request,reply)=>{
+    const body=z.object({applicationId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe aplicação e canal.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if((access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Sessão mudou durante conferência de arquivos.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();return await app.ha.returnMediaOptions(body.data.applicationId,body.data.channelId,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Opções locais indisponíveis ou inventário excede limite. Nenhum arquivo foi aberto como entrada.'})}
+  })
+  server.post('/api/ha/returns/media-review',async(request,reply)=>{
+    const body=haReturnMediaReviewRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe revisão, aplicação e canal.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante análise de mídia.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();const inventory=await bindingInventory(body.data.channelId);authorize();auditChannels.set(request,[body.data.channelId]);return await app.ha.reviewReturnMedia(body.data,inventory,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Análise não confirmada; consulte sem repetir. Cópias e PGM preservados.'})}
+  })
+  server.post('/api/ha/returns/application',async(request,reply)=>{
+    const body=haReturnApplicationRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe aplicação, candidato e plano local deste canal.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante aplicação.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();const inventory=await bindingInventory(body.data.channelId);authorize();auditChannels.set(request,[body.data.channelId]);return await app.ha.applyReturnBindings(body.data,inventory,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Aplicação não confirmada; consulte sem repetir. Originais e PGM preservados.'})}
+  })
+  server.post('/api/ha/returns/bindings',async(request,reply)=>{
+    const body=haReturnBindingRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe candidato e decisão completa para este canal.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante decisão de vínculos.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();const inventory=await bindingInventory(body.data.channelId);authorize();auditChannels.set(request,[body.data.channelId]);return await app.ha.saveReturnBindings(body.data,inventory,authorize,actorId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Decisão não confirmada; consulte sem repetir. Nenhuma saída foi aberta.'})}
+  })
+  server.get('/api/ha/binding-channels',async(request,reply)=>{
+    try{
+      if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Conferência do reserva exige administrador.'})
+      reply.header('Cache-Control','private, no-store')
+      return {channels:(app.ha?.bindingChannels()??[]).filter(row=>access.channelAllowed(request,row.id))}
+    }catch(error){return reply.code(error instanceof HaError?error.status:409).send({error:'Conferência exige reserva configurado e espelho válido.'})}
+  })
+  server.get('/api/ha/executions',async(request,reply)=>{
+    const channelId=(request.query as {channelId?:unknown}).channelId
+    if(typeof channelId!=='string'||!channelId||channelId.length>128)return reply.code(400).send({error:'Selecione o canal espelhado.'})
+    if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN'||!access.channelAllowed(request,channelId))return reply.code(403).send({error:'Consulta da execução HA exige administrador autorizado no canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{return {executions:app.ha?.promotionObservations(channelId)??[],automaticTake:false,physicalOutputValidated:false}}
+    catch{return reply.code(409).send({error:'Observação de execução indisponível neste nó.'})}
+  })
+  server.get('/api/ha/executions/return-resume',async(request,reply)=>{
+    const body=z.object({resumeId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe retomada e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturnResume(body.data.resumeId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Pedido indisponível; retomada não foi repetida.'})}
+  })
+  server.post('/api/ha/executions/return-resume',async(request,reply)=>{
+    const body=haReturnResumeRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Retomada exige intenção, conferência e offset.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante retomada.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.resumeReturn(body.data,authorize,actor)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Retomada não confirmada; preserve pedido e consulte sem repetir.'})}
+  })
+  server.get('/api/ha/executions/return-send',async(request,reply)=>{
+    const body=z.object({requestId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe pedido e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.queryReturn(body.data.requestId,body.data.channelId)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Diário indisponível; envio não foi repetido.'})}
+  })
+  server.post('/api/ha/executions/return-send',async(request,reply)=>{
+    const body=haReturnSendRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe execução, exportação e intenção de envio.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante envio.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.sendReturn(body.data,authorize,actor)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Envio não confirmado; preserve pedido e consulte sem repetir.'})}
+  })
+  server.post('/api/ha/executions/return-inspect',async(request,reply)=>{
+    const body=z.object({requestId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe pedido e canal.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante consulta.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.inspectReturn(body.data.requestId,body.data.channelId,authorize)}catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Consulta remota não confirmada; nenhum bloco foi reenviado.'})}
+  })
+  server.get('/api/ha/executions/export',async(request,reply)=>{
+    const body=z.object({requestId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe pedido e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.promotionExportQuery(body.data.requestId,body.data.channelId)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Exportação indisponível; nenhuma cópia foi repetida.'})}
+  })
+  server.post('/api/ha/executions/export',async(request,reply)=>{
+    const body=haExportRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe execução, parada confirmada e intenção de exportação.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante exportação.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.promotionExport(body.data,authorize,actor)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Exportação não confirmada; preserve o pedido e consulte sem repetir.'})}
+  })
+  server.get('/api/ha/executions/return-review',async(request,reply)=>{
+    const body=z.object({promotionId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe execução e canal.'})
+    const actorId=access.identity(request)?.id??null
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if((access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Sessão mudou durante conferência de retorno.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();return await app.ha.promotionReturnReview(body.data.promotionId,body.data.channelId,authorize)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Conferência indisponível. Nenhuma autoridade foi transferida ou engine iniciado.'})}
+  })
+  server.get('/api/ha/executions/stop-review',async(request,reply)=>{
+    const body=z.object({promotionId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe execução e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.promotionStopReview(body.data.promotionId,body.data.channelId)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Conferência de encerramento indisponível; nenhum processo alterado.'})}
+  })
+  server.get('/api/ha/executions/stop',async(request,reply)=>{
+    const body=z.object({requestId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe pedido e canal.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.promotionStopQuery(body.data.requestId,body.data.channelId)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Pedido indisponível; encerramento não foi repetido.'})}
+  })
+  server.post('/api/ha/executions/stop',async(request,reply)=>{
+    const body=haStopRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Encerramento exige intenção e confirmação explícitas.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante encerramento.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.promotionStop(body.data,authorize,actor)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Encerramento não confirmado; preserve o pedido e consulte, sem repetir.'})}
+  })
+  server.get('/api/ha/executions/control',async(request,reply)=>{
+    const body=z.object({requestId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe pedido e canal do controle.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT'))throw new HaBindingError(403,'Sem permissão de operação.');if(!app.ha)throw new Error();return app.ha.promotionControlQuery(body.data.requestId,body.data.channelId)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Pedido indisponível; nenhum CUE/TAKE foi reenviado.'})}
+  })
+  server.post('/api/ha/executions/control',async(request,reply)=>{
+    const body=haControlRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Pedido CUE/TAKE inválido.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante comando da reserva.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.promotionControl(body.data,authorize,actor)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Controle não confirmado; consulte o mesmo pedido antes de qualquer nova tentativa.'})}
+  })
+  server.post('/api/ha/executions/control/review',async(request,reply)=>{
+    const body=haControlReviewRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Revisão de controle inválida.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if(!can(access.role(request),'TRANSPORT')||(access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Permissão/sessão mudou durante revisão da reserva.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.promotionControlReview(body.data,authorize,actor)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Revisão sem prova suficiente; nenhum CUE/TAKE foi repetido.'})}
+  })
+  server.get('/api/ha/executions/monitor',async(request,reply)=>{
+    const body=z.object({requestId:z.string().uuid(),channelId:z.string().min(1).max(128)}).strict().safeParse(request.query)
+    if(!body.success)return reply.code(400).send({error:'Informe pedido e canal do monitor.'})
+    reply.header('Cache-Control','private, no-store')
+    try{bindingAccess(request,body.data.channelId);if(!app.ha)throw new Error();return app.ha.promotionMonitorQuery(body.data.requestId,body.data.channelId)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Pedido indisponível; nenhum comando foi reenviado.'})}
+  })
+  server.post('/api/ha/executions/monitor',async(request,reply)=>{
+    const body=haMonitorRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Pedido de monitor inválido.'})
+    const actorId=access.identity(request)?.id??null,actor=access.identity(request)?.username??'local-admin'
+    const authorize=()=>{bindingAccess(request,body.data.channelId);if((access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Sessão mudou durante comando do monitor.')}
+    reply.header('Cache-Control','private, no-store')
+    try{authorize();if(!app.ha)throw new Error();auditChannels.set(request,[body.data.channelId]);return await app.ha.promotionMonitor(body.data,authorize,actor)}
+    catch(error){return reply.code(error instanceof HaBindingError?error.status:409).send({error:'Monitor não confirmado; consulte o mesmo pedido antes de outra tentativa.'})}
+  })
+  server.get('/api/ha/bindings',async(request,reply)=>{
+    const channelId=(request.query as {channelId?:string}).channelId
+    if(!channelId)return reply.code(400).send({error:'Selecione o canal espelhado.'})
+    try{bindingAccess(request,channelId);const inventory=await bindingInventory(channelId);bindingAccess(request,channelId);reply.header('Cache-Control','private, no-store');if(!app.ha)throw new HaBindingError(409,'Reserva não configurado.');return app.ha.bindingReview(channelId,inventory)}
+    catch(error){return reply.code(error instanceof HaBindingError||error instanceof HaError?error.status:409).send({error:error instanceof HaBindingError?error.message:'Não foi possível conferir os vínculos locais.'})}
+  })
+  server.post('/api/ha/bindings',async(request,reply)=>{
+    const body=haBindingRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Plano local inválido; atualize a conferência.'})
+    const channelId=body.data.channelId,actor=access.identity(request)?.username??null,actorId=access.identity(request)?.id??null
+    try{
+      bindingAccess(request,channelId);const inventory=await bindingInventory(channelId)
+      const authorize=()=>{bindingAccess(request,channelId);if((access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Sessão mudou durante a conferência.')}
+      if(!app.ha)throw new HaBindingError(409,'Reserva não configurado.')
+      auditChannels.set(request,[channelId]);reply.header('Cache-Control','private, no-store')
+      return app.ha.saveBindings(body.data,inventory,actor,authorize)
+    }catch(error){return reply.code(error instanceof HaBindingError||error instanceof HaError?error.status:409).send({error:error instanceof HaBindingError?error.message:'Plano local não foi confirmado; nada entrou em PGM.'})}
+  })
+  server.post('/api/ha/prepare',async(request,reply)=>{
+    const body=z.object({requestId:z.string().uuid(),sequence:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),channelId:z.string().min(1).max(128),bindingPlanId:z.string().uuid()}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe pedido, sequência, canal e plano local registrado.'})
+    const channelId=body.data.channelId,actorId=access.identity(request)?.id??null
+    try{
+      bindingAccess(request,channelId)
+      const inventory=await bindingInventory(channelId)
+      const authorize=()=>{bindingAccess(request,channelId);if((access.identity(request)?.id??null)!==actorId)throw new HaBindingError(403,'Sessão mudou durante a preparação.')}
+      if(!app.ha)throw new HaBindingError(409,'Reserva não configurado.')
+      auditChannels.set(request,[channelId]);reply.header('Cache-Control','private, no-store')
+      const report=await app.ha.prepareBindings(body.data,inventory,authorize)
+      authorize();return report
+    }catch(error){return reply.code(error instanceof HaBindingError||error instanceof HaError?error.status:409).send({error:error instanceof HaBindingError||error instanceof HaRecoveryError?error.message:'Preparação não confirmada. Consulte o pedido no histórico; nenhum PGM foi aberto.'})}
+  })
+  server.get('/api/engineering/storage',async(request,reply)=>{
+    if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Diagnóstico do banco exige administrador.'})
+    reply.header('Cache-Control','private, no-store')
+    return databaseStorageStatus(app.db.$client)
   })
   server.get('/api/ha/rehearsal',async(request,reply)=>{
     if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Ensaio HA exige administrador.'})
@@ -919,7 +1351,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
   for(const endpoint of ['/api/ha/rehearsal','/api/ha/rehearsal/reconcile'])server.post(endpoint,async(request,reply)=>{
     if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Ensaio HA exige administrador.'})
-    const body=z.object({requestId:z.string().uuid(),sequence:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),channelId:z.string().min(1).max(128)}).strict().safeParse(request.body)
+    const body=z.object({requestId:z.string().uuid(),sequence:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),channelId:z.string().min(1).max(128),bindingPlanId:z.string().uuid().optional()}).strict().safeParse(request.body)
     if(!body.success)return reply.code(400).send({error:'Informe pedido único, sequência espelhada e canal; não há ação de TAKE neste endpoint.'})
     if(!access.channelAllowed(request,body.data.channelId))return reply.code(403).send({error:'Sem acesso a este canal.'})
     reply.header('Cache-Control','private, no-store')
@@ -1020,6 +1452,21 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       return app.schedulePublication.suspend(id,owner.username,'Publicação automática desligada explicitamente. Grades já publicadas permanecem intactas.','DISABLED')
     },{behavior:'immediate'})}
     catch(error){return reply.code(error instanceof CollaborativeEditError?error.status:409).send(error instanceof CollaborativeEditError?error.payload:{error:'Política não foi alterada. Confira a pauta e tente novamente.'})}
+  })
+
+  server.get('/api/channels/:id/execution-ownership',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    if(!access.channelAllowed(request,id))return reply.code(403).send({error:'Canal não autorizado.'})
+    if(!await getChannel(app.db,id,true))return reply.code(404).send({error:'Canal não encontrado.'})
+    reply.header('Cache-Control','private, no-store')
+    try{return {...app.executionOwnership.status(id),physicalOutputValidated:false,promotionReady:false}}
+    catch{return reply.code(409).send({error:'Registro de posse da execução inválido. Nenhum processo foi aberto ou encerrado.',diagnostic:{code:'INVALID_RECORD',message:'Registro inválido ou não autenticável; preserve reserva, cursor e histórico para reparo explícito.',repairRequired:true}})}
+  })
+  server.get('/api/distribution/execution-ownership',async(request,reply)=>{
+    if(!can(access.role(request),'OUTPUT_CONTROL'))return reply.code(403).send({error:'Sem permissão para consultar a distribuição.'})
+    reply.header('cache-control','private, no-store')
+    try{return {...app.distributionOwnership.status(),enabled:Boolean(app.mediamtx||app.hostFence)}}
+    catch{return reply.code(409).send({error:'Registro global inválido; nenhum arquivo ou processo foi alterado.',diagnostic:{code:'INVALID_RECORD',message:'Reserva global inválida ou não autenticável; nenhum recurso foi liberado.',repairRequired:true}})}
   })
 
   server.get('/api/channels/:id/published-continuity',async(request,reply)=>{
@@ -1170,6 +1617,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     await app.db.insert(channels).values({
       id,
       name: body.data.name,
+      qcProfile:{...DEFAULT_QC_PROFILE,requireProbe:true},
       rateNum: body.data.rateNum ?? reference?.rate.num ?? RATE_PADRAO.num,
       rateDen: body.data.rateDen ?? reference?.rate.den ?? RATE_PADRAO.den,
       width: body.data.width ?? reference?.width ?? 1920,
@@ -1583,12 +2031,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
   server.get('/api/media/jobs', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar fila de mídia.' })
-    return { jobs: app.mediaWorkflow.jobs(), batches: app.sqlite.prepare('SELECT id,roots,state,error,created_at,updated_at FROM ingest_batches ORDER BY created_at DESC LIMIT 100').all() }
+    return { jobs: app.mediaWorkflow.jobs(), worker:{error:app.mediaWorkflow.lastError,cleanup:app.mediaWorkflow.cleanup},batches: app.sqlite.prepare('SELECT id,roots,state,error,created_at,updated_at FROM ingest_batches ORDER BY created_at DESC LIMIT 100').all() }
   })
   server.post('/api/media/jobs/:id/retry', async (request, reply) => {
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Sem permissão para reexecutar análise de mídia.' })
     const { id } = request.params as { id: string }
-    return app.mediaWorkflow.retry(id) ? { ok: true } : reply.code(409).send({ error: 'Somente trabalhos com falha podem ser reexecutados.' })
+    const body=z.object({confirmedPreviousStopped:z.boolean().optional()}).strict().safeParse(request.body??{})
+    if(!body.success)return reply.code(400).send({error:'Confirmação de retomada inválida.'})
+    return app.mediaWorkflow.retry(id,body.data.confirmedPreviousStopped===true,details=>{app.db.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@library',kind:'MEDIA_JOB_RETRY_REQUESTED',payload:{...details,automaticTake:false},actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString()}).run()}) ? { ok: true } : reply.code(409).send({ error: 'Somente trabalhos com falha podem ser reexecutados. Se o responsável anterior não foi identificado, confirme primeiro que aquela instância encerrou.' })
   })
 
   /**
@@ -1625,14 +2075,23 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     // a divisão fina é a que alimenta a tela de conferência -- essa precisa dar
     // para ver onde cortar.
     const largura = highQuality ? (Math.max(64,Math.min(asset.probe?.width??1920,3840)) & ~1) : quantos > 24 ? 640 : 320
-    const prefixo = resolvePath(app.thumbnailDir, `${asset.contentHash}-${quantos}${highQuality?`-qc-${largura}`:''}`)
+    // New picture recipe: do not relabel/reuse JPEGs baked by the old geometry.
+    // Old caches stay recoverable; this address generates corrected frames.
+    const prefixo = resolvePath(app.thumbnailDir, `${asset.contentHash}-${quantos}-picture-v2${highQuality?`-qc-frame-v3-${largura}`:''}`)
     const destino = `${prefixo}-${indice}.jpg`
 
-    const inspectionPath=highQuality?await app.mediaWorkflow.inspectionOriginal(asset.id,asset.contentHash,asset.path):asset.path
+    // Navigation strips need only the economical rendition. Opening a large
+    // original for all 24 thumbnails delays QC and competes with playout.
+    // Without a ready proxy show the existing static thumbnail instead of
+    // silently launching expensive original decoding. Explicit quality always
+    // uses the verified original, never this proxy.
+    const inspectionPath=highQuality?await app.mediaWorkflow.inspectionOriginal(asset.id,asset.contentHash,asset.path)
+      :await app.mediaWorkflow.preview(asset.id,asset.contentHash)
     if(highQuality&&!inspectionPath)return reply.code(409).send({error:'Original não corresponde à edição selecionada ou está indisponível. Reescaneie antes de aprovar.'})
 
     if (!existsSync(destino)) {
-      if ((await app.ingest.strip(inspectionPath!, quantos, prefixo, largura)) === 0) {
+      if(!highQuality&&!inspectionPath)return reply.redirect(`/api/assets/${asset.id}/thumbnail.svg`)
+      if ((await (highQuality?app.ingest.strip(inspectionPath!,quantos,prefixo,largura,indice):app.ingest.strip(inspectionPath!,quantos,prefixo,largura))) === 0) {
         if(highQuality)return reply.code(425).send({error:'Não foi possível extrair quadros em qualidade. Nenhuma miniatura foi anunciada como inspeção em qualidade.'})
         // Sem quadro, a régua usa a miniatura de sempre: ela fica pobre, e não
         // quebrada.
@@ -1753,6 +2212,22 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return active
   })
 
+  const protectReviewedExecution=(runtime:ChannelRuntime,payload:Parameters<typeof assertOnAirMediaUnchanged>[1]&{rundown:RundownView['rundown']},context:ReturnType<ChannelRuntime['interruptionContext']>)=>{
+    if(JSON.stringify(runtime.interruptionContext())!==JSON.stringify(context))throw new Error('A execução mudou durante a publicação. Confira novamente o PGM e a revisão.')
+    const preview=runtime.transport.state().preview
+    if(preview?.kind==='ITEM'&&runtime.executionView){
+      try{
+        assertOnAirMediaUnchanged({rate:runtime.channel.rate,items:runtime.executionView.items.map(entry=>entry.item),assets:runtime.executionView.items.flatMap(entry=>entry.asset?[entry.asset]:[])},payload,preview.id)
+        const previous=runtime.executionView,entry=previous.items.find(row=>row.item.id===preview.id)
+        if(entry?.asset&&!entry.item.sourceRef&&!entry.item.liveEndpoint&&!entry.item.liveConfig?.sourceEndpoint){
+          const candidate=buildView(payload.rundown,runtime.channel,payload.items,new Map((payload.assets??[]).map(asset=>[asset.id,asset])),null,runtime.transport.state().onAir)
+          const next=candidate.items.find(row=>row.item.id===preview.id)
+          if(!next||JSON.stringify(executionTrim(entry,previous.schedule.items.find(row=>row.id===preview.id),runtime.channel.rate,previous))!==JSON.stringify(executionTrim(next,candidate.schedule.items.find(row=>row.id===preview.id),runtime.channel.rate,candidate)))throw new Error('Corte calculado do CUE mudou.')
+        }
+      }
+      catch{throw new Error('A revisão alteraria ou removeria a mídia/fonte/corte/áudio do item no CUE. Limpe o CUE e confira novamente antes de publicar.')}
+    }
+  }
   server.post('/api/rundowns/:id/operational-publish', async (request, reply) => {
     const { id } = request.params as { id: string }
     if (!(await allowed(request, 'PLAYLIST_PUBLISH'))) {
@@ -1766,7 +2241,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
     return mutatePlaylist(runtime, reply, async () => {
     const actor = await usernameOf(request)
-    const isLoaded = runtime.view?.rundown.id === id
+    const isLoaded = runtime.executionView?.rundown.id === id
+    const context=runtime.interruptionContext()
     const onAirId = isLoaded ? runtime.transport.state().onAir?.itemId : null
     let revision
     try {
@@ -1774,25 +2250,30 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       // publications use the persisted snapshot inside the domain service.
       revision = await publishOperationalPlaylist(app.db, runtime.channel, id, actor, onAirId ?? null,(review,payload)=>{
         authorizePublication(request,review);requireOperationalReview(review,body.data.reviewToken)
+        if(isLoaded)protectReviewedExecution(runtime,payload,context)
         if(onAirId && !runtime.operationalRevision && runtime.executionView)assertOnAirMediaUnchanged({rate:runtime.channel.rate,items:runtime.executionView.items.map(entry=>entry.item),assets:runtime.executionView.items.flatMap(entry=>entry.asset?[entry.asset]:[])},payload,onAirId)
       })
     }
     catch (error) { if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
-    if (isLoaded) await runtime.refresh()
+    let refreshError:string|null=null
+    if(isLoaded)try{await runtime.refresh()}catch{refreshError='Revisão gravada, mas a atualização da execução não foi confirmada. Confira o canal; não repita a publicação.'}
     const payload = readOperationalPayload(revision.payload)
-    onChange()
-    void emitIntegrationEvent(app.db, 'operational-playlist.published', {
+    try{onChange()}catch{refreshError??='Revisão gravada; atualização da tela não confirmada. Confira o canal.'}
+    try{await emitIntegrationEvent(app.db, 'operational-playlist.published', {
       rundownId: id,
       revision: revision.revision,
       conflicts: payload.schedule.conflicts.length,
-    }, runtime.channel.id)
+    }, runtime.channel.id)}catch{server.log.warn({rundownId:id,revision:revision.revision},'Publicação gravada; notificação de integração não confirmada.')}
     return reply.code(201).send({
       id: revision.id,
       revision: revision.revision,
       publishedAt: revision.publishedAt,
       conflicts: payload.schedule.conflicts,
+      applied:true,
+      executionUpdated:isLoaded?refreshError===null:null,
+      refreshError,
     })
-    }, () => runtime.view?.rundown.id === id)
+    }, () => runtime.executionView?.rundown.id === id)
   })
 
   server.get('/api/rundowns/:id/operational-simulation', async (request, reply) => {
@@ -1816,25 +2297,96 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     })}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Conferência de rollback recusada.'})}
   })
 
+  const durationInput=z.object({itemId:z.string().min(1),expectedFrames:z.number().int().min(0),deltaSeconds:z.number().int().min(-600).max(600).refine(value=>value!==0)}).strict()
+  const compensationInput=z.object({itemId:z.string().min(1),expectedFrames:z.number().int().min(0),action:z.enum(['FILLER','TRIM','DROP_OPTIONAL','ACCEPT_DELAY']),deltaFrames:z.number().int()}).strict()
+  const compensationContext=(runtime:ChannelRuntime)=>({...runtime.insertionContext(),onAir:runtime.transport.state().onAir,preview:runtime.transport.state().preview})
+  server.get('/api/channels/:id/compensation/:requestId',async(request,reply)=>{
+    const {id,requestId}=request.params as {id:string;requestId:string}
+    if(!z.string().uuid().safeParse(requestId).success)return reply.code(400).send({error:'Identificador de solicitação inválido.'})
+    try{
+      assertEditorialAccess(request,id)
+      return reply.header('cache-control','private, no-store').send(compensationReceipt(app.db,id,requestId,await usernameOf(request)))
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Consulta indisponível.'})}
+  })
+  server.post('/api/channels/:id/compensation-review',async(request,reply)=>{
+    const {id}=request.params as {id:string},body=compensationInput.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe item, ação e ajuste em quadros válidos.'})
+    const runtime=await runtimeFor(app,id);if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    try{assertEditorialAccess(request,id);assertTransportOwnership(id);return reply.header('cache-control','private, no-store').send(inspectCompensation(app.db,compensationContext(runtime),body.data,await usernameOf(request)).review)}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Compensação recusada.'})}
+  })
+  server.post('/api/channels/:id/compensation',async(request,reply)=>{
+    const {id}=request.params as {id:string},body=z.object({input:compensationInput,requestId:z.string().uuid(),reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Confira a compensação antes de confirmar.'})
+    const runtime=await runtimeFor(app,id);if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    return mutatePlaylist(runtime,reply,async()=>{
+      try{
+        const actor=await usernameOf(request)
+        const result=commitCompensation(app.db,compensationContext(runtime),body.data.input,body.data.requestId,body.data.reviewToken,actor,()=>{assertEditorialAccess(request,id);assertTransportOwnership(id)})
+        let refreshError:string|null=null
+        try{await runtime.refresh();runtime.checkpoint(true)}catch{refreshError='Compensação gravada; atualização da execução não confirmada. Confira o canal.'}
+        try{onChange()}catch{refreshError??='Compensação gravada; atualização da tela não confirmada.'}
+        return {...result,applied:true,refreshError}
+      }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Compensação recusada.'})}
+    })
+  })
+  const inspectLiveDuration=(runtime:ChannelRuntime,input:z.infer<typeof durationInput>,actor:string|null)=>{
+    const context=runtime.insertionContext()
+    if(context.onAirItemId!==input.itemId)throw new Error('O item no ar mudou. Confira o PGM antes de ajustar.')
+    const active=app.db.select().from(operationalPlaylistRevisions).where(and(eq(operationalPlaylistRevisions.rundownId,context.rundownId),eq(operationalPlaylistRevisions.active,true))).get()
+    if(!active || active.id!==context.revisionId)throw new Error('A revisão operacional mudou. Confira a grade antes de ajustar.')
+    const item=readOperationalPayload(active.payload).items.find(item=>item.id===input.itemId)
+    if(!item || !(item.type==='LIVE'||item.sourceRef||item.liveEndpoint))throw new Error('O item no ar não é uma entrada ao vivo.')
+    const frames=item.liveConfig?.estimatedDuration??item.liveEstimatedDuration??item.durationOverride??0
+    if(frames!==input.expectedFrames)throw new Error('A duração exibida mudou. Aguarde a atualização da grade antes de ajustar.')
+    const reviewToken=installationVault().reviewIdentity(JSON.stringify({kind:'LIVE_DURATION',context,input,actor,configurationRevision:configurationRevision(app.db,runtime.channel.id)}),'live-duration-review:v1')
+    return {reviewToken,context}
+  }
+  server.get('/api/channels/:id/live-duration-review',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    const input=durationInput.safeParse({...request.query as object,expectedFrames:Number((request.query as any).expectedFrames),deltaSeconds:Number((request.query as any).deltaSeconds)})
+    if(!input.success)return reply.code(400).send({error:'Informe item, duração exibida e ajuste válido.'})
+    const runtime=await runtimeFor(app,id)
+    if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    try{
+      assertEditorialAccess(request,id);assertTransportOwnership(id)
+      const review=inspectLiveDuration(runtime,input.data,await usernameOf(request))
+      return reply.header('cache-control','private, no-store').send({reviewToken:review.reviewToken,input:input.data})
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Ajuste recusado.'})}
+  })
   server.post('/api/channels/:id/live-duration', async (request, reply) => {
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode ajustar a duração ao vivo.' })
     const { id } = request.params as { id: string }
-    const body = z.object({ deltaSeconds: z.number().int().min(-600).max(600).refine(value => value !== 0) }).safeParse(request.body)
+    const body = z.object({input:durationInput,requestId:z.string().uuid(),reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict().safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe ajuste em segundos entre -600 e +600, diferente de zero.' })
     const runtime = await runtimeFor(app, id)
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
     return mutatePlaylist(runtime, reply, async () => {
-    const onAir = runtime.transport.state().onAir
-    if (!runtime.executionView || !onAir) return reply.code(409).send({ error: 'Não há live no ar para ajustar.' })
     try {
-      const actor = await usernameOf(request), rundownId = runtime.executionView.rundown.id
-      if (runtime.transport.state().onAir?.itemId !== onAir.itemId || runtime.executionView.rundown.id !== rundownId) throw new Error('O PGM mudou durante o ajuste. Confira o item no ar e tente novamente.')
-      const revision = adjustPublishedLiveDuration(app.db, runtime.channel, rundownId, onAir.itemId, secondsToFrames(body.data.deltaSeconds, runtime.channel.rate), Math.floor(onAir.elapsed), actor)
-      await runtime.refresh()
-      await logDecision(app, rundownId, onAir.itemId, 'LIVE_DURATION_ADJUSTED', { revision: revision.revision, operation: readOperationalPayload(revision.payload).operation }, actor)
-      runtime.checkpoint(true); onChange()
-      return { ...snapshot(app, runtime), revision: revision.revision }
-    } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Ajuste recusado.' }) }
+      const actor=await usernameOf(request),decisionId=`live-duration:${body.data.requestId}`
+      const digest=installationVault().reviewIdentity(JSON.stringify({channelId:id,actor,input:body.data.input,reviewToken:body.data.reviewToken}),'live-duration-request:v1')
+      const result=app.db.transaction(tx=>{
+        // Authorization is rechecked even for retries of an already committed request.
+        assertEditorialAccess(request,id);assertTransportOwnership(id)
+        const previous=tx.select().from(operatorDecisions).where(eq(operatorDecisions.id,decisionId)).get()
+        if(previous){
+          if(previous.kind!=='LIVE_DURATION_ADJUSTED'||previous.payload.digest!==digest)throw new Error('Identificador pertence a outro ajuste.')
+          return {revision:previous.payload.revision as number,deduplicated:true}
+        }
+        const review=inspectLiveDuration(runtime,body.data.input,actor)
+        if(review.reviewToken!==body.data.reviewToken)throw new Error('A execução ou configuração mudou. Confira o PGM e a grade antes de ajustar.')
+        const onAir=runtime.transport.state().onAir
+        if(!onAir || onAir.itemId!==review.context.onAirItemId)throw new Error('O PGM mudou durante o ajuste.')
+        const revision=adjustPublishedLiveDuration(tx,runtime.channel,review.context.rundownId,onAir.itemId,secondsToFrames(body.data.input.deltaSeconds,runtime.channel.rate),Math.floor(onAir.elapsed),actor)
+        tx.insert(operatorDecisions).values({id:decisionId,rundownId:review.context.rundownId,itemId:onAir.itemId,kind:'LIVE_DURATION_ADJUSTED',payload:{digest,revision:revision.revision,revisionId:revision.id,operation:readOperationalPayload(revision.payload).operation},actorUsername:actor,createdAt:new Date().toISOString()}).run()
+        return {revision:revision.revision,deduplicated:false}
+      },{behavior:'immediate'})
+      // The durable commit must not be reported as rolled back if refresh fails.
+      let refreshError:string|null=null
+      try{await runtime.refresh();runtime.checkpoint(true)}catch{refreshError='Ajuste gravado, mas a execução não confirmou a atualização. Confira o canal antes de outro ajuste.'}
+      try{onChange();return {...snapshot(app,runtime),...result,applied:true,refreshError}}
+      catch{return {...result,applied:true,refreshError:refreshError??'Ajuste gravado; atualização da tela não confirmada. Confira o canal.'}}
+    } catch (error) {if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({ error: error instanceof Error ? error.message : 'Ajuste recusado.' }) }
     })
   })
 
@@ -1851,10 +2403,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     try {
       const actor = await usernameOf(request)
       const isLoaded = runtime.executionView?.rundown.id === id
-      const revision = await rollbackOperationalPlaylist(app.db, id, body.data.revisionId, actor, isLoaded ? runtime.transport.state().onAir?.itemId ?? null : null,(review)=>{authorizePublication(request,review);requireOperationalReview(review,body.data.reviewToken)})
-      if (isLoaded) await runtime.refresh()
-      onChange()
-      return { ...snapshot(app, runtime), revision: revision.revision }
+      const context=runtime.interruptionContext()
+      const revision = await rollbackOperationalPlaylist(app.db, id, body.data.revisionId, actor, isLoaded ? runtime.transport.state().onAir?.itemId ?? null : null,(review,payload)=>{authorizePublication(request,review);requireOperationalReview(review,body.data.reviewToken);if(isLoaded)protectReviewedExecution(runtime,payload,context)})
+      let refreshError:string|null=null
+      if(isLoaded)try{await runtime.refresh()}catch{refreshError='Rollback gravado, mas a atualização da execução não foi confirmada. Confira o canal; não repita a restauração.'}
+      try{onChange()}catch{refreshError??='Rollback gravado; atualização da tela não confirmada.'}
+      const result={revision:revision.revision,applied:true,executionUpdated:isLoaded?refreshError===null:null,refreshError}
+      try{return {...snapshot(app,runtime),...result,snapshotAvailable:true}}
+      catch{return {...result,snapshotAvailable:false,refreshError:refreshError??'Rollback gravado; leitura da tela não confirmada.'}}
     } catch (error) {
       if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload)
       return reply.code(409).send({ error: error instanceof Error ? error.message : 'Rollback recusado.' })
@@ -2038,11 +2594,6 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
   // ---- acervo -----------------------------------------------------------
 
-  const qcProfileSchema = z.object({
-    codecs: z.array(z.string().min(1).max(100)).max(30), width: z.number().int().min(1).max(8192).nullable(), height: z.number().int().min(1).max(8192).nullable(),
-    fps: z.number().positive().max(240).nullable(), scan: z.enum(['ANY', 'PROGRESSIVE', 'INTERLACED']), requireAudio: z.boolean(),
-    minDurationSeconds: z.number().min(0).max(86400), requireLoudness: z.boolean(), minLufs: z.number().min(-100).max(0), maxLufs: z.number().min(-100).max(0), maxTruePeakDbtp: z.number().min(-100).max(12),
-  }).refine(profile => profile.minLufs <= profile.maxLufs, 'Faixa de loudness inválida.')
   server.get('/api/channels/:id/qc-profile', async (request, reply) => {
     const id=(request.params as {id:string}).id
     const result=app.db.transaction(tx=>{
@@ -2066,13 +2617,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if(!channel)throw new CollaborativeEditError(404,{error:'Canal não encontrado.'})
       if(channel.archivedAt)throw new CollaborativeEditError(409,{error:'Canal arquivado: perfil preservado.'})
       const before=requireChannelConfiguration(tx,id,request.headers['if-match'])
-      tx.update(channels).set({qcProfile:body.data}).where(eq(channels.id,id)).run()
+      const savedProfile={...body.data,requireProbe:body.data.requireProbe??channel.qcProfile?.requireProbe??false}
+      tx.update(channels).set({qcProfile:savedProfile}).where(eq(channels.id,id)).run()
       const revision=configurationRevision(tx,id)
-      tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@qc',kind:'QC_PROFILE_CHANGED',payload:{channelId:id,before:channel.qcProfile??DEFAULT_QC_PROFILE,profile:body.data,revisionBefore:before,revisionAfter:revision},actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString()}).run()
-      return {profile:body.data,configurationRevision:revision}
+      tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@qc',kind:'QC_PROFILE_CHANGED',payload:{channelId:id,before:channel.qcProfile??DEFAULT_QC_PROFILE,profile:savedProfile,revisionBefore:before,revisionAfter:revision},actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString()}).run()
+      return {profile:savedProfile,configurationRevision:revision}
     },{behavior:'immediate'})}catch(error){return automationError(reply,error)}
     // A committed profile change isn't a rollback if updating the view fails.
     // This route never reconfigures the decoder or issues transport commands.
+    app.runtimes.get(id)?.applyCommittedQcProfile(result.profile)
     let refreshError:string|null=null
     try{await app.runtimes.get(id)?.refresh();onChange()}catch{refreshError='Perfil gravado; falha ao atualizar a visão. Consulte o canal novamente.'}
     return reply.header('etag',channelConfigurationETag(id,result.configurationRevision)).send({...result,refreshError,message:refreshError??'Perfil gravado. Elegibilidade dos próximos arquivos será reconferida; o decoder do item no ar foi preservado.'})
@@ -2123,10 +2676,30 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     ignored: z.boolean().optional(),
     qcStatus: z.enum(['PENDING', 'ANALYSIS', 'APPROVED', 'APPROVED_WITH_NOTES', 'REJECTED', 'FAILED', 'BLOCKED']).optional(),
     qcNotes: z.string().max(2_000).nullable().optional(),
-  }).refine(body=>body.qcNotes===undefined || body.qcStatus!==undefined || body.ignored!==undefined,'Informe o estado QC junto com a observação.')
+  }).strict().refine(body=>body.title!==undefined||body.categoryId!==undefined||body.qcStatus!==undefined||body.ignored!==undefined,'Informe os campos da alteração.').refine(body=>body.qcNotes===undefined || body.qcStatus!==undefined || body.ignored!==undefined,'Informe o estado QC junto com a observação.')
+
+  server.get('/api/assets/:id/metadata-review',(request,reply)=>{
+    try{
+      const result=readAssetMetadata(app.db,(request.params as {id:string}).id,captureAssetMetadataAuthority(app.db,request))
+      return reply.header('cache-control','private, no-store').header('etag',assetMetadataETag(result)).send(result)
+    }catch(error){return automationError(reply,error)}
+  })
+  const saveAssetMetadata=(request:FastifyRequest,reply:any)=>{
+    try{
+      const result=editAssetMetadata(app.db,(request.params as {id:string}).id,request.body,request.headers['if-match'],captureAssetMetadataAuthority(app.db,request))
+      let refreshError:string|null=null
+      try{onChange()}catch{refreshError='Metadados gravados; falha ao atualizar a visão. Consulte o acervo novamente.'}
+      return reply.header('cache-control','private, no-store').header('etag',result.eTag).send({...result,refreshError})
+    }catch(error){return automationError(reply,error)}
+  }
+  server.patch('/api/assets/:id/metadata',saveAssetMetadata)
 
   server.patch('/api/assets/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
+    // Metadata authority is captured synchronously before any permission await.
+    // A changed session owner cannot inherit the prior actor's draft.
+    const raw=request.body
+    if(raw!==null&&typeof raw==='object'&&(Object.hasOwn(raw,'title')||Object.hasOwn(raw,'categoryId')))return saveAssetMetadata(request,reply)
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar o acervo.' })
     const body = assetPatch.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
@@ -2174,66 +2747,33 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { ok: true,refreshError }
   })
 
-  /**
-   * Tira o arquivo do acervo. O arquivo em disco não é tocado.
-   *
-   * Arquivo em uso não sai calado: a grade que aponta para ele perderia a
-   * referência e o operador descobriria no ar. A resposta diz quantos itens o
-   * usam, e quem decide é ele.
-   */
-  server.delete('/api/assets/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover arquivos.' })
-    const { force } = request.query as { force?: string }
-
-    const usos = await app.db.select().from(rundownItems).where(eq(rundownItems.mediaId, id))
-    if (usos.length > 0 && force !== '1') {
-      return reply.code(409).send({
-        error: `Este arquivo está em ${usos.length} item${usos.length > 1 ? 's' : ''} da grade.`,
-        items: usos.length,
-      })
-    }
-
-    if (usos.length > 0) {
-      await app.db.delete(rundownItems).where(eq(rundownItems.mediaId, id))
-    }
-    // Remoção da listagem é persistente. O arquivo volta a ser visto pelo
-    // scanner, mas continua ignorado até o operador aceitá-lo explicitamente.
-    await app.db.update(mediaAssets).set({ ignored: true }).where(eq(mediaAssets.id, id))
-    for (const runtime of app.runtimes.values()) await runtime.refresh()
-    onChange()
-    return { ok: true, removedItems: usos.length }
+  server.get('/api/assets/:id/removal-review',(request,reply)=>{
+    try{
+      const review=readAssetRemoval(app,'REMOVE',(request.params as {id:string}).id,captureAssetRemovalAuthority(app.db,request))
+      return reply.header('cache-control','private, no-store').header('etag',assetRemovalETag(review)).send(review)
+    }catch(error){return automationError(reply,error)}
   })
-
-  /**
-   * Limpa do acervo tudo que não abriu.
-   *
-   * Arquivo que não abre fica na lista com o motivo à vista -- é informação
-   * acionável enquanto alguém pode agir. Depois que o operador viu e decidiu
-   * que não vai agir, a mesma lista vira ruído, e limpar é o que devolve a
-   * tela para o material que serve.
-   */
-  server.post('/api/assets/prune', async (request, reply) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode limpar o acervo.' })
-    const quebrados = await app.db
-      .select()
-      .from(mediaAssets)
-      .where(isNotNull(mediaAssets.probeError))
-
-    let itensRemovidos = 0
-    for (const asset of quebrados) {
-      const usos = await app.db.select().from(rundownItems).where(eq(rundownItems.mediaId, asset.id))
-      itensRemovidos += usos.length
-      if (usos.length > 0) {
-        await app.db.delete(rundownItems).where(eq(rundownItems.mediaId, asset.id))
-      }
-      await app.db.delete(mediaAssets).where(eq(mediaAssets.id, asset.id))
-    }
-
-    for (const runtime of app.runtimes.values()) await runtime.refresh()
-    onChange()
-    return { removed: quebrados.length, removedItems: itensRemovidos }
+  server.get('/api/assets/prune-review',(request,reply)=>{
+    try{
+      const review=readAssetRemoval(app,'PRUNE',null,captureAssetRemovalAuthority(app.db,request))
+      return reply.header('cache-control','private, no-store').header('etag',assetRemovalETag(review)).send(review)
+    }catch(error){return automationError(reply,error)}
   })
+  const saveAssetRemoval=(operation:'REMOVE'|'PRUNE')=>(request:FastifyRequest,reply:any)=>{
+    try{
+      const authority=captureAssetRemovalAuthority(app.db,request)
+      if(Object.keys(request.query as object).length)throw new CollaborativeEditError(400,{error:'Remoção não aceita force nem escopo forjado. Confira o impacto original.'})
+      const result=applyAssetRemoval(app,operation,operation==='REMOVE'?(request.params as {id:string}).id:null,request.body,request.headers['if-match'],authority)
+      let refreshError:string|null=null
+      // No await gap permits an old unpublished runtime to execute removed
+      // editorial rows. Earlier loads are fenced before notifying observers.
+      for(const runtime of app.runtimes.values())try{runtime.invalidateCatalogRemoval((request.body as {assetIds:string[]}).assetIds)}catch{refreshError='Remoção gravada; falha ao atualizar uma visão. Confira o canal antes de comandá-lo.'}
+      try{onChange()}catch{refreshError='Remoção gravada; falha ao notificar a visão. Consulte o acervo novamente.'}
+      return reply.header('cache-control','private, no-store').send({...result,refreshError})
+    }catch(error){return automationError(reply,error)}
+  }
+  server.delete('/api/assets/:id',saveAssetRemoval('REMOVE'))
+  server.post('/api/assets/prune',saveAssetRemoval('PRUNE'))
 
   /** As categorias que existem no acervo, para a interface oferecer. */
   /**
@@ -2267,28 +2807,25 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
-  const corValida = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Cor em #rrggbb.')
+  server.get('/api/categories/:id/review',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    try{const review=readCategory(app.db,id,categoryAuthority(app.db,request));return reply.header('cache-control','private, no-store').header('etag',categoryETag(review)).send(review)}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:'Conferência indisponível; nenhuma categoria foi alterada.'})}
+  })
+  const categoryMutation=async(request:import('fastify').FastifyRequest,reply:import('fastify').FastifyReply,action:'SET'|'DELETE')=>{
+    const {id}=request.params as {id:string}
+    let result
+    try{result=editCategory(app.db,id,action,request.body,request.headers['if-match'],categoryAuthority(app.db,request))}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:'Categoria não foi alterada; confira a auditoria e tente novamente.'})}
+    let refreshError:string|null=null
+    if(action==='DELETE')for(const runtime of app.runtimes.values())try{await runtime.refresh()}catch{refreshError='Remoção gravada, mas atualização da grade não confirmada. Não repita a remoção.'}
+    try{onChange()}catch{refreshError??='Categoria gravada; atualização da tela não confirmada. Não repita a gravação.'}
+    return {...result,ok:true,refreshError}
+  }
 
   /** Cria a categoria ou troca a cor dela. O nome é a chave. */
   server.put('/api/categories/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar categorias.' })
-    const body = z.object({ color: corValida }).safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: 'Cor em #rrggbb.' })
-    if (id.trim() === '') return reply.code(400).send({ error: 'A categoria precisa de nome.' })
-
-    const [existente] = await app.db.select().from(categories).where(eq(categories.id, id))
-    if (existente) {
-      await app.db.update(categories).set({ color: body.data.color }).where(eq(categories.id, id))
-    } else {
-      await app.db.insert(categories).values({
-        id,
-        color: body.data.color,
-        createdAt: new Date().toISOString(),
-      })
-    }
-    onChange()
-    return { ok: true }
+    return categoryMutation(request,reply,'SET')
   })
 
   /**
@@ -2298,16 +2835,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * fantasma na grade e uma opção que não aparece em lista nenhuma.
    */
   server.delete('/api/categories/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover categorias.' })
-    await app.db.delete(categories).where(eq(categories.id, id))
-    const soltos = await app.db
-      .update(mediaAssets)
-      .set({ categoryId: null })
-      .where(eq(mediaAssets.categoryId, id))
-    for (const runtime of app.runtimes.values()) await runtime.refresh()
-    onChange()
-    return { ok: true, soltos: soltos.changes ?? 0 }
+    return categoryMutation(request,reply,'DELETE')
   })
 
   /** Archive decommissions the channel, preserving published/as-run history. */
@@ -2354,8 +2882,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/library/scan', async () => {
     const roots = await Roots.listRoots(app.db, app.mediaRoot)
     const estado = app.ingest.status()
+    const activeBatches=readScanDiagnostics(app.sqlite)
     return {
       ...estado,
+      running:activeBatches.some(batch=>batch.state==='RUNNING'),
+      globalBusy:activeBatches.length>0,
+      localRunning:estado.running,
+      progressAvailable:estado.running,
+      activeBatches,
       available: app.ingest.available,
       root: estado.root ?? roots[0]?.path ?? app.mediaRoot,
       folders: roots,
@@ -2388,6 +2922,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   /** As pastas do acervo. */
+  const rootResult=(reply:import('fastify').FastifyReply,work:()=>unknown)=>{try{return work()}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:'Conferência das pastas indisponível; nenhuma alteração aplicada.'})}}
+  server.get('/api/library/roots/review',async(request,reply)=>rootResult(reply,()=>{const review=readRootCatalog(app.db,rootAuthority(app.db,request));return reply.header('cache-control','private, no-store').header('etag',rootCatalogETag(review)).send(review)}))
+  server.get('/api/library/roots/add-review',async(request,reply)=>rootResult(reply,()=>{const query=z.object({path:z.string().min(1).max(4096)}).strict().safeParse(request.query);if(!query.success)return reply.code(400).send({error:'Informe somente o caminho da pasta.'});const review=readRootAdd(app.db,query.data.path,rootAuthority(app.db,request));return reply.header('cache-control','private, no-store').header('etag',rootAddETag(review)).send(review)}))
   server.get('/api/library/roots', async () => ({
     roots: await Roots.listRoots(app.db, app.mediaRoot),
   }))
@@ -2426,59 +2963,34 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   server.post('/api/library/roots', async (request, reply) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode adicionar pastas.' })
-    const body = z
-      .object({ path: z.string().min(1), label: z.string().optional() })
-      .safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: 'Diga o caminho da pasta.' })
-
-    const resultado = await Roots.addRoot(app.db, body.data.path, body.data.label)
-    if (!resultado.ok) return reply.code(400).send({ error: resultado.error })
-
-    // Varre só a pasta nova: quem acabou de apontar para uma pasta quer ver o
-    // que tem nela, e revarrer o acervo inteiro faria isso levar minutos.
-    if (app.ingest.available) app.ingest.start([resultado.root.path])
-    return { root: resultado.root, scanning: app.ingest.status().running }
+    let result:ReturnType<typeof addRootConferred>
+    try {result=addRootConferred(app.db,request.body,request.headers['if-match'],rootAuthority(app.db,request),app.ingest.available)}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:'Pasta não cadastrada; conferência ou auditoria indisponível.'})}
+    if(!result.scanBatchId)return {...result,scanning:false,scanRequired:true,scanState:null,scanError:'Sonda indisponível; pasta cadastrada sem pedido de leitura.'}
+    try{app.ingest.resumePending();const row=app.sqlite.prepare('SELECT state FROM ingest_batches WHERE id=?').get(result.scanBatchId) as {state:string}|undefined;return {...result,scanning:row?.state==='RUNNING',scanRequired:false,scanState:row?.state??'UNKNOWN'}}
+    catch{return {...result,scanning:false,scanRequired:false,scanState:'UNKNOWN',scanError:'Pasta e pedido confirmados; início/status indisponível. Não repita o cadastro.'}}
   })
 
   server.delete('/api/library/roots/:id', async (request, reply) => {
     const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover pastas.' })
-    if (!(await Roots.removeRoot(app.db, id))) {
-      return reply
-        .code(400)
-        .send({ error: 'Não deu para tirar essa pasta. O acervo precisa de pelo menos uma.' })
-    }
-    return { ok: true }
+    try{return removeRootConferred(app.db,id,request.body,request.headers['if-match'],rootAuthority(app.db,request))}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:'Pasta não removida; conferência ou auditoria indisponível.'})}
   })
 
-  server.post('/api/library/scan', async (request, reply) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode iniciar varredura.' })
-    if (!app.ingest.available) {
-      return reply.code(409).send({ error: 'A sonda de mídia não está configurada.' })
-    }
-    const body = z
-      .object({ root: z.string().min(1).optional(), measure: z.boolean().optional() })
-      .safeParse(request.body ?? {})
-    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-
-    // Medir loudness é o que demora numa varredura. Poder ler sem medir é o
-    // que torna um acervo grande utilizável no mesmo dia.
-
-    // Sem pasta escolhida, varre todas -- que é o que "procurar arquivos"
-    // significa para quem tem o acervo espalhado em mais de um lugar. Inclui
-    // as indisponíveis para que seus arquivos sejam sinalizados na grade.
-    const roots = await Roots.listRoots(app.db, app.mediaRoot)
-    const alvo = body.data.root
-      ? [body.data.root]
-      : roots.map((root) => root.path)
-    if (alvo.length === 0) {
-      return reply.code(409).send({ error: 'Nenhuma pasta do acervo está acessível agora.' })
-    }
-    if (!app.ingest.start(alvo, body.data.measure ?? true)) {
-      return reply.code(409).send({ error: 'A varredura já está em andamento.' })
-    }
-    return app.ingest.status()
+  server.get('/api/library/scan/review',async(request,reply)=>rootResult(reply,()=>{const review=readScanReview(app.db,rootAuthority(app.db,request),app.ingest.available);return reply.header('cache-control','private, no-store').header('etag',scanETag(review)).send(review)}))
+  server.post('/api/library/scan/recover',async(request,reply)=>{
+    let result:import('@rplayout/protocol').ScanCommandResult
+    try{result=recoverScan(app.db,request.body,request.headers['if-match'],rootAuthority(app.db,request),app.ingest.available)}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:'Retomada não registrada; conferência ou auditoria indisponível.'})}
+    try{if(result.state==='PENDING')app.ingest.resumePending();const row=app.sqlite.prepare('SELECT state FROM ingest_batches WHERE id=?').get(result.batchId) as {state:string}|undefined;return {...result,state:row?.state??'UNKNOWN'}}catch{return {...result,state:'UNKNOWN',startError:'Retomada registrada; início/status indisponível. Não crie outro pedido.'}}
+  })
+  server.post('/api/library/scan',async(request,reply)=>{
+    let result:import('@rplayout/protocol').ScanCommandResult
+    try{result=queueScan(app.db,request.body,request.headers['if-match'],rootAuthority(app.db,request),app.ingest.available)}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:'Varredura não registrada; conferência ou auditoria indisponível.'})}
+    // Committed command is never reported as rolled back if worker startup fails.
+    try{if(result.state==='PENDING')app.ingest.resumePending()}catch{return {...result,startError:'Pedido registrado; início do scanner indisponível. Não crie outro pedido.'}}
+    const row=app.sqlite.prepare('SELECT state FROM ingest_batches WHERE id=?').get(result.batchId) as {state:string}|undefined
+    return {...result,state:row?.state??'UNKNOWN'}
   })
 
   server.get('/api/rundowns/:id', async (request, reply) => {
@@ -2565,6 +3077,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   const addItemSchema = z.object({
     mediaId: z.string().nullable().optional(),
     sourceRef: z.string().nullable().optional(),
+    configuredSourceId: z.string().min(1).max(200).nullable().optional(),
     type: z.enum(['VT', 'LIVE', 'GFX', 'SLATE', 'COMMERCIAL', 'FILLER']),
     eventType: z.enum(['FIXED', 'SEQUENTIAL', 'HARD_TIME', 'LIVE', 'FILLER']).optional(),
     title: z.string().min(1).optional(),
@@ -2679,6 +3192,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       liveCfg?.sourceType ?? body.data.liveSourceType ?? (body.data.type === 'LIVE' ? inferLiveSourceType(body.data.sourceRef ?? body.data.liveEndpoint ?? '') : null)
     const liveEndpoint =
       liveCfg?.sourceEndpoint ?? body.data.liveEndpoint ?? body.data.sourceRef ?? null
+    const configuredSource = body.data.configuredSourceId
+      ? requireItemSourceBinding(tx,state.channel.id,body.data.configuredSourceId,liveEndpoint,body.data.type)
+      : null
     const liveEstimatedDuration =
       liveCfg?.estimatedDuration ?? body.data.liveEstimatedDuration ?? duration
     const liveMaxDuration =
@@ -2694,9 +3210,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       sortOrder: 0,
       type: body.data.type,
       eventType,
-      title: body.data.title ?? asset?.title ?? 'Novo item',
+      title: body.data.title ?? configuredSource?.name ?? asset?.title ?? 'Novo item',
       mediaId: body.data.mediaId ?? null,
       sourceRef: liveEndpoint ?? body.data.sourceRef ?? null,
+      configuredSourceId: configuredSource?.id ?? null,
       trimmable,
       optional,
       protected: isProtected,
@@ -2825,9 +3342,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       delete updatePayload.timingFlags
     }
     if (body.data.liveConfig !== undefined) {
+      // A manual connection edit removes the catalog claim. A new binding is
+      // established only through explicit selection when inserting a live.
+      updatePayload.configuredSourceId = null
       if (body.data.liveConfig) {
         updatePayload.liveSourceType = body.data.liveConfig.sourceType
         updatePayload.liveEndpoint = body.data.liveConfig.sourceEndpoint
+        updatePayload.sourceRef = body.data.liveConfig.sourceEndpoint
         updatePayload.liveEstimatedDuration = body.data.liveConfig.estimatedDuration
         updatePayload.liveMaxDuration = body.data.liveConfig.maxDuration ?? null
         updatePayload.liveAutoFollowOnEnd = body.data.liveConfig.autoFollowOnEnd
@@ -2835,6 +3356,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       } else {
         updatePayload.liveSourceType = null
         updatePayload.liveEndpoint = null
+        updatePayload.sourceRef = null
         updatePayload.liveEstimatedDuration = null
         updatePayload.liveMaxDuration = null
         updatePayload.liveAutoFollowOnEnd = false
@@ -2846,6 +3368,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     try{
       mutateEditorial(app.db,app.concurrency,runtime.view.rundown.id,request.headers['if-match'],(tx,state)=>{
         assertEditorialAccess(request,state.channel.id)
+        if(body.data.liveEndpoint!==undefined || body.data.liveSourceType!==undefined) updatePayload.configuredSourceId=null
+        if(body.data.liveConfig===undefined && body.data.liveEndpoint!==undefined)updatePayload.sourceRef=body.data.liveEndpoint
         const previousView=editorialView(state)
         const reorders=Boolean(body.data.anchor && body.data.anchor.kind!=='FLOW')
         const remember=app.history.prepareCapture(tx,state.rundown.id,'editar item',{itemIds:reorders?state.items.map(item=>item.id):[id]})
@@ -3025,12 +3549,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.post('/api/items/:id/audio-analysis',async(request,reply)=>{
     const {id}=request.params as {id:string}
     if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode medir o mix deste item.'})
-    const body=z.object({contentHash:z.string().regex(/^[a-f0-9]{64}$/i),audioTrack:z.number().int().min(0).max(63),routing:audioSchema.shape.routing.unwrap()}).strict().safeParse(request.body)
+    const body=z.object({contentHash:z.string().regex(/^[a-f0-9]{64}$/i),audioTrack:z.number().int().min(0).max(63),routing:audioSchema.shape.routing.unwrap(),scope:z.enum(['FILE','TRIM']).default('FILE')}).strict().safeParse(request.body)
     if(!body.success)return reply.code(400).send({error:'Configuração de mix inválida.'})
     try{
       const job=app.audioMixAnalysis.queue(id,body.data.contentHash,body.data.audioTrack,body.data.routing,await usernameOf(request),()=>{
         const owners=inspectEditScope(app.db,id,'ITEM',rid=>app.concurrency.getRundownVersion(rid),rows=>authorizeScope(request,rows));auditChannels.set(request,owners.owners.map(row=>row.channelId))
-      })
+      },body.data.scope)
       const {worker,...publicJob}=job;return reply.code(job.state==='READY'?200:202).send({analysis:publicJob})
     }catch(error){return automationError(reply,error)}
   })
@@ -3068,17 +3592,27 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   // decorativos da interface.
 
   /** Métricas do computador que efetivamente hospeda esta instância. */
-  server.get('/api/host-metrics', async () => {
-    return app.hostMetrics.latest()
+  server.get('/api/host-metrics', async (request) => {
+    return scopedOperationalSample(await app.hostMetrics.latest(),id=>access.channelAllowed(request,id))
   })
   server.get('/api/host-metrics/history', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar histórico do servidor.' })
-    const body = z.object({ hours: z.coerce.number().min(0.1).max(336).default(1), limit: z.coerce.number().int().min(1).max(5000).default(2000) }).safeParse(request.query)
-    if (!body.success) return reply.code(400).send({ error: 'Janela de histórico inválida.' })
-    const since = new Date(Date.now()-body.data.hours*3600_000).toISOString()
-    const samples = app.hostMetrics.history(since, body.data.limit)
-    const totalSamples = app.hostMetrics.historyCount(since)
-    return { since, retainedDays: 14, limit: body.data.limit, totalSamples, truncated: totalSamples > samples.length, samples }
+    const query=parseMetricHistoryQuery(request.query)
+    if(!query)return reply.code(400).send({error:'Janela ou cursor de histórico inválido.'})
+    if(query.channelId&&!access.channelAllowed(request,query.channelId))return reply.code(403).send({error:'Sem acesso ao histórico deste canal.'})
+    const page=app.hostMetrics.historyPage(query.since,query.until,query.before,query.limit)
+    const samples=page.samples.map(({sample})=>scopedOperationalSample(sample,id=>access.channelAllowed(request,id),query.channelId))
+    return {since:query.since,until:query.until,retainedDays:14,limit:query.limit,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
+  })
+  server.get('/api/channels/:id/operational-metrics/history',async(request,reply)=>{
+    const id=(request.params as {id:string}).id
+    if(!access.channelAllowed(request,id)||!(await allowed(request,'REPORT_EXPORT')))return reply.code(403).send({error:'Sem permissão para o histórico deste canal.'})
+    const query=parseMetricHistoryQuery(request.query)
+    if(!query)return reply.code(400).send({error:'Janela ou cursor de histórico inválido.'})
+    const {since,until,before,limit}=query
+    const page=app.hostMetrics.historyPage(since,until,before,limit)
+    const samples=page.samples.map(({sampledAt,sample})=>({sampledAt,operations:scopedOperationalSample(sample,channelId=>access.channelAllowed(request,channelId),id).operations??null}))
+    return {channelId:id,since,until,retainedDays:14,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
   })
 
   /**
@@ -3232,9 +3766,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * situações diferentes, e dizer qual é poupa o operador de procurar no lugar
    * errado.
    */
-  server.get('/api/sources', async (request) => {
-    const { refresh } = request.query as { refresh?: string }
-    return app.sources.list(refresh === '1')
+  server.get('/api/sources', async (request,reply) => {
+    const query=z.object({refresh:z.enum(['0','1']).optional(),channelId:z.string().min(1).optional()}).safeParse(request.query)
+    if(!query.success)return reply.code(400).send({error:'Consulta de fontes inválida.'})
+    if(query.data.channelId&&!access.channelAllowed(request,query.data.channelId))return reply.code(403).send({error:'Sem acesso às entradas deste canal.'})
+    return scopedSourceList(await app.sources.list(query.data.refresh==='1'),id=>access.channelAllowed(request,id),query.data.channelId)
   })
 
   // ==========================================
@@ -3258,339 +3794,194 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/srt/telemetry', handleSrtTelemetry)
 
   // Disparo manual ou automatizado de chaveamento de contingência (Failover)
-  const handleFailoverTrigger = async (request: any, reply: any) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
-      return reply.code(403).send({ error: 'Seu papel não tem permissão para acionar failover técnico.' })
-    }
-
-    const body = z
-      .object({
-        sourceId: z.string().min(1, 'sourceId é obrigatório'),
-        targetRole: z.enum(['PRIMARY', 'BACKUP']).optional(),
-        reason: z.string().optional(),
+  const failoverSelection=z.object({targetRole:z.enum(['PRIMARY','BACKUP']).optional(),reason:z.string().trim().min(1).max(500).optional()})
+  const applyManualFailover=async(request:FastifyRequest,reply:any,input:ManualFailoverInput)=>{
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode registrar decisão de failover.'})
+    const ownerId=access.identity(request)?.id??null,actorName=await usernameOf(request)
+    try{
+      const result=recordManualFailover(app.db,globalSrtManager.failover,request.headers['idempotency-key'],input,ownerId,actorName,channelId=>{
+        const current=access.identity(request)
+        if((current?.id??null)!==ownerId||access.required()&&!current||!can(access.role(request),'PLAYLIST_EDIT')||!access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:'Sessão ou acesso ao canal mudou; decisão de failover não registrada.'})
       })
-      .safeParse(request.body)
-
-    if (!body.success) {
-      return reply.code(400).send({ error: body.error.flatten() })
-    }
-
-    const source = await getLiveSource(app.db, body.data.sourceId, true)
-    if (!source) {
-      return reply.code(404).send({ error: 'Fonte ao vivo não encontrada.' })
-    }
-
-    const currentRole = globalSrtManager.failover.getActiveRole(source.id, source.role)
-    const targetRole = body.data.targetRole ?? (currentRole === 'PRIMARY' ? 'BACKUP' : 'PRIMARY')
-    const operator = await usernameOf(request)
-    const reason = body.data.reason ?? `Comutação manual de contingência disparada por ${operator}`
-
-    const event = globalSrtManager.failover.triggerSwitch(source, targetRole, reason, {
-      operator: operator ?? undefined,
-      automatic: false,
-    })
-
-    // Registra evento de AsRun e Auditoria
-    await app.db.insert(healthEvents).values({
-      id: randomUUID(),
-      channelId: source.channelId,
-      component: 'FAILOVER_CONTROLLER',
-      state: targetRole,
-      severity: 'WARN',
-      message: `Comutação ${event.fromRole} -> ${targetRole}: ${reason}`,
-      occurredAt: event.timestamp,
-    })
-
-    void emitIntegrationEvent(app.db, 'source.failover', { ...event }, source.channelId)
-    onChange()
-
-    return {
-      ok: true,
-      event,
-      operation:'METADATA_DECISION_ONLY',nativeProgramConfirmed:false,physicalOutputValidated:false,
-    }
+      let refreshError:string|null=!result.replayed&&!result.cacheApplied?'Decisão gravada, mas cache local não aplicado. O recibo não confirma a seleção atual ou o PGM.':null
+      if(!result.replayed){
+        try{void emitIntegrationEvent(app.db,'source.failover',{...result.event},result.channelId).catch(()=>{});onChange()}
+        catch{refreshError='Decisão gravada, mas atualização da tela/integração não confirmada. Não repita com outro identificador.'}
+      }
+      return reply.header('cache-control','private, no-store').send({ok:true,...result,refreshError})
+    }catch(error){return automationError(reply,error)}
+  }
+  const handleFailoverTrigger = async (request: FastifyRequest, reply: any) => {
+    const body=failoverSelection.extend({sourceId:z.string().min(1)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:body.error.flatten()})
+    return applyManualFailover(request,reply,body.data)
   }
   server.post('/api/v1/engineering/failover/trigger', handleFailoverTrigger)
   server.post('/api/engineering/failover/trigger', handleFailoverTrigger)
 
   // Multiview Layout & Configuração
-  const handleGetMultiview = async (request: any) => {
-    const { channelId } = request.query as { channelId?: string }
-    return getMultiviewConfig(app.db, channelId)
+  const multiviewAuthority=(request:FastifyRequest,ownerId:string|null,write=false)=>(_tx:unknown,id:string|null)=>{
+    const identity=access.identity(request)
+    if(access.required()&&!identity || (identity?.id??null)!==ownerId || !can(access.role(request),write?'PLAYLIST_EDIT':'REPORT_EXPORT') ||
+      (id===null?identity?.channelIds!==undefined&&identity.channelIds!==null:!access.channelAllowed(request,id)))throw new CollaborativeEditError(403,{error:'A sessão ou acesso ao escopo do multiview mudou. Confira novamente.'})
+  }
+  const handleGetMultiview = async (request: FastifyRequest,reply:any) => {
+    const query=z.object({channelId:z.string().min(1).optional()}).strict().safeParse(request.query)
+    if(!query.success)return reply.code(400).send({error:'Escopo multiview inválido.'})
+    try{
+      const id=query.data.channelId??null,ownerId=access.identity(request)?.id??null
+      const review=readMultiviewReview(app.db,id,multiviewAuthority(request,ownerId))
+      reply.header('cache-control','private, no-store').header('etag',multiviewETag(id,review.revision))
+      return review
+    }catch(error){return automationError(reply,error)}
   }
   server.get('/api/v1/multiview/config', handleGetMultiview)
   server.get('/api/multiview/config', handleGetMultiview)
 
-  const handlePutMultiview = async (request: any, reply: any) => {
+  const handlePutMultiview = async (request: FastifyRequest, reply: any) => {
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
       return reply.code(403).send({ error: 'Seu papel não pode alterar layout de multiview.' })
     }
 
-    const body = z
-      .object({
-        channelId: z.string().optional(),
-        layout: z.enum(['GRID_2X2', 'GRID_1_PLUS_3', 'COMPACT_LIST']).default('GRID_2X2'),
-        cells: z
-          .array(
-            z.object({
-              id: z.string(),
-              name: z.string(),
-              sourceUrl: z.string(),
-              tally: z.enum(['ON_AIR', 'NEXT', 'CUED', 'OFFLINE']),
-              audioPeakDb: z.tuple([z.number(), z.number()]),
-              syncState: z.enum(['LOCKED', 'DRIFT', 'LOST']),
-              srtTelemetry: z.any().optional(),
-            }),
-          )
-          .default([]),
+    const ownerId=access.identity(request)?.id??null
+    try{
+      const saved=editMultiview(app.db,request.body,request.headers['if-match'],{
+        authorize:multiviewAuthority(request,ownerId,true),
+        audit:(tx,details)=>{
+          auditChannels.set(request,typeof details.channelId==='string'?[details.channelId]:[])
+          tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@security',kind:'MULTIVIEW_EDITED',actorUsername:access.identity(request)?.username??null,payload:details,createdAt:new Date().toISOString()}).run()
+        },
       })
-      .safeParse(request.body)
-
-    if (!body.success) {
-      return reply.code(400).send({ error: body.error.flatten() })
-    }
-
-    const saved = await saveMultiviewConfig(
-      app.db,
-      body.data.channelId,
-      body.data.layout as MultiviewLayout,
-      body.data.cells as MultiviewCell[],
-    )
-    onChange()
-    return saved
+      reply.header('cache-control','private, no-store').header('etag',saved.eTag)
+      try{onChange();return saved}catch{return {...saved,refreshError:'Multiview gravado; atualização da tela não confirmada. Reabra antes de outra alteração.'}}
+    }catch(error){return automationError(reply,error)}
   }
   server.put('/api/v1/multiview/config', handlePutMultiview)
   server.put('/api/multiview/config', handlePutMultiview)
 
   // Gerenciamento de Fontes ao Vivo (Live Sources CRUD)
-  const liveSourceSchema = z.object({
-    channelId: z.string().min(1, 'channelId é obrigatório'),
-    name: z.string().min(1, 'name é obrigatório'),
-    kind: z.enum(['SRT', 'RTMP', 'SDI', 'NDI', 'OMT']),
-    targetUrl: z.string().optional(),
-    srtConfig: z
-      .object({
-        mode: z.enum(['caller', 'listener', 'rendezvous']),
-        host: z.string().default(''),
-        port: z.number().int().min(1024).max(65535).default(9000),
-        latencyMs: z.number().int().min(120).max(2000).default(800),
-        passphrase: z.string().min(10).max(79).optional(),
-        pbkeylen: z.union([z.literal(16), z.literal(24), z.literal(32)]).optional(),
-        streamId: z.string().max(512).optional(),
-        pollTimeoutMs: z.number().int().min(50).max(1000).optional(),
-      })
-      .optional(),
-    role: z.enum(['PRIMARY', 'BACKUP']).default('PRIMARY'),
-    pairedSourceId: z.string().optional(),
-    autoFailover: z.boolean().default(true),
-    failoverConfig: z
-      .object({
-        autoFailover: z.boolean().default(true),
-        maxLossPercent: z.number().default(15.0),
-        maxTimeoutMs: z.number().default(1500),
-        maxRttMs: z.number().default(2400),
-        switchDelayMs: z.number().default(120),
-      })
-      .optional(),
-    enabled: z.boolean().default(true),
+  const sourceEditHooks=(request:FastifyRequest)=>{
+    const ownerId=access.identity(request)?.id??null
+    return {
+      authorize:(_tx:Pick<Db,'select'>,channelId:string)=>{
+        assertEditorialAccess(request,channelId)
+        if((access.identity(request)?.id??null)!==ownerId)throw new CollaborativeEditError(403,{error:'A sessão mudou antes de alterar a entrada.'})
+        auditChannels.set(request,[channelId])
+      },
+      audit:(tx:EditorialTransaction,details:Record<string,unknown>)=>{
+        tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@security',kind:'LIVE_SOURCE_EDITED',actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString(),payload:details}).run()
+      },
+    }
+  }
+  server.get('/api/channels/:id/live-source-review',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    try{
+      const review=readLiveSourceReview(app.db,id,sourceEditHooks(request).authorize)
+      return reply.header('cache-control','private, no-store').header('etag',liveSourceETag(id,review.revision)).send(review)
+    }catch(error){return automationError(reply,error)}
   })
-
-  const handleListLiveSources = async (request: any) => {
+  const handleListLiveSources = async (request: any,reply:any) => {
     const { channelId } = request.query as { channelId?: string }
+    reply.header('cache-control','private, no-store')
     return listLiveSources(app.db, channelId, false)
   }
   server.get('/api/v1/sources/live', handleListLiveSources)
   server.get('/api/sources/live', handleListLiveSources)
 
-  const handleCreateLiveSource = async (request: any, reply: any) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
-      return reply.code(403).send({ error: 'Seu papel não tem permissão para cadastrar fontes ao vivo.' })
-    }
-
-    const body = liveSourceSchema.safeParse(request.body)
-    if (!body.success) {
-      return reply.code(400).send({ error: body.error.flatten() })
-    }
-
-    const created = await createLiveSource(app.db, body.data)
-    onChange()
-    return reply.code(201).send(created)
+  const sourceMutation=async(request:FastifyRequest,reply:any,operation:'CREATE'|'UPDATE'|'DELETE')=>{
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode alterar entradas ao vivo.'})
+    try{
+      const {id}=(request.params??{}) as {id?:string}
+      const result=editLiveSource(app.db,operation,id,request.body,request.headers['if-match'],sourceEditHooks(request))
+      let refreshError:string|null=null
+      try{onChange()}catch{refreshError='Cadastro gravado; falha ao atualizar a tela. Consulte a lista antes de repetir.'}
+      // Registration never rebuilds a runtime, retunes PVW or changes PGM.
+      return reply.code(operation==='CREATE'?201:200).header('cache-control','private, no-store').header('etag',result.eTag).send(operation==='DELETE'?{ok:true,...result,refreshError}:{...result.source,applied:true,channelId:result.channelId,revision:result.revision,automaticTake:false,physicalSignalValidated:false,refreshError})
+    }catch(error){return automationError(reply,error)}
   }
+  const handleCreateLiveSource=(request:FastifyRequest,reply:any)=>sourceMutation(request,reply,'CREATE')
   server.post('/api/v1/sources/live', handleCreateLiveSource)
   server.post('/api/sources/live', handleCreateLiveSource)
 
   const handleGetLiveSource = async (request: any, reply: any) => {
     const { id } = request.params as { id: string }
     const source = await getLiveSource(app.db, id, false)
-    if (!source) {
-      return reply.code(404).send({ error: 'Fonte ao vivo não encontrada.' })
-    }
-    return source
+    if (!source) return reply.code(404).send({ error: 'Fonte ao vivo não encontrada.' })
+    return reply.header('cache-control','private, no-store').send(source)
   }
   server.get('/api/v1/sources/live/:id', handleGetLiveSource)
   server.get('/api/sources/live/:id', handleGetLiveSource)
 
-  const handleUpdateLiveSource = async (request: any, reply: any) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
-      return reply.code(403).send({ error: 'Seu papel não pode editar fontes ao vivo.' })
-    }
-
-    const { id } = request.params as { id: string }
-    const body = liveSourceSchema.partial().safeParse(request.body)
-    if (!body.success) {
-      return reply.code(400).send({ error: body.error.flatten() })
-    }
-
-    const updated = await updateLiveSource(app.db, id, body.data)
-    if (!updated) {
-      return reply.code(404).send({ error: 'Fonte ao vivo não encontrada.' })
-    }
-    onChange()
-    return updated
-  }
+  const handleUpdateLiveSource=(request:FastifyRequest,reply:any)=>sourceMutation(request,reply,'UPDATE')
   server.put('/api/v1/sources/live/:id', handleUpdateLiveSource)
   server.put('/api/sources/live/:id', handleUpdateLiveSource)
-
-  const handleDeleteLiveSource = async (request: any, reply: any) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
-      return reply.code(403).send({ error: 'Seu papel não pode remover fontes ao vivo.' })
-    }
-
-    const { id } = request.params as { id: string }
-    await deleteLiveSource(app.db, id)
-    onChange()
-    return { ok: true }
-  }
+  const handleDeleteLiveSource=(request:FastifyRequest,reply:any)=>sourceMutation(request,reply,'DELETE')
   server.delete('/api/v1/sources/live/:id', handleDeleteLiveSource)
   server.delete('/api/sources/live/:id', handleDeleteLiveSource)
 
-  const handleForceFailover = async (request: any, reply: any) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
-      return reply.code(403).send({ error: 'Seu papel não pode forçar comutação de redundância.' })
-    }
-
-    const { id } = request.params as { id: string }
-    const source = await getLiveSource(app.db, id, true)
-    if (!source) {
-      return reply.code(404).send({ error: 'Fonte ao vivo não encontrada.' })
-    }
-
-    const currentRole = globalSrtManager.failover.getActiveRole(source.id, source.role)
-    const targetRole = currentRole === 'PRIMARY' ? 'BACKUP' : 'PRIMARY'
-    const operator = await usernameOf(request)
-    const reason = `Comutação forçada manual pelo operador ${operator}`
-
-    const event = globalSrtManager.failover.triggerSwitch(source, targetRole, reason, {
-      operator: operator ?? undefined,
-      automatic: false,
-    })
-
-    await app.db.insert(healthEvents).values({
-      id: randomUUID(),
-      channelId: source.channelId,
-      component: 'FAILOVER_CONTROLLER',
-      state: targetRole,
-      severity: 'WARN',
-      message: `Comutação forçada ${event.fromRole} -> ${targetRole}: ${reason}`,
-      occurredAt: event.timestamp,
-    })
-
-    onChange()
-    return { ok: true, event,operation:'METADATA_DECISION_ONLY',nativeProgramConfirmed:false,physicalOutputValidated:false }
+  const handleForceFailover = async (request: FastifyRequest, reply: any) => {
+    const {id}=request.params as {id:string},body=failoverSelection.strict().safeParse(request.body??{})
+    if(!body.success)return reply.code(400).send({error:body.error.flatten()})
+    return applyManualFailover(request,reply,{sourceId:id,...body.data})
   }
   server.post('/api/v1/sources/live/:id/force-failover', handleForceFailover)
   server.post('/api/sources/live/:id/force-failover', handleForceFailover)
 
+  const graphicsAuthority=(request:FastifyRequest,ownerId:string|null,write:boolean)=>(_tx:unknown,id:string|null)=>{
+    const identity=access.identity(request)
+    if(access.required()&&!identity||(identity?.id??null)!==ownerId||!can(access.role(request),write?'PLAYLIST_EDIT':'REPORT_EXPORT')||
+      (id===null?write&&identity?.channelIds!==undefined&&identity.channelIds!==null:!access.channelAllowed(request,id)))throw new CollaborativeEditError(403,{error:'A sessão, papel, estação ou acesso às artes mudou. Confira novamente.'})
+  }
+  const graphicsHooks=(request:FastifyRequest,kind:string)=>{
+    const ownerId=access.identity(request)?.id??null
+    return {authorize:graphicsAuthority(request,ownerId,true),audit:(tx:Parameters<Parameters<Db['transaction']>[0]>[0],details:Record<string,unknown>)=>{
+      const id=typeof details.channelId==='string'?details.channelId:null;auditChannels.set(request,id?[id]:[])
+      tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@security',kind,actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString(),payload:details}).run()
+    }}
+  }
   server.patch('/api/channels/:id/slate', async (request, reply) => {
     const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode configurar a apresentação técnica.' })
-    const body = z
-      .object({ templateId: z.string().nullable() })
-      .safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-
-    await app.db
-      .update(channels)
-      .set({ slateTemplateId: body.data.templateId })
-      .where(eq(channels.id, id))
-
-    // O canal que está no ar recebe a escolha em memória. Recriar o runtime
-    // aqui subiria um segundo engine no mesmo destino.
-    const runtime = app.runtimes.get(id)
-    runtime?.setSlate(body.data.templateId)
-    onChange()
-    return { ok: true }
+    try{
+      const result=editSlate(app.db,id,request.body,request.headers['if-match'],graphicsHooks(request,'SLATE_CONFIGURATION_CHANGED'))
+      reply.header('cache-control','private, no-store').header('etag',result.eTag)
+      try{const runtime=app.runtimes.get(id);runtime?.setSlate(result.slateTemplateId);onChange();return {...result,runtimeConfigurationApplied:Boolean(runtime)}}
+      catch(error){return {...result,runtimeConfigurationApplied:false,refreshError:sanitizeDiagnostic(error instanceof Error?error.message:'Configuração gravada; aplicação no runtime não confirmada.')}}
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
   })
 
   // ---- pauta ---------------------------------------------------------------
 
-  server.get('/api/channels/:id/rules', async (request) => {
-    const { id } = request.params as { id: string }
-    const rules = await app.db
-      .select()
-      .from(scheduleRules)
-      .where(eq(scheduleRules.channelId, id))
-      .orderBy(asc(scheduleRules.startMinute))
-    return { rules }
+  const ruleAuthority=(request:FastifyRequest,ownerId:string|null,write:boolean)=>(_tx:unknown,id:string)=>{
+    const identity=access.identity(request)
+    if(access.required()&&!identity||(identity?.id??null)!==ownerId||!can(access.role(request),write?'PLAYLIST_EDIT':'REPORT_EXPORT')||!access.channelAllowed(request,id))
+      throw new CollaborativeEditError(403,{error:'A sessão ou o acesso às faixas mudou. Confira novamente.'})
+  }
+  server.get('/api/channels/:id/rules',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    try{
+      const review=readScheduleRuleReview(app.db,id,ruleAuthority(request,access.identity(request)?.id??null,false))
+      reply.header('cache-control','private, no-store').header('etag',scheduleRuleETag(id,review.revision))
+      return review
+    }catch(error){return automationError(reply,error)}
   })
-
-  const ruleSchema = z.object({
-    name: z.string().min(1),
-    weekdays: z.string().regex(/^[0-6]{1,7}$/),
-    startMinute: z.number().int().min(0).max(1439),
-    endMinute: z.number().int().min(1).max(1440),
-    categories: z.array(z.string()),
-    avoidHours: z.number().int().min(0).max(240).optional(),
-  })
-
-  server.post('/api/channels/:id/rules', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar a pauta.' })
-    const body = ruleSchema.safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-    if (body.data.endMinute <= body.data.startMinute) {
-      return reply.code(400).send({ error: 'A faixa termina antes de começar.' })
-    }
-
-    const existentes = await app.db.select().from(scheduleRules).where(eq(scheduleRules.channelId, id))
-    const conflita = conflictsWithScheduleRule(body.data, existentes)
-    if (conflita) {
-      return reply.code(409).send({ error: 'Esta faixa se sobrepõe a outra faixa no mesmo dia.' })
-    }
-
-    const row = {
-      id: randomUUID(),
-      channelId: id,
-      ...body.data,
-      avoidHours: body.data.avoidHours ?? 6,
-      createdAt: new Date().toISOString(),
-    }
-    await app.db.insert(scheduleRules).values(row)
-    return { rule: row }
-  })
-
-  server.delete('/api/rules/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar a pauta.' })
-    await app.db.delete(scheduleRules).where(eq(scheduleRules.id, id))
-    return { ok: true }
-  })
-
-  server.patch('/api/rules/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar a pauta.' })
-    const body = ruleSchema.partial().safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-    const [current] = await app.db.select().from(scheduleRules).where(eq(scheduleRules.id, id)).limit(1)
-    if (!current) return reply.code(404).send({ error: 'Faixa não encontrada.' })
-    const next = { ...current, ...body.data }
-    if (next.endMinute <= next.startMinute) return reply.code(400).send({ error: 'A faixa termina antes de começar.' })
-    const existentes = await app.db.select().from(scheduleRules).where(eq(scheduleRules.channelId, next.channelId))
-    const conflita = conflictsWithScheduleRule(next, existentes, id)
-    if (conflita) return reply.code(409).send({ error: 'Esta faixa se sobrepõe a outra faixa no mesmo dia.' })
-    await app.db.update(scheduleRules).set(body.data).where(eq(scheduleRules.id, id))
-    return { rule: { ...current, ...body.data } }
-  })
+  const changeRule=async(request:FastifyRequest,reply:import('fastify').FastifyReply,operation:'CREATE'|'UPDATE'|'DELETE')=>{
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode editar a pauta.'})
+    const {id}=request.params as {id:string},actorId=access.identity(request)?.id??null
+    try{
+      const saved=editScheduleRule(app.db,operation,id,request.body,request.headers['if-match'],{
+        authorize:ruleAuthority(request,actorId,true),
+        audit:(tx,details)=>{
+          auditChannels.set(request,[String(details.channelId)])
+          tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@security',kind:'SCHEDULE_RULE_EDITED',actorUsername:access.identity(request)?.username??null,payload:details,createdAt:new Date().toISOString()}).run()
+        },
+      })
+      reply.header('cache-control','private, no-store').header('etag',saved.eTag)
+      try{onChange();return saved}catch{return {...saved,refreshError:'Faixa gravada; atualização da tela não confirmada. Reabra antes de outra alteração.'}}
+    }catch(error){return automationError(reply,error)}
+  }
+  server.post('/api/channels/:id/rules',(request,reply)=>changeRule(request,reply,'CREATE'))
+  server.patch('/api/rules/:id',(request,reply)=>changeRule(request,reply,'UPDATE'))
+  server.delete('/api/rules/:id',(request,reply)=>changeRule(request,reply,'DELETE'))
 
   /**
    * Monta o dia inteiro pela pauta.
@@ -3687,6 +4078,30 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   // ---- cópia de segurança --------------------------------------------------
+
+  const upgradeBackups=new UpgradeBackups(app.sqlite,app.backupDir)
+  server.addHook('onClose',async()=>{upgradeBackups.close();await upgradeBackups.settled()})
+  const upgradeBackupAccess=(request:FastifyRequest)=>{
+    if(access.role(request)!=='ADMIN'||!can(access.role(request),'REPORT_EXPORT')||access.required()&&!access.identity(request))throw new Error('Backup de atualização exige administrador com sessão válida e acesso global.')
+  }
+  server.get('/api/backups/upgrade/:requestId',async(request,reply)=>{
+    try{upgradeBackupAccess(request);reply.header('Cache-Control','private, no-store');return upgradeBackups.query(request.params)}
+    catch{return reply.code(409).send({error:'Não foi possível consultar o pedido de backup. Confira acesso e UUID.'})}
+  })
+  server.post('/api/backups/upgrade',async(request,reply)=>{
+    const body=upgradeBackupRequest.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe UUID único do pedido de backup.'})
+    const actor=access.identity(request)?.id??null
+    const authorize=()=>{upgradeBackupAccess(request);if((access.identity(request)?.id??null)!==actor)throw new Error('Sessão mudou durante o backup.')}
+    try{reply.header('Cache-Control','private, no-store');return upgradeBackups.create(body.data,authorize)}
+    catch{return reply.code(409).send({error:'Backup não iniciado ou resultado desconhecido. Consulte este UUID antes de repetir; confira sessão e pedidos anteriores.'})}
+  })
+  server.post('/api/backups/upgrade/:requestId/reconcile',async(request,reply)=>{
+    const body=z.object({confirm:z.literal(true)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Confirmação explícita obrigatória; reconciliação não repete o backup.'})
+    try{reply.header('Cache-Control','private, no-store');return upgradeBackups.reconcile({...request.params as {requestId:string},confirm:true},()=>upgradeBackupAccess(request))}
+    catch{return reply.code(409).send({error:'Reconciliação recusada. Criador vivo, remoto ou desconhecido não será liberado; arquivos preservados.'})}
+  })
 
   server.get('/api/backups', async () => ({
     directory: app.backupDir,
@@ -3871,7 +4286,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         const state=runtime?.transport.state(),reason=runtime?.reconfigurationStatus(false,false).reason
         if(reason || state?.playing || state?.onAir || state?.preview)throw new CollaborativeEditError(409,{error:reason??'Pare o PGM e limpe o CUE antes de encerrar a pendência.'})
         const checkpoints=new Checkpoints(app.sqlite),saved=checkpoints.read(id)
-        if(saved)checkpoints.write({...saved,playing:false,itemId:null,elapsed:0,contingency:undefined})
+        if(saved)checkpoints.write(stoppedCheckpoint(saved))
       })
       const result=await (runtime?.transport instanceof EngineTransport?runtime.transport.mutatePlaylist(async()=>work()):work())
       onChange();return result
@@ -3966,90 +4381,56 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   })
 
-  const templateSchema = z.object({
-    name: z.string().min(1),
-    svg: z.string().min(1),
-    channelId: z.string().nullable().optional(),
-    fields: z
-      .array(
-        z.object({
-          key: z.string().min(1),
-          label: z.string().min(1),
-          defaultValue: z.string(),
-        }),
-      )
-      .optional(),
-    fadeMs: z.number().int().min(0).max(5000).optional(),
-    holdSeconds: z.number().int().min(1).max(3600).nullable().optional(),
+  server.get('/api/graphics/review',async(request,reply)=>{
+    const query=z.object({channelId:z.string().min(1).optional()}).strict().safeParse(request.query)
+    if(!query.success)return reply.code(400).send({error:'Escopo de artes inválido.'})
+    try{
+      const ownerId=access.identity(request)?.id??null,result=readGraphicsReview(app.db,query.data.channelId??null,graphicsAuthority(request,ownerId,false))
+      reply.header('cache-control','private, no-store').header('etag',graphicsETag(result));return result
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
   })
-
-  server.post('/api/graphics', async (request, reply) => {
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode criar grafismos.' })
-    const body = templateSchema.safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-
-    // Campo que o SVG usa e ninguém declarou entra com o próprio nome: é
-    // melhor um rótulo feio do que um campo que não dá para preencher.
-    const declared = body.data.fields ?? []
-    const fields = fieldsUsedIn(body.data.svg).map(
-      (key) =>
-        declared.find((field) => field.key === key) ?? {
-          key,
-          label: key,
-          defaultValue: '',
-        },
-    )
-
-    const row = {
-      id: randomUUID(),
-      channelId: body.data.channelId ?? null,
-      name: body.data.name,
-      svg: body.data.svg,
-      fields,
-      fadeMs: body.data.fadeMs ?? 300,
-      holdSeconds: body.data.holdSeconds ?? null,
-      createdAt: new Date().toISOString(),
-    }
-    await app.db.insert(graphicTemplates).values(row)
-    return { template: row }
-  })
-
-  server.patch('/api/graphics/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode editar grafismos.' })
-    const body = templateSchema.partial().safeParse(request.body)
-    if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-
-    const [existing] = await app.db
-      .select()
-      .from(graphicTemplates)
-      .where(eq(graphicTemplates.id, id))
-    if (!existing) return reply.code(404).send({ error: 'Template não existe.' })
-
-    const svg = body.data.svg ?? existing.svg
-    const declared = body.data.fields ?? existing.fields
-    const fields = fieldsUsedIn(svg).map(
-      (key) =>
-        declared.find((field) => field.key === key) ?? { key, label: key, defaultValue: '' },
-    )
-
-    await app.db
-      .update(graphicTemplates)
-      .set({ ...body.data, svg, fields })
-      .where(eq(graphicTemplates.id, id))
-    return { ok: true }
-  })
-
-  server.delete('/api/graphics/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
-    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode remover grafismos.' })
-    await app.db.delete(graphicTemplates).where(eq(graphicTemplates.id, id))
-    return { ok: true }
-  })
+  const changeGraphic=(operation:'CREATE'|'UPDATE'|'DELETE')=>async(request:FastifyRequest,reply:any)=>{
+    try{
+      const target=(request.params as {id?:string}).id,result=editGraphicTemplate(app.db,operation,target,request.body,request.headers['if-match'],graphicsHooks(request,'GRAPHIC_TEMPLATE_EDITED'))
+      reply.header('cache-control','private, no-store').header('etag',result.eTag)
+      try{onChange();return result}catch(error){return {...result,refreshError:sanitizeDiagnostic(error instanceof Error?error.message:'Arte gravada; atualização de tela não confirmada.')}}
+    }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
+  }
+  server.post('/api/graphics',changeGraphic('CREATE'))
+  server.patch('/api/graphics/:id',changeGraphic('UPDATE'))
+  server.delete('/api/graphics/:id',changeGraphic('DELETE'))
 
   const fireSchema = z.object({
     templateId: z.string(),
     values: z.record(z.string(), z.string()).optional(),
+  }).strict()
+  const assertGraphicAccess=(request:FastifyRequest,id:string,action:Action,ownerId:string|null)=>{
+    const current=access.identity(request)
+    if((current?.id??null)!==ownerId||access.required()&&!current||!can(access.role(request),action)||!access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:'Sessão ou acesso ao canal mudou; grafismo não enviado.'})
+  }
+  const assertGraphicAuthority=(request:FastifyRequest,id:string,action:Action,ownerId:string|null)=>{
+    assertGraphicAccess(request,id,action,ownerId)
+    const runtime=app.runtimes.get(id)
+    if(runtime?.emergencyOverlay||runtime?.emergencyCommandPending)throw new CollaborativeEditError(409,{error:'Slate de emergência ativo ou aguardando confirmação; encerre a intervenção antes de substituir o grafismo.'})
+  }
+  const graphicCommand=<T>(request:FastifyRequest,id:string,selection:object,authorize:()=>void,work:(beforeSend:()=>void)=>Promise<T>)=>{
+    const actor=access.identity(request)
+    const runtime=app.runtimes.get(id),context=runtime?.graphicContext()??null
+    const boundAuthorize=()=>{
+      authorize()
+      if(JSON.stringify(runtime?.graphicContext()??null)!==JSON.stringify(context))throw new CollaborativeEditError(409,{error:'Ocorrência de PGM mudou durante a espera; atualize antes de enviar o grafismo.'})
+    }
+    return new GraphicCommandLedger(app.db,id).execute({key:request.headers['idempotency-key'],actorId:actor?.id??null,actorName:actor?.username??null,selection,context:()=>runtime?.graphicContext()??null,native:runtime?.transport.state().mode==='NATIVE'},boundAuthorize,work)
+  }
+  server.get('/api/channels/:id/graphic-commands',async(request,reply)=>{
+    const {id}=request.params as {id:string},actor=access.identity(request)
+    try{assertGraphicAccess(request,id,'PLAYLIST_EDIT',actor?.id??null);return reply.header('Cache-Control','private, no-store').send({commands:new GraphicCommandLedger(app.db,id).list(),canReview:can(access.role(request),'OUTPUT_CONTROL')})}catch(error){return automationError(reply,error)}
+  })
+  server.post('/api/channels/:id/graphic-commands/:commandId/review',async(request,reply)=>{
+    const {id,commandId}=request.params as {id:string;commandId:string},actor=access.identity(request)
+    const body=z.object({reviewToken:z.string().min(1),note:z.string().trim().min(1).max(500),imageAndEngineChecked:z.literal(true)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Confirme a conferência do engine e da imagem com uma observação.'})
+    try{return {graphicCommand:new GraphicCommandLedger(app.db,id).review(commandId,body.data.reviewToken,body.data.note,actor?.username??null,()=>assertGraphicAccess(request,id,'OUTPUT_CONTROL',actor?.id??null)),signalRecovered:false}}catch(error){return automationError(reply,error)}
   })
 
   server.post('/api/channels/:id/graphic', async (request, reply) => {
@@ -4058,6 +4439,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const body = fireSchema.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
+    const ownerId=access.identity(request)?.id??null
     const runtime = await runtimeFor(app, id)
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
@@ -4068,19 +4450,24 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!template) return reply.code(404).send({ error: 'Template não existe.' })
     if (template.channelId && template.channelId !== id) return reply.code(400).send({error:'Template não pertence a este canal.'})
 
-    runtime.graphics.show(template, body.data.values ?? {})
+    let receipt:import('./domain/graphic-command-ledger.js').GraphicCommandReceipt
+    const authorize=()=>assertGraphicAuthority(request,id,'PLAYLIST_EDIT',ownerId)
+    try{receipt=(await graphicCommand(request,id,{action:'SHOW',templateSnapshot:template,values:body.data.values??{}},authorize,beforeSend=>runtime.graphics.showConfirmed(template,body.data.values??{},authorize,beforeSend))).receipt}catch(error){return automationError(reply,error)}
     onChange()
-    return snapshot(app, runtime)
+    return {...await snapshot(app, runtime),graphicCommand:receipt}
   })
 
   server.delete('/api/channels/:id/graphic', async (request, reply) => {
     const { id } = request.params as { id: string }
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode retirar grafismos.' })
+    const ownerId=access.identity(request)?.id??null
     const runtime = await runtimeFor(app, id)
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
-    runtime.graphics.hide()
+    let receipt:import('./domain/graphic-command-ledger.js').GraphicCommandReceipt
+    const authorize=()=>assertGraphicAuthority(request,id,'PLAYLIST_EDIT',ownerId)
+    try{receipt=(await graphicCommand(request,id,{action:'HIDE_ALL'},authorize,beforeSend=>runtime.graphics.hideConfirmed(authorize,300,beforeSend))).receipt}catch(error){return automationError(reply,error)}
     onChange()
-    return snapshot(app, runtime)
+    return {...await snapshot(app, runtime),graphicCommand:receipt}
   })
 
   server.get('/api/items/:id/graphics', async (request, reply) => {
@@ -4342,6 +4729,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
 
   const outputTransaction=(request:FastifyRequest,id:string,lease:ConfigurationLease,work:(tx:EditorialTransaction)=>Record<string,unknown>)=>app.db.transaction(tx=>{
+    if(app.mediamtx||app.hostFence)app.distributionOwnership.assertOwned()
     lease.assertOwned(tx);assertConfigurationAccess(request,id)
     const channel=tx.select().from(channels).where(eq(channels.id,id)).get()
     if(!channel || channel.archivedAt)throw new CollaborativeEditError(404,{error:'Canal ativo não encontrado.'})
@@ -4789,6 +5177,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       assetId: z.string().nullable().optional(),
     }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Comando externo inválido.' })
+    try{assertTransportOwnership(body.data.channelId)}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     const runtime = await runtimeFor(app, body.data.channelId)
     if (!runtime?.view) return reply.code(404).send({ error: 'Canal sem grade carregada.' })
     try {
@@ -4834,6 +5223,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const actionPermission = body.data.action === 'stop' ? 'CHANNEL_STOP' : 'PLAYLIST_EDIT'
     if (!(await allowed(request, actionPermission))) return reply.code(403).send({ error: 'Seu papel não pode executar esta ação.' })
 
+    try{assertTransportOwnership(id)}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     const runtime = await runtimeFor(app, id)
     // Editorial authority doesn't require a loaded PGM playlist. STOP must
     // still suspend that policy; no view is not permission to keep publishing.
@@ -5088,24 +5478,34 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, 'PLAYLIST_EDIT'))) {
       return reply.code(403).send({ error: 'Sem permissão para acionar intervenções de emergência.' })
     }
-    const body = (request.body as { channelId?: string; action?: string; reason?: string } | undefined) ?? {}
-    if (!body.channelId) return reply.code(400).send({ error: 'Informe o canal da sonda PGM.' })
+    const parsed=z.object({channelId:z.string().min(1),action:z.enum(['TRIGGER','RESET']).default('TRIGGER'),reason:z.string().trim().min(1).max(500).optional()}).strict().safeParse(request.body)
+    if(!parsed.success)return reply.code(400).send({error:'Informe canal, ação TRIGGER/RESET e motivo válido.'})
+    const body=parsed.data,ownerId=access.identity(request)?.id??null
+    const authorize=()=>assertGraphicAccess(request,body.channelId,'PLAYLIST_EDIT',ownerId)
+    try{authorize()}catch(error){return automationError(reply,error)}
     const probe = pgmProbeFor(app, body.channelId)
+    const runtime=await runtimeFor(app,body.channelId)
+    if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    const command={key:request.headers['idempotency-key'],actorId:ownerId,actorName:await usernameOf(request),authorize}
     if (body.action === 'RESET') {
-      const runtime = await runtimeFor(app, body.channelId)
-      if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
-      try { await runtime.setEmergencySlate(false) } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
-      probe.resetEmergencySlate()
-      return { ok: true, emergencySlateActive: false, status: probe.getStatus() }
+      try {
+        const receipt=await runtime.setEmergencySlate(false,command)
+        if(!runtime.emergencyOverlay)probe.resetEmergencySlate()
+        return {ok:true,emergencySlateActive:runtime.emergencyOverlay,status:probe.getStatus(),graphicCommand:receipt}
+      }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:String(error)})}
     }
-    const alert = await probe.triggerEmergencySlate(body.reason ?? 'MANUAL_EMERGENCY_DISPATCH')
+    let receipt:import('./domain/graphic-command-ledger.js').GraphicCommandReceipt|undefined
+    const alert = await probe.triggerEmergencySlate(body.reason ?? 'MANUAL_EMERGENCY_DISPATCH',async()=>{
+      receipt=await runtime.setEmergencySlate(true,command)
+      return {ok:runtime.emergencyOverlay,message:runtime.emergencyOverlay?'Slate confirmado pelo engine.':'Pedido antigo confirmado no histórico; não reenviado e não está ativo agora.'}
+    })
     if (alert.actionStatus !== 'SUCCEEDED') return reply.code(409).send({ error: alert.actionMessage ?? 'Slate não confirmado pelo engine.', alert, status: probe.getStatus() })
-    const runtime = app.runtimes.get(body.channelId)
     if (runtime) void emitIntegrationEvent(app.db, 'pgm_probe.emergency_slate', { alert }, runtime.channel.id)
     return {
       ok: true,
       emergencySlateActive: true,
       alert,
+      graphicCommand:receipt,
       status: probe.getStatus(),
     }
   })
@@ -5238,14 +5638,16 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       fadeMs: z.number().int().min(0).max(5000).optional(),
       durationFrames: z.number().int().min(0).optional(),
       opacity: z.number().min(0).max(1).optional(),
-    }).safeParse(request.body)
+    }).strict().safeParse(request.body)
     if (!body.success) {
       return reply.code(400).send({ error: 'Parâmetros inválidos.', details: body.error.format() })
     }
-    const channelId = body.data.channelId ?? (await listChannels(app.db))[0]?.id
+    const channelId = body.data.channelId
     if (!channelId) {
-      return reply.code(404).send({ error: 'Nenhum canal encontrado.' })
+      return reply.code(400).send({ error: 'Selecione explicitamente o canal do grafismo.' })
     }
+    const ownerId=access.identity(request)?.id??null
+    try{assertGraphicAuthority(request,channelId,'OUTPUT_CONTROL',ownerId)}catch(error){return automationError(reply,error)}
     const runtime = await runtimeFor(app, channelId)
     if (!runtime) {
       return reply.code(404).send({ error: 'Canal não inicializado.' })
@@ -5254,8 +5656,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (body.data.templateId) {
       const [t] = await app.db.select().from(graphicTemplates).where(eq(graphicTemplates.id, body.data.templateId))
       template = t
+      if(!template)return reply.code(404).send({error:'Template não encontrado; camada anterior preservada.'})
+      if(template.channelId&&template.channelId!==channelId)return reply.code(403).send({error:'Template não pertence ao canal selecionado.'})
     }
-    const result = runtime.graphics.triggerLayer(layer, body.data.action, {
+    let command:{receipt:import('./domain/graphic-command-ledger.js').GraphicCommandReceipt;result?:import('@rplayout/protocol').GraphicLayerState}
+    const authorize=()=>assertGraphicAuthority(request,channelId,'OUTPUT_CONTROL',ownerId)
+    try{command = await graphicCommand(request,channelId,{layer,...body.data,templateSnapshot:template??null},authorize,beforeSend=>runtime.graphics.triggerLayerConfirmed(layer, body.data.action, {
       templateId: body.data.templateId,
       template,
       name: body.data.name,
@@ -5264,8 +5670,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       fadeMs: body.data.fadeMs,
       durationFrames: body.data.durationFrames,
       opacity: body.data.opacity,
-    })
-    return { success: true, layerState: result }
+    },authorize,beforeSend))}catch(error){return automationError(reply,error)}
+    return { success: true, layerState: command.result??runtime.graphics.getLayers()[layer],graphicCommand:command.receipt,confirmation:command.receipt.state==='CONFIRMED'?'NATIVE_ACK':'SIMULATED',physicalOutputValidated:false }
   })
 
   // 3. Disparo de marcador SCTE-35 / SCTE-104
@@ -5339,6 +5745,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/channels/:id/projects', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Seu papel não pode consultar projetos.' })
     const channelId = (request.params as { id: string }).id
+    reply.header('cache-control','private, no-store')
     return { projects: await listChannelProjects(app.db, channelId) }
   })
 
@@ -5347,30 +5754,74 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const channelId = (request.params as { id: string }).id
     const body = z.object({ label: z.string().trim().min(1).max(120) }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Nome do ponto de restauração inválido.' })
-    const project = await saveChannelProject(app.db, channelId, body.data.label)
+    const ownerId=access.identity(request)?.id??null
+    let project:Awaited<ReturnType<typeof saveChannelProject>>
+    try{project = await saveChannelProject(app.db, channelId, body.data.label,{
+      authorize:tx=>{
+        assertEditorialAccess(request,channelId)
+        if((access.identity(request)?.id??null)!==ownerId)throw new CollaborativeEditError(403,{error:'A sessão mudou antes da captura do projeto.'})
+        const channel=tx.select().from(channels).where(eq(channels.id,channelId)).get()
+        if(!channel)throw new CollaborativeEditError(404,{error:'Canal não encontrado.'})
+        if(channel.archivedAt)throw new CollaborativeEditError(409,{error:'Canal arquivado: nenhuma captura foi gravada.'})
+      },
+      audit:(tx,details)=>{tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@security',kind:'CHANNEL_PROJECT_SAVED',actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString(),payload:{channelId,...details}}).run()},
+    })}catch(error){return automationError(reply,error)}
     return { project, projects: await listChannelProjects(app.db, channelId) }
   })
 
+  server.get('/api/channels/:id/projects/:projectId/restore-review',async(request,reply)=>{
+    if(!(await allowed(request,'OUTPUT_CONTROL')))return reply.code(403).send({error:'A conferência de restauração exige Supervisor ou Administrador.'})
+    const {id:channelId,projectId}=request.params as {id:string;projectId:string}
+    const ownerId=access.identity(request)?.id??null
+    try{
+      const review=reviewChannelProject(app.db,channelId,projectId,ownerId,()=>{
+        assertConfigurationAccess(request,channelId)
+        if((access.identity(request)?.id??null)!==ownerId)throw new CollaborativeEditError(403,{error:'A sessão mudou antes da conferência.'})
+      })
+      reply.header('cache-control','private, no-store').header('etag',projectRestoreETag(review))
+      return {review}
+    }catch(error){
+      if(error instanceof CollaborativeEditError)return automationError(reply,error)
+      return reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:'Não foi possível conferir o projeto.')})
+    }
+  })
   server.post('/api/channels/:id/projects/:projectId/restore', async (request, reply) => {
     if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Restaurar um projeto substitui entradas, formato e saídas; exige Supervisor ou Administrador.' })
     const { id: channelId, projectId } = request.params as { id: string; projectId: string }
+    const ownerId=access.identity(request)?.id??null
     if (!(await getChannel(app.db,channelId))) return reply.code(404).send({error:'Canal não encontrado.'})
-    return configureChannel(channelId, reply, async () => {
+    return configureChannel(channelId, reply, async (_applyOutput,lease) => {
       const currentRuntime = app.runtimes.get(channelId), state = currentRuntime?.transport.state()
       if (state?.playing || state?.onAir || state?.preview) return reply.code(409).send({error:'Pare o PGM e limpe o CUE antes de restaurar o projeto. Entradas, formato e saídas serão substituídos com interrupção controlada.'})
-      let restored: Awaited<ReturnType<typeof restoreChannelProject>>
-      try { restored = await restoreChannelProject(app.db,channelId,projectId) }
-      catch (error) { return reply.code(400).send({error:error instanceof Error ? error.message : 'Não foi possível restaurar o projeto.'}) }
-      await configurationAudit(request,channelId,'CHANNEL_PROJECT_RESTORED',{projectId,editorialRestore:true,operationalHistoryPreserved:true})
-      const recovery = await rebuildChannel(channelId,() => syncDistribution(app))
-      const runtime = app.runtimes.get(channelId)
-      if (runtime) {
-        const first = (await listRundowns(app.db)).find((row) => row.channelId === channelId)
-        if (first) await runtime.load(first.id)
-        await runtime.refresh()
+      const restored=await restoreChannelProject(app.db,channelId,projectId,{header:request.headers['if-match'],token:(request.body as {reviewToken?:unknown}|null)?.reviewToken,actorId:ownerId},{
+        authorize:tx=>{
+          assertConfigurationAccess(request,channelId)
+          if((access.identity(request)?.id??null)!==ownerId)throw new CollaborativeEditError(403,{error:'A sessão mudou antes da restauração.'})
+          lease?.assertOwned(tx)
+          const fresh=app.runtimes.get(channelId)?.transport.state()
+          if(fresh?.playing||fresh?.onAir||fresh?.preview)throw new CollaborativeEditError(409,{error:'PGM/CUE mudou antes do commit. Nenhum projeto foi restaurado.'})
+        },
+        audit:(tx,details)=>{
+          lease?.record(tx,'PROJECT_RESTORED',details)
+          tx.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@security',kind:'CHANNEL_PROJECT_RESTORED',actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString(),payload:{channelId,...details}}).run()
+        },
+      })
+      try{
+        const recovery = await rebuildChannel(channelId,() => syncDistribution(app))
+        const runtime = app.runtimes.get(channelId)
+        if (runtime) {
+          const first = (await listRundowns(app.db)).find((row) => row.channelId === channelId)
+          if (first) await runtime.load(first.id)
+          await runtime.refresh()
+        }
+        if(recovery.recoveryError)throw new Error(recovery.recoveryError)
+        onChange()
+        return { ok: true, applied:true,automaticTake:false,physicalOutputValidated:false,restored, ...recovery }
+      }catch(error){
+        const message=sanitizeDiagnostic(error instanceof Error?error.message:'Falha de aplicação da configuração após restauração.')
+        try{lease?.markUncertain('Projeto gravado, mas aplicação no engine não confirmada: '+message)}catch{/* The durable slot remains blocked; do not falsely report rollback. */}
+        return {ok:true,applied:true,automaticTake:false,physicalOutputValidated:false,restored,engineError:message,configurationUncertain:true}
       }
-      onChange()
-      return { ok: true, restored, ...recovery }
     })
   })
   server.get('/api/external/devices', async (request, reply) => {

@@ -25,6 +25,7 @@ export interface OperationalPayload {
   restoredFrom?: { id: string; revision: number }
   operation?: { kind: 'LIVE_DURATION'; itemId: string; deltaFrames: number; elapsedFrames: number; previousFrames: number; newFrames: number; at: string }
     | {kind:'INSERT';mode:'NEXT'|'NOW';requestId:string;itemId:string;sourceRevisionId:string;at:string}
+    | {kind:'COMPENSATION';action:string;itemId:string;deltaFrames:number;sourceRevisionId:string;at:string}
 }
 
 export function readOperationalPayload(payload: Record<string, unknown>): OperationalPayload {
@@ -41,8 +42,9 @@ export function inspectOperationalPlaylist(db:Db,rundownId:string,channelId?:str
   const state=readEditorialState(db,rundownId)
   if(!state || channelId!==undefined && state.channel.id!==channelId)throw new CollaborativeEditError(404,{error:'Grade ativa não encontrada neste canal.'})
   const {rundown,channel,items,assets}=state
-  assertPublishedAudio(channel.audioChannels??2,items,[...assets.values()])
+  assertPublishedAudio(channel.audioChannels??2,items,[...assets.values()],channel.rate)
   const view = buildView(rundown, channel, items, assets, null, null)
+  if(view.schedule.conflicts.some(conflict=>conflict.message.includes('medição de áudio')))throw new CollaborativeEditError(409,{error:'O corte operacional não corresponde à medição de áudio. Meça novamente antes de publicar.'})
   const used = new Set(items.flatMap(item=>[item.mediaId,item.liveFallbackMediaId,item.liveConfig?.fallbackMediaId]).filter(Boolean))
   const rows = tx.select().from(itemGraphics)
     .innerJoin(rundownItems, eq(itemGraphics.itemId, rundownItems.id))
@@ -118,7 +120,7 @@ export function persistRevision(db: Pick<Db, 'transaction'>, rundownId: string, 
 
 /** Operational intervention, not an implicit publication of editorial edits.
  * Read, change and allocate the revision under one SQLite write transaction. */
-export function adjustPublishedLiveDuration(db: Db, channel: Channel, rundownId: string, itemId: string, deltaFrames: number, elapsedFrames: number, actor: string | null) {
+export function adjustPublishedLiveDuration(db: Pick<Db,'transaction'>, channel: Channel, rundownId: string, itemId: string, deltaFrames: number, elapsedFrames: number, actor: string | null) {
   if (!Number.isSafeInteger(deltaFrames) || !Number.isSafeInteger(elapsedFrames) || elapsedFrames < 0) throw new Error('Ajuste de duração inválido.')
   return db.transaction(tx => {
     const active = tx.select().from(operationalPlaylistRevisions).where(and(eq(operationalPlaylistRevisions.rundownId, rundownId), eq(operationalPlaylistRevisions.active, true))).get()
@@ -177,8 +179,9 @@ export function assertOnAirMediaUnchanged(previous: Pick<OperationalPayload, 'it
   const old = previous.items.find((item) => item.id === onAirId)
   const updated = next.items.find((item) => item.id === onAirId)
   if (!old || !updated) throw new Error('A revisão não preserva o item no ar. Faça a troca de PGM antes de ativá-la.')
-  const protectedFields = ['mediaId', 'sourceRef', 'trim', 'audio', 'fit', 'audioTrack', 'liveSourceType', 'liveEndpoint', 'liveFallbackMediaId'] as const
+  const protectedFields = ['mediaId', 'sourceRef', 'configuredSourceId', 'trim', 'audio', 'fit', 'audioTrack', 'liveSourceType', 'liveEndpoint', 'liveFallbackMediaId'] as const
   if (protectedFields.some((field) => JSON.stringify(old[field]) !== JSON.stringify(updated[field]))) throw new Error('A mídia, fonte, cortes ou áudio do item no ar mudaram. Ative esta revisão após a troca de PGM.')
+  if(['sourceType','sourceEndpoint','fallbackMediaId'].some(field=>JSON.stringify(old.liveConfig?.[field as keyof NonNullable<typeof old.liveConfig>])!==JSON.stringify(updated.liveConfig?.[field as keyof NonNullable<typeof updated.liveConfig>])))throw new Error('A fonte ou fallback do live no ar mudou. Ative esta revisão após a troca de PGM.')
   const oldAsset = previous.assets?.find((asset) => asset.id === old.mediaId)
   const newAsset = next.assets?.find((asset) => asset.id === updated.mediaId)
   if (oldAsset && newAsset && oldAsset.contentHash !== newAsset.contentHash) throw new Error('A versão da mídia no ar mudou; publique depois de trocar o PGM.')

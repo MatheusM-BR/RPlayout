@@ -21,6 +21,10 @@ use std::collections::VecDeque;
 
 use crate::loudness::TruePeak;
 
+/// Shared defaults for live element and isolated qualification helper.
+pub const DEFAULT_LOOKAHEAD_MS: f64 = 5.0;
+pub const DEFAULT_RELEASE_MS: f64 = 50.0;
+
 /// Margem abaixo do teto pedido.
 ///
 /// O ataque é exponencial e não chega exatamente ao alvo dentro da janela de
@@ -63,7 +67,45 @@ pub struct Limiter {
     reduction_db: f64,
 }
 
+/// Shared interleaved bus kernel. Pair-linked buses protect each embedded
+/// stereo pair independently; a hot auxiliary must not duck the master.
+/// This is the actual streaming DSP, not a qualification/admission flag.
+pub struct BusLimiter {
+    channels:usize,
+    link_channels:usize,
+    limiters:Vec<Limiter>,
+    pair:Vec<f32>,
+}
+impl BusLimiter {
+    pub fn new(rate:u32,channels:usize,ceiling:f64,pair_linked:bool)->Result<Self,&'static str>{
+        if rate==0||channels==0||channels>16||!ceiling.is_finite()||!(-30.0..=0.0).contains(&ceiling){return Err("caps/teto inválidos para limiter");}
+        let link_channels=if pair_linked{2.min(channels)}else{channels};
+        if channels%link_channels!=0{return Err("barramento de pares exige canais em número par");}
+        Ok(Self{channels,link_channels,limiters:(0..channels/link_channels).map(|_|Limiter::new(rate,link_channels,ceiling,DEFAULT_LOOKAHEAD_MS,DEFAULT_RELEASE_MS)).collect(),pair:Vec::new()})
+    }
+    pub fn channels(&self)->usize{self.channels}
+    pub fn delay_frames(&self)->usize{self.limiters[0].delay_frames()}
+    pub fn set_ceiling(&mut self,ceiling:f64){for limiter in &mut self.limiters{limiter.set_ceiling(ceiling);}}
+    pub fn take_reduction_db(&mut self)->f64{self.limiters.iter_mut().map(Limiter::take_reduction_db).fold(0.0,f64::max)}
+    pub fn process(&mut self,samples:&mut[f32])->Result<(),&'static str>{
+        if samples.len()%self.channels!=0{return Err("PCM não contém quadros completos do bus");}
+        if self.limiters.len()==1{self.limiters[0].process(samples);return Ok(());}
+        let frames=samples.len()/self.channels;
+        self.pair.resize(frames*self.link_channels,0.0);
+        for(index,limiter)in self.limiters.iter_mut().enumerate(){
+            let start=index*self.link_channels;let end=start+self.link_channels;
+            for(source,target)in samples.chunks_exact(self.channels).zip(self.pair.chunks_exact_mut(self.link_channels)){target.copy_from_slice(&source[start..end]);}
+            limiter.process(&mut self.pair);
+            for(target,source)in samples.chunks_exact_mut(self.channels).zip(self.pair.chunks_exact(self.link_channels)){target[start..end].copy_from_slice(source);}
+        }
+        Ok(())
+    }
+}
+
 impl Limiter {
+    /// Exact delay of this instance, shared with isolated tail measurement.
+    pub fn delay_frames(&self) -> usize { self.window.saturating_sub(1) as usize }
+
     pub fn new(rate: u32, channels: usize, ceiling_dbtp: f64, lookahead_ms: f64, release_ms: f64) -> Self {
         let channels = channels.max(1);
         let lookahead = ((rate as f64) * lookahead_ms / 1000.0).round().max(1.0);
@@ -164,6 +206,34 @@ mod tests {
 
     const RATE: u32 = 48_000;
     const CEILING: f64 = -1.0;
+
+    // NOT_RUN in integration batch: shared bus kernel, no physical output proof.
+    #[test] fn shared_bus_matches_independent_reference_pairs_across_buffers(){
+        for channels in [2,8,16]{
+            let mut bus=BusLimiter::new(RATE,channels,CEILING,channels>2).unwrap();
+            let mut references:Vec<Limiter>=(0..channels/2).map(|_|Limiter::new(RATE,2,CEILING,DEFAULT_LOOKAHEAD_MS,DEFAULT_RELEASE_MS)).collect();
+            assert_eq!(bus.delay_frames(),240);
+            for frames in [64usize,512,97,1024]{
+                let mut actual:Vec<f32>=(0..frames*channels).map(|sample|if sample%channels<2{0.1}else if sample%channels<4{3.0}else{0.0}).collect();
+                let mut expected=actual.clone();
+                for(pair,reference)in references.iter_mut().enumerate(){
+                    let mut values:Vec<f32>=expected.chunks_exact(channels).flat_map(|frame|frame[pair*2..pair*2+2].iter().copied()).collect();
+                    reference.process(&mut values);
+                    for(frame,values)in expected.chunks_exact_mut(channels).zip(values.chunks_exact(2)){frame[pair*2..pair*2+2].copy_from_slice(values);}
+                }
+                bus.process(&mut actual).unwrap();assert_eq!(actual,expected);
+                let reduction=references.iter_mut().map(Limiter::take_reduction_db).fold(0.0,f64::max);
+                assert_eq!(bus.take_reduction_db(),reduction);
+                if channels>2{assert!(actual.chunks_exact(channels).all(|frame|frame[0].abs()<=0.10001));}
+            }
+        }
+    }
+    #[test] fn bus_refuses_invalid_caps_and_partial_frames_before_processing(){
+        for(rate,channels,ceiling,pairs)in [(0,2,-1.0,true),(48000,0,-1.0,true),(48000,17,-1.0,false),(48000,3,-1.0,true),(48000,8,f64::NAN,true),(48000,8,1.0,true)]{assert!(BusLimiter::new(rate,channels,ceiling,pairs).is_err());}
+        let mut bus=BusLimiter::new(RATE,8,CEILING,true).unwrap();let mut invalid=vec![0.25;7];let original=invalid.clone();
+        assert!(bus.process(&mut invalid).is_err());assert_eq!(invalid,original);
+        assert_eq!(bus.take_reduction_db(),0.0);
+    }
 
     fn sine(hz: f64, amplitude: f64, seconds: f64) -> Vec<f32> {
         let frames = (RATE as f64 * seconds) as usize;

@@ -46,7 +46,8 @@ describe('monitor de fonte deriva sinal dos barramentos, não do cadastro',()=>{
   it('mede áudio separadamente, sem inventar silêncio ou nível em dB',()=>{
     const state=live();state.transport.liveSources[0]!.measurements!.pvw!.audioPresent=false
     const result=liveSourceMonitor(source(),state,monitors,undefined,now)
-    expect(result.signalLabel).toBe('VÍDEO PRESENTE');expect(result.signalMessage).toContain('áudio ausente')
+    expect(result.signalLabel).toBe('VÍDEO SEM ÁUDIO');expect(result.signalMessage).toContain('áudio ausente')
+    expect(result.syncState).toBe('DRIFT')
     expect(result).not.toHaveProperty('audioLevels')
   })
   it('simulação, medida vencida e instante futuro não viram vídeo presente',()=>{
@@ -63,8 +64,34 @@ describe('monitor de fonte deriva sinal dos barramentos, não do cadastro',()=>{
     state.transport.onAir={itemId:'live-item',startedAt:0,elapsed:0};row.busStates={pgm:'LOST'};row.measurements={pgm:{...sample(),videoPresent:false}}
     expect(liveSourceMonitor(source(),state,monitors,undefined,now)).toMatchObject({tally:'ON_AIR',signalLabel:'SEM VÍDEO RECENTE',whepPath:null})
   })
+  it('a idade do buffer inclui o tempo desde a medição, mesmo antes de novo WebSocket',()=>{
+    const state=live(),measurement=state.transport.liveSources[0]!.measurements!.pvw!
+    measurement.videoAgeMs=1500;measurement.audioAgeMs=1500
+    expect(liveSourceMonitor(source(),state,monitors,undefined,now+600)).toMatchObject({tally:'CUED',signalLabel:'SEM VÍDEO RECENTE',whepPath:null})
+    measurement.videoAgeMs=0
+    const recovered=liveSourceMonitor(source(),state,monitors,undefined,now+600)
+    expect(recovered).toMatchObject({signalLabel:'VÍDEO SEM ÁUDIO',whepPath:'ch/preview'})
+    expect(recovered.signalMessage).toContain('áudio ausente')
+  })
   it('registro antigo com mesma fonte não substitui item que está realmente selecionado',()=>{
     const state=live();state.transport.preview={kind:'ITEM',id:'another-item'}
     expect(liveSourceMonitor(source(),state,monitors,undefined,now)).toMatchObject({tally:'OFFLINE',signalLabel:'NÃO MONITORADA',whepPath:null})
+  })
+  it('recalcula diagnóstico recebido em vez de confiar no SIGNAL_OK antigo do servidor',()=>{
+    const state=live(),row=state.transport.liveSources[0]!
+    row.busSignals={pvw:{status:'SIGNAL_OK',videoRecent:true,audioRecent:true,sampleAgeMs:0}}
+    expect(liveSourceMonitor(source(),state,monitors,undefined,now+3000)).toMatchObject({signalStatus:'UNKNOWN',whepPath:null})
+    row.measurements!.pvw!.audioPresent=false
+    expect(liveSourceMonitor(source(),state,monitors,undefined,now)).toMatchObject({signalStatus:'NO_AUDIO',whepPath:'ch/preview'})
+    row.busStates!.pvw='FAILED'
+    expect(liveSourceMonitor(source(),state,monitors,undefined,now)).toMatchObject({signalStatus:'FAILED',whepPath:null})
+  })
+  it('instabilidade de chegada mantém imagem e tally de PGM, sem chamar jitter de rede',()=>{
+    const state=live(),row=state.transport.liveSources[0]!
+    state.transport.onAir={itemId:'live-item',startedAt:0,elapsed:0}
+    row.busStates={pgm:'ON_PGM'};row.measurements={pgm:{...sample(),rateNum:25,rateDen:1,arrivalJitterMs:150}}
+    const result=liveSourceMonitor(source(),state,monitors,undefined,now)
+    expect(result).toMatchObject({signalStatus:'UNSTABLE',signalLabel:'SINAL INSTÁVEL',syncState:'DRIFT',tally:'ON_AIR',whepPath:'ch/monitor'})
+    expect(result.signalMessage).toContain('Não é jitter de pacotes')
   })
 })

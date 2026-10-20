@@ -1,5 +1,6 @@
 import type { RundownView } from './plan.js'
 import type { TransportState } from './transport.js'
+import {assessQc,DEFAULT_QC_PROFILE,qcApproved} from '@rplayout/protocol'
 
 export class TakeTargetError extends Error {
   constructor(message: string, readonly statusCode: 400 | 409 = 400) { super(message) }
@@ -18,7 +19,13 @@ export function resolveTakeTarget(execution: RundownView, state: TransportState,
   if (!itemId) throw new TakeTargetError(state.preview?.kind === 'ASSET'
     ? 'O arquivo está em inspeção no MAM/QC. Adicione-o à playlist publicada e faça CUE na linha desejada antes do TAKE, preservando cortes e duração.'
     : 'TAKE envia o CUE/PVW ao ar. Selecione um item publicado ou entrada no preview; Próximo é uma operação distinta.')
-  const item = execution.items.find(entry => entry.item.id === itemId)?.item
+  const entry = execution.items.find(entry => entry.item.id === itemId),item=entry?.item
   if (!item) throw new TakeTargetError('O item não pertence à playlist operacional ativa. Publique a alteração antes de colocar o item no ar.', 409)
+  if(item.mediaId&&!item.sourceRef&&item.type!=='LIVE'){
+    const asset=entry!.asset
+    if(!asset||asset.ignored||asset.probeError||!qcApproved(asset.qcStatus??'APPROVED'))throw new TakeTargetError('A versão do arquivo está indisponível ou não está aprovada no QC deste canal. PGM anterior preservado.',409)
+    const checks=assessQc(asset,execution.channel.qcProfile??DEFAULT_QC_PROFILE)
+    if(!checks.playable)throw new TakeTargetError('O arquivo não atende ao perfil técnico atual: '+checks.errors.join(' ')+' PGM anterior preservado.',409)
+  }
   return { itemId, item }
 }

@@ -1,5 +1,9 @@
 import { and, eq } from 'drizzle-orm'
-import { randomUUID } from 'node:crypto'
+import { randomUUID,createHash } from 'node:crypto'
+import {captureGraphicDisplay} from './domain/graphic-composition.js'
+import {primaryReturnMediaAdapter} from './domain/ha-return-local-media.js'
+import {HA_GRAPHIC_RECEIPT_PREFIX,readHaGraphicComposition} from './domain/ha-graphic-receipts.js'
+import {GraphicRecoveryIncident} from './domain/graphic-recovery-incident.js'
 import {
   framesSinceMidnight,
   secondsToFrames,
@@ -14,26 +18,28 @@ import {
 import type Database from 'better-sqlite3'
 import { openDatabase, type Db } from './db/client.js'
 import { assetMap, getChannel, getRundown, listChannels, listItems } from './db/repo.js'
-import { channelCadenceConversions, graphicTemplates, itemGraphics, rundownItems, operatorDecisions, secondaryEvents, secondaryEventRuns } from './db/schema.js'
+import { channelCadenceConversions, graphicTemplates, itemGraphics, rundownItems, operatorDecisions, secondaryEvents } from './db/schema.js'
 import { buildView, type RundownView } from './domain/plan.js'
 import {readEditorialState,editorialView} from './domain/editorial-state.js'
 import { rundownClock, rundownFrames } from './domain/rundown-clock.js'
 import { MediaWorkflow } from './domain/media-workflow.js'
 import { simulateMeter, SILENCE, type MeterReading } from './domain/meters.js'
 import { SimulatedTransport, type Transport } from './domain/transport.js'
-import { EngineTransport, type EnginePlaylistBoundary } from './domain/engine.js'
+import { EngineTransport,EngineCommandRejected, type EnginePlaylistBoundary } from './domain/engine.js'
 import { PlaylistBoundaryLedger, inspectBoundary, requireBoundaryReview, boundaryProcessesGone, type BoundaryPlan, type BoundaryRun } from './domain/playlist-boundary.js'
 import { PublishedContinuity } from './domain/published-continuity.js'
 import { SchedulePublication,schedulePlannerBinary } from './domain/schedule-publication.js'
 import { hostname } from 'node:os'
 import { AsRun } from './domain/asrun.js'
-import { ensureDefaultGraphics, Graphics } from './domain/graphics.js'
+import { ensureDefaultGraphics, Graphics,fitGraphicViewport } from './domain/graphics.js'
+import {GraphicCommandLedger} from './domain/graphic-command-ledger.js'
 import { History } from './domain/history.js'
 import {ConcurrencyManager} from './domain/concurrency.js'
 import {InterruptionCommands} from './domain/interruption-commands.js'
 import {EditorialVersions} from './db/editorial-revisions.js'
 import {
   ENGINE_BINARY,
+  HOST_GUARD_BINARY,
   ENGINE_BITRATE_KBPS_EXPLICITO,
   ENGINE_OUTPUTS,
   MEDIAMTX_BINARY,
@@ -66,11 +72,25 @@ import { ContinuityCache } from './domain/continuity-cache.js'
 import { PgmProbe } from './domain/pgm-probe.js'
 import { activeOperationalPlaylist, readOperationalPayload } from './domain/operational-playlist.js'
 import { Checkpoints, type ChannelCheckpoint } from './domain/checkpoints.js'
+import {resolveLiveProgramBinding} from './domain/live-program-binding.js'
+import {assertPersistedLiveReplacementReceipt} from './domain/native-live-replacement-ledger.js'
+import {assertProgramTrim} from './domain/program-trim.js'
+import {programDurationFrames} from '@rplayout/protocol'
+import {ExecutionOwnership,type ExecutionLease} from './domain/execution-ownership.js'
+import {endPreviousPgmObservation} from './domain/pgm-signal-incidents.js'
+import {persistRuntimeSignalIncidents,runtimeObservationSnapshot,RuntimeIncidentRecorder} from './domain/runtime-signal-incidents.js'
+import {DistributionOwnership} from './domain/distribution-ownership.js'
+import {HostDistributionFence} from './domain/host-distribution-fence.js'
+import {LocalRestoredEngineGenerations} from './domain/local-restored-engine-lease.js'
 import { Interruptions } from './domain/interruptions.js'
 import { applyQcDecisions } from './domain/qc-workflow.js'
 import { HostMetrics } from './domain/host-metrics.js'
+import {captureOperationalMetrics} from './domain/operational-metrics.js'
+import {operationalMetricLabels} from './domain/operational-metric-labels.js'
+import {ProcessMetrics} from './domain/process-metrics.js'
 import { IntegrationOutbox } from './domain/integration-outbox.js'
-import { SecondaryEventLedger } from './domain/secondary-event-ledger.js'
+import { SecondaryEventLedger,SecondaryEventUncertain } from './domain/secondary-event-ledger.js'
+import {secondaryGraphicWindow} from './domain/secondary-graphic-window.js'
 import { emitIntegrationEvent } from './domain/integrations.js'
 import { configuredContingencyAssets, prepareContingencyPlaylist } from './domain/contingency-playlist.js'
 import { ScheduledDeviceAutomation } from './domain/device-automation.js'
@@ -79,9 +99,12 @@ import {ConfigurationChanges} from './domain/configuration-changes.js'
 import type {InsertionInput} from './domain/operational-insertion.js'
 import type {OperationalPayload} from './domain/operational-playlist.js'
 import {HaReplication,haOptions} from './domain/ha-replication.js'
+import {appendHaHistory,queryHaHistoryImport} from './domain/ha-history-import.js'
+import {preserveHaHistoryVariants,queryHaHistoryVariant} from './domain/ha-history-variant.js'
 import type {HaLeaseClient} from './domain/ha-witness.js'
 import {captureHaSnapshot} from './domain/ha-snapshot.js'
 import {QcLiveInspection} from './domain/qc-live-inspection.js'
+import {CollaborativeEditError} from './domain/collaborative-edit.js'
 
 /**
  * Runtime de um canal. Guarda a grade já resolvida em cache porque o
@@ -101,6 +124,22 @@ const short = (url: string): string => url.split('/').slice(-2).join('/')
 const MONITOR_OCIOSO_MS = 20_000
 
 export class ChannelRuntime {
+  private lastIncidentCapture=0
+  private incidentRecorder:RuntimeIncidentRecorder|null=null
+  private recordNativeObservation():void{
+    if(this.closed||!this.executionLease||!this.transport)return
+    const recorder=this.incidentRecorder??=new RuntimeIncidentRecorder(this.db,this.executionLease)
+    recorder.record(()=>runtimeObservationSnapshot(this,()=>operationalMetricLabels(this.db,this.channel.id,undefined,this.executionView)))
+  }
+  reconcileSignalIncidents(admissionOnly=false,path?:ChannelPaths):void{
+    if(!this.executionLease)return
+    if(!admissionOnly&&Date.now()-this.lastIncidentCapture<1000)return
+    const capture=()=>runtimeObservationSnapshot(this,()=>operationalMetricLabels(this.db,this.channel.id,path,this.executionView))
+    if(admissionOnly)persistRuntimeSignalIncidents(this.db,this.executionLease,capture(),undefined,true)
+    else (this.incidentRecorder??=new RuntimeIncidentRecorder(this.db,this.executionLease)).persist(capture)
+    if(!admissionOnly)this.lastIncidentCapture=Date.now()
+  }
+  get executionOwnerId():string|null{return this.executionLease?.identity.id??null}
   readonly qcInspection:QcLiveInspection
   view: RundownView | null = null
   operationalView: RundownView | null = null
@@ -124,21 +163,38 @@ export class ChannelRuntime {
   private cuesFor: string | null = null
   /** Se a apresentação técnica está no ar por conta do canal vazio. */
   private slateUp = false
+  private idleSlateIdentity:string|null=null
+  private idleSlateLayer:import('@rplayout/protocol').GraphicsLayer|null=null
+  private idleSlateGeneration=0
+  private attemptedIdleSlate:string|null=null
 
   private fired = new Set<string>()
+  private automaticGraphicsPending=false
+  private attemptedGraphicExpiry:string|null=null
   private phase = 0
   private lastCheckpointAt = 0
   private recovering = false
   private readonly boundaryOwner = JSON.stringify({host:hostname(),pid:process.pid,boot:randomUUID()})
   private boundaryPins: MediaAsset[] = []
   private executionId: string | undefined
+  graphicContext():import('./domain/graphic-recovery-incident.js').GraphicRecoveryContext|null {
+    const item=this.transport.state().onAir
+    return item&&this.executionId?{executionId:this.executionId,revisionId:this.operationalRevision?.id??null,itemId:item.itemId,startedAt:item.startedAt}:null
+  }
   private executionItemId: string | null = null
   private simulatedStartedAt: number | null = null
   private graphicsExecutionId: string | undefined
   private restoreSecondaryGraphics = false
+  private graphicRestoreReceiptId:string|null=null
+  private graphicRecoveryIncident:GraphicRecoveryIncident|null=null
   private closed = false
   private loadEpoch = 0
   private pendingRecovery: ChannelCheckpoint | null = null
+  private recoveryAttempt:ChannelCheckpoint|null=null
+  private recoveryRetryAt=0
+  private recoveryRetryCount=0
+  /** Empty/refused recovery is not an operator STOP and must not erase evidence. */
+  private recoveryCheckpointProtected=false
   recoveryError: string | null = null
   emergencyOverlay = false
   private contingencyOrigin: ChannelCheckpoint['contingency'] | null = null
@@ -191,21 +247,38 @@ export class ChannelRuntime {
     private readonly interruptionCommands:InterruptionCommands|null=null,
     private readonly authority:HaLeaseClient|null=null,
     private readonly qcPreviewOutput:string|null=null,
+    private readonly executionLease:ExecutionLease|null=null,
+    private readonly distributionOwnership:DistributionOwnership|null=null,
+    private readonly localRestorePreparation:{host:HostDistributionFence;assertAdmission:()=>void}|null=null,
   ) {
+    if(ENGINE_BINARY&&!this.executionLease)throw new Error('Engine nativo exige posse durável do canal antes de abrir o processo.')
+    if(this.localRestorePreparation&&(!ENGINE_BINARY||!this.executionLease||!this.distributionOwnership||this.authority))throw new Error('Preparação restaurada local exige engine/posse/distribuição próprios, sem autoridade HA.')
+    const localRestoredLease=this.localRestorePreparation?new LocalRestoredEngineGenerations(this.executionLease!,this.distributionOwnership!,this.localRestorePreparation.host,()=>this.transport instanceof EngineTransport?this.transport.processId():null,this.localRestorePreparation.assertAdmission):null
+    const eventLedger = new SecondaryEventLedger(db,channel.id)
+    eventLedger.reconcileGraphicReceipts()
+    eventLedger.reportUnconfirmed()
     // Sem engine configurado, a grade inteira continua operável no simulado:
     // é o que permite montar programação numa máquina sem GStreamer.
     this.transport = ENGINE_BINARY
       ? new EngineTransport(channel, () => this.executionView, (id) => this.assets.get(id) ?? null, {
           binary: ENGINE_BINARY,
+          onSignalObservation:()=>this.recordNativeObservation(),
+          assertExecutionOwned:()=>{this.executionLease?.assertOwned();this.distributionOwnership?.assertOwned()},
+          beforeProcessStart:token=>this.executionLease?.beforeSpawn(token),
+          onProcessExited:(pid,token)=>this.executionLease?.exited(pid,token),
           executionIdentity: () => this.operationalRevision?.id ?? null,
+          executionOccurrenceId:()=>this.executionId??null,
           onPlaylistEnd: itemId => this.resolvePlaylistBoundary(itemId),
           onPreparePlaylistEnd: () => this.preparePlaylistBoundaryAhead(),
           canRecoverProgram:()=>!this.interruptionCommands?.blockedReason(this.channel.id) && this.configurationChanges?.canRecover(this.channel.id)!==false && !new PlaylistBoundaryLedger(this.db,this.channel.id).list().some(run=>['PREPARING','SWITCHING','UNCERTAIN'].includes(run.state)),
-          canRestartEngine:()=>!this.interruptionCommands?.blockedReason(this.channel.id) && this.configurationChanges?.canRecover(this.channel.id)!==false,
+          canRestartEngine:()=>this.executionLease?.canSpawn()!==false&&this.distributionOwnership?.owns()!==false&&!this.interruptionCommands?.blockedReason(this.channel.id) && this.configurationChanges?.canRecover(this.channel.id)!==false,
           canStartProgram:()=>!this.interruptionCommands?.blockedReason(this.channel.id) && this.configurationChanges?.canRecover(this.channel.id)!==false,
-          onProcessStarted:pid=>this.configurationChanges?.trackEngine(this.channel.id,pid),
+          onProcessStarted:(pid,token)=>{if(pid!==null)this.executionLease?.spawned(pid,token);this.configurationChanges?.trackEngine(this.channel.id,pid)},
           onTakeConfirmed: (itemId, position, recovered, previous) => {
             if (this.closed) return
+            if(recovered||this.recovering)this.recoveryError=null
+            this.pendingRecovery=null;this.recoveryAttempt=null;this.recoveryRetryAt=0;this.recoveryRetryCount=0
+            this.recoveryCheckpointProtected=false
             if (!((recovered || this.recovering) && this.executionId)) {this.executionId = randomUUID();this.restoreSecondaryGraphics=false}
             this.executionItemId = itemId
             if (this.contingencyOrigin && this.transport.state().rundownId !== this.contingencyOrigin.loopRundownId) this.contingencyOrigin = null
@@ -217,8 +290,23 @@ export class ChannelRuntime {
             void this.asRun.follow(itemId, this.executionView, this.operationalRevision?.id ?? null, position, true)
               .catch((error: unknown) => { this.recoveryError = 'Falha no registro de execução: ' + (error instanceof Error ? error.message : String(error)) })
           },
+          onRecoveryRejected:(attempt,error)=>{
+            const saved=this.recoveryAttempt
+            if(saved&&saved.rundownId===attempt.rundownId&&saved.itemId===attempt.itemId&&saved.elapsed===attempt.frames)this.rejectRecovery(saved,error)
+          },
+          onHeldRecoveryConfirmed:async(attempt,proof)=>{
+            const saved=this.checkpoints?.read(this.channel.id)
+            if(!saved?.programHold||saved.rundownId!==attempt.rundownId||saved.itemId!==attempt.itemId||saved.elapsed!==attempt.frames||JSON.stringify(saved.programTrim)!==JSON.stringify(attempt.programTrim)||this.recovering||this.pendingRecovery)throw new Error('Watchdog pausado sem checkpoint/contexto correspondente; cursor preservado.')
+            this.recoveryAttempt=saved;this.recoveryCheckpointProtected=true;this.recovering=true
+            try{await this.commitHeldRecovery(saved,proof)}
+            catch(error){this.recoveryError='Recuperação pausada do watchdog inconclusiva: '+(error instanceof Error?error.message:String(error));throw error}
+            finally{this.recovering=false}
+          },
+          onStopConfirmed:()=>{this.pendingRecovery=null;this.recoveryAttempt=null;this.recoveryRetryAt=0;this.recoveryRetryCount=0;this.recoveryCheckpointProtected=false;this.executionLease?.acknowledgeStoppedPredecessor()},
           onProgramCleared: (reason, position) => {
             if (this.closed) return
+            if(reason==='STOP')this.recoveryCheckpointProtected=false
+            if(reason==='STOP')this.executionLease?.acknowledgeStoppedPredecessor()
             if (reason === 'STOP') this.contingencyOrigin = null
             void this.asRun.finish(reason, position)
               .catch((error: unknown) => { this.recoveryError = 'Falha no registro de saída de PGM: ' + (error instanceof Error ? error.message : String(error)) })
@@ -232,7 +320,13 @@ export class ChannelRuntime {
             }
           },
           outputs: engineOutputs,
-          fenceLease:this.authority?(owner,nonce)=>this.authority!.obtain(channel.id,owner,nonce):undefined,
+          holdProgramOutputs:Boolean(localRestoredLease),
+          fenceLease:this.authority?async(owner,nonce)=>{
+            this.executionLease?.assertOwned()
+            const grant=await this.authority!.obtain(channel.id,owner,nonce)
+            this.executionLease?.assertOwned()
+            return grant
+          }:localRestoredLease?(owner,nonce)=>localRestoredLease.grant(owner,nonce):undefined,
           preview: previewOutput,
           qcPreview: qcPreviewOutput,
           // O padrão sai do formato do canal, não de um número fixo: 4 Mbps
@@ -254,10 +348,18 @@ export class ChannelRuntime {
       await this.transport.qcMonitor(source,on,authorize)
     })
 
-    const eventLedger = new SecondaryEventLedger(db,channel.id)
     const deviceAutomation = new ScheduledDeviceAutomation(db)
     this.graphics = new Graphics(channel, this.transport, {
       template:id=>this.executionTemplates.get(id),
+      remainingDurationFrames:event=>{
+        const state=this.transport.state(),onAir=state.onAir
+        if(!onAir||!this.executionId)throw new Error('Sem ocorrência em PGM para calcular duração do grafismo.')
+        const duration=programDurationFrames(onAir,this.executionView?.schedule.items.find(item=>item.id===onAir.itemId)?.duration??0)
+        const fired=eventLedger.fireFor({executionId:this.executionId,itemId:onAir.itemId,revisionId:this.operationalRevision?.id??null},event.id)
+        const window=secondaryGraphicWindow(event,duration,onAir.elapsed,fired?.frames)
+        if(window.expired)throw new Error('Janela do grafismo já encerrada; nenhum SHOW enviado.')
+        return window.remainingFrames
+      },
       scte:async (message,scte35Hex,scte104Hex)=>emitIntegrationEvent(db,'scte.cue',{...message,scte35Hex,scte104Hex,physicalInsertionConfirmed:false},channel.id),
       device: async event => {
         const state = this.transport.state(), executionId = this.executionId, revisionId = this.operationalRevision?.id
@@ -268,18 +370,38 @@ export class ChannelRuntime {
       execute:async (event,mode,work) => {
         const state=this.transport.state()
         if (!state.onAir || !this.executionId || event.rundownItemId!==state.onAir.itemId) throw new Error('Evento secundário exige um item confirmado no PGM.')
-        const duration=this.executionView?.schedule.items.find(item=>item.id===state.onAir!.itemId)?.duration ?? 0
-        const triggerFrame=event.triggerMode==='OFFSET_BEFORE_END' ? Math.max(0,duration-event.offsetFrames) : event.offsetFrames
-        const canRestore=this.restoreSecondaryGraphics && (!event.durationFrames || state.onAir.elapsed<triggerFrame+event.durationFrames)
-        await eventLedger.execute({executionId:this.executionId,itemId:state.onAir.itemId,revisionId:this.operationalRevision?.id ?? null,frames:Math.max(0,Math.floor(state.onAir.elapsed))},event,mode,async () => {
+        const executionId=this.executionId,revisionId=this.operationalRevision?.id??null
+        const duration=programDurationFrames(state.onAir,this.executionView?.schedule.items.find(item=>item.id===state.onAir!.itemId)?.duration ?? 0)
+        const previous=eventLedger.fireFor({executionId,itemId:state.onAir.itemId,revisionId},event.id)
+        const window=secondaryGraphicWindow(event,duration,state.onAir.elapsed,previous?.frames)
+        const graphic=!(event.type==='SCTE_TRIGGER'||event.scteConfig||event.type==='DEVICE_AUTOMATION'||event.deviceConfig)
+        const authorize=()=>{
+          if(this.closed||this.emergencyOverlay||this.emergencyCommandPending||this.executionId!==executionId||(this.operationalRevision?.id??null)!==revisionId||this.transport.state().onAir?.itemId!==event.rundownItemId)throw new Error('Execução mudou ou emergência ativa; grafismo automático não enviado.')
+          if(graphic&&mode==='FIRE'&&window.end!==null&&this.transport.state().onAir!.elapsed>=window.end)throw new Error('Janela do grafismo terminou na fila; SHOW não enviado.')
+          if(graphic&&mode==='DISMISS'&&previous?.state!=='EXECUTED')throw new Error('Evento sem FIRE confirmado; retirada automática não enviada.')
+        }
+        // Restore the whole confirmed composition, never historical SHOWs over
+        // a later manual replacement. External effects are never replayed.
+        const canRestore=false
+        await eventLedger.execute({executionId,itemId:state.onAir.itemId,revisionId,frames:Math.max(0,Math.floor(state.onAir.elapsed))},event,mode,async secondaryRunId => {
           // Persist a refused request too, so the page never reports mere
           // scheduler acceptance or silently retries it after reconnection.
           if (!(this.transport instanceof EngineTransport) && (event.type==='SCTE_TRIGGER' || event.type==='DEVICE_AUTOMATION' || event.deviceConfig)) throw new Error('Automação externa não executada em canal simulado.')
-          await work()
+          authorize()
+          if(!graphic){await work(authorize);return}
+          const key='secondary-'+createHash('sha256').update(JSON.stringify([executionId,event.id,mode,canRestore?this.boundaryOwner:null])).digest('hex')
+          let sent=false
+          try{
+            await new GraphicCommandLedger(db,channel.id).execute({key,context:()=>this.graphicContext(),actorId:null,actorName:'AUTOMATIC',native:state.mode==='NATIVE',...(secondaryRunId?{secondaryRunId}:{}),selection:{action:'SECONDARY_'+mode,event:structuredClone(event),revisionId,executionId,template:structuredClone(this.executionTemplates.get(event.templateId)??null)}},authorize,send=>work(authorize,()=>{send();sent=true}))
+          }catch(error){
+            const receipt=error instanceof CollaborativeEditError?error.payload.graphicCommand as {state?:string}|undefined:undefined
+            if(sent&&receipt?.state==='UNCERTAIN')throw new SecondaryEventUncertain('Grafismo secundário sem confirmação durável.',{cause:error})
+            throw error
+          }
         },canRestore)
       },
     })
-    this.asRun = new AsRun(db, channel, this.transport instanceof EngineTransport ? 'NATIVE' : 'SIMULATED')
+    this.asRun = new AsRun(db, channel, this.transport instanceof EngineTransport ? 'NATIVE' : 'SIMULATED',this.executionLease)
   }
 
   /** Explicit operator activation, distinct from telemetry/editorial refresh.
@@ -380,6 +502,44 @@ export class ChannelRuntime {
   }
 
   /** Recalcula a grade corrente. Chamado depois de toda alteração. */
+  applyCommittedQcProfile(profile:NonNullable<Channel['qcProfile']>):void {
+    // Fence asynchronous loads that captured the previous profile. Eligibility
+    // changes immediately; the decoder and current PGM are not reconfigured.
+    ++this.loadEpoch
+    this.channel={...this.channel,qcProfile:profile}
+    for(const key of ['view','operationalView','unconfirmedInsertionView'] as const){
+      const current=this[key]
+      if(current){
+        const updatedChannel={...current.channel,qcProfile:profile}
+        const pinned=new Map(current.items.flatMap(entry=>entry.asset?[[entry.asset.id,entry.asset] as const]:[]))
+        const clock=rundownClock(current.rundown.date,updatedChannel.rate,new Date(),this.transport.state().onAir)
+        this[key]={...current,...buildView(current.rundown,updatedChannel,current.items.map(entry=>entry.item),pinned,clock.now,clock.onAir)}
+      }
+    }
+  }
+
+  invalidateCatalogRemoval(assetIds:readonly string[]): void {
+    // Fence every earlier async load before returning from the catalog commit.
+    // This is editorial invalidation, never CUE/TAKE/STOP or re-publication.
+    ++this.loadEpoch
+    const id=this.view?.rundown.id
+    for(const assetId of assetIds)this.assets.delete(assetId)
+    if(!id)return
+    this.view=null
+    const editorial=readEditorialState(this.db,id)
+    if(!editorial){this.view=null;return}
+    const clock=rundownClock(editorial.rundown.date,editorial.channel.rate,new Date(),this.transport.state().onAir)
+    this.view=editorialView(editorial,clock.now,clock.onAir)
+    for(const [assetId,asset]of editorial.assets){
+      const previous=this.assets.get(assetId)
+      this.assets.set(assetId,previous?.contentHash===asset.contentHash?{...asset,path:previous.path}:asset)
+    }
+    for(const assetId of this.assets.keys())if(!editorial.assets.has(assetId)&&!this.operationalView?.items.some(row=>row.asset?.id===assetId))this.assets.delete(assetId)
+    const itemIds=new Set(editorial.items.map(row=>row.id))
+    for(const itemId of this.cues.keys())if(!itemIds.has(itemId))this.cues.delete(itemId)
+    if(!this.operationalView)this.executionCues=this.cues
+  }
+
   async refresh(): Promise<RundownView | null> {
     if(this.unconfirmedInsertionView)return this.view
     const id = this.view?.rundown.id
@@ -431,23 +591,90 @@ export class ChannelRuntime {
   /** Resume a real PGM, never turn a simulator checkpoint into air. */
   async recoverCheckpoint(): Promise<boolean> {
     if (!this.checkpoints || !(this.transport instanceof EngineTransport)) return false
+    this.recoveryCheckpointProtected=true
     try {
       if(this.interruptionCommands?.blockedReason(this.channel.id))throw new Error(this.interruptionCommands.blockedReason(this.channel.id)!)
       if (new PlaylistBoundaryLedger(this.db,this.channel.id).list().some(run=>['PREPARING','SWITCHING','UNCERTAIN'].includes(run.state))) throw new Error('Há passagem de playlist sem conclusão durável. Confira e encerre os processos anteriores antes de retomar; TAKE não será reenviado automaticamente.')
       const saved = this.checkpoints.read(this.channel.id)
-      if (!saved?.realEngine || !saved.playing || !saved.rundownId || !saved.itemId) return false
+      if(saved?.realEngine&&!saved.playing&&saved.itemId&&!saved.programHold)throw new Error('PGM pausado exige recuperação de quadro congelado; cursor preservado.')
+      if (!saved?.realEngine || (!saved.playing&&!saved.programHold) || !saved.rundownId || !saved.itemId) {this.recoveryCheckpointProtected=false;return false}
+      const owner=this.executionLease?.assertOwned()
+      if(!owner||!saved.ownerRunId||!this.executionLease!.canRecoverCursorFrom(saved.ownerRunId))throw new Error('Checkpoint não pertence à execução atual ou à cadeia não resolvida de predecessores comprovadamente parados. Cursor preservado; recuperação automática recusada.')
       if (saved.rate && BigInt(saved.rate.num) * BigInt(this.channel.rate.den) !== BigInt(this.channel.rate.num) * BigInt(saved.rate.den)) throw new Error('A cadência do canal mudou desde o checkpoint; o cursor não será reinterpretado. Revise a grade e faça CUE/TAKE explicitamente.')
       if((saved.audioChannels??2)!==(this.channel.audioChannels??2))throw new Error('O barramento de áudio mudou desde o checkpoint. Confira os pares, publique a grade e faça CUE/TAKE explicitamente.')
       const view = await this.load(saved.rundownId)
       if (!view || saved.revisionId !== (this.operationalRevision?.id ?? null)) throw new Error('A revisão publicada mudou desde o checkpoint; faça CUE/TAKE explicitamente.')
       if (!this.executionView?.items.some((entry) => entry.item.id === saved.itemId)) throw new Error('O item do checkpoint não existe na playlist operacional.')
+      if(saved.liveProgramBinding){
+        resolveLiveProgramBinding(saved.liveProgramBinding,saved)
+        assertPersistedLiveReplacementReceipt(this.db,saved.liveProgramBinding)
+      }
+      const entry=this.executionView.items.find(row=>row.item.id===saved.itemId)!
+      if(entry.asset&&!entry.item.sourceRef&&!entry.item.liveEndpoint&&!entry.item.liveConfig?.sourceEndpoint){
+        if(!saved.programTrim)throw new Error('Checkpoint antigo sem corte confirmado do PGM. Cursor preservado; confira CUE/TAKE explicitamente.')
+        assertProgramTrim(entry,saved.programTrim,saved.elapsed,this.channel.rate)
+      }else if(saved.programTrim)throw new Error('Checkpoint de arquivo não pode ser retomado como entrada ao vivo.')
+      // Operator policy: resume automatically at the LAST DURABLE cursor,
+      // never extrapolate through an unobserved storage outage. Audit intent
+      // before requesting native recovery; this is not a TAKE/PGM receipt.
+      this.db.insert(operatorDecisions).values({id:randomUUID(),rundownId:saved.rundownId,itemId:saved.itemId,
+        kind:'CHECKPOINT_AUTO_RECOVERY_REQUESTED',actorUsername:'@runtime',createdAt:new Date().toISOString(),
+        payload:{channelId:this.channel.id,policy:'LAST_SAVED_CHECKPOINT',sourceOwnerRunId:saved.ownerRunId,
+          ownerRunId:owner.id,positionFrames:saved.elapsed,rate:this.channel.rate,held:Boolean(saved.programHold),
+          possibleReplay:true,unpersistedEndKnown:false,operatorConfirmationRequired:false,nativeRecoveryConfirmed:false}}).run()
       this.pendingRecovery = saved
+      this.recoveryRetryAt=0;this.recoveryRetryCount=0
       this.contingencyOrigin = saved.contingency ?? null
       this.executionId = saved.executionId ?? randomUUID()
       this.executionItemId = saved.itemId
       this.restoreSecondaryGraphics = true
+      this.graphicRestoreReceiptId=saved.graphicReceiptId??null
       return true
     } catch (error) { this.recoveryError = error instanceof Error ? error.message : String(error); return false }
+  }
+
+  private rejectRecovery(saved:ChannelCheckpoint,error:Error):void {
+    if(this.recoveryAttempt!==saved)return
+    this.recoveryAttempt=null
+    this.recoveryError=`PGM não recuperado: ${error.message}`
+    const entry=this.executionView?.items.find(row=>row.item.id===saved.itemId)
+    const live=Boolean(entry&&(entry.item.sourceRef||entry.item.liveEndpoint||entry.item.liveConfig?.sourceEndpoint))
+    // Positive opening ACK is not PGM. Only terminal, decoder-bound refusal
+    // or negative command ACK allows a retry of this unchanged saved context.
+    if(!this.closed&&live&&error instanceof EngineCommandRejected&&this.recoveryRetryCount<4&&
+      !this.transport.state().onAir&&saved.executionId===this.executionId&&saved.revisionId===(this.operationalRevision?.id??null)&&saved.rundownId===this.executionView?.rundown.id&&this.recoveryCheckpointProtected){
+      try{
+        const owner=this.executionLease?.assertOwned()
+        if(!owner||!saved.ownerRunId||!this.executionLease!.canRecoverCursorFrom(saved.ownerRunId))return
+        this.recoveryRetryCount++
+        this.recoveryRetryAt=Date.now()+Math.min(8000,1000*2**(this.recoveryRetryCount-1))
+        this.pendingRecovery=saved
+        this.recoveryError+='; aguardando nova tentativa limitada da mesma live após recusa confirmada.'
+      }catch{/* Ownership uncertainty retains the checkpoint, no retry. */}
+    }
+  }
+
+  private async commitHeldRecovery(saved:ChannelCheckpoint,proof:{itemId:string;decoderId:number;frames:number}):Promise<void>{
+    const assertCurrent=(committed=false)=>{
+      if(!(this.transport instanceof EngineTransport)||this.closed||this.recoveryAttempt!==saved||!saved.programHold||proof.itemId!==saved.itemId||proof.frames!==saved.elapsed||!saved.programTrim||this.operationalRevision?.id!==saved.revisionId||this.executionView?.rundown.id!==saved.rundownId||(saved.executionId&&saved.executionId!==this.executionId))throw new Error('Contexto da recuperação pausada mudou; checkpoint preservado.')
+      const owner=this.executionLease?.assertOwned(),state=this.transport.state(),hold=this.transport.health().programHold
+      const persisted=committed?this.checkpoints?.read(this.channel.id):null
+      const ownerValid=committed?Boolean(persisted&&persisted.ownerRunId===owner?.id&&persisted.itemId===proof.itemId&&persisted.elapsed===proof.frames&&persisted.executionId===this.executionId&&persisted.programHold?.decoderId===proof.decoderId):Boolean(saved.ownerRunId&&this.executionLease!.canRecoverCursorFrom(saved.ownerRunId))
+      if(!owner||!ownerValid||state.playing||state.onAir?.itemId!==proof.itemId||hold?.status!=='HELD'||hold.decoderId!==proof.decoderId||hold.frames!==proof.frames||JSON.stringify(state.programTrim)!==JSON.stringify(saved.programTrim))throw new Error('Posse/PGM pausado não corresponde ao checkpoint; confirmação recusada.')
+    }
+    assertCurrent()
+    // Recovery is a continuation segment, not a newly requested TAKE.
+    if(!this.checkpoints)throw new Error('Recuperação pausada exige checkpoint durável.')
+    await this.asRun.followHeldWithCommit(proof.itemId,this.executionView,this.operationalRevision?.id??null,proof.frames,()=>{
+      assertCurrent()
+      this.executionLease!.acknowledgeStoppedPredecessor()
+      this.checkpoints!.write({...saved,executionId:this.executionId??undefined,playing:false,elapsed:proof.frames,
+        programHold:{status:'HELD',decoderId:proof.decoderId,frames:proof.frames},rate:this.channel.rate,audioChannels:this.channel.audioChannels??2})
+    })
+    assertCurrent(true)
+    this.executionItemId=proof.itemId;this.pendingRecovery=null;this.recoveryAttempt=null
+    this.recoveryRetryAt=0;this.recoveryRetryCount=0;this.recoveryError=null
+    this.recoveryCheckpointProtected=false
   }
 
   checkpoint(force = false): void {
@@ -455,29 +682,73 @@ export class ChannelRuntime {
     // The empty state during an engine restart is not an intentional STOP.
     if (!this.transport.health().ready || this.recovering) return
     if (this.pendingRecovery) {
+      if(Date.now()<this.recoveryRetryAt)return
       const saved = this.pendingRecovery
+      if(this.recoveryRetryCount>0){
+        try{
+          const owner=this.executionLease?.assertOwned()
+          if(this.transport.state().onAir||saved.executionId!==this.executionId||saved.revisionId!==(this.operationalRevision?.id??null)||saved.rundownId!==this.executionView?.rundown.id||!owner||!saved.ownerRunId||!this.executionLease!.canRecoverCursorFrom(saved.ownerRunId))throw new Error('Contexto/posse mudou durante a espera; recuperação anterior não reenviada.')
+        }catch(error){this.pendingRecovery=null;this.recoveryError=error instanceof Error?error.message:String(error);return}
+      }
       this.pendingRecovery = null
+      this.recoveryAttempt=saved
       this.recovering = true
-      void Promise.resolve(this.transport instanceof EngineTransport ? this.transport.recover(saved.rundownId!, saved.itemId!, saved.elapsed) : this.transport.take(saved.rundownId!, saved.itemId!, saved.elapsed))
-        .then(() => { this.recoveryError = null })
-        .catch((error: Error) => { this.recoveryError = `PGM não recuperado: ${error.message}` })
+      void Promise.resolve(this.transport instanceof EngineTransport ? saved.programHold
+        ? this.transport.recoverHeld(saved.rundownId!,saved.itemId!,saved.elapsed,saved.programTrim!,proof=>this.commitHeldRecovery(saved,proof))
+        : saved.liveProgramBinding?this.transport.recover(saved.rundownId!,saved.itemId!,saved.elapsed,saved.programTrim,saved.liveProgramBinding)
+          :this.transport.recover(saved.rundownId!, saved.itemId!, saved.elapsed,saved.programTrim) : this.transport.take(saved.rundownId!, saved.itemId!, saved.elapsed))
+        .then(() => { if(this.recoveryAttempt===saved&&!this.pendingRecovery)this.recoveryError = null })
+        .catch((error: Error) => {
+          this.rejectRecovery(saved,error)
+        })
         .finally(() => { this.recovering = false; this.checkpoint(true) })
       return
     }
     if (!force && Date.now() - this.lastCheckpointAt < 1000) return
     const state = this.transport.state()
-    this.checkpoints.write({ version: 1, channelId: this.channel.id, rundownId: this.executionView?.rundown.id ?? null,
+    if(this.recoveryCheckpointProtected)return
+    const hold=this.transport instanceof EngineTransport?this.transport.health().programHold:null
+    if(hold?.status==='UNCONFIRMED'){this.recoveryError='Pausa nativa inconclusiva; checkpoint anterior preservado.';return}
+    if(this.transport instanceof EngineTransport&&state.onAir&&!state.playing&&hold?.status!=='HELD'){this.recoveryError='Estado pausado sem confirmação nativa; checkpoint anterior preservado.';return}
+    if(hold?.status==='HELD'&&hold.itemId!==state.onAir?.itemId){this.recoveryError='Pausa pertence a outro item; checkpoint anterior preservado.';return}
+    const held=hold?.status==='HELD'&&hold.itemId===state.onAir?.itemId?hold:null
+    if(held&&(!state.programTrim||!this.operationalRevision)){this.recoveryError='Pausa sem corte/revisão confirmados; checkpoint anterior preservado.';return}
+    const liveProgramBinding=this.transport instanceof EngineTransport?this.transport.liveProgramBindingSnapshot?.()??undefined:undefined
+    try{this.checkpoints.write({ version: liveProgramBinding?2:1,liveProgramBinding,channelId: this.channel.id, rundownId: this.executionView?.rundown.id ?? null,
       revisionId: this.operationalRevision?.id ?? null, itemId: state.onAir?.itemId ?? null,
-      elapsed: Math.max(0, Math.floor(state.onAir?.elapsed ?? 0)), playing: state.playing,
-      realEngine: this.transport instanceof EngineTransport, rate: this.channel.rate,audioChannels:this.channel.audioChannels??2, executionId: this.executionId, contingency: this.contingencyOrigin ?? undefined })
+      elapsed: held?.frames??Math.max(0, Math.floor(state.onAir?.elapsed ?? 0)), playing: held?false:state.playing,
+      programHold:held?{status:'HELD',decoderId:held.decoderId,frames:held.frames!}:undefined,
+      graphicReceiptId:new GraphicCommandLedger(this.db,this.channel.id).latestNativeCompositionId()??undefined,
+      realEngine: this.transport instanceof EngineTransport, programTrim:state.programTrim??undefined, rate: this.channel.rate,audioChannels:this.channel.audioChannels??2, executionId: this.executionId, contingency: this.contingencyOrigin ?? undefined })}catch(error){this.recoveryError=error instanceof Error?error.message:String(error);return}
     this.lastCheckpointAt = Date.now()
   }
 
   /** Cancel runtime persistence before terminating its owned engine. */
-  close(): void {
+  private cancelPersistenceForClose():boolean {
+    if(this.closed)return false
     this.closed = true
     this.loadEpoch++
-    this.transport.close()
+    if(this.executionLease)try{
+      (this.incidentRecorder??=new RuntimeIncidentRecorder(this.db,this.executionLease)).drainAndSeal()
+    }catch(error){this.recoveryError=error instanceof Error?error.message:String(error)}
+    return true
+  }
+  private releaseClosingLease(){
+    try{this.executionLease?.release()}catch(error){this.recoveryError=error instanceof Error?error.message:String(error)}
+  }
+  close(): void {
+    if(!this.cancelPersistenceForClose())return
+    this.transport.close();this.releaseClosingLease()
+  }
+  closeGracefully():Promise<import('./domain/engine.js').NativeShutdownResult>{
+    this.cancelPersistenceForClose()
+    const proof=this.transport instanceof EngineTransport?this.transport.closeGracefully():(this.transport.close(),Promise.resolve({ownedNativeProcessesStopped:true,graceful:true,forceRequested:false}))
+    // Whole-application normal shutdown must retain the active lease while
+    // app.flush() closes the pending as-run. Releasing it here makes that
+    // final authorized write fail. App.close() performs final release only
+    // after the native generation has actually exited; quick close() keeps
+    // its separate reconfiguration/fencing contract.
+    return proof
   }
 
   private meterForItem(itemId: string | null): MeterReading {
@@ -534,10 +805,7 @@ export class ChannelRuntime {
    */
   setSlate(templateId: string | null): void {
     this.channel = { ...this.channel, slateTemplateId: templateId }
-    if (templateId === null && this.slateUp) {
-      this.graphics.hide()
-      this.slateUp = false
-    }
+    this.followSlate()
   }
 
   /**
@@ -548,24 +816,35 @@ export class ChannelRuntime {
    * sai sozinha assim que um item entra.
    */
   followSlate(): void {
+    if(this.closed||this.automaticGraphicsPending||this.graphics.commandPending||this.emergencyCommandPending)return
     if (this.emergencyOverlay) return
+    const ledger=new GraphicCommandLedger(this.db,this.channel.id)
+    if(ledger.hasUnresolved())return
     const onAir = this.transport.state().onAir !== null
     const slateId = this.channel.slateTemplateId
-
-    if (onAir || !slateId) {
-      if (this.slateUp) {
-        this.graphics.hide()
-        this.slateUp = false
-      }
-      return
+    const composition=JSON.stringify(this.graphics.getLayers())
+    // A manual/event overlay can replace the idle composition. It is no longer
+    // owned by the idle presentation and must not be removed as a side effect.
+    if(this.slateUp&&(!this.idleSlateLayer||this.idleSlateIdentity!==JSON.stringify(this.graphics.getLayers()[this.idleSlateLayer]))){
+      this.slateUp=false;this.idleSlateIdentity=null;this.idleSlateLayer=null;this.idleSlateGeneration++
     }
-    if (this.slateUp || this.graphics.onAir()) return
-
-    const template = this.templates.get(slateId)
-    if (!template) return
-    // Slate não tem hora para sair: quem a tira é o item que entrar.
-    this.graphics.show({ ...template, holdSeconds: null }, {})
-    this.slateUp = true
+    const remove=onAir||!slateId
+    if(remove?!this.slateUp:this.slateUp||!!this.graphics.onAir())return
+    const template=remove?null:this.templates.get(slateId!)
+    if(!remove&&(!template||template.channelId!=null&&template.channelId!==this.channel.id))return
+    const frozen=template?structuredClone({...template,holdSeconds:null}):null
+    const key='idle-'+createHash('sha256').update(JSON.stringify([this.boundaryOwner,this.idleSlateGeneration,remove,slateId,frozen,composition])).digest('hex')
+    if(this.attemptedIdleSlate===key)return
+    const authorize=()=>{
+      if(this.closed||this.emergencyOverlay||this.emergencyCommandPending||this.channel.slateTemplateId!==slateId||(this.transport.state().onAir!==null)!==onAir||JSON.stringify(this.graphics.getLayers())!==composition)throw new Error('Estado mudou; apresentação automática antiga não enviada.')
+    }
+    this.attemptedIdleSlate=key;this.automaticGraphicsPending=true
+    void ledger.execute({key,context:()=>this.graphicContext(),actorId:null,actorName:'AUTOMATIC',native:this.transport.state().mode==='NATIVE',selection:{action:remove?'IDLE_HIDE':'IDLE_SHOW',template:frozen,composition}},authorize,async send=>{
+      if(remove)await this.graphics.triggerLayerConfirmed(this.idleSlateLayer!,'HIDE',{fadeMs:0},authorize,send)
+      else await this.graphics.showConfirmed(frozen!,{},authorize,send)
+      this.slateUp=!remove;this.idleSlateLayer=remove?null:this.graphics.onAirLayer();this.idleSlateIdentity=this.idleSlateLayer?JSON.stringify(this.graphics.getLayers()[this.idleSlateLayer]):null;this.idleSlateGeneration++
+    }).catch(()=>{this.recoveryError='Apresentação automática sem confirmação; confira imagem e histórico. Nenhum reenvio automático.'})
+      .finally(()=>{this.automaticGraphicsPending=false})
   }
 
   /**
@@ -582,20 +861,33 @@ export class ChannelRuntime {
     const state = this.transport.state()
     await this.asRun.follow(state.onAir?.itemId ?? null, this.executionView, this.operationalRevision?.id ?? null, state.onAir?.elapsed ?? 0)
   }
-  async setEmergencySlate(enabled: boolean): Promise<void> {
-    if (!(this.transport instanceof EngineTransport)) throw new Error('Slate não enviado: canal está em modo simulado, sem engine real.')
-    if (!enabled) {
-      await this.transport.graphicConfirmed(null, 0)
-      this.emergencyOverlay = false
-      return
+  emergencyCommandPending=false
+  async setEmergencySlate(enabled: boolean,command:{key?:unknown;actorId?:string|null;actorName?:string|null;authorize?:()=>void}={}):Promise<import('./domain/graphic-command-ledger.js').GraphicCommandReceipt> {
+    if(this.graphics.commandPending)throw new Error('Grafismo aguarda confirmação; atualize o estado antes de alterar a emergência.')
+    if(this.emergencyCommandPending)throw new Error('Emergência aguarda confirmação; nenhum segundo comando foi enviado.')
+    this.emergencyCommandPending=true
+    try{
+    const transport=this.transport
+    if (!(transport instanceof EngineTransport)) throw new Error('Slate não enviado: canal está em modo simulado, sem engine real.')
+    const authorize=()=>{command.authorize?.();if(this.closed)throw new Error('Runtime encerrado; emergência não enviada.')}
+    authorize()
+    let template:GraphicTemplate|null=null,svg:string|null=null
+    if(enabled){
+      const current=await getChannel(this.db,this.channel.id)
+      if(!current?.slateTemplateId)throw new Error('Escolha a arte de apresentação técnica do canal antes de acionar o slate.')
+      const row=this.db.select().from(graphicTemplates).where(eq(graphicTemplates.id,current.slateTemplateId)).get()
+      if(!row||(row.channelId!=null&&row.channelId!==this.channel.id))throw new Error('Arte de apresentação técnica ausente ou de outro canal.')
+      template=row
+      svg='<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080"><rect width="1920" height="1080" fill="black"/>'+fitGraphicViewport(renderTemplate(row,{}))+'</svg>'
     }
-    const current = await getChannel(this.db, this.channel.id)
-    if (!current?.slateTemplateId) throw new Error('Escolha a arte de apresentação técnica do canal antes de acionar o slate.')
-    const [template] = await this.db.select().from(graphicTemplates).where(eq(graphicTemplates.id, current.slateTemplateId))
-    if (!template) throw new Error('A arte de apresentação técnica foi removida.')
-    const svg = renderTemplate(template, {}).replace(/(<svg\b[^>]*>)/i, '$1<rect width="100%" height="100%" fill="black"/>')
-    await this.transport.graphicConfirmed(svg, 0)
-    this.emergencyOverlay = true
+    const result=await new GraphicCommandLedger(this.db,this.channel.id).execute({key:command.key,context:()=>this.graphicContext(),actorId:command.actorId??null,actorName:command.actorName??'AUTOMATIC',native:true,selection:{action:enabled?'EMERGENCY_SHOW':'EMERGENCY_RESET',template}},authorize,async send=>{
+      if(enabled)await transport.graphicConfirmed(svg,0,()=>{authorize();send()})
+      else await this.graphics.hideConfirmed(authorize,0,send)
+      this.emergencyOverlay=enabled
+      if(enabled)captureGraphicDisplay({...this.graphics.displaySnapshot(),emergencySvg:svg})
+    })
+    return result.receipt
+    }finally{this.emergencyCommandPending=false}
   }
 
   async prepareContingency(revisionId: string, loop = true) {
@@ -615,6 +907,7 @@ export class ChannelRuntime {
   }
 
   /** Identifies the occurrence, not merely the item (a repeated VT is new air). */
+  telemetryIdentity(){return {revisionId:this.operationalRevision?.id??null,executionId:this.executionId??null}}
   interruptionContext(){
     const state=this.transport.state()
     if(!(this.transport instanceof EngineTransport) && state.onAir && (this.executionItemId!==state.onAir.itemId || this.simulatedStartedAt!==state.onAir.startedAt)){
@@ -823,28 +1116,71 @@ export class ChannelRuntime {
   }
 
   fireDueGraphics(): boolean {
-    if (this.emergencyOverlay) return false
+    if(this.closed||this.automaticGraphicsPending||this.graphics.commandPending||this.emergencyCommandPending)return false
+    if(this.transport instanceof EngineTransport&&(!this.transport.health().ready||this.recovering||this.pendingRecovery))return false
+    if(new GraphicCommandLedger(this.db,this.channel.id).hasUnresolved())return false
     const onAir = this.transport.state().onAir
     if (!onAir) {
       this.cuesFor = null
       this.graphics.scheduler.resetItem(null)
       return false
     }
+    if(this.restoreSecondaryGraphics){
+      this.restoreSecondaryGraphics=false
+      const sourceReceipt=this.graphicRestoreReceiptId,executionId=this.executionId,revisionId=this.operationalRevision?.id??null,itemId=onAir.itemId,startedAt=onAir.startedAt
+      const ledger=new GraphicCommandLedger(this.db,this.channel.id)
+      if(sourceReceipt){
+        const readDisplay=()=>sourceReceipt.startsWith(HA_GRAPHIC_RECEIPT_PREFIX)?readHaGraphicComposition(this.db,this.channel.id,sourceReceipt):ledger.confirmedDisplay(sourceReceipt)
+        this.automaticGraphicsPending=true
+        const authorize=()=>{
+          if(this.closed||this.emergencyCommandPending||this.executionId!==executionId||(this.operationalRevision?.id??null)!==revisionId||this.transport.state().onAir?.itemId!==itemId||this.transport.state().onAir?.startedAt!==startedAt)throw new Error('Execução mudou; composição de recuperação não enviada.')
+          this.executionLease?.assertOwned()
+          readDisplay()
+        }
+        const key='restore-display-'+createHash('sha256').update(JSON.stringify([this.boundaryOwner,sourceReceipt,executionId,revisionId,itemId])).digest('hex')
+        void (async()=>{
+          authorize();const display=readDisplay()
+          await ledger.execute({key,context:()=>this.graphicContext(),actorId:null,actorName:'RECOVERY',native:this.transport.state().mode==='NATIVE',selection:{action:'COMPOSITION_RESTORE',sourceReceipt,executionId,revisionId,itemId}},authorize,async send=>{
+            await this.graphics.restoreDisplayConfirmed(display,authorize,send)
+            this.emergencyOverlay=display.emergencySvg!==null
+          })
+          this.checkpoint(true)
+        })().catch(error=>{
+          const message='Composição não recuperada; confira o histórico e a imagem: '+(error instanceof Error?error.message:String(error))
+          try{this.graphicRecoveryIncident=new GraphicRecoveryIncident(this.db,this.channel.id,{executionId,revisionId,itemId,startedAt},sourceReceipt,message)}catch{this.recoveryError=message+'; falha ao registrar incidente gráfico.'}
+        })
+          .finally(()=>{this.automaticGraphicsPending=false})
+        return false
+      }
+      if(ledger.latestNativeCompositionId()){
+        const message='Checkpoint antigo sem vínculo de composição gráfica; nenhum SHOW histórico foi reenviado. Confira a imagem e faça intervenção explícita.'
+        try{this.graphicRecoveryIncident=new GraphicRecoveryIncident(this.db,this.channel.id,{executionId,revisionId,itemId,startedAt},ledger.latestNativeCompositionId(),message)}catch{this.recoveryError=message+'; falha ao registrar incidente gráfico.'}
+        return false
+      }
+    }
+    if (this.emergencyOverlay) return false
+    // A confirmed saved composition may be restored above while HELD, but
+    // elapsed cues/device events must not fire until playback is released.
+    if(!this.transport.state().playing)return false
     if (!(this.transport instanceof EngineTransport) && (this.executionItemId !== onAir.itemId || this.simulatedStartedAt !== onAir.startedAt)) {
       this.executionId=randomUUID();this.executionItemId=onAir.itemId;this.simulatedStartedAt=onAir.startedAt
     }
     if (this.cuesFor !== onAir.itemId || this.graphicsExecutionId !== this.executionId) {
       this.cuesFor = onAir.itemId
       this.graphicsExecutionId = this.executionId
-      this.fired = new Set()
+      this.fired = this.executionId?new GraphicCommandLedger(this.db,this.channel.id).confirmedCueIds(this.executionId,onAir.itemId,this.operationalRevision?.id??null):new Set()
       this.graphics.scheduler.resetItem(onAir.itemId)
     }
 
     const itemEntry = this.executionView?.items.find((entry) => entry.item.id === onAir.itemId)
-    const duration = this.executionView?.schedule.items.find(item=>item.id===onAir.itemId)?.duration
-      ?? itemEntry?.item.durationOverride ?? itemEntry?.asset?.durationFrames ?? 18000
+    const duration = programDurationFrames(onAir,this.executionView?.schedule.items.find(item=>item.id===onAir.itemId)?.duration
+      ?? itemEntry?.item.durationOverride ?? itemEntry?.asset?.durationFrames ?? 18000)
     void this.graphics.scheduler.tick(onAir.itemId, onAir.elapsed, duration)
       .catch((error:unknown)=>{this.recoveryError='Falha no evento secundário: '+(error instanceof Error ? error.message : String(error))})
+    // A secondary command can claim the durable composition synchronously,
+    // before Graphics marks its asynchronous native work pending. Defer legacy
+    // cues instead of consuming them as failed concurrent requests.
+    if(new GraphicCommandLedger(this.db,this.channel.id).hasUnresolved())return false
 
 
 
@@ -854,21 +1190,48 @@ export class ChannelRuntime {
       if (onAir.elapsed < secondsToFrames(cue.atSeconds, this.channel.rate)) continue
       const template = this.executionTemplates.get(cue.templateId)
       this.fired.add(cue.id)
-      if (!template) continue
-      this.graphics.show(template, cue.values)
+      if (!template){this.recoveryError='Deixa gráfica sem template publicado; nenhum comando enviado.';continue}
+      const executionId=this.executionId,revisionId=this.operationalRevision?.id??null,itemId=onAir.itemId,startedAt=onAir.startedAt
+      const authorize=()=>{
+        const current=this.transport.state().onAir
+        if(this.closed||this.emergencyOverlay||this.emergencyCommandPending||this.executionId!==executionId||(this.operationalRevision?.id??null)!==revisionId||current?.itemId!==itemId||current.startedAt!==startedAt)throw new Error('Execução mudou; deixa antiga não enviada.')
+      }
+      const key='cue-'+createHash('sha256').update(JSON.stringify([executionId,itemId,startedAt,cue.id])).digest('hex')
+      this.automaticGraphicsPending=true
+      void new GraphicCommandLedger(this.db,this.channel.id).execute({key,context:()=>this.graphicContext(),actorId:null,actorName:'AUTOMATIC',native:this.transport.state().mode==='NATIVE',selection:{action:'LEGACY_CUE',executionId,itemId,revisionId,cue:structuredClone(cue),template:structuredClone(template)}},authorize,send=>this.graphics.showConfirmed(template,cue.values,authorize,send))
+        .catch(()=>{this.recoveryError='Deixa gráfica sem confirmação; confira o histórico de comandos e a imagem. Nenhum reenvio automático.'})
+        .finally(()=>{this.automaticGraphicsPending=false})
       changed = true
+      break // One durable automatic composition owns this cycle.
     }
     return changed
+  }
+
+  /** Automatic expiry is a durable command, not an optimistic UI mutation. */
+  expireGraphics():boolean{
+    if(this.closed||this.automaticGraphicsPending||this.graphics.commandPending||this.emergencyOverlay||this.emergencyCommandPending||!this.graphics.hasExpiredLayers())return false
+    if(new GraphicCommandLedger(this.db,this.channel.id).hasUnresolved())return false
+    const layers=structuredClone(this.graphics.getLayers()),signature=JSON.stringify(layers)
+    const key='expire-'+createHash('sha256').update(signature).digest('hex')
+    if(this.attemptedGraphicExpiry===key)return false
+    const authorize=()=>{
+      if(this.closed||this.emergencyOverlay||this.emergencyCommandPending||JSON.stringify(this.graphics.getLayers())!==signature)throw new Error('Composição mudou; expiração antiga não enviada.')
+    }
+    this.attemptedGraphicExpiry=key;this.automaticGraphicsPending=true
+    void new GraphicCommandLedger(this.db,this.channel.id).execute({key,context:()=>this.graphicContext(),actorId:null,actorName:'AUTOMATIC',native:this.transport.state().mode==='NATIVE',selection:{action:'EXPIRE',layers}},authorize,send=>this.graphics.expireConfirmed(authorize,send))
+      .catch(()=>{this.recoveryError='Retirada automática sem confirmação; confira a imagem e o histórico. Nenhum reenvio automático.'})
+      .finally(()=>{this.automaticGraphicsPending=false})
+    return true
   }
 
   /** Return the persisted outcome, not merely acceptance by the scheduler. */
   async fireSecondaryEvent(eventId:string) {
     this.fireDueGraphics()
-    const onAir=this.transport.state().onAir, executionId=this.executionId
+    const onAir=this.transport.state().onAir, executionId=this.executionId,revisionId=this.operationalRevision?.id??null
     const event=this.graphics.scheduler.getEvents().find(event=>event.id===eventId)
     if (!onAir || !executionId || !event?.enabled || event.triggerMode!=='MANUAL' || event.rundownItemId!==onAir.itemId) throw new Error('Evento manual exige o item publicado no PGM.')
     await this.graphics.scheduler.triggerManual(eventId)
-    const [run]=await this.db.select().from(secondaryEventRuns).where(and(eq(secondaryEventRuns.channelId,this.channel.id),eq(secondaryEventRuns.executionId,executionId),eq(secondaryEventRuns.eventId,eventId),eq(secondaryEventRuns.mode,'FIRE')))
+    const run=new SecondaryEventLedger(this.db,this.channel.id).fireFor({executionId,itemId:onAir.itemId,revisionId},eventId)
     if (!run) throw new Error('O pedido não foi registrado.')
     return {id:run.id,state:run.state,error:run.error}
   }
@@ -942,6 +1305,10 @@ export class ChannelRuntime {
 
   alerts(): { kind: 'OUTPUT' | 'ENGINE'; message: string }[] {
     const found: { kind: 'OUTPUT' | 'ENGINE'; message: string }[] = []
+    if(this.graphicRecoveryIncident){
+      try{if(this.graphicRecoveryIncident.reconcile(this.graphicContext()))this.graphicRecoveryIncident=null}catch{/* Failed audit retains the active warning. */}
+      if(this.graphicRecoveryIncident)found.push({kind:'ENGINE',message:this.graphicRecoveryIncident.message})
+    }
     if (this.recoveryError) found.push({ kind: 'ENGINE', message: this.recoveryError })
 
     for (const publisher of this.transport.publishers()) {
@@ -1073,12 +1440,17 @@ export class ChannelRuntime {
 }
 
 export interface App {
+  readonly restoredAdmission:RestoredBackendAdmission|null
+  readonly haExecutionAdmission?:HaExecutionAdmission|null
   readonly ha:HaReplication|null
   readonly db: Db
   readonly runtimes: Map<string, ChannelRuntime>
   readonly history: History
   readonly concurrency:ConcurrencyManager
   readonly configurationChanges:ConfigurationChanges
+  readonly executionOwnership:ExecutionOwnership
+  readonly distributionOwnership:DistributionOwnership
+  readonly hostFence:HostDistributionFence|null
   readonly interruptionCommands:InterruptionCommands
   /** Servidor de mídia local. Nulo quando não há binário configurado. */
   readonly mediamtx: MediaMtx | null
@@ -1103,33 +1475,76 @@ export interface App {
   readonly integrationOutbox: IntegrationOutbox
   /** Fecha o que precisa de escrita antes de o processo sair. */
   flush(): Promise<void>
-  close(): void
+  close(): void|Promise<void>
 }
 
-export async function createApp(file: string): Promise<App> {
-  const haConfig=haOptions(file)
-  const { db, sqlite } = openDatabase(file)
+import {initializeRoots} from './domain/roots.js'
+import {ServerInstanceRegistration} from './domain/server-instances.js'
+import {assertRestoredAdmission,type RestoredBackendAdmission} from './domain/restored-execution-review.js'
+import {isRecoveryRehearsal} from './domain/recovery-rehearsal.js'
+import {assertHaExecutionAdmission,type HaExecutionAdmission} from './domain/ha-execution-admission.js'
+import {startupTrace} from './domain/startup-trace.js'
+export async function createApp(file: string,options:{restoredAdmission?:RestoredBackendAdmission;haExecutionAdmission?:HaExecutionAdmission}={}): Promise<App> {
+  startupTrace('application construction entered')
+  const haAdmission=options.haExecutionAdmission
+  if(haAdmission){assertHaExecutionAdmission(haAdmission);haAdmission.assertHeld();if(resolvePath(file)!==resolvePath(haAdmission.copy.file))throw new Error('Backend HA exige o banco copiado da admissão exata.');if(options.restoredAdmission)throw new Error('Admissões HA/restauração não podem ser combinadas.')}
+  const haConfig=haAdmission?null:haOptions(file)
+  const admission=options.restoredAdmission
+  if(admission){assertRestoredAdmission(admission);if(haConfig?.role==='STANDBY')throw new Error('Admissão restaurada não promove nó standby.')}
+  let instance!:ServerInstanceRegistration
+  const { db, sqlite } = openDatabase(file,{maintenance:haAdmission?.maintenance??admission?.maintenance,assertAdmission:haAdmission?sqlite=>haAdmission.assertBeforeOpen(sqlite):admission?sqlite=>admission.assertBeforeOpen(sqlite):undefined,onOpened:sqlite=>{instance=haAdmission?haAdmission.register(sqlite):admission?admission.register(sqlite):new ServerInstanceRegistration(sqlite)}})
+  startupTrace('database opened and registered')
+  if(haAdmission){try{haAdmission.completeTransfer(sqlite)}catch(error){sqlite.close();throw error}}
+  if(admission){try{admission.completeTransfer(sqlite)}catch(error){sqlite.close();throw error}}
+  if(!haAdmission)await initializeRoots(db,MEDIA_ROOT)
+  startupTrace('media roots initialized')
   const runtimes = new Map<string, ChannelRuntime>()
+  let closeStarted=false,closeResult:Promise<void>|void=undefined,flushResult:Promise<void>|null=null
+  // Admission precedes construction of publishers and discovery helpers.
+  // A standby/rehearsal never claims the primary host's distribution family.
+  const rehearsal=isRecoveryRehearsal(sqlite)
+  const hostFence=haAdmission?.hostFence??admission?.hostFence??((ENGINE_BINARY||MEDIAMTX_BINARY||RELAY_BINARY)&&haConfig?.role!=='STANDBY'&&!rehearsal?new HostDistributionFence(HOST_GUARD_BINARY):null)
+  if(hostFence&&!admission&&!haAdmission)await hostFence.acquire()
+  startupTrace('host admission checked')
+  const executionOwnership=new ExecutionOwnership(db),distributionOwnership=new DistributionOwnership(db,executionOwnership.identity,undefined,hostFence,haAdmission?()=>haAdmission.assertNativeActivation():admission?()=>admission.assertNativeActivation(sqlite):null)
   const mediaWorkflow = new MediaWorkflow(sqlite, process.env.RPLAYOUT_MEDIA_VERSIONS ?? resolvePath(THUMBNAIL_DIR, '../.media-versions'), PROXY_BINARY)
-  const mediamtx = MEDIAMTX_BINARY && haConfig?.role!=='STANDBY'
+  const mediamtx = MEDIAMTX_BINARY && haConfig?.role!=='STANDBY'&&!haAdmission
     ? new MediaMtx({
         binary: MEDIAMTX_BINARY,
         configPath: resolvePath(process.cwd(), 'mediamtx.yml'),
         bind: MEDIAMTX_BIND,
         logLevel: MEDIAMTX_LOGLEVEL,
+        ownership:distributionOwnership,
+        hostFence,
+        requireAppliedConfig:true,
       })
     : null
 
   const app: App = {
-    ha:haConfig?new HaReplication(haConfig,()=>captureHaSnapshot(app),fetch,PROBE_BINARY||null):null,
+    ha:haConfig?new HaReplication(haConfig,()=>captureHaSnapshot(app),fetch,PROBE_BINARY||null,null,{commit:(request,rows,authorize,actor)=>appendHaHistory(app.sqlite,request,rows,authorize,actor),query:(importId,channelId)=>queryHaHistoryImport(app.sqlite,importId,channelId)},{commit:(request,received,authorize,actor)=>preserveHaHistoryVariants(app.sqlite,request,received,authorize,actor),query:(decisionId,channelId)=>queryHaHistoryVariant(app.sqlite,decisionId,channelId)},{lookup:(channelId,hashes)=>primaryReturnMediaAdapter(app.db).lookup(channelId,hashes)}):null,
     db,
     runtimes,
     history: new History(),
     concurrency:new ConcurrencyManager(new EditorialVersions(sqlite)),
     configurationChanges:new ConfigurationChanges(db),
+    executionOwnership,
+    distributionOwnership,
+    hostFence,
+    restoredAdmission:admission??null,
+    haExecutionAdmission:haAdmission??null,
     interruptionCommands:new InterruptionCommands(db,sqlite),
     mediamtx,
-    relays: new RelaySupervisor(RELAY_BINARY),
+    relays: new RelaySupervisor(RELAY_BINARY,distributionOwnership,()=>!mediamtx||mediamtx.readyForPublish,haConfig?.witnessUrl?{binding:target=>{
+      if(!target.channelId)return null
+      const runtime=runtimes.get(target.channelId),transport=runtime?.transport
+      if(!(transport instanceof EngineTransport))return null
+      const binding=transport.fenceBinding(),authority=app.ha?.witness
+      if(!binding||!authority)return null
+      return {...binding,obtain:(consumerId,nonce)=>{
+        if(transport.fenceBinding()?.ownerId!==binding.ownerId)throw new Error('Engine mudou; relay antigo não será renovado.')
+        return authority.obtainOutput(target.channelId!,binding.ownerId,consumerId,nonce)
+      }}
+    }}:undefined),
     ingest: new Ingest(db, PROBE_BINARY, THUMBNAIL_DIR, mediaWorkflow, sqlite),
     mediaWorkflow,
     audioMixAnalysis:new AudioMixAnalysis(db,AUDIO_ANALYSIS_BINARY,(id,hash,path)=>mediaWorkflow.inspectionOriginal(id,hash,path)),
@@ -1152,45 +1567,105 @@ export async function createApp(file: string): Promise<App> {
      * de a escrita chegar ao disco -- o item que estava no ar ficaria para
      * sempre sem hora de saída.
      */
-    flush: async () => {
-      for (const runtime of runtimes.values()) await runtime.asRun.finish('SHUTDOWN')
+    flush: () => {
+      // Terminal drain, not a retryable save. A caller may already have seen
+      // an uncertain SQL result; close() must await that SAME outcome rather
+      // than submitting the pending write again or certifying storage closed.
+      if(flushResult)return flushResult
+      const pendingRuntimes=[...runtimes.values()]
+      flushResult=(async()=>{
+        await app.ingest.close()
+        // Abort copy/transcode and await stream/child cleanup before SQLite closes.
+        await mediaWorkflow.close()
+        app.integrationOutbox.close();await app.integrationOutbox.settled()
+        for (const runtime of pendingRuntimes) await runtime.asRun.finish('SHUTDOWN')
+      })()
+      return flushResult
     },
     close: () => {
-      app.ha?.close()
+      if(closeStarted)return closeResult
+      closeStarted=true
+      blockRuntimeCreation(app)
+      const errors:unknown[]=[],drains:Promise<void>[]=[]
+      const collect=(work:()=>unknown)=>{
+        try{const value=work();if(value&&typeof (value as PromiseLike<unknown>).then==='function')drains.push(Promise.resolve(value).then(()=>{},error=>{errors.push(error)}))}
+        catch(error){errors.push(error)}
+      }
+      collect(()=>app.ha?.close())
       // O processo do engine mantém pipes e timers próprios. Fechar apenas o
       // SQLite deixa motores órfãos e, na próxima subida, dois playouts podem
       // disputar o mesmo canal.
-      for (const runtime of app.runtimes.values()) runtime.close()
+      const closingRuntimes=[...app.runtimes.values()]
+      const ordinaryLocal=!app.ha&&!app.restoredAdmission&&!app.haExecutionAdmission
+      const normalProofs:Promise<import('./domain/engine.js').NativeShutdownResult>[]=[]
+      for (const runtime of closingRuntimes){
+        if(ordinaryLocal&&runtime.transport instanceof EngineTransport){
+          try{normalProofs.push(runtime.closeGracefully())}
+          catch(error){errors.push(error);normalProofs.push((runtime.transport as EngineTransport).closeConfirmed(5000).then(proof=>({...proof,graceful:false,forceRequested:true})))}
+        }else collect(()=>runtime.close())
+      }
+      // Direct ordinary native callers need the same history drain as index.
+      // Runtime persistence is cancelled above, but its lease remains active
+      // until this drain and actual native exit both succeed. Capture runtimes
+      // inside flush() BEFORE clearing the map. HA/restored policy is unchanged.
+      if(ordinaryLocal&&closingRuntimes.some(runtime=>runtime.transport instanceof EngineTransport))collect(()=>app.flush())
       app.runtimes.clear()
-      app.relays.closeAll()
-      mediamtx?.stop()
-      mediaWorkflow.close()
-      app.publishedContinuity.close()
-      app.schedulePublication.close()
-      app.audioMixAnalysis.close()
-      app.hostMetrics.close()
-      app.integrationOutbox.close()
-      app.ingest.close()
-      sqlite.close()
+      // Keep SQLite/ownership alive until actual native exit callbacks retire
+      // their generation. Closing storage immediately loses those callbacks.
+      const nativeDrain=ordinaryLocal?Promise.all(normalProofs).then(proofs=>{
+        if(proofs.some(proof=>!proof.ownedNativeProcessesStopped))throw new Error('Encerramento nativo inconclusivo; storage/posse preservados, não inicie outra instância.')
+        if(proofs.some(proof=>!proof.graceful))throw new Error('Engine não confirmou encerramento normal; finalização de gravação e storage não serão declarados concluídos.')
+      }):Promise.all(closingRuntimes.filter(runtime=>runtime.transport instanceof EngineTransport).map(async runtime=>{
+        const stopped=await (runtime.transport as EngineTransport).closeConfirmed(5000)
+        if(!stopped.ownedNativeProcessesStopped)throw new Error('Encerramento nativo inconclusivo; storage/posse preservados, não inicie outra instância.')
+      }))
+      // Attach rejection handlers BEFORE another controller can throw. Finish
+      // all own cleanup attempts, then propagate failure; never invent closure.
+      collect(()=>nativeDrain)
+      collect(()=>app.relays.closeAll())
+      collect(()=>mediamtx?.stop())
+      collect(()=>mediaWorkflow.close())
+      collect(()=>app.publishedContinuity.close())
+      collect(()=>app.schedulePublication.close())
+      collect(()=>app.audioMixAnalysis.close())
+      collect(()=>app.hostMetrics.close())
+      collect(()=>app.integrationOutbox.close())
+      collect(()=>app.integrationOutbox.settled())
+      collect(()=>app.ingest.close())
+      collect(()=>app.ha?.settled())
+      const closeStorage=()=>{app.executionOwnership.close();try{app.distributionOwnership.close()}catch{/* Preserve uncertain resource ownership. */}try{if(sqlite.open){try{instance.storageClosed();admission?.releaseForShutdown(sqlite)}finally{if(!haAdmission)sqlite.close()}}}finally{if(!haAdmission)hostFence?.close()}}
+      // Legacy callers may close without flush; keep storage alive until the
+      // cancelled worker releases only its own claim after stream/child exit.
+      const assertClean=()=>{if(errors.length===1)throw errors[0];if(errors.length)throw new AggregateError(errors,'Falha ao encerrar recursos; storage/posse não serão declarados concluídos.')}
+      const asynchronous=closingRuntimes.some(runtime=>runtime.transport instanceof EngineTransport)||mediaWorkflow.isDraining||app.integrationOutbox.isDraining||app.ingest.isDraining||app.ha?.isDraining
+      if(asynchronous){closeResult=Promise.all(drains).then(()=>{assertClean();closeStorage()});return closeResult}
+      // Preserve immediate SQLite closure for legacy idle/simulated callers.
+      try{assertClean();closeStorage()}catch(error){if(!errors.includes(error))errors.push(error)}
+      closeResult=Promise.all(drains).then(assertClean);return closeResult
     },
   }
 
   // Descobre o que a instalação tem uma vez ao subir. Sem isto o primeiro
   // alerta de áudio sairia com "pode faltar" só porque ninguém tinha aberto o
   // diálogo de fontes ainda -- e "pode" é o que este alerta deixou de ser.
-  void app.sources.list().catch(() => {
+  if(!haAdmission)void app.sources.list().catch(() => {
     // Máquina sem descoberta funciona: os alertas voltam a dizer "pode".
   })
 
+  const historicalProcessMetrics=new ProcessMetrics()
+  app.hostMetrics.onCapture=()=>captureOperationalMetrics(app.runtimes,historicalProcessMetrics,runtime=>operationalMetricLabels(app.db,runtime.channel.id,app.paths.find(path=>path.channelId===runtime.channel.id),app.runtimes.get(runtime.channel.id)?.executionView??null))
+  startupTrace('application construction completed')
   return app
 }
 
 export async function runtimeFor(app: App, channelId: string): Promise<ChannelRuntime | null> {
+  if(closingApplications.has(app))return null
+  if(app.haExecutionAdmission)return null
   if(app.ha?.options.role==='STANDBY')return null
   // Rehearsal DBs are evidence, not a promoted operational installation.
   // Even explicitly unarchiving one in a normal backend must not bypass
   // binding/QC/authority review and start foreign published live endpoints.
-  if(app.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='ha_recovery_origin' AND type='table'").get())return null
+  if(isRecoveryRehearsal(app.sqlite)&&!app.restoredAdmission?.nativeStageAllowed(app.sqlite))return null
   const existing = app.runtimes.get(channelId)
   if (existing) return existing
   if(app.configurationChanges.blockedReason(channelId) && !app.configurationChanges.owns(channelId))return null
@@ -1205,11 +1680,28 @@ export async function runtimeFor(app: App, channelId: string): Promise<ChannelRu
 }
 
 const runtimeCreations = new WeakMap<App, Map<string, Promise<ChannelRuntime | null>>>()
+const closingApplications=new WeakSet<App>()
+export function blockRuntimeCreation(app:App):void{closingApplications.add(app)}
 
 async function createRuntime(app: App, channelId: string): Promise<ChannelRuntime | null> {
 
   const channel = await getChannel(app.db, channelId)
   if (!channel) return null
+  if(app.mediamtx||ENGINE_BINARY){
+    try{app.distributionOwnership.claim();await app.hostFence?.freshProof()}catch(error){if(error instanceof CollaborativeEditError||app.hostFence)return null;throw error}
+    if(app.mediamtx&&!(await app.mediamtx.waitUntilReady(2000)))return null
+  }
+
+  let lease:ExecutionLease|null=null
+  if(ENGINE_BINARY){
+    try{lease=await app.executionOwnership.claimWhenReady(channelId)}catch(error){if(error instanceof CollaborativeEditError)return null;throw error}
+  }
+  let created:ChannelRuntime|null=null
+  try{
+
+  // No simulated, standby, foreign-owner or quarantined runtime can retire
+  // predecessor observations. Existing same-instance probes remain intact.
+  if(lease)endPreviousPgmObservation(app.db,channelId,lease,undefined,app.pgmProbes.get(channelId))
 
   const path = app.paths.find((entry) => entry.channelId === channelId)
   if (app.mediamtx) await ensureManagedOutputs(app.db, channel, path)
@@ -1261,11 +1753,14 @@ async function createRuntime(app: App, channelId: string): Promise<ChannelRuntim
   conferir('pvw', 'PREVIEW')
   conferir('mon', 'MONITOR')
 
-  if(app.configurationChanges.blockedReason(channelId) && !app.configurationChanges.owns(channelId))return null
-  if(app.interruptionCommands.blockedReason(channelId))return null
+  if(app.configurationChanges.blockedReason(channelId) && !app.configurationChanges.owns(channelId)){lease?.release();return null}
+  if(app.interruptionCommands.blockedReason(channelId)){lease?.release();return null}
   const qcPreviewOutput = app.mediamtx && path?.inspection && monitores.has('pvw')
     ? JSON.stringify({kind:'srt',target:MediaMtx.loopbackSrt(path.inspection)}) : null
-  const runtime = new ChannelRuntime(channel, app.db, outputs, previewOutput, monitores, motivos, app.continuityCache, new Checkpoints(app.sqlite), app.mediaWorkflow, new Interruptions(app.sqlite),app.configurationChanges,app.interruptionCommands,app.ha?.witness??null,qcPreviewOutput)
+  if(closingApplications.has(app)){lease?.release();return null}
+  const runtime = new ChannelRuntime(channel, app.db, outputs, previewOutput, monitores, motivos, app.continuityCache, new Checkpoints(app.sqlite,lease), app.mediaWorkflow, new Interruptions(app.sqlite),app.configurationChanges,app.interruptionCommands,app.ha?.witness??null,qcPreviewOutput,lease,(app.mediamtx||ENGINE_BINARY)?app.distributionOwnership:null,app.restoredAdmission?{host:app.hostFence!,assertAdmission:()=>app.restoredAdmission!.assertLocalEngineLease(app.sqlite)}:null)
+  created=runtime
+  runtime.reconcileSignalIncidents(true,path)
   app.configurationChanges.trackEngine(channelId,runtime.transport instanceof EngineTransport?runtime.transport.processId():null)
   // Os alertas precisam saber o que falta na instalação, e não podem esperar
   // por uma descoberta a cada tique: perguntam ao que já foi descoberto.
@@ -1274,6 +1769,11 @@ async function createRuntime(app: App, channelId: string): Promise<ChannelRuntim
   runtime.restoreBoundaryProtection()
   pgmProbeFor(app, channelId)
   return runtime
+  }catch(error){
+    if(created){created.close();if(app.runtimes.get(channelId)===created)app.runtimes.delete(channelId)}
+    else try{lease?.release()}catch{}
+    throw error
+  }
 }
 
 /** Sonda isolada por canal, criada cedo para a UI poder informar sem amostra. */
@@ -1288,7 +1788,7 @@ export function pgmProbeFor(app: App, channelId: string): PgmProbe {
     if (saved.thresholds) probe.setThresholds(saved.thresholds)
     if (saved.loopRevisionId) app.continuityCache.replaceProtection(`contingency:${channelId}`, configuredContingencyAssets(app.db, channelId, saved.loopRevisionId))
   }
-  probe.onAction(async (action) => {
+  probe.onAction(async (action,alert) => {
     const runtime = await runtimeFor(app, channelId)
     if (!runtime) return { ok: false, message: 'Canal não encontrado.' }
     if (action === 'FAILOVER_HOST_B') return { ok: false, message: 'Standby físico ainda não configurado/homologado; PGM não foi alterado.' }
@@ -1299,7 +1799,7 @@ export function pgmProbeFor(app: App, channelId: string): PgmProbe {
       await runtime.enterContingency(revisionId)
       return { ok: true, message: 'Arquivo da playlist de contingência confirmado pelo engine no PGM; origem/posição de retorno preservadas.' }
     }
-    await runtime.setEmergencySlate(true)
+    await runtime.setEmergencySlate(true,{key:'probe-'+alert.id,actorName:'AUTOMATIC',authorize:()=>{if(!probe.getStatus().automaticActionsEnabled)throw new Error('Intervenção automática desarmada antes do envio.')}})
     return { ok: true, message: 'Slate opaco confirmado pelo engine; transmissão subjacente preservada.' }
   })
   app.pgmProbes.set(channelId, probe)
@@ -1337,28 +1837,32 @@ export async function runtimeForItem(app: App, itemId: string): Promise<ChannelR
  * arquivo e recarrega.
  */
 export async function syncDistribution(app: App): Promise<void> {
+  if(app.haExecutionAdmission)return
   const channels = await listChannels(app.db)
   app.paths = channelPaths(channels)
 
   if (!app.mediamtx) return
+  try{app.distributionOwnership.claim()}catch(error){if(error instanceof CollaborativeEditError){app.mediamtx.lastError=error.message;return}throw error}
 
   const guests = await app.db.select().from(guestKeys)
   const activeChannelIds = new Set(channels.map(channel=>channel.id))
-  await app.mediamtx.apply(
+  try{await app.mediamtx.apply(
     app.paths,
     guests
       .filter((guest) => guest.enabled && activeChannelIds.has(guest.channelId))
       .map((guest) => ({ label: guest.label, streamKey: guest.streamKey })),
-  )
-  app.mediamtx.start()
+  )}catch(error){app.mediamtx.lastError='Configuração da distribuição não foi autorizada; arquivo anterior preservado.';throw error}
+  await app.mediamtx.start()
   if (!(await app.mediamtx.waitUntilReady())) {
     console.error('[rplayout] o servidor de mídia local não respondeu; as saídas ficarão mudas.')
+    return
   }
 
   const targets = await app.db.select().from(destinations)
+  if(!(await app.mediamtx.waitUntilReady(2000)))return
   app.relays.sync(targets.filter((target) => target.enabled).flatMap((target) => {
     const path = app.paths.find((path) => path.channelId === target.channelId)
-    return path ? [{ id: target.id, name: target.name, url: target.url,
+    return path ? [{ id: target.id, channelId:target.channelId,name: target.name, url: target.url,
       source: MediaMtx.internalRead(path.program),
       transport: target.url.toLowerCase().startsWith('srt:') ? 'SRT' as const : target.url.toLowerCase().startsWith('rtmp:') || target.url.toLowerCase().startsWith('rtmps:') ? 'RTMP' as const : 'OTHER' as const,
       mode: (() => { try { const value = new URL(target.url).searchParams.get('mode')?.toUpperCase(); return value === 'CALLER' || value === 'LISTENER' || value === 'RENDEZVOUS' ? value : 'UNKNOWN' as const } catch { return 'UNKNOWN' as const } })(),

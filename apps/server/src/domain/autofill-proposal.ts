@@ -1,8 +1,10 @@
 import {randomUUID} from 'node:crypto'
-import {asc,eq} from 'drizzle-orm'
+import {eq} from 'drizzle-orm'
 import {resolveTrim,resolveAudio,secondsToFrames,type Anchor,type Frames} from '@rplayout/protocol'
 import type {Db} from '../db/client.js'
-import {operatorDecisions,rundownItems,scheduleRules} from '../db/schema.js'
+import {operatorDecisions,rundownItems} from '../db/schema.js'
+import {scheduleRuleRevision} from '../db/schedule-rule-revisions.js'
+import {readStoredScheduleRules} from './schedule-rule-edit.js'
 import {readEditorialState,editorialView} from './editorial-state.js'
 import {buildCandidatesNow,planFill} from './autofill.js'
 import {installationVault} from './secret-vault.js'
@@ -21,13 +23,14 @@ interface Proposal {
 }
 function rulesFor(tx:Tx,state:State){
   const weekday=String(new Date(`${state.rundown.date}T12:00:00`).getDay())
-  return tx.select().from(scheduleRules).where(eq(scheduleRules.channelId,state.channel.id)).orderBy(asc(scheduleRules.startMinute),asc(scheduleRules.id)).all().filter(rule=>rule.weekdays.includes(weekday))
+  return readStoredScheduleRules(tx,state.channel.id).filter(rule=>rule.weekdays.includes(weekday))
 }
 function dependency(tx:Tx,state:State,entries:Entry[],kind:Proposal['kind']){
   const ids=[...new Set(entries.map(entry=>entry.mediaId!))].sort()
   const candidates=new Map(buildCandidatesNow(tx,state.channel,[...state.assets.values()]).map(item=>[item.id,item]))
   return installationVault().reviewIdentity(JSON.stringify({channel:state.channel,assets:ids.map(id=>state.assets.get(id)??null),
-    candidates:ids.map(id=>candidates.get(id)??null),rules:kind==='DAY'?rulesFor(tx,state):null}),'autofill-dependencies:v1')
+    candidates:ids.map(id=>candidates.get(id)??null),rules:kind==='DAY'?rulesFor(tx,state):null,
+    ...(kind==='DAY'?{rulesRevision:scheduleRuleRevision(tx,state.channel.id)}:{})}),'autofill-dependencies:v1')
 }
 function insertIndex(state:State,minute:number){
   const at=secondsToFrames(minute*60,state.channel.rate),index=editorialView(state).schedule.items.findIndex(item=>item.start>=at)

@@ -29,6 +29,124 @@ function login(){
   return {cookie:`rplayout_session=${token}`}
 }
 describe('aprovação/reprovação e perfil usam a conferência original',()=>{
+  it('committed QC profile immediately fences old eligibility even when refresh cannot install its view',async()=>{
+    const runtime=app.runtimes.get('ch')!
+    app.sqlite.exec("UPDATE media_assets SET qc_status='APPROVED' WHERE id='a'")
+    await runtime.refresh()
+    const before=runtime.transport.state()
+    vi.spyOn(runtime,'refresh').mockResolvedValue(runtime.view)
+    await setProfile({width:640})
+    expect(runtime.executionView!.channel.qcProfile!.width).toBe(640)
+    expect(runtime.executionView!.schedule.items.find(item=>item.id==='item')!.state).toBe('DROPPED')
+    await setProfile({width:320})
+    expect(runtime.executionView!.channel.qcProfile!.width).toBe(320)
+    expect(runtime.channel.qcProfile!.width).toBe(320)
+    expect(runtime.executionView!.schedule.items.find(item=>item.id==='item')!.state).not.toBe('DROPPED')
+    expect(runtime.transport.state()).toEqual(before)
+  })
+  it('novo canal nasce rigoroso sem alterar o perfil dos canais existentes',async()=>{
+    const before=state()
+    const created=await server.inject({method:'POST',url:'/api/channels',payload:{name:'Novo rigoroso'}})
+    expect(created.statusCode,created.body).toBe(200)
+    const configured=await server.inject({url:`/api/channels/${created.json().channelId}/qc-profile`})
+    expect(configured.json().profile.requireProbe).toBe(true)
+    expect(state()).toEqual(before)
+  })
+  it('cliente legado não desativa a exigência por omitir campo novo',async()=>{
+    await setProfile({requireProbe:true})
+    const opened=await server.inject({url:'/api/channels/ch/qc-profile'})
+    const {requireProbe:ignored,...oldPayload}=DEFAULT_QC_PROFILE
+    const result=await server.inject({method:'PUT',url:'/api/channels/ch/qc-profile',headers:{'if-match':opened.headers.etag!},payload:oldPayload})
+    expect(result.statusCode,result.body).toBe(200);expect(result.json().profile.requireProbe).toBe(true)
+  })
+  it.each(['video_codec=NULL','duration_ns=NULL','audio_channels=NULL'])('perfil rigoroso não aprova legado %s e não modifica PGM',async missing=>{
+    app.sqlite.exec("UPDATE media_assets SET video_codec='video/x-h264',audio_channels=2 WHERE id='a'")
+    app.sqlite.exec(`UPDATE media_assets SET ${missing} WHERE id='a'`)
+    await setProfile({requireProbe:true})
+    const opened=await read(),before=state(),pgm=app.runtimes.get('ch')!.transport.state()
+    expect(opened.json().checks.playable).toBe(false)
+    expect((await write('APPROVED',opened.headers.etag!)).statusCode).toBe(409)
+    expect(state()).toEqual(before);expect(app.runtimes.get('ch')!.transport.state()).toEqual(pgm)
+  })
+  async function setProfile(fields:Record<string,unknown>){
+    const current=await server.inject({url:'/api/channels/ch/qc-profile'})
+    const saved=await server.inject({method:'PUT',url:'/api/channels/ch/qc-profile',headers:{'if-match':current.headers.etag!},payload:{...DEFAULT_QC_PROFILE,...fields}})
+    expect(saved.statusCode,saved.body).toBe(200)
+  }
+  it.each([
+    ['codec',{codecs:['video/x-h265']},null],
+    ['largura',{width:1920},null],
+    ['altura',{height:1080},null],
+    ['cadência',{fps:29.97},null],
+    ['varredura',{scan:'INTERLACED'},null],
+    ['áudio obrigatório',{requireAudio:true},'has_audio=0'],
+    ['duração mínima',{minDurationSeconds:11},null],
+    ['loudness ausente',{requireLoudness:true},null],
+  ])('regra individual %s impede aprovação/ressalva sem decisão falsa',async(_name,fields,technical)=>{
+    app.sqlite.exec("UPDATE media_assets SET video_codec='video/x-h264' WHERE id='a'")
+    if(technical)app.sqlite.exec(`UPDATE media_assets SET ${technical} WHERE id='a'`)
+    await setProfile(fields)
+    const opened=await read(),before=state()
+    expect(opened.json().checks.playable).toBe(false)
+    for(const status of ['APPROVED','APPROVED_WITH_NOTES']){
+      const response=await write(status,opened.headers.etag!)
+      expect(response.statusCode,response.body).toBe(409);expect(state()).toEqual(before)
+    }
+  })
+  const validMeasurement={integratedLufs:-23,truePeakDbtp:-3,lra:4,scope:'FILE',measuredAt:'2026-10-08T12:00:00Z'}
+  it.each([
+    ['trecho',{scope:'TRIM'}],
+    ['data inválida',{measuredAt:'invalid'}],
+    ['LRA inválido',{lra:-1}],
+    ['outra versão',{input:{contentHash:'other',audioTrack:0,routing:{mode:'DEFAULT'}}}],
+    ['LUFS fora da faixa',{integratedLufs:-10}],
+    ['pico acima do teto',{truePeakDbtp:0}],
+  ])('medição %s não autoriza QC nem ressalva',async(_name,invalid)=>{
+    app.sqlite.prepare("UPDATE media_assets SET loudness_file=? WHERE id='a'").run(JSON.stringify({...validMeasurement,...invalid}))
+    await setProfile({requireLoudness:true})
+    const opened=await read(),before=state()
+    expect(opened.json().checks.playable).toBe(false)
+    for(const status of ['APPROVED','APPROVED_WITH_NOTES']){
+      const response=await write(status,opened.headers.etag!)
+      expect(response.statusCode,response.body).toBe(409);expect(state()).toEqual(before)
+    }
+  })
+  it.each(['APPROVED','APPROVED_WITH_NOTES'])('perfil completo e medição original válidos permitem %s só no canal avaliado',async status=>{
+    app.sqlite.prepare("UPDATE media_assets SET video_codec='video/x-h264',loudness_file=? WHERE id='a'").run(JSON.stringify(validMeasurement))
+    await setProfile({codecs:['video/x-h264'],width:320,height:180,fps:25,scan:'PROGRESSIVE',requireAudio:true,minDurationSeconds:10,requireLoudness:true})
+    const opened=await read();expect(opened.json().checks.playable).toBe(true)
+    const response=await write(status,opened.headers.etag!)
+    expect(response.statusCode,response.body).toBe(200)
+    expect(state().qc).toHaveLength(1);expect(state().audit).toHaveLength(2)
+    expect((await server.inject({url:'/api/assets/a/qc?channelId=other'})).json().decisions).toEqual([])
+  })
+  it.each(['rate_den','width','duration_ns'])('não aprova sonda com %s zero nem grava decisão/auditoria falsa',async column=>{
+    app.sqlite.exec(`UPDATE media_assets SET ${column}=0 WHERE id='a'`)
+    const opened=await read(),before=state()
+    expect(opened.json().checks.playable).toBe(false)
+    const result=await write('APPROVED',opened.headers.etag!)
+    expect(result.statusCode,result.body).toBe(409)
+    expect(state()).toEqual(before)
+  })
+  it('política live por canal persiste com revisão/auditoria sem comandar transporte',async()=>{
+    const current=await server.inject({url:'/api/channels/ch/qc-profile'})
+    const pgm=app.runtimes.get('ch')!.transport.state()
+    const payload={...DEFAULT_QC_PROFILE,liveSignalPolicy:{arrivalWarningEnabled:true,warningFrameIntervals:5,minimumReceivedFrames:75}}
+    const write=await server.inject({method:'PUT',url:'/api/channels/ch/qc-profile',headers:{'if-match':current.headers.etag!},payload})
+    expect(write.statusCode,write.body).toBe(200)
+    const read=await server.inject({url:'/api/channels/ch/qc-profile'})
+    expect(read.json().profile).toEqual(payload)
+    expect(read.json().configurationRevision).toBeGreaterThan(current.json().configurationRevision)
+    expect((await server.inject({url:'/api/channels/other/qc-profile'})).json().profile.liveSignalPolicy).toBeUndefined()
+    expect(app.runtimes.get('ch')!.transport.state()).toEqual(pgm)
+    expect(state().audit).toHaveLength(1)
+    const stale=await server.inject({method:'PUT',url:'/api/channels/ch/qc-profile',headers:{'if-match':current.headers.etag!},payload})
+    expect(stale.statusCode).toBe(409)
+  })
+  it.each([{warningFrameIntervals:0},{warningFrameIntervals:21},{minimumReceivedFrames:0},{minimumReceivedFrames:1.5},{arrivalWarningEnabled:'yes'}])('rejects invalid live policy without commit (%s)',invalid=>{
+    const payload={...DEFAULT_QC_PROFILE,liveSignalPolicy:{arrivalWarningEnabled:true,warningFrameIntervals:3,minimumReceivedFrames:50,...invalid}}
+    return server.inject({method:'PUT',url:'/api/channels/ch/qc-profile',payload}).then(response=>{expect(response.statusCode).toBe(400);expect(state().audit).toHaveLength(0)})
+  })
   it('leitura entrega metadados/perfil/histórico e duas revisões no mesmo snapshot, sem escrita',async()=>{
     const before=state(),response=await read(),result=response.json()
     expect(response.statusCode).toBe(200);expect(response.headers.etag).toBe(qcDecisionETag(result.review));expect(result.review).toEqual({assetId:'a',channelId:'ch',contentHash:'original',assetRevision:before.assetRevision,configurationRevision:before.channelRevision})

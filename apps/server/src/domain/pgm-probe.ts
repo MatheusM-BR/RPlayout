@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  IncidentContext,
   PgmProbeAlert,
   PgmProbeAlertType,
   PgmProbeAutoAction,
@@ -11,6 +12,8 @@ export interface PgmProbeTelemetryInput {
   isBlack?: boolean
   /** Se o frame atual está congelado (diferença entre frames consecutivos ~ 0) */
   isFreeze?: boolean
+  /** Actual unchanged-picture duration from the native detector, not debounced twice. */
+  freezeDurationMs?:number
   /** Nível de áudio em dBFS (L/R RMS) */
   audioDbfs?: number
   /** Intervalo decorrido em milissegundos desde a última amostra (default: 100ms) */
@@ -38,6 +41,8 @@ export interface PgmProbeStatusResult {
 export type AutoActionCallback = (action: PgmProbeAutoAction, alert: PgmProbeAlert) =>
   { ok: boolean; message?: string } | Promise<{ ok: boolean; message?: string }>
 
+export interface ProbeTransition {key:string;alert:PgmProbeAlert;state:'active'|'recovered'|'unobserved';occurredAt:string;context:IncidentContext|null}
+
 export class PgmProbe {
   private thresholds: PgmProbeThresholds = {
     blackThresholdMs: 2000,
@@ -60,6 +65,16 @@ export class PgmProbe {
 
   private emergencySlateActive = false
   private history: PgmProbeAlert[] = []
+  private transitions=new Map<string,ProbeTransition>()
+  private contextProvider:(()=>IncidentContext)|null=null
+  onContext(provider:()=>IncidentContext):void{this.contextProvider=provider}
+  pendingTransitions():ProbeTransition[]{return [...this.transitions.values()].map(row=>({...row,alert:{...row.alert},context:row.context?structuredClone(row.context):null}))}
+  confirmTransitions(keys:string[]):void{for(const key of keys)this.transitions.delete(key)}
+  private transition(alert:PgmProbeAlert,state:ProbeTransition['state'],now=Date.now()):void{
+    const key=alert.id+':'+state
+    let context:IncidentContext|null=null;try{context=this.contextProvider?structuredClone(this.contextProvider()):null}catch{/* Missing context must not suppress a real alarm. */}
+    this.transitions.set(key,{key,alert:{...alert},state,occurredAt:state==='active'?alert.timestamp:new Date(now).toISOString(),context})
+  }
   private actionCallback: AutoActionCallback | null = null
   private automaticActions = false
   private pendingAction: { action: PgmProbeAutoAction; result: Promise<{ ok: boolean; message?: string }> } | null = null
@@ -81,7 +96,7 @@ export class PgmProbe {
   }
   setAutomaticActions(enabled: boolean): void { this.automaticActions = enabled }
   idle(): void {
-    for (const alert of [this.activeBlackAlert, this.activeFreezeAlert, this.activeSilenceAlert]) if (alert) alert.active = false
+    for (const alert of [this.activeBlackAlert, this.activeFreezeAlert, this.activeSilenceAlert]) if (alert) {alert.active = false;this.transition(alert,'unobserved')}
     this.activeBlackAlert = null; this.activeFreezeAlert = null; this.activeSilenceAlert = null
     this.blackDurationMs = 0; this.freezeDurationMs = 0; this.silenceDurationMs = 0
     this.lastSampleTimeMs = null
@@ -89,19 +104,19 @@ export class PgmProbe {
     this.lastAudioDbfs = null
   }
 
-  private async runAction(action: PgmProbeAutoAction, alert: PgmProbeAlert, manual = false): Promise<void> {
+  private async runAction(action: PgmProbeAutoAction, alert: PgmProbeAlert, manual = false,override?:AutoActionCallback): Promise<void> {
     alert.requestedAction = action
     if (!manual && !this.automaticActions) { alert.actionStatus = 'DISABLED'; alert.actionMessage = 'Intervenção automática desligada; alerta requer decisão do operador.'; return }
-    if (!this.actionCallback) { alert.actionStatus = 'FAILED'; alert.actionMessage = 'Não há runtime conectado para executar a intervenção.'; return }
+    if (!override&&!this.actionCallback) { alert.actionStatus = 'FAILED'; alert.actionMessage = 'Não há runtime conectado para executar a intervenção.'; return }
     alert.actionStatus = 'PENDING'
     try {
-      if (this.pendingAction && this.pendingAction.action !== action) {
+      if (this.pendingAction && (override||this.pendingAction.action !== action)) {
         alert.actionStatus = 'FAILED'
         alert.actionMessage = 'Há outra intervenção aguardando confirmação. Confira o PGM antes de solicitar uma ação diferente.'
         return
       }
       if (!this.pendingAction) {
-        const callback = this.actionCallback
+        const callback = override??this.actionCallback!
         // Trava antes de invocar o runtime: as três métricas podem cruzar seus
         // limites no mesmo feed. A confirmação é compartilhada, não três TAKEs.
         const pending = { action, result: Promise.resolve().then(() => callback(action, alert)) }
@@ -158,24 +173,28 @@ export class PgmProbe {
           }
           this.activeBlackAlert = alert
           this.history.push(alert)
+          this.transition(alert,'active',now)
           void this.runAction(this.thresholds.defaultAutoAction, alert)
           triggeredAlerts.push(alert)
         } else {
           this.activeBlackAlert.durationMs = this.blackDurationMs
         }
       }
-    } else {
+    } else if(input.isBlack===false) {
       if (this.activeBlackAlert) {
         this.activeBlackAlert.active = false
         this.activeBlackAlert.durationMs = this.blackDurationMs
+        this.transition(this.activeBlackAlert,'recovered',now)
         this.activeBlackAlert = null
       }
       this.blackDurationMs = 0
-    }
+    } else this.blackDurationMs=0
 
     // 2. Verificação de Freeze Frame (> 2.0s)
-    if (input.isFreeze) {
-      this.freezeDurationMs += delta
+    const measuredFreeze=typeof input.freezeDurationMs==='number'&&Number.isFinite(input.freezeDurationMs)&&input.freezeDurationMs>=0?input.freezeDurationMs:null
+    const freezing=measuredFreeze!==null?measuredFreeze>0:input.isFreeze
+    if (freezing) {
+      this.freezeDurationMs = measuredFreeze??(this.freezeDurationMs+delta)
       if (this.freezeDurationMs >= this.thresholds.freezeThresholdMs) {
         if (!this.activeFreezeAlert) {
           const alert: PgmProbeAlert = {
@@ -188,20 +207,22 @@ export class PgmProbe {
           }
           this.activeFreezeAlert = alert
           this.history.push(alert)
+          this.transition(alert,'active',now)
           void this.runAction(this.thresholds.defaultAutoAction, alert)
           triggeredAlerts.push(alert)
         } else {
           this.activeFreezeAlert.durationMs = this.freezeDurationMs
         }
       }
-    } else {
+    } else if(freezing===false) {
       if (this.activeFreezeAlert) {
         this.activeFreezeAlert.active = false
         this.activeFreezeAlert.durationMs = this.freezeDurationMs
+        this.transition(this.activeFreezeAlert,'recovered',now)
         this.activeFreezeAlert = null
       }
       this.freezeDurationMs = 0
-    }
+    } else this.freezeDurationMs=0
 
     // 3. Verificação de Silêncio (< -60 dBFS por > 3.0s)
     const isSilence = this.lastAudioDbfs !== null && this.lastAudioDbfs <= this.thresholds.silenceDbfs
@@ -219,30 +240,32 @@ export class PgmProbe {
           }
           this.activeSilenceAlert = alert
           this.history.push(alert)
+          this.transition(alert,'active',now)
           void this.runAction(this.thresholds.defaultAutoAction, alert)
           triggeredAlerts.push(alert)
         } else {
           this.activeSilenceAlert.durationMs = this.silenceDurationMs
         }
       }
-    } else {
+    } else if(this.lastAudioDbfs!==null) {
       if (this.activeSilenceAlert) {
         this.activeSilenceAlert.active = false
         this.activeSilenceAlert.durationMs = this.silenceDurationMs
+        this.transition(this.activeSilenceAlert,'recovered',now)
         this.activeSilenceAlert = null
       }
       this.silenceDurationMs = 0
-    }
+    } else this.silenceDurationMs=0
 
     return triggeredAlerts
   }
 
   /** Dispara manualmente a injeção do Slate institucional de emergência. */
-  async triggerEmergencySlate(reason = 'MANUAL_DISPATCH'): Promise<PgmProbeAlert> {
-    return this.triggerAction('SLATE_INJECTED', reason)
+  async triggerEmergencySlate(reason = 'MANUAL_DISPATCH',callback?:AutoActionCallback): Promise<PgmProbeAlert> {
+    return this.triggerAction('SLATE_INJECTED', reason,callback)
   }
 
-  async triggerAction(action: PgmProbeAutoAction, reason = 'MANUAL_DISPATCH'): Promise<PgmProbeAlert> {
+  async triggerAction(action: PgmProbeAutoAction, reason = 'MANUAL_DISPATCH',callback?:AutoActionCallback): Promise<PgmProbeAlert> {
     const alert: PgmProbeAlert = {
       id: randomUUID(),
       type: 'BLACK_FRAME',
@@ -253,7 +276,7 @@ export class PgmProbe {
     }
     this.history.push(alert)
     alert.actionMessage = reason
-    await this.runAction(action, alert, true)
+    await this.runAction(action, alert, true,callback)
     return alert
   }
 

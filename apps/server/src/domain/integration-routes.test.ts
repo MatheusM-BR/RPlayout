@@ -17,12 +17,14 @@ afterEach(async () => {await server.close();app.close();vi.unstubAllGlobals()})
 
 describe('fila externa na API sem vazamento de credenciais', () => {
   it('mascara caminho privado na criação/consulta e conserva destino real ao ativar', async () => {
-    const response = await server.inject({method:'POST',url:'/api/integrations',payload:{channelId:'ch',name:'QA',url:'https://example.test/webhook/SECRET?token=PRIVATE',events:['source.lost']}})
+    const catalog=await server.inject('/api/integrations/review?channelId=ch')
+    const response = await server.inject({method:'POST',url:'/api/integrations',headers:{'if-match':catalog.headers.etag!},payload:{channelId:'ch',name:'QA',url:'https://example.test/webhook/SECRET?token=PRIVATE',events:['source.lost']}})
     expect(response.statusCode).toBe(200)
     const row = response.json().integration
     expect(row).toMatchObject({url:'https://example.test/REDACTED',enabled:false})
     expect((await server.inject({url:'/api/integrations?channelId=ch'})).body).not.toMatch(/SECRET|PRIVATE/)
-    expect((await server.inject({method:'PATCH',url:`/api/integrations/${row.id}`,payload:{enabled:true}})).statusCode).toBe(200)
+    const review=await server.inject(`/api/integrations/${row.id}/review`)
+    expect((await server.inject({method:'PATCH',url:`/api/integrations/${row.id}`,headers:{'if-match':review.headers.etag!},payload:{enabled:true}})).statusCode).toBe(200)
     expect((await app.db.select().from(integrations))[0]!.url).toContain('SECRET?token=PRIVATE')
     expect(JSON.stringify(app.sqlite.prepare('SELECT url FROM integrations').all())).not.toMatch(/SECRET|PRIVATE/)
     await emitIntegrationEvent(app.db,'source.lost',{private:'PAYLOADSECRET'},'ch')
@@ -38,10 +40,12 @@ describe('fila externa na API sem vazamento de credenciais', () => {
     const request = {method:'POST' as const,url:`/api/integration-deliveries/${row.id}/retry`,payload:{}}
     for (const state of ['QUEUED','SENDING','DELIVERED'] as const) {
       await app.db.update(integrationDeliveries).set({state}).where(eq(integrationDeliveries.id,row.id))
-      expect((await server.inject(request)).statusCode).toBe(409)
+      const review=await server.inject(`/api/integration-deliveries/${row.id}/review`)
+      expect((await server.inject({...request,headers:{'if-match':review.headers.etag!}})).statusCode).toBe(409)
     }
     await app.db.update(integrationDeliveries).set({state:'FAILED',attempts:8,lastError:'Falhou'}).where(eq(integrationDeliveries.id,row.id))
-    expect((await server.inject(request)).statusCode).toBe(200)
+    const review=await server.inject(`/api/integration-deliveries/${row.id}/review`)
+    expect((await server.inject({...request,headers:{'if-match':review.headers.etag!}})).statusCode).toBe(200)
     expect(await app.db.select().from(integrationDeliveries)).toEqual([expect.objectContaining({id:row.id,state:'QUEUED',attempts:0,lastError:null})])
     expect(app.sqlite.prepare("SELECT kind FROM operator_decisions WHERE kind='INTEGRATION_RETRY'").get()).toBeTruthy()
   })

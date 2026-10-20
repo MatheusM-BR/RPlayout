@@ -11,7 +11,7 @@ export function assertOperationalCadence(db:Pick<Db,'select'>,channel:Pick<Chann
   const current=db.select({audioChannels:channels.audioChannels}).from(channels).where(eq(channels.id,channel.id)).get()
   const published=payload.audioChannels??2
   if(![2,8,16].includes(published) || current && published!==current.audioChannels)throw new Error('Esta publicação usa outro barramento de áudio. Confira os pares e publique novamente; não é seguro descartar ou inventar canais de saída.')
-  if(payload.items)assertPublishedAudio(published,payload.items,payload.assets)
+  if(payload.items)assertPublishedAudio(published,payload.items,payload.assets,channel.rate)
   if(payload.rate){
     validateCadence(payload.rate)
     if(!sameRate(payload.rate,channel.rate))throw new Error('Esta publicação usa outra cadência. Consulte o histórico e publique a grade convertida; não é seguro reinterpretar seus quadros.')

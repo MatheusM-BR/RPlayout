@@ -22,15 +22,16 @@ beforeEach(async () => {
 afterEach(async () => { await server.close(); app.close(); vi.restoreAllMocks() })
 describe('HTTP público preserva referências executáveis privadas', () => {
   it('CRUD oculta URI/config, nome preserva credenciais e duas fontes não se confundem', async () => {
+    const headers=async()=>({'if-match':(await server.inject('/api/channels/ch/live-source-review')).headers.etag as string})
     const payload = { channelId: 'ch', name: 'EXTERNA ÇÃO', kind: 'SRT', targetUrl: raw, srtConfig: { mode: 'caller', host: '127.0.0.1', port: 9000, latencyMs: 120, passphrase: 'PRIVATE_SOURCE_SECRET' } }
-    const created = await server.inject({ method: 'POST', url: '/api/sources/live', payload })
+    const created = await server.inject({ method: 'POST', url: '/api/sources/live', headers:await headers(),payload })
     expect(created.statusCode).toBe(201); expect(created.body).not.toContain('PRIVATE_SOURCE_SECRET')
     const source = created.json(); expect(source.credentialProtected).toBe(true); expect(source.controlRef).toBe(sourceWire().reference(raw))
     expect((await server.inject(`/api/sources/live/${source.id}`)).json().controlRef).toBe(source.controlRef)
     expect((await server.inject('/api/sources/live?channelId=ch')).body).not.toContain('PRIVATE_SOURCE_SECRET')
-    expect((await server.inject({ method: 'PUT', url: `/api/sources/live/${source.id}`, payload: { name: 'NOVO APELIDO', targetUrl: source.controlRef } })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'PUT', url: `/api/sources/live/${source.id}`,headers:await headers(), payload: { name: 'NOVO APELIDO', targetUrl: source.controlRef } })).statusCode).toBe(200)
     expect(await getLiveSource(app.db, source.id, true)).toMatchObject({ name: 'NOVO APELIDO', targetUrl: raw, srtConfig: { passphrase: 'PRIVATE_SOURCE_SECRET' } })
-    const second = (await server.inject({ method: 'POST', url: '/api/sources/live', payload: { ...payload, targetUrl: raw.replace('PRIVATE_SOURCE_SECRET', 'SECOND_SOURCE_SECRET') } })).json()
+    const second = (await server.inject({ method: 'POST', url: '/api/sources/live',headers:await headers(), payload: { ...payload, targetUrl: raw.replace('PRIVATE_SOURCE_SECRET', 'SECOND_SOURCE_SECRET') } })).json()
     expect(second.controlRef).not.toBe(source.controlRef)
   })
   it('CUE de referência abre URI real; TAKE do preview acha o evento e conserva segredo privado', async () => {

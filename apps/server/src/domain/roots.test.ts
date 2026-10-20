@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase, type Db } from '../db/client.js'
-import { addRoot, browseServerFolders, contem, dentroDasPastas, labelFor, listRoots, recordingTarget, removeRoot } from './roots.js'
+import { addRoot, browseServerFolders, contem, dentroDasPastas, labelFor, listRoots, initializeRoots, recordingTarget, removeRoot } from './roots.js'
 
 let db: Db
 let base: string
@@ -90,12 +90,12 @@ describe('pastas do acervo', () => {
   it('banco vazio nasce com a pasta da variável de ambiente', async () => {
     // Quem já usava o sistema não pode perder o acervo por causa desta tabela.
     const raiz = pasta('midia')
-    const pastas = await listRoots(db, raiz)
+    const pastas = await initializeRoots(db, raiz)
     expect(pastas.map((entrada) => entrada.path)).toEqual([resolve(raiz)])
   })
 
   it('acrescenta uma segunda pasta', async () => {
-    await listRoots(db, pasta('midia'))
+    await initializeRoots(db, pasta('midia'))
     const resultado = await addRoot(db, pasta('comerciais'))
     expect(resultado.ok).toBe(true)
     expect(await listRoots(db, '')).toHaveLength(2)
@@ -115,25 +115,25 @@ describe('pastas do acervo', () => {
 
   it('recusa a mesma pasta duas vezes', async () => {
     const raiz = pasta('midia')
-    await listRoots(db, raiz)
+    await initializeRoots(db, raiz)
     expect(await addRoot(db, raiz)).toMatchObject({ ok: false })
   })
 
   it('recusa pasta dentro de outra que já está', async () => {
     // Seria varrida duas vezes, e o mesmo arquivo apareceria duas vezes no
     // explorador.
-    await listRoots(db, pasta('midia'))
+    await initializeRoots(db, pasta('midia'))
     expect(await addRoot(db, pasta('midia', 'vinhetas'))).toMatchObject({ ok: false })
   })
 
   it('recusa pasta que engloba uma que já está', async () => {
-    await listRoots(db, pasta('midia', 'vinhetas'))
+    await initializeRoots(db, pasta('midia', 'vinhetas'))
     expect(await addRoot(db, join(base, 'midia'))).toMatchObject({ ok: false })
   })
 
   it('tira uma pasta, mas nunca a última', async () => {
     const raiz = pasta('midia')
-    await listRoots(db, raiz)
+    await initializeRoots(db, raiz)
     const extra = await addRoot(db, pasta('comerciais'))
     expect(extra.ok).toBe(true)
     if (!extra.ok) return
@@ -148,7 +148,7 @@ describe('pastas do acervo', () => {
 
   it('pasta que sumiu do disco aparece marcada, não some da lista', async () => {
     const raiz = pasta('rede')
-    await listRoots(db, raiz)
+    await initializeRoots(db, raiz)
     rmSync(raiz, { recursive: true, force: true })
     const pastas = await listRoots(db, '')
     expect(pastas[0]?.present).toBe(false)

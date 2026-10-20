@@ -1,10 +1,10 @@
 import { and, asc, eq, inArray } from 'drizzle-orm'
-import { convertTrim, resolvedAudioRouting, validateAudioRouting, validateAuxiliaryPairs, knownInputAudioChannels, type AudioLevel, type EditScope, type Trim } from '@rplayout/protocol'
+import { convertTrim, resolvedAudioRouting, validateAudioRouting, validateAuxiliaryPairs, knownInputAudioChannels, validFileLoudness, type AudioLevel, type EditScope, type Trim } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
 import { channels, mediaAssets, rundownItems, rundowns } from '../db/schema.js'
 import {sealHistoryCapture} from './history.js'
 import {CollaborativeEditError} from './collaborative-edit.js'
-import {requireMixMeasurement} from './audio-mix-analysis.js'
+import {requireMixMeasurement,currentAudioCut} from './audio-mix-analysis.js'
 
 export interface ScopeResult {
   /** Quantos itens do rundown mudaram. */
@@ -149,17 +149,26 @@ export async function applyAudio(
     }
   }
   if(audio.mode==='AUTO' && routing.mode!=='DEFAULT' && !audio.analysisId)reject('O mix escolhido não tem medição de loudness própria. Meça o mix ou use ganho manual/sem ganho.')
-  if(routing.mode!=='DEFAULT'||audio.analysisId||audio.mode==='AUTO')for(let offset=0;offset<ids.length;offset+=400){
-    const rows=tx.select({id:rundownItems.id,title:rundownItems.title,audioTrack:rundownItems.audioTrack,audioChannels:mediaAssets.audioChannels,audioTracks:mediaAssets.audioTracks,hasAudio:mediaAssets.hasAudio,contentHash:mediaAssets.contentHash}).from(rundownItems).leftJoin(mediaAssets,eq(mediaAssets.id,rundownItems.mediaId)).where(inArray(rundownItems.id,ids.slice(offset,offset+400))).all()
+  if(audio.mode==='AUTO'&&routing.mode==='DEFAULT'&&!audio.analysisId){
+    const selected=audioTrack??tx.select({track:rundownItems.audioTrack}).from(rundownItems).where(eq(rundownItems.id,itemId)).get()?.track??0
+    if(selected>0)reject('A trilha escolhida não tem medição própria. Meça antes de usar AUTO.')
+    const asset=mediaId?tx.select().from(mediaAssets).where(eq(mediaAssets.id,mediaId)).get():null
+    const measured=asset?.loudnessFile
+    if(!asset||!validFileLoudness(measured,asset.contentHash))reject('O arquivo não tem medição completa válida salva no acervo. Meça novamente ou use ganho manual/sem ganho. Nenhum alvo foi alterado.')
+    audio={...audio,measured:measured??null}
+  }
+  const audioTargets=audio.analysisId&&scope==='ASSET_DEFAULT'?auxTargets:ids
+  if(routing.mode!=='DEFAULT'||audio.analysisId||audio.mode==='AUTO')for(let offset=0;offset<audioTargets.length;offset+=400){
+    const rows=tx.select({id:rundownItems.id,title:rundownItems.title,audioTrack:rundownItems.audioTrack,audioChannels:mediaAssets.audioChannels,audioTracks:mediaAssets.audioTracks,hasAudio:mediaAssets.hasAudio,contentHash:mediaAssets.contentHash}).from(rundownItems).leftJoin(mediaAssets,eq(mediaAssets.id,rundownItems.mediaId)).where(inArray(rundownItems.id,audioTargets.slice(offset,offset+400))).all()
     for(const item of rows){
       const selected=item.id===itemId?audioTrack??item.audioTrack??0:item.audioTrack??0
       if(audio.mode==='AUTO'&&selected>0&&!audio.analysisId)reject('A trilha escolhida não tem medição própria. Meça antes de usar AUTO.')
       if(audio.analysisId){
         if(!item.contentHash)reject('Entrada live não possui medição de arquivo. Use ganho manual/sem ganho.')
-        const measured=requireMixMeasurement(tx,audio.analysisId,item.contentHash!,selected,routing)
+        const measured=requireMixMeasurement(tx,audio.analysisId,item.contentHash!,selected,routing,()=>currentAudioCut(tx,item.id))
         // Never trust loudness numbers supplied by a client/imported preset.
         audio={...audio,measured}
-        if(scope==='ASSET_DEFAULT')requireMixMeasurement(tx,audio.analysisId!,item.contentHash!,0,routing)
+        if(scope==='ASSET_DEFAULT')requireMixMeasurement(tx,audio.analysisId!,item.contentHash!,0,routing,()=>currentAudioCut(tx,item.id))
       }
       // Audio metadata is independent of a complete video probe. A partial
       // probe must not turn a known two-channel track into an unknown input.

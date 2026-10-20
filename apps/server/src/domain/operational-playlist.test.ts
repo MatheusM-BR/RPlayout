@@ -5,7 +5,7 @@ import { channels, rundowns, rundownItems, operationalPlaylistRevisions, graphic
 import type { MediaWorkflow } from './media-workflow.js'
 import { getChannel, listItems } from '../db/repo.js'
 import { ChannelRuntime } from '../app.js'
-import { activeOperationalPlaylist, adjustPublishedLiveDuration, diffOperationalGraphics, diffOperationalItems, publishOperationalPlaylist, readOperationalPayload, rollbackOperationalPlaylist, simulateOperationalPlaylist } from './operational-playlist.js'
+import { activeOperationalPlaylist, adjustPublishedLiveDuration, diffOperationalGraphics, diffOperationalItems, publishOperationalPlaylist, readOperationalPayload, rollbackOperationalPlaylist, simulateOperationalPlaylist,assertOnAirMediaUnchanged } from './operational-playlist.js'
 
 let database: ReturnType<typeof openDatabase>
 let runtime: ChannelRuntime
@@ -23,6 +23,14 @@ beforeEach(async () => {
 afterEach(() => { runtime?.transport.close(); database.sqlite.close() })
 
 describe('playlist operacional separada da grade editorial', () => {
+  it.each(['sourceType','sourceEndpoint','fallbackMediaId'] as const)('protege %s de liveConfig sem impedir ajustar apenas duração',async field=>{
+    const base=await simulateOperationalPlaylist(database.db,runtime.channel,'rd'),item=base.items[0]!
+    const old={...base,items:[{...item,sourceRef:null,liveConfig:{sourceType:'NDI' as const,sourceEndpoint:'ndi:CAM',fallbackMediaId:null,estimatedDuration:500,maxDuration:null,autoFollowOnEnd:false}}]}
+    const changed={...old,items:[{...old.items[0]!,liveConfig:{...old.items[0]!.liveConfig,[field]:field==='sourceType'?'OMT':field==='sourceEndpoint'?'ndi:OTHER':'other-fallback'}}]}
+    expect(()=>assertOnAirMediaUnchanged(old,changed as typeof old,'live')).toThrow('fonte ou fallback')
+    const durationOnly={...old,items:[{...old.items[0]!,liveConfig:{...old.items[0]!.liveConfig,estimatedDuration:2000}}]}
+    expect(()=>assertOnAirMediaUnchanged(old,durationOnly,'live')).not.toThrow()
+  })
   async function delayedArchiveRuntime() {
     await database.db.insert(mediaAssets).values({ id: 'slow-asset', contentHash: 'a'.repeat(64), path: 'C:/original.mkv', title: 'VT', kind: 'VIDEO', durationFrames: 250, rateNum: 25, rateDen: 1, createdAt: now })
     await database.db.update(rundownItems).set({ type: 'VT', sourceRef: null, mediaId: 'slow-asset', durationOverride: null }).where(eq(rundownItems.id, 'live'))
@@ -100,9 +108,9 @@ describe('playlist operacional separada da grade editorial', () => {
     await runtime.refresh()
     expect(readOperationalPayload(published.payload).secondaryEvents).toEqual([event])
     expect(diffOperationalGraphics(readOperationalPayload(published.payload),await simulateOperationalPlaylist(database.db,runtime.channel,'rd'))).toEqual(['live'])
-    const trigger=vi.spyOn(runtime.graphics,'triggerLayer')
+    const trigger=vi.spyOn(runtime.graphics,'triggerLayerConfirmed')
     await runtime.transport.take('rd','live');runtime.fireDueGraphics()
-    await vi.waitFor(()=>expect(trigger).toHaveBeenCalledWith('LOWER_THIRD','SHOW',expect.objectContaining({template:expect.objectContaining({svg:'<svg><text>{{nome}}</text></svg>'}),values:{nome:'PUBLICADO'}})))
+    await vi.waitFor(()=>expect(trigger).toHaveBeenCalledWith('LOWER_THIRD','SHOW',expect.objectContaining({template:expect.objectContaining({svg:'<svg><text>{{nome}}</text></svg>'}),values:{nome:'PUBLICADO'}}),expect.any(Function),expect.any(Function)))
     runtime.fireDueGraphics()
     await vi.waitFor(async()=>expect((await database.db.select().from(secondaryEventRuns)).filter(row=>row.mode==='FIRE')).toHaveLength(1))
   })
@@ -115,10 +123,10 @@ describe('playlist operacional separada da grade editorial', () => {
     await database.db.delete(itemGraphics).where(eq(itemGraphics.id, 'cue'))
     await runtime.refresh()
     expect(runtime.cuesOf('live')).toEqual([])
-    const show = vi.spyOn(runtime.graphics, 'show')
+    const show = vi.spyOn(runtime.graphics, 'showConfirmed')
     await runtime.transport.take('rd', 'live')
     expect(runtime.fireDueGraphics()).toBe(true)
-    expect(show).toHaveBeenCalledWith(expect.objectContaining({ svg: '<svg><text>{{nome}}</text></svg>', name: 'Nome original' }), { nome: 'PUBLICADO' })
+    await vi.waitFor(()=>expect(show).toHaveBeenCalledWith(expect.objectContaining({ svg: '<svg><text>{{nome}}</text></svg>', name: 'Nome original' }), { nome: 'PUBLICADO' },expect.any(Function),expect.any(Function)))
     const edited = await simulateOperationalPlaylist(database.db, runtime.channel, 'rd')
     expect(diffOperationalGraphics(readOperationalPayload(first.payload), edited)).toEqual(['live'])
     const second = await publishOperationalPlaylist(database.db, runtime.channel, 'rd', 'editor')

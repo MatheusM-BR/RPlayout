@@ -13,6 +13,7 @@ import { createServer, type Socket } from 'node:net'
 // Media generation warms the exact private registry later used by the engine;
 // this is not a measurement/claim of cold-start time on an installed station.
 const workspace = fileURLToPath(new URL('..', import.meta.url))
+const archiveOnly=process.argv.includes('--archive-only')
 const argument = process.argv.indexOf('--package'), root = argument < 0 ? workspace : resolve(process.argv[argument + 1]!)
 const directory = await mkdtemp(join(tmpdir(), 'RPlayout-device-automation-'))
 const media = join(directory, 'media'); await mkdir(media)
@@ -78,6 +79,19 @@ async function awaitStableConfiguration() {
   // race another configuration or retry mutations: wait for its explicit gate.
   await wait('Recuperação não liberou reconfiguração', async () => (await api('/api/n1/state')).channels.some((row:any) => row.channelId==='automation' && row.health.ready && row.reconfiguration?.ready===true))
 }
+async function stopOwnServer() {
+  const own=child;child=null
+  if(!own || own.exitCode!==null || own.signalCode!==null)return
+  // Use the retained ChildProcess handle. Historical engine PIDs can be
+  // recycled; never kill them. Server exit closes its broker pipe and the
+  // broker drains the exact native Job family, independently of this verifier.
+  let timer:ReturnType<typeof setTimeout>|undefined
+  const exited=new Promise<void>(resolve=>own.once('exit',()=>resolve()))
+  own.kill('SIGKILL')
+  try {
+    await Promise.race([exited,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Servidor próprio não confirmou encerramento')),10_000)})])
+  }finally{if(timer)clearTimeout(timer)}
+}
 try {
   const now = new Date().toISOString(), hash = createHash('sha256').update(await readFile(file)).digest('hex')
   database.sqlite.prepare('INSERT INTO channels (id,name,rate_num,rate_den,width,height,target_lufs,ceiling_dbtp,limiter_lookahead_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run('automation', 'Automação isolada', 25, 1, 320, 180, -23, -1, 5, now)
@@ -112,6 +126,8 @@ try {
   assert.equal(externalTake.transport, 'NATIVE')
   assert.equal(externalTake.nativeProgramConfirmed, true)
   assert.equal(externalTake.physicalOutputValidated, false)
+  let sentBeforeBlocked=blocks.length
+  if(!archiveOnly){
   await wait('Consulta automática não foi persistida', () => Boolean(database.sqlite.prepare("SELECT 1 FROM secondary_event_runs WHERE event_id=? AND state='EXECUTED'").get(events[0].id)))
   assert.deepEqual(blocks, ['PING:'])
   const rejectedLoad = await api('/api/channels/automation/load-rundown', { rundownId: 'other' }, 409)
@@ -124,7 +140,7 @@ try {
   refuseAfterRoute = true
   const uncertain = await api(path(events[2]), {}, 409)
   assert.equal(uncertain.run.state, 'FIRING')
-  const sentBeforeBlocked = blocks.length
+  sentBeforeBlocked = blocks.length
   assert.equal((await api(path(events[3]), {}, 409)).run.state, 'FAILED')
   assert.equal(blocks.length, sentBeforeBlocked)
   await api('/api/v1/external/control', { requestId: randomUUID(), deviceId: device.id, targetDevice: 'VIDEOHUB_ROUTER', action: 'ROUTE_CROSSPOINT', params: { source: 2, destination: 4 } }, 409)
@@ -169,8 +185,8 @@ try {
   assert.equal((await api(`/api/outputs/${added.output.id}`,undefined,200,'DELETE',await configurationHeaders())).recoveryRequested,true)
   await wait('Remover saída não retomou PGM', async () => (await api('/api/n1/state')).channels.some((row:any) => row.channelId==='automation' && row.health.ready && row.state.onAir?.itemId==='vt'))
   assert.equal(blocks.length,sentBeforeBlocked,'Configuração de saídas repetiu automação externa')
-  const oldEngine = await engine(), oldServer = child!.pid!
-  child!.kill('SIGKILL'); await wait('Servidor não encerrou', () => !alive(oldServer)); await wait('Engine órfão', () => !alive(oldEngine), 10_000)
+  const oldEngine = await engine()
+  await stopOwnServer(); await wait('Engine órfão', () => !alive(oldEngine), 10_000)
   start(); await wait('PGM não retomou', async () => { try { return (await api('/api/n1/state')).channels.some((row: any) => row.channelId === 'automation' && row.health.ready && row.state.onAir?.itemId === 'vt') } catch { return false } })
   await engine()
   assert.equal(blocks.length, sentBeforeBlocked, 'Recuperação repetiu automação externa')
@@ -185,7 +201,9 @@ try {
   await api('/api/channels/automation/transport', { action: 'stop' })
   await wait('STOP não fechou as-run nativo', () => Boolean(database.sqlite.prepare("SELECT 1 FROM as_run WHERE ended_by='STOP' AND execution_kind='NATIVE' AND duration_evidence='ENGINE_POSITION'").get()))
   const beforeRestore = await engine()
-  assert.equal((await api(restoreUrl,{})).controlledInterruption,true)
+  const restoreReview=(await api(restoreUrl.replace(/\/restore$/,'/restore-review'))).review
+  const restoreHeaders={'if-match':`"project:${encodeURIComponent(restoreReview.channelId)}:${encodeURIComponent(restoreReview.projectId)}:${restoreReview.projectRevision}"`}
+  assert.equal((await api(restoreUrl,{reviewToken:restoreReview.token},200,'POST',restoreHeaders)).controlledInterruption,true)
   await wait('Restauração não encerrou engine com configuração antiga',() => !alive(beforeRestore),10_000)
   await wait('Restauração não deixou canal pronto e parado',async() => (await api('/api/n1/state')).channels.some((row:any) => row.channelId==='automation' && row.health.ready && row.state.onAir===null))
   assert.notEqual(await engine(),beforeRestore)
@@ -198,6 +216,15 @@ try {
   await api('/api/channels/automation/load-rundown', { rundownId: 'other' })
   assert.equal((await api('/api/n1/state')).channels.find((row: any) => row.channelId === 'automation').state.onAir, null)
   assert.equal(blocks.length, sentBeforeBlocked, 'Troca de grade disparou automação antiga')
+  }else{
+    // Replay only the failed final boundary with genuine native TAKE/STOP,
+    // then an empty playlist. No fabricated checkpoint or owner admission.
+    await api('/api/channels/automation/transport',{action:'stop'})
+    await awaitStableConfiguration()
+    await api('/api/channels/automation/load-rundown',{rundownId:'other'})
+    sentBeforeBlocked=blocks.length
+    assert.equal((await api('/api/n1/state')).channels.find((row:any)=>row.channelId==='automation').state.onAir,null)
+  }
   const extraChannel=await api('/api/channels',{name:'QA — mantém um canal ativo'})
   const extraId=extraChannel.channelId
   assert.ok(extraId,'Canal adicional não retornou identidade')
@@ -221,12 +248,21 @@ try {
   assert.ok(stateAudit.entries.some((row:any)=>row.kind==='CHANNEL_REACTIVATED'))
   assert.equal(blocks.length,sentBeforeBlocked,'Arquivar/reativar repetiu automação externa')
   console.log(JSON.stringify({result:'PASS',directory,channelArchiveRetiresEngine:true,asRunAndPublicationPreserved:true,reactivationDoesNotStartEngineOrTake:true,channelAuditReadable:true,physicalOutputValidated:false}))
-  console.log(JSON.stringify({result:'PASS',directory,geometryRebuildResumesPgm:true,cadenceChangeRefusesFrameReinterpretation:true,outputCreationDisableDeleteResumePgm:true,hotOutputKeepsEngineAndPgm:true,configurationDoesNotReplayAutomation:true,projectRestoreRebuildsStoppedEngine:true,publishedHistoryPreserved:true,physicalOutputValidated:false}))
-  console.log(JSON.stringify({ result: 'PASS', evidence: 'COMPILED_NATIVE_PGM_AND_LOCAL_DEVICE_AUTOMATION', directory, root, port, equipmentPort, revisionId: publishedRevision, programmedWithoutSending: true, nativePgmRequired: true, pingWithoutRouting: true, manualDuplicateNotResent: true, unknownRouteBlocksNext: true, serviceCannotBypassUncertainty: true, externalTakeDoesNotInferNext: true, externalTakeReportsNativeConfirmation: true, controlledRestartResumesWithoutReplay: true, acknowledgementDoesNotReplay: true, recoveryDoesNotReplay: true, secondaryRuns: 4, historicalRateAndNativeCursorInAsRun: true, playlistActivationPreservesPgm: true, previewPublisherEnabled: false, localProtocolBlocks: blocks, physicalOutputValidated: false }))
+  if(archiveOnly){
+    console.log(JSON.stringify({result:'PASS',evidence:'SCOPED_NATIVE_ARCHIVE_REPLAY_NOT_FULL_AUTOMATION',directory,root,port,equipmentPort,revisionId:publishedRevision,nativeTakeAndStop:true,protectedStoppedCheckpointPreserved:true,localProtocolBlocks:blocks,physicalOutputValidated:false}))
+  }else{
+    console.log(JSON.stringify({result:'PASS',directory,geometryRebuildResumesPgm:true,cadenceChangeRefusesFrameReinterpretation:true,outputCreationDisableDeleteResumePgm:true,hotOutputKeepsEngineAndPgm:true,configurationDoesNotReplayAutomation:true,projectRestoreRebuildsStoppedEngine:true,publishedHistoryPreserved:true,physicalOutputValidated:false}))
+    console.log(JSON.stringify({ result: 'PASS', evidence: 'COMPILED_NATIVE_PGM_AND_LOCAL_DEVICE_AUTOMATION', directory, root, port, equipmentPort, revisionId: publishedRevision, programmedWithoutSending: true, nativePgmRequired: true, pingWithoutRouting: true, manualDuplicateNotResent: true, unknownRouteBlocksNext: true, serviceCannotBypassUncertainty: true, externalTakeDoesNotInferNext: true, externalTakeReportsNativeConfirmation: true, controlledRestartResumesWithoutReplay: true, acknowledgementDoesNotReplay: true, recoveryDoesNotReplay: true, secondaryRuns: 4, historicalRateAndNativeCursorInAsRun: true, playlistActivationPreservesPgm: true, previewPublisherEnabled: false, localProtocolBlocks: blocks, physicalOutputValidated: false }))
+  }
 } finally {
-  child?.kill('SIGKILL')
-  for (const pid of ownedEngines) if (alive(pid)) { try { process.kill(pid) } catch {} }
-  for (const socket of sockets) socket.destroy()
-  await new Promise<void>(resolve => peer.close(() => resolve()))
-  database.sqlite.close()
+  try {
+    await stopOwnServer()
+    // Read-only disappearance observations; a timeout is a diagnostic failure,
+    // never authority to terminate an unrelated incarnation using a stale PID.
+    await wait('Família nativa própria ainda não encerrou após EOF',()=>[...ownedEngines].every(pid=>!alive(pid)),10_000)
+  }finally{
+    for (const socket of sockets) socket.destroy()
+    await new Promise<void>(resolve => peer.close(() => resolve()))
+    database.sqlite.close()
+  }
 }

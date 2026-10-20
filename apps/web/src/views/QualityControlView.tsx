@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
-import { durationIn, qcApproved, type Channel, type ManagedLiveSource, type SrtTelemetry } from '@rplayout/protocol'
+import { durationIn, qcApproved, type Channel, type ManagedLiveSource } from '@rplayout/protocol'
 import type { LibraryFolder, LibraryAsset, ScanStatus, Live } from '../types.js'
 import type { Monitors as MonitorFeeds } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
@@ -11,15 +11,26 @@ import { canonicalLiveSourceRef, sameLiveSource } from '../liveSource.js'
 import { monitorAudioStatistics } from '../components/broadcast/audio-analysis.js'
 import { QcWorkflowPanel } from '../components/broadcast/QcWorkflowPanel.js'
 import { QcInspectionControls } from '../components/broadcast/QcInspectionControls.js'
-import {qcOriginalUrl,qcQualityFrameUrl,qcQualitySelected,qcInspectionUsesFrames,qcMonitorLabels} from '../domain/media-preview.js'
+import { QcSafeAreaOverlay } from '../components/broadcast/QcSafeAreaOverlay.js'
+import {qcOriginalUrl,qcQualityFrameUrl,qcQualitySelected,qcInspectionUsesFrames,qcMonitorLabels,qcInspectionFrameAtTime,qcInspectionVideoHasPicture,qcQualityFrameFailed} from '../domain/media-preview.js'
 import {useQcLiveInspection} from '../domain/use-qc-live-inspection.js'
-import {qcLivePreviewReady} from '../domain/qc-live-preview.js'
+import {qcLivePreviewReady,qcLiveTuningFeedback} from '../domain/qc-live-preview.js'
+import {qcFrameProgress,qcLiveFrameRecent,qcScopePixels,qcStableMeasurements,type QcFrameProgress} from '../domain/qc-scope-sample.js'
+import {QcRenderCost} from '../domain/qc-render-cost.js'
+import {drawQcParade} from '../domain/qc-parade-draw.js'
+import {QcVectorColor} from '../domain/qc-vector-color.js'
+import {retryMediaJobs} from '../domain/media-job-retry.js'
+import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
+import {QcMediaRetryControl} from '../components/broadcast/QcMediaRetryControl.js'
 import {commandRequestId} from '../domain/request-id.js'
 import {qcReviewMatches} from '../domain/qc-review.js'
+import {useQcLiveInputs} from '../domain/use-qc-live-inputs.js'
+import {QcLiveSourceRow} from '../components/broadcast/QcLiveSourceRow.js'
 import type {QcReview} from '@rplayout/protocol'
 
 interface Props {
   folders: LibraryFolder[]
+  libraryLoaded?: boolean
   scan: ScanStatus | null
   onAccept: (assetId: string,review:QcReview) => void | Promise<void>
   onIgnore: (assetId: string,review:QcReview) => void | Promise<void>
@@ -35,6 +46,7 @@ interface Props {
   /** Abre a fonte ao vivo diretamente no barramento de preview do engine. */
   monitors?: MonitorFeeds | null
   signals?: Live['transport']['liveSources']
+  transportMode?: Live['transport']['mode']
   previewTarget?: Live['transport']['preview']
   onMediaChanged?: () => void
   onPreviewLiveSource?: (sourceRef: string, title: string) => void
@@ -42,8 +54,13 @@ interface Props {
 
 type ScopeViewMode = 'QUAD' | 'VECTORSCOPE' | 'WAVEFORM' | 'PARADE'
 
-export function QualityControlView({
+export function QualityControlView(props:Props){
+  return <QualityControlSession key={props.channel.id} {...props}/>
+}
+
+function QualityControlSession({
   folders,
+  libraryLoaded = true,
   scan,
   onAccept,
   onIgnore,
@@ -58,6 +75,7 @@ export function QualityControlView({
   onOpenSettings,
   monitors = null,
   signals = [],
+  transportMode,
   previewTarget,
   onMediaChanged,
   onPreviewLiveSource,
@@ -68,6 +86,15 @@ export function QualityControlView({
   const assets: LibraryAsset[] = useMemo(() => folders.flatMap((f) => f.assets), [folders])
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(() => assets[0]?.id ?? null)
   const [selectedLiveSourceId, setSelectedLiveSourceId] = useState<string | null>(null)
+  const [,setSignalTick]=useState(0)
+  const signalNow=Date.now()
+  // One clock for the visible list: lost WebSocket updates must not freeze a
+  // cached READY badge. No per-source polling or native connection is added.
+  useEffect(()=>{
+    if(!selectedLiveSourceId)return
+    const timer=window.setInterval(()=>setSignalTick(value=>value+1),1000)
+    return()=>window.clearInterval(timer)
+  },[selectedLiveSourceId])
 
   useEffect(() => {
     if (!selectedLiveSourceId && assets.length > 0 && (!selectedAssetId || !assets.some((a) => a.id === selectedAssetId))) {
@@ -93,43 +120,37 @@ export function QualityControlView({
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'VIDEO' | 'AUDIO'>('ALL')
   const [scopeMode, setScopeMode] = useState<ScopeViewMode>('QUAD')
-  const [liveInputs, setLiveInputs] = useState<ManagedLiveSource[]>([])
-  const [liveTelemetry, setLiveTelemetry] = useState<Record<string, SrtTelemetry>>({})
+  const liveCatalog=useQcLiveInputs(channel.id)
+  const liveInputs=liveCatalog.sources,liveTelemetry=liveCatalog.telemetry
   const selectedLiveSource = liveInputs.find((source) => source.id === selectedLiveSourceId) ?? null
   const liveSourceRef=selectedLiveSource?canonicalLiveSourceRef(selectedLiveSource):null
   const [liveQualitySelection,setLiveQualitySelection]=useState<{key:string;id:string}|null>(null)
+  const [liveTuningKey,setLiveTuningKey]=useState<string|null>(null)
   const liveQualityKey=JSON.stringify([channel.id,selectedLiveSourceId,liveSourceRef])
   const liveQualityActive=Boolean(selectedLiveSource && liveQualitySelection?.key===liveQualityKey)
-  const livePreviewReady=qcLivePreviewReady(liveSourceRef,previewTarget,signals)
+  const livePreviewReady=qcLivePreviewReady(liveSourceRef,previewTarget,signals,transportMode)
+  useEffect(()=>{
+    if(livePreviewReady && liveTuningKey===liveQualityKey)setLiveTuningKey(null)
+  },[livePreviewReady,liveTuningKey,liveQualityKey])
   const liveInspection=useQcLiveInspection(channel.id,liveSourceRef,liveQualityActive && livePreviewReady,liveQualitySelection?.id)
   const watchLightPreview=useCallback(()=>{void api.watching(channel.id,'pvw').catch(()=>{})},[channel.id])
 
   const selectLiveSource = useCallback((source: ManagedLiveSource) => {
+    if(!liveCatalog.canSelect||!source.enabled)return
     setLiveQualitySelection(null)
     setIsMuted(true)
     setSelectedAssetId(null)
     setSelectedLiveSourceId(source.id)
-    setQcStatusFeedback(`Sintonizando ${source.name} diretamente no preview…`)
+    setQcStatusFeedback(null)
+    setLiveTuningKey(JSON.stringify([channel.id,source.id,canonicalLiveSourceRef(source)]))
     onPreviewLiveSource?.(canonicalLiveSourceRef(source), source.name)
-  }, [onPreviewLiveSource])
+  }, [onPreviewLiveSource,channel.id,liveCatalog.canSelect])
 
   // O QC de acervo não tenta decodificar NDI/SRT/RTMP no browser. Ele mostra a
   // mesma lista de ingest do servidor e as métricas que o processo realmente
   // publicou, para que uma fonte não desapareça simplesmente por ser ao vivo.
-  useEffect(() => {
-    let mounted = true
-    const refresh = async () => {
-      try {
-        const [sources, telemetry] = await Promise.all([api.liveSources(channel.id), api.srtTelemetry()])
-        if (mounted) { setLiveInputs(sources); setLiveTelemetry(telemetry) }
-      } catch {
-        if (mounted) { setLiveInputs([]); setLiveTelemetry({}) }
-      }
-    }
-    void refresh()
-    const interval = window.setInterval(() => void refresh(), 3000)
-    return () => { mounted = false; window.clearInterval(interval) }
-  }, [channel.id])
+  // Catalog identity and SRT telemetry have independent bounded GET lifecycles.
+  // A telemetry outage must not erase the selected NDI/OMT/SDI source/player.
 
   // Modos de reprodução e fallback
   const [videoError, setVideoError] = useState(false)
@@ -144,8 +165,17 @@ export function QualityControlView({
   const monitorLabels=qcMonitorLabels(Boolean(selectedLiveSourceId),qualityActive,framesOnly)
   const pendingPositionRef=useRef<number|null>(null)
   const playerFrameRef=useRef<HTMLDivElement>(null)
-  const [failedMediaJobs, setFailedMediaJobs] = useState<string[]>([])
+  const [failedMediaJobs, setFailedMediaJobs] = useState<Array<{id:string;retryRequiresConfirmation:boolean}>>([])
+  const [retryingMedia,setRetryingMedia]=useState(false)
+  const proxyGeneration=useRef(0)
+  const workflowReads=useRef(new BoundedLatestRead())
+  const mediaRetryGeneration=useRef<number|null>(null)
   const [framePos, setFramePos] = useState(0)
+  const inspectionFrameUrl=selectedAsset?(qualityActive?qcQualityFrameUrl(selectedAsset,framePos):`/api/assets/${selectedAsset.id}/frame/${framePos}.jpg?total=24`):null
+  const [failedQualityFrame,setFailedQualityFrame]=useState<string|null>(null)
+  const qualityFrameUnavailable=qcQualityFrameFailed(Boolean(selectedLiveSourceId),qualityActive&&framesOnly,inspectionFrameUrl,failedQualityFrame)
+  const inspectionFrameUrlRef=useRef(inspectionFrameUrl)
+  inspectionFrameUrlRef.current=inspectionFrameUrl
 
   // Player controls
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -155,12 +185,14 @@ export function QualityControlView({
   // antiga/nula enquanto a imagem já está visível no player.
   const [sharedPreviewVideo, setSharedPreviewVideo] = useState<HTMLVideoElement | null>(null)
   const frameImgRef = useRef<HTMLImageElement>(null)
+  const safeAreaMedia=useCallback(()=>selectedLiveSourceId?sharedPreviewVideo:framesOnly?(qualityFrameUnavailable?null:frameImgRef.current):videoRef.current,[selectedLiveSourceId,sharedPreviewVideo,framesOnly,qcSelectionKey,playbackUrl,inspectionFrameUrl,qualityFrameUnavailable])
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTimeSec, setCurrentTimeSec] = useState(0)
   const [videoDurationSec, setVideoDurationSec] = useState(0)
   const [isMuted, setIsMuted] = useState(false)
   const [volume, setVolume] = useState(0.8)
   const [qcStatusFeedback, setQcStatusFeedback] = useState<string | null>(null)
+  const visibleQcStatusFeedback=qcStatusFeedback ?? qcLiveTuningFeedback(liveTuningKey,liveQualityKey,selectedLiveSource?.name,livePreviewReady)
 
   // Telemetria dinâmica dos escopos
   const [waveformStats, setWaveformStats] = useState<{ minIre: number; maxIre: number; avgIre: number; clipping: boolean } | null>(null)
@@ -172,21 +204,40 @@ export function QualityControlView({
   const waveformCanvasRef = useRef<HTMLCanvasElement>(null)
   const paradeCanvasRef = useRef<HTMLCanvasElement>(null)
   const audioSpectrumCanvasRef = useRef<HTMLCanvasElement>(null)
+  const scopeAudioBuffersRef=useRef({frequency:new Uint8Array(0),left:new Float32Array(0),right:new Float32Array(0)})
   const scopeSampleReadyRef = useRef(false)
   // WHEP pode expor um intervalo curto sem frame enquanto mantém o último
   // quadro no player. Os scopes devem espelhar esse comportamento e jamais
   // piscar para preto por uma leitura transitória que falhou.
   const lastScopePixelsRef = useRef<Uint8ClampedArray | null>(null)
+  const liveScopeProgressRef = useRef<QcFrameProgress | null>(null)
   // Desenhar quatro scopes é relativamente caro. A entrada pode entregar 60
   // callbacks/s, mas atualizar os canvases nessa taxa disputa a thread da UI
   // com o WHEP e produz justamente o sintoma de imagem presente com scope
   // intermitente. Limitamos a análise a 10 Hz, suficiente para inspeção QC e
   // sem perder o último quadro real.
   const lastScopeRenderAtRef = useRef(0)
+  const scopeCostRef=useRef(new QcRenderCost())
+  const lastScopeCostReportRef=useRef(0)
+  const [scopeCost,setScopeCost]=useState<ReturnType<QcRenderCost['snapshot']>>(null)
+  useEffect(()=>{
+    scopeCostRef.current.reset()
+    lastScopeCostReportRef.current=0
+    setScopeCost(null)
+  },[channel.id,selectedAsset?.id,selectedAsset?.contentHash,selectedLiveSource?.id,qualityActive,framesOnly,scopeMode])
   const [scopeSampleReady, setScopeSampleReady] = useState(false)
+
+  // A different JPEG is a different sample. Do not retain the previous frame's
+  // measurements while loading it, or present a failed quality request as QC.
+  useEffect(()=>{
+    if(!framesOnly)return
+    lastScopePixelsRef.current=null;scopeSampleReadyRef.current=false
+    setScopeSampleReady(false);setWaveformStats(null);setVectorscopeStats(null)
+  },[inspectionFrameUrl,framesOnly,qualityFrameUnavailable])
 
   useEffect(()=>{
     if(!selectedLiveSourceId)return
+    liveScopeProgressRef.current=null
     lastScopePixelsRef.current=null;scopeSampleReadyRef.current=false
     setScopeSampleReady(false);setWaveformStats(null);setVectorscopeStats(null)
     setAudioMeter({peakL:-100,peakR:-100,phase:null,active:false})
@@ -237,12 +288,14 @@ export function QualityControlView({
     setCurrentTimeSec(0)
     setVideoDurationSec(0)
     setVideoError(false)
+    setFailedQualityFrame(null)
     setFramePos(0)
     if (videoRef.current) {
       videoRef.current.currentTime = 0
       videoRef.current.pause()
     }
     lastScopePixelsRef.current = null
+    liveScopeProgressRef.current = null
     scopeSampleReadyRef.current = false
     setScopeSampleReady(false)
     setWaveformStats(null)
@@ -252,29 +305,39 @@ export function QualityControlView({
   useEffect(() => {
     let active = true
     let ready = false
+    proxyGeneration.current++
+    workflowReads.current.cancel()
+    mediaRetryGeneration.current=null
     setProxyUrl(null)
     setFailedMediaJobs([])
+    setRetryingMedia(false)
     if (!selectedAsset || selectedLiveSource) return
     const id = selectedAsset.id, hash = selectedAsset.contentHash
     const load = async () => {
+      if(mediaRetryGeneration.current===proxyGeneration.current)return
+      const reading=workflowReads.current.start(false)
+      if(!reading)return
       try {
-        const workflow = await api.mediaWorkflow(id,hash)
-        if (!active) return
+        const workflow = await api.mediaWorkflow(id,hash,reading.signal)
+        if (!active||!reading.isCurrent()) return
         const version = workflow.versions.find(candidate => candidate.content_hash === hash)
         const failures = version?.jobs.filter(job => job.state === 'FAILED') ?? []
-        setFailedMediaJobs(failures.map(job => job.id))
+        setFailedMediaJobs(failures.map(job => ({id:job.id,retryRequiresConfirmation:job.retryRequiresConfirmation})))
         setProxyMessage(workflow.previewReady ? 'Proxy leve • 240p / 10 fps. Medições técnicas do arquivo original.'
           : failures.length ? `Preview indisponível: ${failures[0]?.error ?? 'falha na fila de mídia'}`
+          : version?.jobs.find(job=>job.ownershipMessage)?.ownershipMessage
+            ? version.jobs.find(job=>job.ownershipMessage)!.ownershipMessage!
           : selectedAsset.probeError ? `Arquivo indisponível: ${selectedAsset.probeError}`
           : !version ? 'Arquivo ainda não versionado para preview. Reescaneie o acervo.'
           : 'Proxy em preparação. A régua de quadros permanece disponível.')
         setProxyUrl(workflow.previewUrl)
         if (workflow.previewReady && !ready) { ready = true; if(!qualityActiveRef.current)setVideoError(false) }
-      } catch (error) { if (active) setProxyMessage(error instanceof Error ? error.message : 'Não foi possível consultar a fila de mídia.') }
+      } catch (error) { if (active&&reading.isCurrent()) setProxyMessage(reading.timedOut()?'Consulta da fila demorou demais. O estado dos trabalhos não foi alterado.':error instanceof Error ? error.message : 'Não foi possível consultar a fila de mídia.') }
+      finally{reading.finish()}
     }
     void load()
     const timer = setInterval(() => void load(), 3000)
-    return () => { active = false; clearInterval(timer) }
+    return () => { active = false;proxyGeneration.current++; workflowReads.current.cancel(); clearInterval(timer) }
   }, [selectedAsset?.id, selectedAsset?.contentHash, selectedLiveSource?.id])
 
   // Análise do áudio do proxy/monitor, antes do volume de escuta.
@@ -368,9 +431,16 @@ export function QualityControlView({
 
   // Função central de renderização dos escopos (Waveform, Vectorscope, Parade, Áudio)
   const renderScopes = useCallback((force = false) => {
+    // Hidden QC must not compete with decoding or the on-air controls.
+    // The next visible render recomputes freshness from the playback clock.
+    if(document.hidden)return
     const now = performance.now()
     if (!force && now - lastScopeRenderAtRef.current < 100) return
     lastScopeRenderAtRef.current = now
+    if(selectedLiveSource && sharedPreviewVideo){
+      liveScopeProgressRef.current=qcFrameProgress(liveScopeProgressRef.current,sharedPreviewVideo.currentTime,now)
+    }
+    const liveFrameValid=!selectedLiveSource || livePreviewReady && qcLiveFrameRecent(liveScopeProgressRef.current,now)
     let pixels: Uint8ClampedArray | null = null
     const sCanvas = sampleCanvasRef.current
     if (sCanvas) {
@@ -378,8 +448,8 @@ export function QualityControlView({
       if (sCtx) {
         const sourceEl = selectedLiveSource ? sharedPreviewVideo
           : selectedAsset?.probeError && !playbackUrl ? null
-          : framesOnly ? frameImgRef.current : videoRef.current
-        if (sourceEl) {
+          : framesOnly ? (qualityFrameUnavailable?null:frameImgRef.current) : videoRef.current
+        if (sourceEl && liveFrameValid) {
           try {
             // Não aceite um canvas transparente/sem decoder como amostra. Em
             // WHEP `loadedmetadata` pode anteceder o primeiro frame real.
@@ -393,9 +463,9 @@ export function QualityControlView({
             sCtx.drawImage(sourceEl, 0, 0, 160, 90)
             const imgData = sCtx.getImageData(0, 0, 160, 90)
             pixels = imgData.data
-            // Copia o buffer: ImageData/canvas pode ser reutilizado pelo
-            // navegador no próximo ciclo de composição.
-            lastScopePixelsRef.current = new Uint8ClampedArray(pixels)
+            // getImageData returns an independent snapshot; drawing into the
+            // canvas later does not mutate it. Retain it without another copy.
+            lastScopePixelsRef.current = pixels
           } catch {
             // Não apaga a última amostra durante uma lacuna do decoder.
           }
@@ -406,11 +476,12 @@ export function QualityControlView({
     // Sem frame novo, reutiliza o último RGBA real. Isto mantém waveform,
     // vectorscope e parade estáveis durante jitter/reconfiguração do WHEP;
     // ao trocar a fonte o efeito acima limpa explicitamente a amostra.
-    const samplePixels = pixels ?? lastScopePixelsRef.current
+    const samplePixels = qcScopePixels(Boolean(selectedLiveSource),liveFrameValid && !qualityFrameUnavailable,pixels,lastScopePixelsRef.current)
     const hasPixels = samplePixels !== null
     if (scopeSampleReadyRef.current !== hasPixels) {
       scopeSampleReadyRef.current = hasPixels
       setScopeSampleReady(hasPixels)
+      if(!hasPixels){setWaveformStats(null);setVectorscopeStats(null)}
     }
 
     // 1. Renderiza Vectorscope de Alta Definição Digital (ITU-R BT.709)
@@ -518,6 +589,7 @@ export function QualityControlView({
         // Renderização digital de alta definição dos pontos cromáticos reais amostrados
         if (samplePixels) {
           let maxDist = 0
+          const pointColor=new QcVectorColor(vCtx)
           const dotSize = w > 240 ? 1.5 : 1.2
           for (let i = 0; i < samplePixels.length; i += 8) {
             const r = samplePixels[i] ?? 0
@@ -531,12 +603,12 @@ export function QualityControlView({
             const py = cy - (cr / 128) * rMax
 
             // Desenho com cor calibrada e luminescência digital nítida
-            vCtx.fillStyle = `rgba(${Math.max(60, r)}, ${Math.max(100, g)}, ${Math.max(120, b)}, 0.65)`
+            pointColor.select(r,g,b)
             vCtx.fillRect(px, py, dotSize, dotSize)
           }
 
           const satPercent = Math.round((maxDist / 128) * 100)
-          setVectorscopeStats({ maxSat: satPercent, legalGamut: satPercent <= 100 })
+          setVectorscopeStats(previous=>qcStableMeasurements(previous,{ maxSat: satPercent, legalGamut: satPercent <= 100 }))
         } else {
           setVectorscopeStats(null)
         }
@@ -644,12 +716,12 @@ export function QualityControlView({
           }
 
           const avgI = cnt > 0 ? sumI / cnt : 0
-          setWaveformStats({
+          setWaveformStats(previous=>qcStableMeasurements(previous,{
             minIre: Math.round(minI * 10) / 10,
             maxIre: Math.round(maxI * 10) / 10,
             avgIre: Math.round(avgI * 10) / 10,
             clipping: maxI > 100 || minI < 0,
-          })
+          }))
         } else {
           setWaveformStats(null)
         }
@@ -708,24 +780,7 @@ export function QualityControlView({
 
         if (samplePixels) {
           const dotSize = w > 400 ? 1.8 : 1.2
-          for (let sy = 0; sy < 90; sy += 2) {
-            for (let sx = 0; sx < 160; sx += 2) {
-              const idx = (sy * 160 + sx) * 4
-              const r = samplePixels[idx] ?? 0
-              const g = samplePixels[idx + 1] ?? 0
-              const b = samplePixels[idx + 2] ?? 0
-              const colFrac = sx / 160
-
-              pCtx.fillStyle = 'rgba(255, 51, 75, 0.45)'
-              pCtx.fillRect(colFrac * colW, y0 - (r / 255) * hRange, dotSize, dotSize)
-
-              pCtx.fillStyle = 'rgba(0, 230, 118, 0.45)'
-              pCtx.fillRect(colW + colFrac * colW, y0 - (g / 255) * hRange, dotSize, dotSize)
-
-              pCtx.fillStyle = 'rgba(56, 155, 255, 0.45)'
-              pCtx.fillRect(colW * 2 + colFrac * colW, y0 - (b / 255) * hRange, dotSize, dotSize)
-            }
-          }
+          drawQcParade(pCtx,samplePixels,colW,y0,hRange,dotSize)
         }
       }
     }
@@ -742,13 +797,20 @@ export function QualityControlView({
 
         let freqData: Uint8Array | null = null
         if (analyserRef.current && isPlaying) {
-          const data = new Uint8Array(analyserRef.current.frequencyBinCount)
+          if(scopeAudioBuffersRef.current.frequency.length!==analyserRef.current.frequencyBinCount)scopeAudioBuffersRef.current.frequency=new Uint8Array(analyserRef.current.frequencyBinCount)
+          const data = scopeAudioBuffersRef.current.frequency
           analyserRef.current.getByteFrequencyData(data)
           freqData = data
         }
 
         const bars = 24
         const barW = (w - (bars - 1) * 1.5) / bars
+        // All bars share the same vertical scale: one gradient per canvas pass.
+        const spectrumGradient = aCtx.createLinearGradient(0, h, 0, 0)
+        spectrumGradient.addColorStop(0, '#00E676')
+        spectrumGradient.addColorStop(0.65, '#FFD600')
+        spectrumGradient.addColorStop(0.85, '#FF9500')
+        spectrumGradient.addColorStop(1, '#FF334B')
 
         for (let b = 0; b < bars; b++) {
           // Sem amostra real do analisador, não desenha um espectro falso.
@@ -758,12 +820,7 @@ export function QualityControlView({
           const by = h - barH - 2
 
           // Gradiente digital nítido: Verde (-60 a -18 dBFS) -> Amarelo (-18 a -9 dBFS) -> Vermelho (-9 a 0 dBFS)
-          const grad = aCtx.createLinearGradient(0, h, 0, 0)
-          grad.addColorStop(0, '#00E676')
-          grad.addColorStop(0.65, '#FFD600')
-          grad.addColorStop(0.85, '#FF9500')
-          grad.addColorStop(1, '#FF334B')
-          aCtx.fillStyle = grad
+          aCtx.fillStyle = spectrumGradient
           aCtx.fillRect(bx, by, barW, barH)
 
           // Peak hold bar
@@ -775,11 +832,21 @@ export function QualityControlView({
       }
     }
     if (isPlaying && leftAnalyserRef.current && rightAnalyserRef.current && audioCtxRef.current?.state === 'running') {
-      const left = new Float32Array(leftAnalyserRef.current.fftSize), right = new Float32Array(rightAnalyserRef.current.fftSize)
+      const buffers=scopeAudioBuffersRef.current
+      if(buffers.left.length!==leftAnalyserRef.current.fftSize)buffers.left=new Float32Array(leftAnalyserRef.current.fftSize)
+      if(buffers.right.length!==rightAnalyserRef.current.fftSize)buffers.right=new Float32Array(rightAnalyserRef.current.fftSize)
+      const {left,right}=buffers
       leftAnalyserRef.current.getFloatTimeDomainData(left); rightAnalyserRef.current.getFloatTimeDomainData(right)
-      setAudioMeter(monitorAudioStatistics(left, right))
-    } else setAudioMeter({ peakL: -100, peakR: -100, phase: null, active: false })
-  }, [framesOnly, isPlaying, sharedPreviewVideo, playbackUrl, selectedLiveSource, selectedAsset?.probeError])
+      const nextAudioMeter = monitorAudioStatistics(left, right)
+      setAudioMeter(previous=>qcStableMeasurements(previous,nextAudioMeter))
+    } else setAudioMeter(previous=>qcStableMeasurements(previous,{ peakL: -100, peakR: -100, phase: null, active: false }))
+    scopeCostRef.current.add(performance.now()-now)
+    if(now-lastScopeCostReportRef.current>=1000){
+      lastScopeCostReportRef.current=now
+      const next=scopeCostRef.current.snapshot()
+      if(next)setScopeCost(previous=>qcStableMeasurements(previous,next))
+    }
+  }, [framesOnly, qualityFrameUnavailable, inspectionFrameUrl, isPlaying, sharedPreviewVideo, playbackUrl, selectedLiveSource, selectedAsset?.probeError,livePreviewReady])
 
   // O WHEP chama renderScopes em cada frame decodificado. Este pequeno
   // fallback cobre navegadores sem requestVideoFrameCallback e mídia local,
@@ -790,7 +857,7 @@ export function QualityControlView({
     // Once the player stops, 4 Hz keeps inspection responsive without full-rate decoding.
     const interval = window.setInterval(() => renderScopes(), isPlaying || selectedLiveSource ? 100 : 250)
     return () => window.clearInterval(interval)
-  }, [isPlaying, renderScopes, currentTimeSec, selectedAsset?.id, selectedLiveSource?.id, scopeMode])
+  }, [isPlaying, renderScopes, selectedAsset?.id, selectedLiveSource?.id, scopeMode])
 
   // Atalho de teclado para Barra de Espaço (Play/Pause)
   useEffect(() => {
@@ -1010,23 +1077,23 @@ export function QualityControlView({
                 </span>
               </div>
               <div className="flex items-center gap-3 font-label-mono text-[10px] text-outline">
-                <span>Total: <strong className="text-on-surface">{assets.length}</strong></span>
+                <span>Total: <strong className="text-on-surface">{libraryLoaded ? assets.length : 'N/D'}</strong></span>
                 <span>•</span>
-                <span className="text-status-ok-bright font-bold">{okCount} OK</span>
+                <span className="text-status-ok-bright font-bold">{libraryLoaded ? okCount : 'N/D'} OK</span>
                 <span>•</span>
-                <span className="text-primary font-bold">{pendingCount} PENDENTES</span>
+                <span className="text-primary font-bold">{libraryLoaded ? pendingCount : 'N/D'} PENDENTES</span>
                 <span>•</span>
-                <span className="text-armed-amber font-bold">{alertCount} ALERTAS</span>
+                <span className="text-armed-amber font-bold">{libraryLoaded ? alertCount : 'N/D'} ALERTAS</span>
                 <span>•</span>
-                <span className="text-outline">{ignoredCount} IGNORADOS</span>
+                <span className="text-outline">{libraryLoaded ? ignoredCount : 'N/D'} IGNORADOS</span>
               </div>
             </div>
           </div>
 
           {/* Toast de feedback */}
-          {qcStatusFeedback && (
-            <div className="px-3 py-1 rounded bg-accent-ice/20 border border-accent-ice text-accent-ice-bright font-label-caps text-[10px] font-bold animate-pulse">
-              {qcStatusFeedback}
+          {visibleQcStatusFeedback && (
+            <div role="status" className="px-3 py-1 rounded bg-accent-ice/20 border border-accent-ice text-accent-ice-bright font-label-caps text-[10px] font-bold animate-pulse">
+              {visibleQcStatusFeedback}
             </div>
           )}
 
@@ -1112,6 +1179,7 @@ export function QualityControlView({
                   ))}
                   <button
                     type="button"
+                    disabled={!liveCatalog.canSelect}
                     onClick={() => {
                         const firstSource = liveInputs[0]
                         if (firstSource) selectLiveSource(firstSource)
@@ -1128,7 +1196,7 @@ export function QualityControlView({
                     }`}
                     title="Listar e inspecionar entradas ao vivo no mesmo player QC"
                   >
-                    AO VIVO ({liveInputs.length})
+                    AO VIVO ({liveCatalog.loaded?liveInputs.length:'N/D'})
                   </button>
                 </div>
 
@@ -1153,6 +1221,11 @@ export function QualityControlView({
               </div>
             </div>
 
+            {(!liveCatalog.loaded||liveCatalog.error||liveCatalog.telemetryError) && <div role="status" aria-label="Conferência das entradas ao vivo" className="mx-2 mb-2 rounded border border-armed-amber/40 bg-armed-amber/10 p-2 text-[10px] text-outline">
+              <p>{liveCatalog.error??(!liveCatalog.loaded?'Entradas ao vivo ainda não conferidas; isso não confirma lista vazia.':null)}</p>
+              {liveCatalog.telemetryError&&<p>{liveCatalog.telemetryError}</p>}
+              <button type="button" disabled={liveCatalog.pending} onClick={liveCatalog.refresh} className="mt-1 text-accent-ice disabled:opacity-40">Reconsultar entradas ao vivo</button>
+            </div>}
             {/* Listagem com Scroll de Clipes */}
             <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 broadcast-scrollbar">
               {selectedLiveSourceId ? (
@@ -1163,12 +1236,17 @@ export function QualityControlView({
                   </div>
                 ) : (
                   liveInputs.map((source) => (
-                    <LiveSourceRow
+                    <QcLiveSourceRow
                       key={source.id}
                       source={source}
                       telemetry={liveTelemetry[source.id]}
                       selected={source.id === selectedLiveSourceId}
+                      disabled={!liveCatalog.canSelect||!source.enabled}
                       signal={signals.find(signal => sameLiveSource(signal.source, canonicalLiveSourceRef(source)))}
+                      previewTarget={previewTarget}
+                      transportMode={transportMode}
+                      now={signalNow}
+                      policy={channel.qcProfile?.liveSignalPolicy}
                       onSelect={() => selectLiveSource(source)}
                     />
                   ))
@@ -1181,14 +1259,14 @@ export function QualityControlView({
                     <strong className="text-on-air-crimson block font-label-caps text-[10px]">
                       Arquivos Ignorados / Quarentena ({ignoredCount})
                     </strong>
-                    Estes vídeos foram rejeitados no QC e estão suspensos: eles não aparecem na listagem padrão do QC nem nos seletores de mídia do Master Playout.
+                    Estes vídeos estão ignorados ou em quarentena e não aparecem na listagem padrão nem nos seletores do Master Playout. Ignorado não significa necessariamente rejeitado no QC: consulte a situação e a conferência técnica do arquivo antes de decidir.
                   </div>
                 </div>
               )}
               {filteredAssets.length === 0 ? (
                 <div className="flex flex-col items-center justify-center p-8 text-outline gap-2 my-auto">
                   <span className="material-symbols-outlined text-[36px] opacity-40">inventory_2</span>
-                  <span className="font-body-sm text-[12px]">Nenhum arquivo encontrado no filtro</span>
+                  <span className="font-body-sm text-[12px]">{libraryLoaded ? 'Nenhum arquivo encontrado no filtro' : 'Acervo ainda não conferido; isso não confirma acervo vazio.'}</span>
                 </div>
               ) : (
                 filteredAssets.map((asset) => {
@@ -1310,7 +1388,7 @@ export function QualityControlView({
 
             {/* Rodapé da Coluna com Resumo */}
             <div className="p-2 border-t border-border-subtle bg-surface-panel/30 font-label-mono text-[10px] text-outline flex items-center justify-between shrink-0">
-              <span>{selectedLiveSourceId ? `${liveInputs.length} entradas ao vivo` : `${filteredAssets.length} clipes na fila`}</span>
+              <span>{selectedLiveSourceId ? `${liveInputs.length} entradas ao vivo` : libraryLoaded ? `${filteredAssets.length} clipes na fila` : 'Fila de clipes ainda não conferida'}</span>
               <span>{selectedLiveSourceId ? 'Clique na fonte para abrir o PVW compartilhado' : 'Clique no clipe para inspecionar'}</span>
             </div>
           </div>
@@ -1367,7 +1445,7 @@ export function QualityControlView({
                   videoRef.current?.pause();setIsPlaying(false);setVideoError(false)
                   setQcStatusFeedback(null)
                   pendingPositionRef.current=currentTimeSec
-                  setFramePos(Math.min(23,Math.floor(currentTimeSec/totalDurationSec*24)))
+                  setFramePos(qcInspectionFrameAtTime(currentTimeSec,totalDurationSec,24,!qualityActive))
                   setQualitySelection(qualityActive?null:{id:selectedAsset.id,hash:selectedAsset.contentHash,channelId:channel.id})
                   lastScopePixelsRef.current=null;scopeSampleReadyRef.current=false;setScopeSampleReady(false)
                   setWaveformStats(null);setVectorscopeStats(null)
@@ -1384,8 +1462,13 @@ export function QualityControlView({
               <div
                 ref={playerFrameRef}
                 onClick={togglePlay}
-                className="relative w-full aspect-video shrink-0 bg-black flex items-center justify-center overflow-hidden cursor-pointer group"
+                className="relative w-full aspect-video shrink-0 bg-black flex items-center justify-center overflow-hidden cursor-pointer group [&:fullscreen_.qc-fullscreen-exit]:flex"
               >
+                <button type="button" aria-label="Sair da tela cheia" title="Sair da tela cheia"
+                  className="qc-fullscreen-exit hidden absolute top-3 right-3 z-50 items-center gap-2 rounded bg-black/80 text-white border border-white/30 px-3 py-2"
+                  onClick={(event)=>{event.stopPropagation();void document.exitFullscreen().catch(()=>setQcStatusFeedback('Não foi possível sair da tela cheia neste navegador.'))}}>
+                  <span className="material-symbols-outlined">fullscreen_exit</span>Sair da tela cheia
+                </button>
                 <div className="relative w-full h-full aspect-video overflow-hidden bg-black">
                   {selectedLiveSource ? (
                     !livePreviewReady ? (
@@ -1416,12 +1499,16 @@ export function QualityControlView({
                   ) : selectedAsset ? (
                     !framesOnly && playbackUrl ? (
                       <video
+                        key={playbackUrl}
                         ref={videoRef}
                         src={playbackUrl}
                         className="w-full h-full object-contain"
                         crossOrigin="anonymous"
                         preload="metadata"
-                        onError={() => {
+                        onError={(event) => {
+                          // A detached rendition must not fail the newly selected player.
+                          if(event.currentTarget!==videoRef.current)return
+                          setFramePos(qcInspectionFrameAtTime(event.currentTarget.currentTime,totalDurationSec,24,qualityActive))
                           setVideoError(true)
                           setIsPlaying(false)
                           if(qualityActive)setQcStatusFeedback('O navegador não decodificou o original. Inspeção por quadros em resolução até 4K (JPEG); não é playback contínuo nem prova de áudio.')
@@ -1432,7 +1519,15 @@ export function QualityControlView({
                             renderScopes()
                           }
                         }}
-                        onLoadedMetadata={() => {
+                        onLoadedMetadata={(event) => {
+                          if(event.currentTarget!==videoRef.current)return
+                          if(!qcInspectionVideoHasPicture(event.currentTarget.videoWidth,event.currentTarget.videoHeight)){
+                            event.currentTarget.pause()
+                            setFramePos(qcInspectionFrameAtTime(currentTimeSec,totalDurationSec,24,qualityActive))
+                            setVideoError(true);setIsPlaying(false)
+                            if(qualityActive)setQcStatusFeedback('O navegador abriu o original sem imagem decodificável. Inspeção por quadros do original; sem reprodução contínua nem conferência de áudio.')
+                            return
+                          }
                           if (videoRef.current) {
                             setVideoDurationSec(videoRef.current.duration)
                             if(pendingPositionRef.current!==null){videoRef.current.currentTime=Math.min(pendingPositionRef.current,Number.isFinite(videoRef.current.duration)?videoRef.current.duration:pendingPositionRef.current);pendingPositionRef.current=null}
@@ -1448,13 +1543,23 @@ export function QualityControlView({
                         onPause={() => setIsPlaying(false)}
                         onEnded={() => setIsPlaying(false)}
                       />
+                    ) : qualityFrameUnavailable ? (
+                      <div role="status" className="w-full h-full flex flex-col items-center justify-center gap-3 text-center text-outline text-[11px] px-6">
+                        <span>Quadro em qualidade indisponível. Nenhuma miniatura substitui a conferência do original.</span>
+                        <button type="button" className="px-3 py-2 border border-border-strong rounded text-primary"
+                          onClick={(event)=>{event.stopPropagation();setFailedQualityFrame(null);setQcStatusFeedback(null)}}>
+                          Tentar este quadro novamente
+                        </button>
+                      </div>
                     ) : (
                       <img
+                        key={inspectionFrameUrl}
                         ref={frameImgRef}
-                        src={qualityActive?qcQualityFrameUrl(selectedAsset,framePos):`/api/assets/${selectedAsset.id}/frame/${framePos}.jpg?total=24`}
-                        onLoad={() => renderScopes(true)}
+                        src={inspectionFrameUrl!}
+                        onLoad={() => {if(inspectionFrameUrlRef.current===inspectionFrameUrl)renderScopes(true)}}
                         onError={(e) => {
-                          if(qualityActive){setQcStatusFeedback('Quadro em qualidade indisponível. A miniatura não substitui a conferência em qualidade.');return}
+                          if(inspectionFrameUrlRef.current!==inspectionFrameUrl)return
+                          if(qualityActive){setFailedQualityFrame(inspectionFrameUrl);lastScopePixelsRef.current=null;scopeSampleReadyRef.current=false;setScopeSampleReady(false);setWaveformStats(null);setVectorscopeStats(null);setQcStatusFeedback('Quadro em qualidade indisponível. A miniatura não substitui a conferência em qualidade.');return}
                           ;(e.target as HTMLImageElement).src = `/api/assets/${selectedAsset.id}/thumbnail.svg`
                         }}
                         alt=""
@@ -1476,23 +1581,9 @@ export function QualityControlView({
                   </div>
                 )}
 
-                  {/* Safe Areas Overlay — preso exclusivamente ao raster 16:9. */}
+                  {/* Match actual object-contain picture, including fullscreen. */}
                   {safeAreaActive && (selectedAsset || selectedLiveSource) && (
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                    <div className="w-[90%] h-[90%] border border-status-ok/30 relative">
-                      <span className="absolute top-0.5 left-1 text-[7.5px] font-label-mono text-status-ok/70">
-                        ACTION SAFE (90%)
-                      </span>
-                      <div className="absolute inset-[5.5556%] border border-status-ok/40">
-                        <span className="absolute top-0.5 left-1 text-[7.5px] font-label-mono text-status-ok/80">
-                          TITLE SAFE (80%)
-                        </span>
-                      </div>
-                    </div>
-                    {/* Mira Central */}
-                    <div className="absolute w-4 h-px bg-status-ok/40"></div>
-                    <div className="absolute h-4 w-px bg-status-ok/40"></div>
-                  </div>
+                    <QcSafeAreaOverlay container={playerFrameRef} getMedia={safeAreaMedia}/>
                   )}
                 </div>
               </div>
@@ -1500,10 +1591,18 @@ export function QualityControlView({
               {/* Controles de Transporte e Scrubber */}
               {selectedAsset && !selectedLiveSource && <div className="px-3 py-2 border-t border-border-subtle text-[10px] text-outline flex gap-2 items-center">
                 <span className="flex-1">{qualityActive?(framesOnly?'Inspeção por quadros JPEG do original · até 4K. Sem playback contínuo.':'Qualidade original · maior consumo de rede/CPU. Reprodução depende dos codecs do navegador.'):proxyMessage}</span>
-                {failedMediaJobs.length > 0 && <button className="text-primary shrink-0" onClick={() => {
-                  void Promise.all(failedMediaJobs.map(id => api.retryMediaJob(id))).then(() => { setFailedMediaJobs([]); setProxyMessage('Trabalhos recolocados na fila…') })
-                    .catch(error => setProxyMessage(error instanceof Error ? error.message : 'Não foi possível reexecutar.'))
-                }}>Tentar novamente</button>}
+                {failedMediaJobs.length > 0 && <QcMediaRetryControl key={JSON.stringify([selectedAsset.id,selectedAsset.contentHash,failedMediaJobs])} pending={retryingMedia} requiresConfirmation={failedMediaJobs.some(job=>job.retryRequiresConfirmation)} onRetry={confirmed => {
+                  if(retryingMedia||mediaRetryGeneration.current===proxyGeneration.current)return
+                  const requiresConfirmation=failedMediaJobs.some(job=>job.retryRequiresConfirmation)
+                  if(requiresConfirmation&&!confirmed)return
+                  const started=proxyGeneration.current
+                  mediaRetryGeneration.current=started
+                  workflowReads.current.cancel()
+                  setRetryingMedia(true)
+                  void retryMediaJobs(failedMediaJobs,(id,confirmed)=>api.retryMediaJob(id,confirmed)).then(result => { if(proxyGeneration.current===started){setFailedMediaJobs(result.unresolved); setProxyMessage(result.message)} })
+                    .catch(error => {if(proxyGeneration.current===started)setProxyMessage(error instanceof Error ? error.message : 'Não foi possível reexecutar.')})
+                    .finally(()=>{if(proxyGeneration.current===started){mediaRetryGeneration.current=null;setRetryingMedia(false)}})
+                }}/>}
               </div>}
               <div className="p-2 bg-surface-panel flex flex-col gap-1.5 border-t border-border-subtle">
                 <div className="flex items-center gap-2">
@@ -1625,7 +1724,8 @@ export function QualityControlView({
                     Scopes · {monitorLabels.image} · inspeção visual aproximada
                   </span>
                   <span className="font-label-mono text-[9px] px-1.5 py-0.2 rounded bg-surface-panel border border-border-subtle text-status-ok-bright">
-                    MONITORAMENTO 10 Hz
+                    MONITORAMENTO {isPlaying||selectedLiveSource?10:4} Hz
+                    {scopeCost && <span title="Custo local do desenho dos scopes; não mede decoder, CPU do servidor ou rede. Últimas até 120 amostras."> · DESENHO p95 {scopeCost.p95Ms.toFixed(1)} ms</span>}
                   </span>
                 </div>
 
@@ -1792,48 +1892,3 @@ export function QualityControlView({
   )
 }
 
-function LiveSourceRow({ source, telemetry, selected, signal, onSelect }: {
-  source: ManagedLiveSource
-  telemetry?: SrtTelemetry
-  selected: boolean
-  signal?: Live['transport']['liveSources'][number]
-  onSelect: () => void
-}) {
-  // Selection is not signal evidence. Only the engine's first-frame event
-  // confirms availability, independently of protocol discovery/registration.
-  const previewState = selected ? signal?.busStates?.pvw ?? signal?.state : signal?.state
-  const measured = selected ? signal?.measurements?.pvw : signal?.measurements?.pgm ?? signal?.measurements?.pvw
-  const ready = previewState === 'PVW_READY' || previewState === 'ON_PGM'
-  const signalState = previewState
-  const state = !source.enabled ? 'DESATIVADA' : signalState === 'FAILED' ? 'FALHOU'
-    : signalState === 'LOST' ? 'SINAL PERDIDO' : signalState === 'ON_PGM' ? 'NO PGM'
-    : signalState === 'PVW_READY' ? 'PVW PRONTO' : signalState === 'TAKE_PENDING' ? 'AGUARDANDO QUADRO'
-    : signalState === 'IDLE' ? 'NÃO SINTONIZADA' : signalState === 'CUEING' ? 'SINTONIZANDO'
-    : selected ? 'SINTONIZANDO' : telemetry ? telemetry.linkState : 'CADASTRADA · SINAL N/D'
-  const statusClass = !source.enabled || signalState === 'LOST' || signalState === 'FAILED' || telemetry?.linkState === 'DISCONNECTED'
-    ? 'text-on-air-crimson border-on-air-crimson/35 bg-on-air-crimson/10'
-    : ready
-      ? 'text-status-ok border-status-ok/35 bg-status-ok/10'
-    : telemetry?.linkState === 'OPTIMAL'
-      ? 'text-status-ok border-status-ok/35 bg-status-ok/10'
-      : 'text-armed-amber border-armed-amber/35 bg-armed-amber/10'
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={`w-full p-2 rounded-lg border flex items-center gap-2.5 text-left transition-all cursor-pointer ${selected ? 'bg-primary-container/20 border-primary shadow-sm ring-1 ring-primary/40' : 'bg-surface-panel hover:bg-surface-panel/80 border-border-subtle hover:border-border-strong'}`}
-      title="Abrir esta fonte no PVW compartilhado e assistir no player QC"
-    >
-      <span className="material-symbols-outlined text-accent-ice text-[20px]">sensors</span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-1.5"><strong className="truncate font-headline-md text-[12px] text-on-surface">{source.name}</strong><span className="rounded bg-surface-base px-1 font-label-mono text-[8px] text-accent-ice">{source.kind}</span></span>
-        <span className="mt-0.5 block truncate font-label-mono text-[9px] text-outline" title={source.targetUrl}>{telemetry ? `${telemetry.bitrateKbps} kbps · RTT ${telemetry.rttMs.toFixed(0)} ms · perda ${telemetry.packetLossPercent.toFixed(2)}%` : source.targetUrl}</span>
-        {measured && <span className="mt-0.5 block font-label-mono text-[9px] text-outline" title="Formato antes da escala do preview; jitter de chegada no decoder, não medição de pacotes da rede">
-          {measured.width && measured.height ? `${measured.width}×${measured.height}` : 'Formato N/D'} · {measured.rateNum && measured.rateDen ? `${(measured.rateNum/measured.rateDen).toFixed(2)} fps` : 'FPS N/D'} · {measured.audioPresent ? `áudio ${measured.audioChannels ?? '?'} ch` : 'SEM ÁUDIO RECEBIDO'} · quadro {measured.videoAgeMs ?? 'N/D'} ms
-          {measured.arrivalJitterMs !== null ? ` · variação ${measured.arrivalJitterMs.toFixed(1)} ms` : ''}
-        </span>}
-      </span>
-      <span className={`rounded border px-1.5 py-0.5 font-label-mono text-[8px] font-bold ${statusClass}`}>{state}</span>
-    </button>
-  )
-}

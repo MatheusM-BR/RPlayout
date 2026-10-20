@@ -5,6 +5,7 @@ import { api } from '../api.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { OperationalMultiview } from '../components/broadcast/OperationalMultiview.js'
+import {SharedMultiview} from '../components/broadcast/SharedMultiview.js'
 import type { MultiviewSourceItem } from '../components/broadcast/OperationalMultiview.js'
 import { SrtManagerPanel, type SrtLinkItem } from '../components/broadcast/SrtManagerPanel.js'
 import { RedundancyFailoverPanel } from '../components/broadcast/RedundancyFailoverPanel.js'
@@ -24,6 +25,7 @@ interface Props {
   sessionRole?: string
   authRequired?: boolean
   onOpenSettings?: () => void
+  onOpenHealth?: () => void
   live?: Live | null
   monitors?: Monitors | null
 }
@@ -45,6 +47,7 @@ export function EngineeringDistributionView({
   sessionRole = 'Operador Master',
   authRequired = false,
   onOpenSettings,
+  onOpenHealth,
   live = null,
   monitors = null,
 }: Props) {
@@ -86,7 +89,7 @@ export function EngineeringDistributionView({
   const engineSimulated = engineProcess?.details?.transport === 'SIMULATED'
   const engineAlert = Boolean(live?.alerts.some((alert) => alert.kind === 'ENGINE')) || engineProcess?.state === 'error'
 
-  const multiviewSources: MultiviewSourceItem[] = liveSources.map(source=>liveSourceMonitor(source,live,monitors,source.kind==='SRT'?srtTelemetry[source.id]:undefined))
+  const multiviewSources: MultiviewSourceItem[] = liveSources.map(source=>liveSourceMonitor(source,live,monitors,source.kind==='SRT'?srtTelemetry[source.id]:undefined,Date.now(),channel.qcProfile?.liveSignalPolicy))
   const srtLinks: SrtLinkItem[] = liveSources
     .filter((source) => source.kind === 'SRT')
     .map((source) => {
@@ -298,6 +301,7 @@ export function EngineeringDistributionView({
 
             {/* Ações Rápidas de Engenharia */}
             <div className="flex items-center justify-end gap-2 shrink-0 border-t lg:border-t-0 lg:border-l border-border-subtle pt-2 lg:pt-0 lg:pl-3">
+              {onOpenHealth && <button type="button" onClick={onOpenHealth} className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel text-on-surface text-[10.5px] font-bold rounded-lg border border-border-subtle"><span className="material-symbols-outlined text-[15px]">vital_signs</span>INCIDENTES DO CANAL</button>}
               {live?.reconfiguration?.ready === false && <span role="status" className="text-xs text-armed-amber max-w-52">{live.reconfiguration.reason ?? 'Aguardando recuperação do canal…'}</span>}
               <button
                 disabled={engineeringAction !== null || live?.reconfiguration?.ready === false}
@@ -394,12 +398,13 @@ export function EngineeringDistributionView({
 
             </div>
           )}
-          {activeSection === 'HOST' && <div className="flex-1 min-h-0"><HostResourcesPanel /></div>}
+          {activeSection === 'HOST' && <div className="flex-1 min-h-0"><HostResourcesPanel channels={channels} initialChannelId={channel.id}/></div>}
 
           {/* SEÇÃO 2: MULTIVIEW COMPLETO (FOCO TOTAL) */}
           {activeSection === 'MULTIVIEW' && (
             <div className="flex-1 min-h-0">
-              <OperationalMultiview
+              <SharedMultiview key={channel.id}
+                channelId={channel.id}
                 sources={multiviewSources}
                 onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
               />

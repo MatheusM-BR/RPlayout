@@ -1,10 +1,11 @@
-import {useState} from 'react'
+import {useRef,useState} from 'react'
 import type {OperationalSimulation} from '../api.js'
 
 export function OperationalRollbackDialog({inspection,onClose,onApply}:{inspection:OperationalSimulation & {sourceRevision:number};onClose:()=>void;onApply:()=>Promise<void>}) {
   const [busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null)
+  const applying=useRef(false)
   const changes=inspection.differences
-  const apply=async()=>{setBusy(true);setError(null);try{await onApply()}catch(reason){setError(reason instanceof Error?reason.message:'Restauração recusada.')}finally{setBusy(false)}}
+  const apply=async()=>{if(applying.current)return;applying.current=true;setBusy(true);setError(null);try{await onApply()}catch(reason){setError(reason instanceof Error?reason.message:'Restauração não confirmada. Confira o histórico antes de repetir.')}finally{applying.current=false;setBusy(false)}}
   return <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4">
     <section role="dialog" aria-modal="true" aria-labelledby="rollback-title" className="bg-surface-card border border-border-subtle rounded-lg max-w-3xl w-full max-h-[85vh] overflow-auto p-5 text-on-surface">
       <h2 id="rollback-title" className="text-lg font-bold">Conferir restauração da revisão {inspection.sourceRevision}</h2>

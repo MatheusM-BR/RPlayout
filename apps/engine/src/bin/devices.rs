@@ -22,6 +22,14 @@ mod omt_runtime;
 /// NDI varre a rede e merece mais tempo.
 const SETTLE_MS: u64 = 1200;
 
+/// Optional fixed-stage diagnostics on stderr; stdout remains one JSON record.
+/// No source names, endpoints, credentials or driver-provided errors are logged.
+fn trace(stage: &str) {
+    if !std::env::args().any(|arg| arg == "--trace") { return; }
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    eprintln!("[devices] {}ms {stage}", START.get_or_init(std::time::Instant::now).elapsed().as_millis());
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Source {
@@ -146,6 +154,7 @@ fn survey(list: &[(&str, &str, &str)]) -> Vec<Missing> {
 /// Provedor ausente não é lista vazia: é plugin que falta, e o operador precisa
 /// saber a diferença entre "não tem placa" e "não tem driver".
 fn enumerate(provider: &str, prefix: &str, missing: &str, direction: &str) -> Family {
+    trace(&format!("{provider}/{direction}:factory"));
     let Some(factory) = gst::DeviceProviderFactory::find(provider) else {
         let element = if direction == "Sink" { "decklinkvideosink" } else { "decklinkvideosrc" };
         if prefix == "sdi" && gst::ElementFactory::find(element).is_some() {
@@ -169,6 +178,7 @@ fn enumerate(provider: &str, prefix: &str, missing: &str, direction: &str) -> Fa
         };
     };
 
+    trace(&format!("{provider}/{direction}:start"));
     if let Err(error) = device_provider.start() {
         return Family {
             available: false,
@@ -180,6 +190,7 @@ fn enumerate(provider: &str, prefix: &str, missing: &str, direction: &str) -> Fa
     }
     std::thread::sleep(std::time::Duration::from_millis(SETTLE_MS));
 
+    trace(&format!("{provider}/{direction}:devices"));
     let mut sources: Vec<Source> = device_provider
         .devices()
         .into_iter()
@@ -194,10 +205,13 @@ fn enumerate(provider: &str, prefix: &str, missing: &str, direction: &str) -> Fa
         })
         .collect();
 
+    trace(&format!("{provider}/{direction}:stop"));
     device_provider.stop();
+    trace(&format!("{provider}/{direction}:stopped"));
     sources.sort_by(|a, b| a.reference.cmp(&b.reference));
     sources.dedup_by(|a, b| a.reference == b.reference);
     if prefix == "ndi" && sources.is_empty() {
+        trace("ndi:mdns-fallback");
         sources = discover_mdns_services(&["_ndi._tcp.local"], "ndi");
     }
 
@@ -341,7 +355,9 @@ fn decode_dns_name(data: &[u8], pos: &mut usize) -> Option<String> {
 }
 
 fn main() -> Result<()> {
+    trace("gstreamer:init");
     gst::init().context("GStreamer não inicializou")?;
+    trace("gstreamer:ready");
 
     let devices = Devices {
         decklink: enumerate(
@@ -363,7 +379,10 @@ fn main() -> Result<()> {
             "Source",
         ),
         omt: {
-            match omt_runtime::discover() {
+            trace("omt:discover");
+            let found = omt_runtime::discover();
+            trace("omt:discovered");
+            match found {
                 Ok(names) => Family {
                     available: true,
                     reason: if names.is_empty() {
@@ -376,6 +395,7 @@ fn main() -> Result<()> {
         },
         plugins: Plugins {
             missing: {
+                trace("plugins:survey");
                 let mut faltando = survey(REQUIRED);
                 faltando.extend(survey_alternativas(ALTERNATIVAS));
                 faltando
@@ -384,7 +404,9 @@ fn main() -> Result<()> {
         },
     };
 
+    trace("json:emit");
     println!("{}", serde_json::to_string(&devices)?);
+    trace("process:finish");
     Ok(())
 }
 

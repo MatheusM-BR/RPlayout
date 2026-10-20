@@ -2,6 +2,7 @@ import { useMemo, useState, type CSSProperties, type MouseEvent } from 'react'
 import { durationIn, isIgnoredVideo, type Rate } from '@rplayout/protocol'
 import type { LibraryFolder, ScanStatus } from '../types.js'
 import { dur, lufs } from '../format.js'
+import {AssetMetadataEditor} from './AssetMetadataEditor.js'
 
 interface Props {
   folders: LibraryFolder[]
@@ -17,7 +18,7 @@ interface Props {
   onInsert: (assetId: string) => void
   onRemove: (assetId: string) => void
   onAccept: (assetId: string) => void | Promise<void>
-  onCategorize: (assetId: string, categoryId: string | null) => void
+  onMetadataSaved?: () => void
   /** Tira do acervo tudo que não abriu. */
   onPrune: () => void
   /** Situação da varredura do acervo. Nulo esconde o botão. */
@@ -58,7 +59,7 @@ export function Explorer({
   onInsert,
   onRemove,
   onAccept,
-  onCategorize,
+  onMetadataSaved,
   onPrune,
   scan,
   onScan,
@@ -82,7 +83,6 @@ export function Explorer({
   const [escolhido, setEscolhido] = useState<string | null>(null)
   /** Arquivo com a caixa de categoria aberta. */
   const [categorizando, setCategorizando] = useState<string | null>(null)
-  const [novaCategoria, setNovaCategoria] = useState<string | null>(null)
 
   const quebrados = useMemo(
     () => folders.reduce((total, folder) => total + folder.assets.filter((a) => a.probeError).length, 0),
@@ -362,9 +362,7 @@ export function Explorer({
                           <button
                             className="marca"
                             title={asset.categoryId ? `Categoria: ${asset.categoryId}` : 'Sem categoria'}
-                            onClick={() =>
-                              setCategorizando(categorizando === asset.id ? null : asset.id)
-                            }
+                            onClick={() => setCategorizando(asset.id)}
                           >
                             {asset.categoryId ? asset.categoryId.slice(0, 3) : '—'}
                           </button>
@@ -380,47 +378,6 @@ export function Explorer({
                       </button>
                     </div>
 
-                    {categorizando === asset.id && (
-                      <div className="categoria" onClick={(event) => event.stopPropagation()}>
-                        {novaCategoria === null ? (
-                          <select
-                            autoFocus
-                            value={asset.categoryId ?? ''}
-                            onChange={(event) => {
-                              if (event.target.value === '__nova__') {
-                                setNovaCategoria('')
-                                return
-                              }
-                              onCategorize(asset.id, event.target.value || null)
-                              setCategorizando(null)
-                            }}
-                          >
-                            <option value="">sem categoria</option>
-                            {categories.map((categoria) => (
-                              <option key={categoria} value={categoria}>
-                                {categoria}
-                              </option>
-                            ))}
-                            <option value="__nova__">nova categoria…</option>
-                          </select>
-                        ) : (
-                          <input
-                            type="text"
-                            autoFocus
-                            placeholder="nome da categoria"
-                            value={novaCategoria}
-                            onChange={(event) => setNovaCategoria(event.target.value)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Escape') setNovaCategoria(null)
-                              if (event.key !== 'Enter' || novaCategoria.trim() === '') return
-                              onCategorize(asset.id, novaCategoria.trim())
-                              setNovaCategoria(null)
-                              setCategorizando(null)
-                            }}
-                          />
-                        )}
-                      </div>
-                    )}
                   </div>
                 ))}
             </div>
@@ -464,6 +421,7 @@ export function Explorer({
         </div>
       )}
 
+      {categorizando&&<AssetMetadataEditor key={categorizando} assetId={categorizando} categories={categories} onSaved={()=>onMetadataSaved?.()} onCancel={()=>setCategorizando(null)}/>}
       {/* O botão de pôr na grade mora embaixo da lista, que é onde a mão já
           está depois de escolher o arquivo -- e não no alto, longe do que foi
           escolhido.

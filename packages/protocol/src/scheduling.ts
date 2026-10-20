@@ -49,6 +49,8 @@ export interface OnAirState {
   readonly startedAt: Frames
   /** Quanto já rodou. */
   readonly elapsed: Frames
+  /** Confirmed native file bounds. Absent for LIVE or simulation. */
+  readonly mountedDuration?:Frames
 }
 
 export interface ResolveInput {
@@ -96,6 +98,8 @@ export interface ResolvedItem {
   readonly duration: Frames
   /** Duração antes dos ajustes. */
   readonly plannedDuration: Frames
+  /** Actual native file bound, distinct from a projected priority interruption. */
+  readonly mountedDuration?:Frames
   readonly state: ItemState
   readonly adjustments: readonly Adjustment[]
   /** Falso quando a âncora não pôde ser respeitada. */

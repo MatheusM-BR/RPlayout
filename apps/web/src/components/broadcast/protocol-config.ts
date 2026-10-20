@@ -22,7 +22,12 @@ export function initialProtocolConfig(uri: string) {
 }
 
 export function sourceName(reference: string, sources: readonly { reference: string; label: string }[]) {
-  return sources.find((source) => source.reference === reference)?.label
+  // Selector canonicalizes ndi:// and omt:// to ndi:/omt:. Match labels
+  // across those spellings, without folding the actual source name's case
+  // or accents and without conflating identical names on different protocols.
+  const identity=(value:string)=>value.replace(/^(ndi|omt|sdi):(?:\/\/)?/i,(_match,kind:string)=>`${kind.toLowerCase()}:`)
+  return (sources.find((source) => source.reference === reference)
+    ??sources.find((source)=>identity(source.reference)===identity(reference)))?.label
     || reference.replace(/^(ndi|omt|sdi):(?:\/\/)?/i, '')
 }
 

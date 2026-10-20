@@ -38,3 +38,5 @@ Processing.NDI.Lib.x64.dll
 vault.json
 vault*.json
 apps/server/UsersfsdaAppDataLocalTempRPlayout-*.mp4
+# Configuração privada temporária: pode conter credenciais após proteção ACL.
+.mediamtx.yml.private-*

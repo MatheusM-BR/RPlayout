@@ -41,7 +41,7 @@ export const usePlayoutStore = create<PlayoutState>((set) => ({
   transitionMode: 'CUT',
   abortArmed: false,
   abortCountdown: 3,
-  safeAreasVisible: true,
+  safeAreasVisible: false,
   conflictDrawerOpen: false,
   selectedItemId: null,
 

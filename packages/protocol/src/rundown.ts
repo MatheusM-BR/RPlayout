@@ -170,6 +170,8 @@ export interface RundownItem {
   readonly mediaId: string | null
   /** Fonte ao vivo: `sdi:0`, `ndi:ESTUDIO (CAM1)`, `srt://…`, `guest:<chave>`. */
   readonly sourceRef: string | null
+  /** Explicit configured selection; never inferred from a shared endpoint. */
+  readonly configuredSourceId?: string | null
 
   /** Corte só deste item. Nulo herda do asset. */
   readonly trim: Trim | null

@@ -5,6 +5,7 @@ import { registerRoutes } from '../routes.js'
 import { AccessControl, sessionDigest, trustedOrigin } from './access.js'
 import { hashPassword } from './auth.js'
 import { operatorDecisions } from '../db/schema.js'
+import {accountETag} from '@rplayout/protocol'
 
 vi.mock('../config.js', async importOriginal => ({ ...await importOriginal<Record<string, unknown>>(), ENGINE_BINARY: '', MEDIAMTX_BINARY: '', DEVICES_BINARY: '', AUTH_USER: '', AUTH_PASSWORD: '', DEFAULT_ROLE: 'OPERATOR' }))
 let app: App, server: FastifyInstance
@@ -20,7 +21,8 @@ beforeEach(async () => {
   expect(login.statusCode).toBe(200)
   cookie = String(login.headers['set-cookie']).split(';')[0]!
 })
-afterEach(async () => { await server.close(); app.close() })
+afterEach(async () => { await server.close(); app.close(); vi.restoreAllMocks() })
+const accountProof=async(id:string)=>{const result=await server.inject({url:'/api/users/review',headers:{cookie}});expect(result.statusCode).toBe(200);return accountETag(result.json(),id)}
 
 describe('controle de acesso e sessão', () => {
   it('restringe estação pelo IP real e restringe comandos/leituras por canal', async () => {
@@ -30,7 +32,7 @@ describe('controle de acesso e sessão', () => {
       app.sqlite.prepare('INSERT INTO rundowns (id,channel_id,name,planned_start,loop,date,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(`rd-${id}`, id, id, 0, 0, '2026-09-30', now, now)
     }
     app.sqlite.prepare('INSERT INTO users VALUES (?,?,?,?,?,?)').run('operator', 'operator', await hashPassword('test-operator-password'), 'OPERATOR', 1, now)
-    const policy = await server.inject({ method: 'PUT', url: '/api/users/operator/access', headers: { cookie }, payload: { channelIds: ['allowed'], stationIps: ['192.168.42.10'] } })
+    const policy = await server.inject({ method: 'PUT', url: '/api/users/operator/access', headers: { cookie,'if-match':await accountProof('operator') }, payload: { channelIds: ['allowed'], stationIps: ['192.168.42.10'] } })
     expect(policy.statusCode).toBe(200)
     const credentials = { username: 'operator', password: 'test-operator-password' }
     expect((await server.inject({ method: 'POST', url: '/api/auth/login', payload: credentials, remoteAddress: '192.168.42.11' })).statusCode).toBe(403)
@@ -79,7 +81,8 @@ describe('controle de acesso e sessão', () => {
     expect(trustedOrigin('http://localhost:5173', 'localhost:4041', ['http://localhost:5173'])).toBe(true)
   })
   it('revogação administrativa encerra sessão sem desativar conta e deixa auditoria sem token/senha', async () => {
-    const res = await server.inject({ method: 'DELETE', url: '/api/users/admin/sessions', headers: { cookie } })
+    const reviewed=await server.inject({url:'/api/users/admin/sessions',headers:{cookie}})
+    const res = await server.inject({ method: 'DELETE', url: '/api/users/admin/sessions', headers: { cookie,'if-match':reviewed.headers.etag as string } })
     expect(res.statusCode).toBe(200)
     expect((await server.inject({ url: '/api/state', headers: { cookie } })).statusCode).toBe(401)
     expect(app.sqlite.prepare('SELECT enabled FROM users WHERE id=?').get('admin')).toEqual({ enabled: 1 })
@@ -89,7 +92,7 @@ describe('controle de acesso e sessão', () => {
     expect(audit).not.toContain(cookie.slice(17))
   })
   it('recusa desativar o último administrador e não reabre modo anônimo com contas inativas', async () => {
-    const result = await server.inject({ method: 'PATCH', url: '/api/users/admin', headers: { cookie }, payload: { enabled: false } })
+    const result = await server.inject({ method: 'PATCH', url: '/api/users/admin', headers: { cookie,'if-match':await accountProof('admin') }, payload: { enabled: false } })
     expect(result.statusCode).toBe(409)
     app.sqlite.prepare('UPDATE users SET enabled=0').run()
     expect(new AccessControl(app.sqlite).required()).toBe(true)
@@ -97,7 +100,7 @@ describe('controle de acesso e sessão', () => {
   })
   it('troca de papel invalida sessões e um header não eleva o papel local', async () => {
     app.sqlite.prepare('INSERT INTO users VALUES (?,?,?,?,?,?)').run('second', 'second', 'none', 'ADMIN', 1, new Date().toISOString())
-    expect((await server.inject({ method: 'PATCH', url: '/api/users/admin', headers: { cookie }, payload: { role: 'OPERATOR' } })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'PATCH', url: '/api/users/admin', headers: { cookie,'if-match':await accountProof('admin') }, payload: { role: 'OPERATOR' } })).statusCode).toBe(200)
     expect((await server.inject({ url: '/api/state', headers: { cookie } })).statusCode).toBe(401)
     app.sqlite.prepare('DELETE FROM users').run()
     expect(new AccessControl(app.sqlite).role({ headers: { 'x-rplayout-role': 'ADMIN' } })).toBe('OPERATOR')
@@ -107,5 +110,50 @@ describe('controle de acesso e sessão', () => {
     const blocked = await server.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'admin', password: 'testing-password' } })
     expect(blocked.statusCode).toBe(429)
     expect(blocked.headers['retry-after']).toBeDefined()
+  })
+  it.each(['VIEWER','operator','ADMIN ','constructor','__proto__'])('papel persistido inválido %s não autentica ou emite nova sessão',async role=>{
+    app.sqlite.prepare('UPDATE users SET role=? WHERE id=?').run(role,'admin')
+    const access=new AccessControl(app.sqlite),before=app.sqlite.prepare('SELECT * FROM sessions').all()
+    expect(access.identity({headers:{cookie}})).toBeNull()
+    expect(access.role({headers:{cookie,'x-rplayout-role':'ADMIN'}})).toBe('DENIED')
+    expect(access.required()).toBe(true)
+    expect((await server.inject({url:'/api/state',headers:{cookie}})).statusCode).toBe(401)
+    expect((await server.inject({url:'/api/session',headers:{cookie}})).json()).toMatchObject({role:'DENIED',authenticated:false,required:true})
+    const login=await server.inject({method:'POST',url:'/api/auth/login',payload:{username:'admin',password:'testing-password'}})
+    expect(login.statusCode).toBe(401);expect(login.headers['set-cookie']).toBeUndefined()
+    expect(app.sqlite.prepare('SELECT * FROM sessions').all()).toEqual(before)
+    const sessionSuccess=app.sqlite.prepare("SELECT * FROM operator_decisions WHERE kind='SESSION_CREATED'").all()
+    expect(sessionSuccess).toHaveLength(1)
+  })
+  it('sem conta, header inválido restringe toda ação em vez de elevar ao operador',()=>{
+    app.sqlite.prepare('DELETE FROM sessions').run();app.sqlite.prepare('DELETE FROM users').run()
+    const access=new AccessControl(app.sqlite)
+    expect(access.required()).toBe(false)
+    expect(access.role({headers:{}})).toBe('OPERATOR')
+    expect(access.role({headers:{'x-rplayout-role':'VIEWER'}})).toBe('DENIED')
+    expect(access.role({headers:{'x-rplayout-role':['ADMIN','OPERATOR']}})).toBe('DENIED')
+  })
+  it('falha de auditoria de login não deixa sessão nem cookie de sucesso',async()=>{
+    const before=app.sqlite.prepare('SELECT * FROM sessions').all(),auditBefore=app.sqlite.prepare("SELECT * FROM operator_decisions WHERE kind='SESSION_CREATED'").all()
+    app.sqlite.exec("CREATE TRIGGER session_audit_failure BEFORE INSERT ON operator_decisions WHEN NEW.kind='SESSION_CREATED' BEGIN SELECT RAISE(ABORT,'SESSION_AUDIT_FAILURE'); END")
+    const response=await server.inject({method:'POST',url:'/api/auth/login',payload:{username:'admin',password:'testing-password'}})
+    expect(response.statusCode).toBe(500);expect(response.headers['set-cookie']).toBeUndefined()
+    expect(app.sqlite.prepare('SELECT * FROM sessions').all()).toEqual(before)
+    expect(app.sqlite.prepare("SELECT * FROM operator_decisions WHERE kind='SESSION_CREATED'").all()).toEqual(auditBefore)
+  })
+  it.each(['disabled','role','password','station','policy'])('login HTTP reconfere %s na emissão, após verificar senha',async change=>{
+    const before=app.sqlite.prepare('SELECT * FROM sessions').all(),auditBefore=app.sqlite.prepare("SELECT * FROM operator_decisions WHERE kind='SESSION_CREATED'").all(),transaction=app.db.transaction.bind(app.db)
+    vi.spyOn(app.db,'transaction').mockImplementation(((callback:any,config:any)=>{
+      if(change==='disabled')app.sqlite.prepare('UPDATE users SET enabled=0').run()
+      if(change==='role')app.sqlite.prepare("UPDATE users SET role='VIEWER'").run()
+      if(change==='password')app.sqlite.prepare("UPDATE users SET password_hash='changed-not-verified-hash'").run()
+      if(change==='station'||change==='policy')app.sqlite.prepare('INSERT INTO user_access VALUES(?,?,?,?)').run('admin',null,change==='station'?'["192.0.2.1"]':'{}','now')
+      return transaction(callback,config)
+    }) as typeof app.db.transaction)
+    const response=await server.inject({method:'POST',url:'/api/auth/login',payload:{username:'admin',password:'testing-password'}})
+    expect(response.statusCode).toBe(change==='station'||change==='policy'?403:401)
+    expect(response.headers['set-cookie']).toBeUndefined()
+    expect(app.sqlite.prepare('SELECT * FROM sessions').all()).toEqual(before)
+    expect(app.sqlite.prepare("SELECT * FROM operator_decisions WHERE kind='SESSION_CREATED'").all()).toEqual(auditBefore)
   })
 })

@@ -12,6 +12,7 @@ export const protectedColumns = [
   ['integration_deliveries','target'], ['integration_deliveries','payload'],
   ['secondary_events','definition'],
   ['health_events','message'],
+  ['health_events','context'],
   ['channel_cadence_conversions','snapshot'],
 ] as const
 

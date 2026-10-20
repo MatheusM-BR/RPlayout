@@ -41,6 +41,9 @@ describe('envelopes autenticados e chave fora do banco', () => {
   })
   it('cria chave durável sem substituir o arquivo e reabre seus envelopes (DPAPI no Windows)', () => {
     const path = join(mkdtempSync(join(tmpdir(),'RPlayout-vault-')), 'key.json')
+    const previousPath=process.env.PATH
+    if(process.platform==='win32')process.env.PATH=''
+    try{
     const first = loadInstallationVault(path, true), stored = readFileSync(path,'utf8')
     const encrypted = first.encrypt('TESTE SOMENTE', 'test')
     const second = loadInstallationVault(path, false)
@@ -48,5 +51,9 @@ describe('envelopes autenticados e chave fora do banco', () => {
     expect(second.fingerprint).toBe(first.fingerprint)
     expect(readFileSync(path,'utf8')).toBe(stored)
     if (process.platform === 'win32') expect(JSON.parse(stored).protection).toBe('WINDOWS_CURRENT_USER')
+    }finally{
+      if(previousPath===undefined)delete process.env.PATH
+      else process.env.PATH=previousPath
+    }
   })
 })

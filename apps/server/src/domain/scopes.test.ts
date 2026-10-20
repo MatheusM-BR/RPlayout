@@ -231,6 +231,19 @@ describe('escopo do corte', () => {
 })
 
 describe('escopo do nivelamento', () => {
+  it('AUTO padrão usa exclusivamente FILE do acervo, não loudness enviada pelo cliente',async()=>{
+    const measured={integratedLufs:-27,lra:2,truePeakDbtp:-6,scope:'FILE' as const,measuredAt:now}
+    db.update(mediaAssets).set({loudnessFile:measured}).where(eq(mediaAssets.id,assetId)).run()
+    await applyAudio(db,itemA1,{mode:'AUTO',gainDb:20,measured:{...measured,integratedLufs:9,scope:'TRIM'}},'RUNDOWN')
+    for(const id of [itemA1,itemA2])expect(db.select().from(rundownItems).where(eq(rundownItems.id,id)).get()?.audio?.measured).toEqual(measured)
+  })
+  it.each(['missing','trim','date','hash','lra'])('AUTO padrão recusa FILE inválido %s sem alterar alvos/revisões',async field=>{
+    const measured={integratedLufs:-27,lra:field==='lra'?-1:2,truePeakDbtp:-6,scope:field==='trim'?'TRIM' as const:'FILE' as const,measuredAt:field==='date'?'invalid':now,...(field==='hash'?{input:{contentHash:'wrong',audioTrack:0,routing:{mode:'DEFAULT' as const}}}:{})}
+    db.update(mediaAssets).set({loudnessFile:field==='missing'?null:measured}).where(eq(mediaAssets.id,assetId)).run()
+    const items=db.select().from(rundownItems).all(),versions=db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()
+    await expect(applyAudio(db,itemA1,{mode:'AUTO',gainDb:0,measured:{...measured,scope:'FILE'}},'ALL_RUNDOWNS')).rejects.toThrow('salva no acervo')
+    expect(db.select().from(rundownItems).all()).toEqual(items);expect(db.$client.prepare('SELECT * FROM editorial_revision_counters ORDER BY scope,rundown_id,item_id').all()).toEqual(versions)
+  })
   it.each(['RUNDOWN','ALL_RUNDOWNS','ASSET_DEFAULT'] as const)('trilha é só do item selecionado mesmo com nível amplo: %s',async scope=>{
     const before=db.select({id:rundownItems.id,track:rundownItems.audioTrack}).from(rundownItems).all().filter(row=>row.id!==itemA1)
     await applyAudio(db,itemA1,audio,scope,undefined,1)

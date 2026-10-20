@@ -1,4 +1,4 @@
-import { afterEach,beforeEach,describe,expect,it } from 'vitest'
+import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
 import Fastify from 'fastify'
 import { createHash } from 'node:crypto'
 import { mkdtemp,readFile,rm,writeFile } from 'node:fs/promises'
@@ -10,6 +10,10 @@ import { registerRoutes } from '../routes.js'
 import { channels,mediaAssets,rundowns,rundownItems } from '../db/schema.js'
 import { getChannel } from '../db/repo.js'
 import { publishOperationalPlaylist } from './operational-playlist.js'
+
+// Cache planning must not start/admit a global native service. This fixture
+// explicitly simulates PGM/CUE; real decoder/relay delivery has its own verifier.
+vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',RELAY_BINARY:'',DEVICES_BINARY:''}))
 
 let app:App,server:ReturnType<typeof Fastify>,dir:string
 const date = (value:Date)=>`${value.getFullYear()}-${String(value.getMonth()+1).padStart(2,'0')}-${String(value.getDate()).padStart(2,'0')}`

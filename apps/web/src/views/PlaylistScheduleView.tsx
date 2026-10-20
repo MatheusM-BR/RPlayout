@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import type { Channel, ManagedLiveSource, Rundown } from '@rplayout/protocol'
+import type { Channel, ManagedLiveSource, Rundown, AssetMetadataReview } from '@rplayout/protocol'
 import { durationIn, qcApproved } from '@rplayout/protocol'
 import { clock, dur } from '../format.js'
 import type { RundownView, ItemView, LibraryAsset, LibraryFolder, Categoria, Snapshot } from '../types.js'
@@ -9,17 +9,23 @@ import { CanonicalProtocolSelector, type ProtocolResult } from '../components/br
 import { inputName } from '../components/broadcast/protocol-config.js'
 import { api, type OperationalRevisionSummary, type OperationalSimulation } from '../api.js'
 import {operationalReviewReady} from '../domain/operational-review.js'
+import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
+import {publicationSnapshot} from '../domain/publication-snapshot.js'
 import {OperationalRollbackDialog} from '../components/OperationalRollbackDialog.js'
 import { canonicalLiveSourceRef } from '../liveSource.js'
 import { ProtectedTimingZonesDialog } from '../components/ProtectedTimingZonesDialog.js'
 import { editorialContext, editorialSelection } from '../domain/editorial-context.js'
 import { SchedulePublicationPanel } from '../components/broadcast/SchedulePublicationPanel.js'
+import {AssetMetadataEditor} from '../components/AssetMetadataEditor.js'
+import {isCatalogMediaAsset} from '../domain/asset-metadata-review.js'
+import {catalogIgnored,type IgnoredOverride} from '../domain/catalog-ignored.js'
 
 interface Props {
   channel: Channel
   channels?: Channel[]
   view: RundownView
   folders?: LibraryFolder[]
+  libraryLoaded?: boolean
   categorias?: Categoria[]
   onInsertAsset?: (
     assetId: string | null,
@@ -60,6 +66,8 @@ interface Props {
   onRemoveItem?: (itemId: string, rundownId?: string, onRemoved?: () => void,revision?:number) => void
   onBulkRemoveItems?: (ids: string[], rundownId?: string, onRemoved?: () => void,revision?:number) => void
   onOpenSettings?: () => void
+  onRemoveAsset?: (assetId:string)=>void
+  onPruneAssets?: ()=>void
 }
 
 export function PlaylistScheduleView({
@@ -67,6 +75,7 @@ export function PlaylistScheduleView({
   channels = [channel],
   view,
   folders = [],
+  libraryLoaded = true,
   categorias = [],
   onInsertAsset,
   onPreviewAsset,
@@ -85,6 +94,8 @@ export function PlaylistScheduleView({
   onRemoveItem,
   onBulkRemoveItems,
   onOpenSettings,
+  onRemoveAsset,
+  onPruneAssets,
 }: Props) {
   const now = new Date()
   const todayDateIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
@@ -115,6 +126,8 @@ export function PlaylistScheduleView({
   const editorialRequestKey = JSON.stringify([channel.id,selectedDate])
   const editorialRequestKeyRef = useRef(editorialRequestKey)
   editorialRequestKeyRef.current = editorialRequestKey
+  const publicationSelection=useRef({key:editorialRequestKey})
+  if(publicationSelection.current.key!==editorialRequestKey)publicationSelection.current={key:editorialRequestKey}
   const pendingEditorialCreation = useRef<{key:string;promise:Promise<RundownView>} | null>(null)
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null)
 
@@ -145,7 +158,16 @@ export function PlaylistScheduleView({
   const [operationalReviewError, setOperationalReviewError] = useState<string | null>(null)
   const [isLoadingOperational, setIsLoadingOperational] = useState(false)
   const [operationalRefresh, setOperationalRefresh] = useState(0)
-  const [rollbackReview,setRollbackReview]=useState<{inspection:OperationalSimulation & {sourceRevision:number};origin:{id:string;version:number;key:string};revisionId:string}|null>(null)
+  const [rollbackReview,setRollbackReview]=useState<{inspection:OperationalSimulation & {sourceRevision:number};origin:{id:string;version:number;key:string;selection:{key:string}};revisionId:string}|null>(null)
+  const comparisonReads=useRef(new BoundedLatestRead())
+  const rollbackReads=useRef(new BoundedLatestRead())
+  const editorialRefreshReads=useRef(new BoundedLatestRead())
+  const operationalBusy=useRef(false)
+  const rollbackInspecting=useRef(false)
+  const operationalAlive=useRef(true)
+  const [isRefreshingEditorial,setIsRefreshingEditorial]=useState(false)
+  const [isInspectingRollback,setIsInspectingRollback]=useState(false)
+  useEffect(()=>{operationalAlive.current=true;return()=>{operationalAlive.current=false;comparisonReads.current.cancel();rollbackReads.current.cancel();editorialRefreshReads.current.cancel()}},[])
 
   const rate = channel.rate
 
@@ -153,9 +175,10 @@ export function PlaylistScheduleView({
   const [sidebarTab, setSidebarTab] = useState<'mam' | 'calendar'>('mam')
   const [mamSearch, setMamSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL')
-  const [categoryOverrides, setCategoryOverrides] = useState<Map<string, string | null>>(new Map())
-  const [ignoredOverrides, setIgnoredOverrides] = useState<Map<string, boolean>>(new Map())
-  const [mamContextMenu, setMamContextMenu] = useState<{ asset: LibraryAsset; x: number; y: number } | null>(null)
+  const [metadataOverrides,setMetadataOverrides]=useState<Map<string,AssetMetadataReview>>(new Map())
+  const [metadataAssetId,setMetadataAssetId]=useState<string|null>(null)
+  const [ignoredOverrides, setIgnoredOverrides] = useState<Map<string, IgnoredOverride>>(new Map())
+  const [mamContextMenu, setMamContextMenu] = useState<{ asset: LibraryAsset & {isLiveSource?:boolean}; x: number; y: number } | null>(null)
   const [liveSources, setLiveSources] = useState<ManagedLiveSource[]>([])
 
   useEffect(() => {
@@ -223,12 +246,15 @@ export function PlaylistScheduleView({
 
   const allMamAssets = useMemo<LibraryAsset[]>(() => {
     if (!folders || folders.length === 0) return []
-    return folders.flatMap((f) => f.assets).map((asset) => ({
-      ...asset,
-      categoryId: categoryOverrides.has(asset.id) ? categoryOverrides.get(asset.id)! : asset.categoryId,
-      ignored: ignoredOverrides.has(asset.id) ? ignoredOverrides.get(asset.id)! : Boolean(asset.ignored),
-    }))
-  }, [folders, categoryOverrides, ignoredOverrides])
+    return folders.flatMap((f) => f.assets).map((asset) => {
+      const own=metadataOverrides.get(asset.id)
+      const metadata=own&&asset.qcRevision!==undefined&&asset.qcRevision<=own.revision?own:null
+      return {...asset,...(metadata?{title:metadata.title,categoryId:metadata.categoryId}:{}),
+        // Do not advance a QC proof using a metadata response. Technical data,
+        // hash and approval still belong to the original library snapshot.
+        ignored:catalogIgnored(asset,ignoredOverrides.get(asset.id))}
+    })
+  }, [folders, metadataOverrides, ignoredOverrides])
 
   // Fontes configuradas aparecem na mesma biblioteca, mas preservam a sua
   // natureza: ao clicar, vão ao PVW por sourceRef em vez de virar asset MAM.
@@ -308,23 +334,14 @@ export function PlaylistScheduleView({
     return list
   }, [categorias, allMamAssets])
 
-  const assignMamCategory = async (asset: LibraryAsset, categoryId: string | null) => {
-    try {
-      await api.patchAsset(asset.id, { categoryId })
-      setCategoryOverrides((previous) => new Map(previous).set(asset.id, categoryId))
-      setFeedbackMessage(`✓ Categoria de "${asset.title}" atualizada para ${categoryId ?? 'Sem Categoria'}`)
-    } catch {
-      setFeedbackMessage('Não foi possível atualizar a categoria do ativo.')
-    } finally {
-      setMamContextMenu(null)
-    }
-  }
+  const openMetadata=(id:string)=>{setMetadataAssetId(id);setMamContextMenu(null)}
 
-  const toggleMamIgnored = async (asset: LibraryAsset) => {
+  const toggleMamIgnored = async (asset: LibraryAsset & {isLiveSource?:boolean}) => {
+    if(!isCatalogMediaAsset(asset)){setMamContextMenu(null);return}
     const nextIgnored = !asset.ignored
     try {
       const result=await api.patchAsset(asset.id, { ignored: nextIgnored },asset.qcRevision)
-      setIgnoredOverrides((previous) => new Map(previous).set(asset.id, nextIgnored))
+      if(asset.qcRevision!==undefined)setIgnoredOverrides((previous) => new Map(previous).set(asset.id,{ignored:nextIgnored,reviewedRevision:asset.qcRevision!,contentHash:asset.contentHash}))
       setFeedbackMessage(result.refreshError??(
         nextIgnored
           ? `✓ Vídeo "${asset.title}" marcado como IGNORADO (oculto da grade ativa)`
@@ -335,13 +352,6 @@ export function PlaylistScheduleView({
     } finally {
       setMamContextMenu(null)
     }
-  }
-
-  const createAndAssignMamCategory = async (asset: LibraryAsset) => {
-    const name = window.prompt('Nome da nova categoria:')?.trim()
-    if (!name) return
-    await api.setCategoryColor(name, '#389BFF')
-    await assignMamCategory(asset, name)
   }
 
   const filteredMamAssets = useMemo(() => {
@@ -447,38 +457,60 @@ export function PlaylistScheduleView({
   const reviewRundownId = activeView?.rundown.id
   const editorialFingerprint = JSON.stringify([activeView?.editorialRevision,activeView?.items.map(entry => entry.item) ?? [],activeView?.rundown.protectedZones ?? []])
   const publicationReady=operationalReviewReady(operationalSimulation?.review,reviewRundownId,channel.id,activeView?.editorialRevision)
+  const operationalContext=JSON.stringify([editorialRequestKey,reviewRundownId,editorialFingerprint])
+  const operationalContextRef=useRef(operationalContext)
+  operationalContextRef.current=operationalContext
+  useEffect(()=>{
+    rollbackReads.current.cancel();editorialRefreshReads.current.cancel()
+    rollbackInspecting.current=false
+    setIsInspectingRollback(false);setIsRefreshingEditorial(false)
+    if(!operationalBusy.current)setRollbackReview(null)
+  },[operationalContext])
   useEffect(() => {
-    let current = true
+    const reading=comparisonReads.current.start()!
     setOperationalSimulation(null)
     setOperationalRevisions([])
     setOperationalRevision(null)
     setOperationalReviewError(null)
-    if (!reviewRundownId) return
+    if (!reviewRundownId){setIsLoadingOperational(false);reading.finish();return}
     setIsLoadingOperational(true)
-    void Promise.all([api.simulateOperationalPlaylist(reviewRundownId), api.operationalRevisions(reviewRundownId)])
+    void Promise.all([api.simulateOperationalPlaylist(reviewRundownId,reading.signal), api.operationalRevisions(reviewRundownId,reading.signal)])
       .then(([simulation, history]) => {
-        if (!current) return
+        if (!reading.isCurrent()||reading.signal.aborted) return
         setOperationalSimulation(simulation)
         setOperationalRevisions(history.revisions)
         setOperationalRevision(simulation.activeRevision)
       })
-      .catch(error => { if (current) setOperationalReviewError(error instanceof Error ? error.message : 'Não foi possível comparar as revisões.') })
-      .finally(() => { if (current) setIsLoadingOperational(false) })
-    return () => { current = false }
-  }, [reviewRundownId, editorialFingerprint, operationalRefresh])
+      .catch(error => {
+        if(!reading.isCurrent())return
+        const timedOut=reading.timedOut()
+        setOperationalReviewError(timedOut?'A conferência demorou demais. Nenhuma publicação foi enviada. Use Atualizar e conferir para tentar novamente.':error instanceof Error?error.message:'Não foi possível comparar as revisões.')
+        setIsLoadingOperational(false)
+        comparisonReads.current.cancel() // Cancel sibling GET, never publication.
+      })
+      .finally(() => { if (reading.isCurrent()) setIsLoadingOperational(false);reading.finish() })
+    return () => { comparisonReads.current.cancel() }
+  }, [operationalContext, operationalRefresh])
 
-  const openOperationalReview = () => { setShowOperationalReview(true); setOperationalRefresh(value => value + 1) }
+  const openOperationalReview = () => { if(operationalBusy.current)return;setShowOperationalReview(true); setOperationalRefresh(value => value + 1) }
+  const closeOperationalReview=()=>{
+    if(operationalBusy.current)return
+    rollbackReads.current.cancel();rollbackInspecting.current=false
+    setIsInspectingRollback(false);setRollbackReview(null);setShowOperationalReview(false)
+  }
   const refreshOperationalReview=async()=>{
-    if(!reviewRundownId || isPublishingOperational || isLoadingOperational)return
-    const origin={id:reviewRundownId,key:editorialRequestKey}
-    setOperationalSimulation(null);setIsLoadingOperational(true);setOperationalReviewError(null)
+    if(!reviewRundownId || operationalBusy.current || rollbackInspecting.current || isLoadingOperational)return
+    const reading=editorialRefreshReads.current.start(false)
+    if(!reading)return
+    const origin={id:reviewRundownId,key:operationalContext}
+    setOperationalSimulation(null);setIsRefreshingEditorial(true);setOperationalReviewError(null)
     try{
-      const fresh=await api.rundown(origin.id)
-      if(editorialRequestKeyRef.current!==origin.key)throw new Error('A seleção mudou. Confira a grade selecionada novamente.')
+      const fresh=await api.rundown(origin.id,reading.signal)
+      if(!reading.isCurrent()||reading.signal.aborted||operationalContextRef.current!==origin.key)return
       if(isLoadedEditorial)onPublishToMaster(fresh);else setDateRundownView(fresh.view)
       setOperationalRefresh(value=>value+1)
-    }catch(error){setOperationalReviewError(error instanceof Error?error.message:'Não foi possível atualizar a grade.')}
-    finally{setIsLoadingOperational(false)}
+    }catch(error){if(reading.isCurrent())setOperationalReviewError(reading.timedOut()?'A leitura da grade demorou demais. Nenhuma publicação foi enviada; tente Atualizar e conferir novamente.':error instanceof Error?error.message:'Não foi possível atualizar a grade.')}
+    finally{if(reading.isCurrent())setIsRefreshingEditorial(false);reading.finish()}
   }
 
   // Conjunto de datas que já possuem grade cadastrada
@@ -543,26 +575,34 @@ export function PlaylistScheduleView({
   // Publicar / Sincronizar com o Master
   const handlePublish = async () => {
     const target = activeView?.rundown
-    if (!target || isPublishingOperational) return
+    if (!target || operationalBusy.current || rollbackInspecting.current || isRefreshingEditorial) return
     if(!showOperationalReview){openOperationalReview();return}
     if(!publicationReady || !operationalSimulation){setOperationalReviewError('A conferência não corresponde à grade exibida. Atualize a grade e revise a publicação novamente.');return}
     const reviewed=operationalSimulation.review
-    const originKey=editorialRequestKey
+    const selection=publicationSelection.current
+    const stillSelected=()=>operationalAlive.current&&publicationSelection.current===selection
+    operationalBusy.current=true
     setIsPublishingOperational(true)
+    setPublishedSuccess(false)
     try {
       // Freeze first. Loading another date is a separate, protected operation;
       // a rejected load cannot overwrite the program or show a stale snapshot.
       const published = await api.publishOperationalPlaylist(target.id,reviewed.editorialRevision,reviewed.token)
-      if(editorialRequestKeyRef.current!==originKey)throw new Error(`Revisão ${published.revision} salva para ${target.date}, mas a seleção mudou. Não foi solicitado carregar outra grade no Master.`)
+      if(!stillSelected())throw new Error(`Revisão ${published.revision} salva para ${target.date}, mas a seleção mudou. Não foi solicitado carregar outra grade no Master.`)
       setOperationalRevision(published.revision)
       setOperationalRefresh(value => value + 1)
-      setPublishedSuccess(true)
-      const snapshot = target.id === view.rundown.id
-        ? await api.rundown(target.id)
-        : await api.loadChannelRundown(channel.id, target.id).catch(error => {
-          throw new Error(`Revisão ${published.revision} salva, mas não carregada no Master: ${error instanceof Error ? error.message : 'carga recusada'}`)
-        })
+      if(published.refreshError){setPublishedSuccess(false);setShowOperationalReview(false);setOperationalReviewError(published.refreshError);setFeedbackMessage(`Revisão ${published.revision} gravada. ${published.refreshError}`);return}
+      const snapshot=await publicationSnapshot({revision:published.revision,rundownId:target.id,loadedRundownId:view.rundown.id,current:stillSelected,
+        read:async()=>{
+          const reading=editorialRefreshReads.current.start()!
+          try{return await api.rundown(target.id,reading.signal)}
+          catch(error){if(reading.timedOut())throw new Error('A leitura após publicação demorou demais');throw error}
+          finally{reading.finish()}
+        },
+        // This is a mutation: it must not share a read cancellation signal.
+        load:()=>api.loadChannelRundown(channel.id,target.id)})
       onPublishToMaster(snapshot)
+      setPublishedSuccess(true)
       setShowOperationalReview(false)
       setFeedbackMessage(
         published.conflicts.length > 0
@@ -574,42 +614,50 @@ export function PlaylistScheduleView({
         setFeedbackMessage(null)
       }, 4000)
     } catch (err: any) {
+      setPublishedSuccess(false)
       setOperationalReviewError(err.message)
       setFeedbackMessage(err.message)
     } finally {
+      operationalBusy.current=false
       setIsPublishingOperational(false)
     }
   }
 
   const handleOperationalRollback = async (revision: OperationalRevisionSummary) => {
-    if (!reviewRundownId || !activeView || isPublishingOperational) return
+    if (!reviewRundownId || !activeView || operationalBusy.current || isRefreshingEditorial || isLoadingOperational || operationalReviewError) return
     const version=activeView.editorialRevision
     if(version===undefined){setOperationalReviewError('Atualize a grade antes de conferir o rollback.');return}
-    const origin={id:reviewRundownId,version,key:editorialRequestKey}
-    setIsPublishingOperational(true)
+    const reading=rollbackReads.current.start(false)
+    if(!reading)return
+    const context=operationalContext
+    const origin={id:reviewRundownId,version,key:editorialRequestKey,selection:publicationSelection.current}
+    rollbackInspecting.current=true
+    setIsInspectingRollback(true)
     setOperationalReviewError(null)
     try {
-      const inspected=await api.reviewOperationalRollback(origin.id,revision.id,origin.version)
-      if(editorialRequestKeyRef.current!==origin.key)throw new Error('A data ou o canal mudou. Reabra a conferência na grade selecionada.')
+      const inspected=await api.reviewOperationalRollback(origin.id,revision.id,origin.version,reading.signal)
+      if(!reading.isCurrent()||reading.signal.aborted||operationalContextRef.current!==context)return
       setRollbackReview({inspection:inspected,origin,revisionId:revision.id})
     } catch (error) {
-      setOperationalReviewError(error instanceof Error ? error.message : 'Restauração recusada.')
-    } finally { setIsPublishingOperational(false) }
+      if(reading.isCurrent())setOperationalReviewError(reading.timedOut()?'A conferência de restauração demorou demais. Nenhuma revisão foi restaurada; atualize e confira novamente.':error instanceof Error ? error.message : 'Conferência de restauração indisponível.')
+    } finally { if(reading.isCurrent()){rollbackInspecting.current=false;setIsInspectingRollback(false)}reading.finish() }
   }
 
   const applyOperationalRollback=async()=>{
-    if(!rollbackReview || isPublishingOperational)return
+    if(!rollbackReview || operationalBusy.current)return
     const {origin,inspection,revisionId}=rollbackReview
-    if(editorialRequestKeyRef.current!==origin.key)throw new Error('A data ou o canal mudou. Feche e confira a grade selecionada novamente.')
+    if(publicationSelection.current!==origin.selection)throw new Error('A data ou o canal mudou. Feche e confira a grade selecionada novamente.')
+    operationalBusy.current=true
     setIsPublishingOperational(true)
     try{
       const restored=await api.rollbackOperationalPlaylist(origin.id,revisionId,origin.version,inspection.review.token)
       setRollbackReview(null)
-      if(editorialRequestKeyRef.current!==origin.key){setFeedbackMessage(`Restauração salva como revisão ${restored.revision} na grade original. A seleção atual não foi alterada.`);return}
+      if(!operationalAlive.current||publicationSelection.current!==origin.selection){setFeedbackMessage(`Restauração salva como revisão ${restored.revision} na grade original. A seleção atual não foi alterada.`);return}
       setOperationalRevision(restored.revision);setOperationalRefresh(value=>value+1)
-      if(origin.id===view.rundown.id)onPublishToMaster(restored)
+      if(restored.refreshError||!restored.snapshotAvailable){setOperationalReviewError(restored.refreshError??'Rollback gravado; leitura da execução não confirmada.');setFeedbackMessage(`Rollback gravado como revisão ${restored.revision}. Confira o canal antes de outra decisão.`);return}
+      if(origin.id===view.rundown.id&&restored.snapshotAvailable)onPublishToMaster(restored)
       setFeedbackMessage(`Revisão ${inspection.sourceRevision} restaurada como revisão ${restored.revision}. A grade editorial foi preservada.`)
-    }finally{setIsPublishingOperational(false)}
+    }finally{operationalBusy.current=false;setIsPublishingOperational(false)}
   }
 
   const handleAddItem = async () => {
@@ -1143,6 +1191,7 @@ export function PlaylistScheduleView({
 
   return (
     <div className="flex flex-col h-screen w-screen bg-surface-base text-on-surface select-none overflow-hidden font-sans">
+      {metadataAssetId&&<AssetMetadataEditor key={metadataAssetId} assetId={metadataAssetId} categories={categorias.map(category=>category.id)} onCancel={()=>setMetadataAssetId(null)} onSaved={(result,message)=>{setMetadataOverrides(previous=>new Map(previous).set(result.assetId,result));setFeedbackMessage(message)}}/>}
       {/* 1. CABEÇALHO GLOBAL BROADCAST (STITCH COMPACT 48px) */}
       <BroadcastHeader
         activeWorkspace="playlist"
@@ -1286,7 +1335,7 @@ export function PlaylistScheduleView({
                           : 'bg-surface-base text-outline border-border-subtle hover:text-on-surface'
                       }`}
                     >
-                      TODAS ({allMamAssets.length})
+                      TODAS ({libraryLoaded ? allMamAssets.length : 'N/D'})
                     </button>
                     {availableCategoriesList.map((cat) => {
                       const isSel = selectedCategory === cat.id
@@ -1321,7 +1370,7 @@ export function PlaylistScheduleView({
                   {filteredMamAssets.length === 0 ? (
                     <div className="p-6 text-center text-outline text-xs flex flex-col items-center justify-center gap-2">
                       <span className="material-symbols-outlined text-[28px] opacity-40">filter_alt_off</span>
-                      <span>Nenhum ativo encontrado no MAM</span>
+                      <span>{libraryLoaded ? 'Nenhum ativo encontrado no MAM' : 'Acervo ainda não conferido; isso não confirma acervo vazio.'}</span>
                     </div>
                   ) : (
                     filteredMamAssets.map((asset) => {
@@ -1331,7 +1380,7 @@ export function PlaylistScheduleView({
 
                       return (
                         <div
-                          key={asset.id}
+                          key={`${asset.isLiveSource?'live':'asset'}:${asset.id}`}
                           onClick={() => {
                             if (asset.isLiveSource && asset.sourceRef) onPreviewLiveSource?.(asset.sourceRef, asset.title)
                           }}
@@ -1394,12 +1443,10 @@ export function PlaylistScheduleView({
                 </div>
                 {mamContextMenu && (
                   <div className="fixed z-50 min-w-52 rounded border border-border-strong bg-surface-card p-1 shadow-xl text-body-sm" style={{ left: mamContextMenu.x, top: mamContextMenu.y }} role="menu">
-                    <div className="px-2 py-1 text-[9px] font-label-caps text-outline">DEFINIR CATEGORIA</div>
-                    <button className="block w-full rounded px-2 py-1 text-left text-[11px] hover:bg-surface-panel cursor-pointer" onClick={() => void assignMamCategory(mamContextMenu.asset, null)}>Sem categoria</button>
-                    {categorias.map((category) => (
-                      <button key={category.id} className="block w-full rounded px-2 py-1 text-left text-[11px] hover:bg-surface-panel cursor-pointer" onClick={() => void assignMamCategory(mamContextMenu.asset, category.id)}>{category.id}</button>
-                    ))}
-                    <button className="block w-full rounded px-2 py-1 text-left text-[11px] text-primary hover:bg-surface-panel cursor-pointer border-b border-border-subtle/50 pb-1.5 mb-1" onClick={() => void createAndAssignMamCategory(mamContextMenu.asset)}>Nova categoria…</button>
+                    {isCatalogMediaAsset(mamContextMenu.asset)?<>
+                    <div className="px-2 py-1 text-[9px] font-label-caps text-outline">ACERVO COMPARTILHADO</div>
+                    <button className="block w-full rounded px-2 py-1 text-left text-[11px] text-primary hover:bg-surface-panel cursor-pointer border-b border-border-subtle/50 pb-1.5 mb-1" onClick={()=>openMetadata(mamContextMenu.asset.id)}>Conferir título / categoria…</button>
+                    {onRemoveAsset&&<button className="block w-full rounded px-2 py-1 text-left text-[11px] text-error hover:bg-surface-panel cursor-pointer" onClick={()=>{const id=mamContextMenu.asset.id;setMamContextMenu(null);onRemoveAsset(id)}}>Conferir remoção e vínculos…</button>}
 
                     <div className="px-2 py-1 text-[9px] font-label-caps text-outline">AÇÕES DE QC</div>
                     <button
@@ -1412,12 +1459,17 @@ export function PlaylistScheduleView({
                     >
                       {mamContextMenu.asset.ignored ? '✓ Reativar Vídeo no MAM' : '🚫 Ignorar Vídeo (Ocultar)'}
                     </button>
+                    </>:<>
+                      <div className="px-2 py-1 text-[9px] font-label-caps text-outline">ENTRADA AO VIVO — NÃO É ARQUIVO DO ACERVO</div>
+                      <button className="block w-full rounded px-2 py-1 text-left text-[11px] text-primary hover:bg-surface-panel cursor-pointer" onClick={()=>{setMamContextMenu(null);if(onOpenSettings)onOpenSettings();else onNavigate('settings')}}>Configurar entrada ao vivo…</button>
+                    </>}
                   </div>
                 )}
 
                 {/* Rodapé da Biblioteca */}
                 <div className="p-1.5 border-t border-border-subtle bg-surface-container-high font-label-mono text-[9px] text-outline flex items-center justify-between shrink-0">
-                  <span>{filteredMamAssets.length} clipes listados</span>
+                  <span>{libraryLoaded ? `${filteredMamAssets.length} clipes listados` : 'Catálogo ainda não conferido'}</span>
+                  {onPruneAssets&&<button className="text-armed-amber cursor-pointer" onClick={onPruneAssets}>Conferir limpeza…</button>}
                   <span className="text-primary font-medium">Duplo clique insere</span>
                 </div>
               </div>
@@ -2245,28 +2297,7 @@ export function PlaylistScheduleView({
                         <div className="flex items-center gap-1 bg-surface-panel px-2 py-1 rounded border border-border-subtle">
                           <span className="material-symbols-outlined text-[14px] text-primary">label</span>
                           <span className="text-[9.5px] text-outline font-label-caps font-semibold">Categoria:</span>
-                          <select
-                            value={selectedItem.asset.categoryId || ''}
-                            onChange={async (e) => {
-                              const newCat = e.target.value || null
-                              try {
-                                await api.patchAsset(selectedItem.asset!.id, { categoryId: newCat })
-                                await loadDateRundown(selectedDate)
-                                setFeedbackMessage(`✓ Categoria atualizada para "${newCat || 'Sem Categoria'}"`)
-                                setTimeout(() => setFeedbackMessage(null), 3000)
-                              } catch (err: any) {
-                                alert(`Erro ao alterar categoria: ${err.message}`)
-                              }
-                            }}
-                            className="bg-transparent text-on-surface text-[10px] font-label-mono font-bold outline-none cursor-pointer"
-                          >
-                            <option value="" className="bg-surface-card text-on-surface">Sem Categoria</option>
-                            {availableCategoriesList.map((c) => (
-                              <option key={c.id} value={c.id} className="bg-surface-card text-on-surface">
-                                {c.id}
-                              </option>
-                            ))}
-                          </select>
+                          <button onClick={()=>openMetadata(selectedItem.asset!.id)} className="bg-transparent text-on-surface text-[10px] font-label-mono font-bold outline-none cursor-pointer">Conferir / editar…</button>
                         </div>
                       )}
 
@@ -2319,11 +2350,13 @@ export function PlaylistScheduleView({
           <section role="dialog" aria-modal="true" aria-labelledby="operational-review-title" className="bg-surface-card border border-border-subtle rounded-lg shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
             <header className="p-4 border-b border-border-subtle flex shrink-0 items-center justify-between">
               <h2 id="operational-review-title" className="font-bold text-on-surface">Publicação e revisões operacionais</h2>
-              <button aria-label="Fechar revisões" disabled={isPublishingOperational} onClick={() => setShowOperationalReview(false)} className="px-3 py-1 text-outline">✕</button>
+              <button aria-label="Fechar revisões" disabled={isPublishingOperational} onClick={closeOperationalReview} className="px-3 py-1 text-outline">✕</button>
             </header>
             <div className="p-4 min-h-0 overflow-auto space-y-4 text-sm text-on-surface">
               <p>A edição da grade não muda a execução publicada. Confira as diferenças antes de criar uma revisão. Outra data só pode ser carregada com o PGM parado.</p>
               {isLoadingOperational && <p role="status">Calculando timing e comparando versões…</p>}
+              {isRefreshingEditorial && <p role="status">Atualizando a grade para nova conferência…</p>}
+              {isInspectingRollback && <p role="status">Conferindo a revisão para restauração…</p>}
               {operationalReviewError && <p role="alert" className="text-error bg-error-container/20 p-3 rounded">{operationalReviewError}</p>}
               {operationalSimulation && <>
                 <p>{operationalSimulation.activeRevision === null ? 'Ainda não há revisão publicada.' : `Revisão publicada: ${operationalSimulation.activeRevision}.`} {operationalSimulation.differences.added.length} inclusão(ões), {operationalSimulation.differences.removed.length} remoção(ões), {operationalSimulation.differences.changed.length} alteração(ões).</p>
@@ -2339,16 +2372,16 @@ export function PlaylistScheduleView({
               </>}
               <h3 className="font-bold">Histórico preservado</h3>
               <div className="flex flex-col gap-2">
-                {!isLoadingOperational && !operationalRevisions.length && <p className="text-outline">Nenhuma publicação registrada.</p>}
+                {!isLoadingOperational && !operationalReviewError && operationalSimulation && !operationalRevisions.length && <p className="text-outline">Nenhuma publicação registrada nesta conferência.</p>}
                 {operationalRevisions.map(revision => <div key={revision.id} className="flex items-center justify-between gap-3 p-2 border border-border-subtle rounded">
                   <div><strong>Rev. {revision.revision}{revision.active ? ' · Publicada' : ''}</strong><p className="text-xs text-outline">{new Date(revision.publishedAt).toLocaleString('pt-BR')} · {revision.publishedBy ?? 'Operação local'}</p></div>
-                  {!revision.active && <button disabled={isPublishingOperational} onClick={() => void handleOperationalRollback(revision)} className="px-3 py-1 rounded border border-armed-amber text-armed-amber disabled:opacity-40">Restaurar</button>}
+                  {!revision.active && <button disabled={isPublishingOperational || isInspectingRollback || isRefreshingEditorial || isLoadingOperational || Boolean(operationalReviewError)} onClick={() => void handleOperationalRollback(revision)} className="px-3 py-1 rounded border border-armed-amber text-armed-amber disabled:opacity-40">Restaurar</button>}
                 </div>)}
               </div>
             </div>
             <footer className="p-4 border-t border-border-subtle flex shrink-0 justify-end gap-3">
-              <button disabled={isPublishingOperational || isLoadingOperational} onClick={() => void refreshOperationalReview()} className="px-3 py-2 border border-border-subtle rounded text-on-surface">Atualizar e conferir</button>
-              <button disabled={isPublishingOperational || isLoadingOperational || !publicationReady || Boolean(operationalReviewError)} onClick={() => void handlePublish()} className="px-3 py-2 bg-primary text-surface-base rounded font-bold disabled:opacity-40">{isPublishingOperational ? 'Publicando…' : 'Publicar e sincronizar Master'}</button>
+              <button disabled={isPublishingOperational || isInspectingRollback || isRefreshingEditorial || isLoadingOperational} onClick={() => void refreshOperationalReview()} className="px-3 py-2 border border-border-subtle rounded text-on-surface">Atualizar e conferir</button>
+              <button disabled={isPublishingOperational || isInspectingRollback || isRefreshingEditorial || isLoadingOperational || !publicationReady || Boolean(operationalReviewError)} onClick={() => void handlePublish()} className="px-3 py-2 bg-primary text-surface-base rounded font-bold disabled:opacity-40">{isPublishingOperational ? 'Publicando…' : 'Publicar e sincronizar Master'}</button>
             </footer>
           </section>
         </div>
@@ -2485,7 +2518,7 @@ export function PlaylistScheduleView({
       )}
 
       {/* MODAL: NOVO PROGRAMA AO VIVO COM ENTRADA MARCADA */}
-      {rollbackReview&&<OperationalRollbackDialog inspection={rollbackReview.inspection} onClose={()=>setRollbackReview(null)} onApply={applyOperationalRollback}/>}
+      {rollbackReview&&<OperationalRollbackDialog inspection={rollbackReview.inspection} onClose={()=>{if(!operationalBusy.current)setRollbackReview(null)}} onApply={applyOperationalRollback}/>}
       {showProtectedZones && activeView && <ProtectedTimingZonesDialog key={activeView.rundown.id} rundown={activeView.rundown} rate={rate} editorialRevision={activeView.editorialRevision} onClose={()=>setShowProtectedZones(false)} onSaved={snapshot=>{if (isLoadedEditorial) onPublishToMaster(snapshot); else setDateRundownView(snapshot.view); setOperationalRefresh(value=>value+1);setShowProtectedZones(false)}} />}
       {showLiveProgramModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">

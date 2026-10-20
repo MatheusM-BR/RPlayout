@@ -1,7 +1,8 @@
 param(
   [string]$Destination = "release/RPlayout-1.1",
   [string]$MsvcRuntimeDirectory = '',
-  [switch]$PrunePreviousPackages
+  [switch]$PrunePreviousPackages,
+  [switch]$SkipFunctionalVerification
 )
 $ErrorActionPreference = 'Stop'
 $workspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -90,12 +91,21 @@ Copy-Item apps/engine/third_party/omt/win-x64/libomt.dll "$Destination/libomt.dl
 Copy-Item apps/engine/third_party/omt/win-x64/libvmx.dll "$Destination/libvmx.dll" -Force
 New-Item -ItemType Directory -Force -Path "$Destination/licenses/omt" | Out-Null
 Copy-Item apps/engine/third_party/omt/LICENSE.txt "$Destination/licenses/omt/LICENSE.txt" -Force
-foreach ($aux in @('rplayout-probe.exe','rplayout-devices.exe','rplayout-relay.exe','rplayout-avsync.exe','rplayout-proxy.exe','rplayout-audio-analysis.exe')) {
+if (!(Test-Path 'apps/engine/target/release/rplayout-host-guard.exe')) { throw 'Trava nativa de distribuição não foi compilada; pacote recusado.' }
+if (!(Test-Path 'apps/engine/target/release/rplayout-file-security.exe')) { throw 'Proteção nativa de configuração não foi compilada; pacote recusado.' }
+if (!(Test-Path 'apps/engine/target/release/rplayout-audio-bus-probe.exe' -PathType Leaf)) { throw 'Sonda de barramento completo não foi compilada; pacote recusado.' }
+foreach ($aux in @('rplayout-probe.exe','rplayout-devices.exe','rplayout-relay.exe','rplayout-avsync.exe','rplayout-proxy.exe','rplayout-audio-analysis.exe','rplayout-audio-bus-probe.exe','rplayout-graphic-probe.exe','rplayout-host-guard.exe','rplayout-file-security.exe')) {
   if (Test-Path "apps/engine/target/release/$aux") { Copy-Item "apps/engine/target/release/$aux" "$Destination/apps/engine/target/release/$aux" -Force }
 }
 if (!(Test-Path 'apps/server/dist/server.cjs')) { throw 'Servidor empacotado não encontrado. Rode pnpm --filter @rplayout/server build.' }
 if (!(Test-Path 'apps/server/dist/schedule-planner.cjs')) { throw 'Auxiliar de montagem empacotado não encontrado. Rode pnpm --filter @rplayout/server build.' }
 if (!(Test-Path 'apps/server/dist/ha-witness.cjs')) { throw 'Testemunha HA compilada não encontrada. Rode pnpm --filter @rplayout/server build.' }
+if (!(Test-Path 'apps/server/dist/restore-backup.cjs')) { throw 'Ferramenta de restauração compilada não encontrada.' }
+if (!(Test-Path 'apps/server/dist/review-restored.cjs')) { throw 'Preparação de restauração compilada não encontrada.' }
+if (!(Test-Path 'apps/server/dist/recover-restored-reservation.cjs')) { throw 'Recuperação de reserva compilada não encontrada.' }
+foreach($storageHelper in @('storage-service.cjs','storage-bridge.cjs')){
+  if(!(Test-Path -LiteralPath "apps/server/dist/$storageHelper" -PathType Leaf)){throw 'Build incompleta: auxiliares do banco separado ausentes.'}
+}
 Copy-Item package.json "$Destination/" -Force
 New-Item -ItemType Directory -Force -Path "$Destination/runtime/node" | Out-Null
 $node = (Get-Command node -ErrorAction SilentlyContinue).Source
@@ -129,6 +139,18 @@ New-Item -ItemType Directory -Force -Path "$Destination/apps/server/dist" | Out-
 Copy-Item apps/server/dist/server.cjs "$Destination/apps/server/dist/server.cjs" -Force
 Copy-Item apps/server/dist/schedule-planner.cjs "$Destination/apps/server/dist/schedule-planner.cjs" -Force
 Copy-Item apps/server/dist/ha-witness.cjs "$Destination/apps/server/dist/ha-witness.cjs" -Force
+Copy-Item apps/server/dist/restore-backup.cjs "$Destination/apps/server/dist/restore-backup.cjs" -Force
+Copy-Item apps/server/dist/review-restored.cjs "$Destination/apps/server/dist/review-restored.cjs" -Force
+if (!(Test-Path 'apps/server/dist/migrate-restored.cjs')) { throw 'Migracao isolada compilada ausente.' }
+Copy-Item apps/server/dist/migrate-restored.cjs "$Destination/apps/server/dist/migrate-restored.cjs" -Force
+if (!(Test-Path 'apps/server/dist/reconcile-upgrade-profile.cjs')) { throw 'Reconciliacao de perfil compilada ausente.' }
+Copy-Item apps/server/dist/reconcile-upgrade-profile.cjs "$Destination/apps/server/dist/reconcile-upgrade-profile.cjs" -Force
+if (!(Test-Path 'apps/server/dist/review-rollback.cjs')) { throw 'Conferencia de historico para retorno compilada ausente.' }
+Copy-Item apps/server/dist/review-rollback.cjs "$Destination/apps/server/dist/review-rollback.cjs" -Force
+Copy-Item apps/server/dist/recover-restored-reservation.cjs "$Destination/apps/server/dist/recover-restored-reservation.cjs" -Force
+foreach($storageHelper in @('storage-service.cjs','storage-bridge.cjs')){
+  Copy-Item -LiteralPath "apps/server/dist/$storageHelper" -Destination "$Destination/apps/server/dist/$storageHelper" -Force
+}
 Copy-Item -Recurse -Force mediamtx "$Destination/"
 # O plugin gstndi carrega o runtime oficial por LoadLibrary. O servidor inicia
 # em apps/server; sem a DLL nesse diretório o provider NDI existe, mas não
@@ -162,6 +184,12 @@ Copy-Item docs/IMPLEMENTACOES-BROADCAST-2026-09-30.md "$Destination/" -Force
 Copy-Item scripts/verify-rplayout-package.ps1 "$Destination/" -Force
 Copy-Item scripts/verify-media-endpoints.ps1 "$Destination/" -Force
 Copy-Item scripts/start-rplayout-server.ps1, scripts/open-rplayout-workspace.ps1 "$Destination/" -Force
+Copy-Item scripts/restore-rplayout-backup.ps1 "$Destination/" -Force
+Copy-Item scripts/prepare-rplayout-upgrade.ps1 "$Destination/" -Force
+Copy-Item scripts/review-rplayout-upgrade.ps1 "$Destination/" -Force
+Copy-Item scripts/start-rplayout-upgrade.ps1 "$Destination/" -Force
+Copy-Item scripts/reconcile-rplayout-upgrade-profile.ps1 "$Destination/" -Force
+Copy-Item scripts/review-rplayout-rollback.ps1 "$Destination/" -Force
 Copy-Item scripts/start-rplayout-witness.ps1, scripts/verify-portable-witness.mjs "$Destination/" -Force
 # Windows PowerShell 5.1 needs a UTF-8 BOM for Portuguese diagnostics/paths.
 foreach ($script in @(Get-ChildItem -LiteralPath $Destination -File -Filter '*.ps1')) {
@@ -180,8 +208,12 @@ Write-Host "MSVC x64 app-local incluído: $($crtFiles[0].VersionInfo.FileVersion
 $manifestFiles = @(Get-ChildItem -LiteralPath $Destination -Recurse -File | ForEach-Object {
   [ordered]@{ file = $_.FullName.Substring($Destination.Length + 1).Replace('\','/'); bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
 })
-$manifest = [ordered]@{ version = 1; builtAt = [DateTime]::UtcNow.ToString('o'); node = (& node -v); msvc = [ordered]@{ version = $crtFiles[0].VersionInfo.FileVersion; distribution = (Split-Path $MsvcRuntimeDirectory -Leaf); deployment = 'app-local'; documentation = 'https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files' }; files = $manifestFiles }
+$manifest = [ordered]@{ version = 1; builtAt = [DateTime]::UtcNow.ToString('o'); functionalVerification = $(if ($SkipFunctionalVerification) { 'NOT_RUN_PARTIAL_BUILD' } else { 'REQUIRED' }); node = (& node -v); msvc = [ordered]@{ version = $crtFiles[0].VersionInfo.FileVersion; distribution = (Split-Path $MsvcRuntimeDirectory -Leaf); deployment = 'app-local'; documentation = 'https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files' }; files = $manifestFiles }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'package-manifest.json') -Encoding UTF8
-& (Join-Path $PSScriptRoot 'verify-rplayout-package.ps1') -Package $Destination
-if ($LASTEXITCODE -ne 0) { throw 'Verificação funcional do pacote falhou.' }
-Write-Host "Pacote compilado e verificado em $Destination"
+if ($SkipFunctionalVerification) {
+  Write-Warning "BUILD PARCIAL NAO HOMOLOGADA: verificacao funcional nao executada por solicitacao do operador. $Destination"
+} else {
+  & (Join-Path $PSScriptRoot 'verify-rplayout-package.ps1') -Package $Destination
+  if ($LASTEXITCODE -ne 0) { throw 'Verificação funcional do pacote falhou.' }
+  Write-Host "Pacote compilado e verificado em $Destination"
+}

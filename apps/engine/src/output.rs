@@ -92,6 +92,9 @@ pub struct Report {
     /// Buffers que chegaram ao sink. Zero com saúde `onAir` é impossível: é
     /// essa contagem que define a saúde.
     pub delivered: u64,
+    /// Process-local identity of this delivery-counter generation. Not proof
+    /// that an external receiver accepted or decoded the output.
+    pub generation: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -184,15 +187,23 @@ pub struct PublisherSpec {
     pub opus: bool,
 }
 
+static NEXT_PUBLISHER_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 pub struct Publisher {
     spec: PublisherSpec,
     pipeline: Option<gst::Pipeline>,
     bus: Option<gst::Bus>,
     delivered: Arc<AtomicU64>,
+    generation: u64,
     health: Health,
     attempts: u32,
     retry_at: Option<Instant>,
     error: Option<String>,
+}
+
+#[cfg(test)]
+impl Publisher {
+    pub(crate) fn audio_channel(&self)->&str { &self.spec.audio_channel }
 }
 
 impl Publisher {
@@ -201,6 +212,7 @@ impl Publisher {
             pipeline: None,
             bus: None,
             delivered: Arc::new(AtomicU64::new(0)),
+            generation: NEXT_PUBLISHER_GENERATION.fetch_add(1, Ordering::Relaxed),
             health: if spec.on_demand { Health::Idle } else { Health::Retrying },
             attempts: 0,
             retry_at: if spec.on_demand { None } else { Some(Instant::now()) },
@@ -303,6 +315,7 @@ impl Publisher {
             health: self.health,
             attempts: self.attempts,
             delivered: self.delivered.load(Ordering::Relaxed),
+            generation: self.generation,
             error: self.error.clone(),
         }
     }
@@ -387,6 +400,7 @@ impl Publisher {
             let _ = pipeline.set_state(gst::State::Null);
         }
         self.delivered.store(0, Ordering::Relaxed);
+        self.generation = NEXT_PUBLISHER_GENERATION.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn shutdown(&mut self) {
@@ -530,6 +544,10 @@ impl Publisher {
                 mux.set_property("latency", MUX_LATENCY);
                 let sink = make("srtsink")?;
                 sink.set_property("uri", &spec.url);
+                // Publisher owns retry/backoff and reports the failed epoch.
+                // Otherwise srtsink reconnects internally while health stays
+                // OnAir and no incident is emitted when the receiver vanishes.
+                set_if_exists(&sink, "auto-reconnect", false);
                 (mux, sink)
             }
             Kind::File => {
@@ -1043,6 +1061,238 @@ mod testes_codec {
 }
 
 #[cfg(test)]
+mod ndi_integration_tests {
+    use super::*;
+    use crate::channel::{Channel, Config, Output, Scan};
+
+    struct Running(gst::Pipeline);
+    impl Drop for Running {
+        fn drop(&mut self) { let _ = self.0.set_state(gst::State::Null); }
+    }
+    struct Discovery(gst::DeviceProvider);
+    impl Drop for Discovery {
+        fn drop(&mut self) { self.0.stop(); }
+    }
+    struct RunningChannel(Channel);
+    impl Drop for RunningChannel {
+        fn drop(&mut self) { self.0.shutdown(); }
+    }
+
+    fn wait_for(label: &str, mut ready: impl FnMut() -> bool) {
+        wait_for_seconds(label, 8, &mut ready);
+    }
+
+    fn wait_for_seconds(label: &str, seconds: u64, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        while Instant::now() < deadline {
+            if ready() { return; }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("NDI loopback: {label} did not complete within {seconds}s");
+    }
+
+    /// Explicitly isolated native diagnostic, not external-source homologation.
+    /// No operational server or network preview destination is used.
+    #[test]
+    #[ignore = "requires NDI GStreamer plugin/runtime and authorized local network; run alone"]
+    fn native_ndi_discovery_cue_take_and_short_signal_recovery() {
+        ndi_loopback(false);
+    }
+
+    fn ndi_loopback(long_loss: bool) {
+        // Declared first: the watchdog also covers native-resource cleanup.
+        let (_completion, completed) = std::sync::mpsc::channel::<()>();
+        let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = progress.clone();
+        std::thread::spawn(move || {
+            if matches!(completed.recv_timeout(Duration::from_secs(60)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
+                eprintln!("NDI loopback timeout: stage={}", observed.load(Ordering::Acquire));
+                std::process::exit(124);
+            }
+        });
+        let stage = |number, label| {
+            progress.store(number, Ordering::Release);
+            eprintln!("NDI loopback stage={number}: {label}");
+        };
+        stage(1, "GStreamer and synthetic source");
+        gst::init().unwrap();
+        crate::limiter_element::register().unwrap();
+        let id = std::process::id();
+        let name = format!("RPlayout São João NDI {id}");
+        let video_channel = format!("ndi-test-video-{id}");
+        let audio_channel = format!("ndi-test-audio-{id}");
+        let input = Running(gst::parse::launch(&format!(
+            "videotestsrc name=ndi-test-picture is-live=true pattern=white ! video/x-raw,width=320,height=180,framerate=25/1 ! intervideosink channel={video_channel} audiotestsrc is-live=true wave=sine ! audio/x-raw,rate=48000,channels=2 ! interaudiosink channel={audio_channel}"
+        )).unwrap().downcast::<gst::Pipeline>().unwrap());
+        let publisher = Publisher::new(PublisherSpec {
+            output_id: format!("ndi-loopback-{id}"), kind: Kind::Ndi,
+            url: format!("ndi:{name}"), video_channel, audio_channel,
+            width: 320, height: 180, fps_n: 25, fps_d: 1, bitrate_kbps: 450,
+            interlaced: false, top_field_first: true, prefer_software: true,
+            role: "test".into(), on_demand: false, opus: false,
+        });
+        // Production publisher builder, not a fixture-only sender graph.
+        let output = Running(publisher.build().unwrap());
+        input.0.set_state(gst::State::Playing).unwrap();
+        output.0.set_state(gst::State::Playing).unwrap();
+        stage(2, "official provider discovery");
+        let provider = Discovery(gst::DeviceProviderFactory::find("ndideviceprovider")
+            .expect("NDI device provider must be installed").get().unwrap());
+        provider.0.start().unwrap();
+        let mut address = None;
+        wait_for("discovery of the actual Unicode sender name", || {
+            address = provider.0.devices().into_iter().find_map(|device| {
+                let value = device.properties()?.get::<String>("ndi-name").ok()?;
+                value.contains(&name).then_some(value)
+            });
+            address.is_some()
+        });
+        let address = address.unwrap();
+        eprintln!("NDI discovered: {address}");
+        stage(3, "independent CUE decoder");
+        let mut channel = RunningChannel(Channel::new(Config {
+            channel_id: format!("ndi-signal-{id}"), width: 640, height: 360,
+            fps_n: 25, fps_d: 1, bitrate_kbps: 450, ceiling_dbtp: -1.0,
+            audio_channels: 2, scan: Scan::Progressive, top_field_first: true,
+            outputs: vec![Output::Null],
+            // On-demand and never enabled: no endpoint is sent preview data.
+            preview: Some(Output::parse("srt://127.0.0.1:19003?mode=caller").unwrap()),
+        }).unwrap());
+        channel.0.start().unwrap();
+        let item: crate::protocol::ItemSpec = serde_json::from_value(serde_json::json!({
+            "itemId":"ndi-native-signal", "source":format!("ndi:{address}"),
+            "trimIn":0, "trimOut":250, "gainDb":0.0
+        })).unwrap();
+        channel.0.preview(Some(item.clone())).unwrap();
+        let mut diagnostic = Instant::now();
+        wait_for("PVW received native video and audio", || {
+            if diagnostic.elapsed() >= Duration::from_secs(2) {
+                eprintln!("NDI PVW reports: {:?}", channel.0.live_signal_reports());
+                eprintln!("NDI PVW elements: {:?}", channel.0.preview_decoder_diagnostic());
+                if let Some(bus) = channel.0.preview_bus() {
+                    while let Some(message) = bus.pop_filtered(&[gst::MessageType::Error, gst::MessageType::Eos]) {
+                        eprintln!("NDI PVW bus: {message:?}");
+                    }
+                }
+                diagnostic = Instant::now();
+            }
+            channel.0.live_signal_reports().iter().any(|(_, bus, signal)|
+                *bus == "pvw" && signal.video_present && signal.audio_present)
+        });
+        assert!(channel.0.on_air_id().is_none(), "CUE cannot change PGM");
+        assert!(channel.0.preview_live_ready().is_some());
+        stage(4, "LOAD/TAKE confirmed by real frames");
+        channel.0.load(item).unwrap();
+        channel.0.take().unwrap();
+        wait_for("PGM actual native format", || {
+            channel.0.service_pending_take().unwrap();
+            channel.0.live_signal_reports().iter().any(|(_, bus, signal)| {
+                if *bus != "pgm" || !signal.video_present || !signal.audio_present { return false; }
+                assert_eq!((signal.width, signal.height, signal.rate_num, signal.rate_den),
+                    (Some(320), Some(180), Some(25), Some(1)));
+                assert_eq!((signal.audio_channels, signal.sample_rate), (Some(2), Some(48000)));
+                assert!(signal.received_frames > 0);
+                true
+            })
+        });
+        wait_for("white picture and audible sine reached PGM", || {
+            let (audio, _, video) = channel.0.measure();
+            channel.0.frames_out() > 0 && !audio.peak_dbfs.is_empty()
+                && audio.peak_dbfs.iter().all(|peak| *peak > -40.0)
+                && video.sample_age_ms.is_some_and(|age| age < 500) && video.luma > 200.0
+        });
+        channel.0.preview(None).unwrap();
+        assert_eq!(channel.0.on_air_id().as_deref(), Some("ndi-native-signal"));
+        let decoder_id = channel.0.decoder_id("pgm");
+        assert!(decoder_id.is_some());
+        stage(5, "sender loss, no stale signal confirmation");
+        output.0.set_state(gst::State::Null).unwrap();
+        wait_for("stale input reported without advancing the program item", || {
+            channel.0.live_signal_reports().iter().any(|(_, bus, signal)|
+                *bus == "pgm" && !signal.video_present)
+        });
+        assert_eq!(channel.0.on_air_id().as_deref(), Some("ndi-native-signal"));
+        let mut recovery = crate::LiveRecovery::default();
+        if long_loss {
+            let mut saw_loss = false;
+            wait_for_seconds("actual NDI receive timeout and SourceLost", 12, || {
+                let (events, _) = crate::poll_program_input(&mut channel.0, &mut recovery);
+                for event in events {
+                    match event {
+                        crate::protocol::Event::SourceLost { item_id, decoder_id: failed, reason } => {
+                            assert_eq!(item_id, "ndi-native-signal");
+                            assert_eq!(failed, decoder_id);
+                            eprintln!("NDI actual timed-out opening: {reason}");
+                            saw_loss = true;
+                        }
+                        crate::protocol::Event::Eos { .. } => panic!("live timeout cannot advance playlist"),
+                        other => eprintln!("NDI timeout diagnostic: {other:?}"),
+                    }
+                }
+                assert_eq!(channel.0.on_air_id().as_deref(), Some("ndi-native-signal"));
+                saw_loss
+            });
+        }
+        let before_return = channel.0.live_signal_reports().into_iter()
+            .find(|(_, bus, _)| *bus == "pgm").unwrap().2.received_frames;
+        stage(6, "same source returns through production recovery loop");
+        // A different picture proves actual recovered program content, not
+        // merely the compositor holding/duplicating its old white frame.
+        input.0.by_name("ndi-test-picture").unwrap().set_property_from_str("pattern", "red");
+        output.0.set_state(gst::State::Playing).unwrap();
+        // Native receive timeout (5s), retry backoff (2s) and connect timeout
+        // (10s) must fit this window. Frame/audio/content assertions unchanged.
+        wait_for_seconds("new video/audio after sender return", 20, || {
+            let (_, error) = crate::poll_pending_take(&mut channel.0);
+            if let Some(error) = error { eprintln!("NDI recovery opening: {error:?}"); }
+            let (events, _) = crate::poll_program_input(&mut channel.0, &mut recovery);
+            for event in events {
+                assert!(!matches!(event, crate::protocol::Event::Eos { .. }),
+                    "live loss cannot advance the playlist");
+                eprintln!("NDI recovery: {event:?}");
+            }
+            channel.0.live_signal_reports().iter().any(|(_, bus, signal)|
+                *bus == "pgm" && signal.video_present && signal.audio_present
+                    && (channel.0.decoder_id("pgm") != decoder_id || signal.received_frames > before_return))
+        });
+        wait_for("new red picture/audio reached program, not held white", || {
+            let (audio, _, video) = channel.0.measure();
+            !audio.peak_dbfs.is_empty() && audio.peak_dbfs.iter().all(|peak| *peak > -40.0)
+                && video.sample_age_ms.is_some_and(|age| age < 500)
+                && (40.0..85.0).contains(&video.luma)
+        });
+        eprintln!("NDI decoder before={decoder_id:?} after={:?}", channel.0.decoder_id("pgm"));
+        if long_loss {
+            assert_ne!(channel.0.decoder_id("pgm"), decoder_id,
+                "actual receive timeout must recover through a new native opening");
+            let (_, _) = crate::poll_program_input(&mut channel.0, &mut recovery);
+            assert!(recovery.target.is_none(), "successful opening must clear the failed decoder's retry");
+        }
+        assert_eq!(channel.0.on_air_id().as_deref(), Some("ndi-native-signal"));
+        assert!(publisher.delivered.load(Ordering::Relaxed) > 0);
+        stage(7, "cleanup");
+    }
+
+    #[test]
+    #[ignore = "explicit bounded NDI intermittency regression; authorized local network, run alone"]
+    fn native_ndi_three_openings_and_recoveries() {
+        // Same source name after full teardown also exercises stale discovery
+        // cache. Each cycle must decode fresh white, then fresh returned red.
+        for cycle in 1..=3 {
+            eprintln!("NDI repeated-opening cycle {cycle}/3");
+            native_ndi_discovery_cue_take_and_short_signal_recovery();
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit actual NDI receive timeout/reopen; authorized local network, run alone"]
+    fn native_ndi_receive_timeout_reopens_only_failed_source() {
+        ndi_loopback(true);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1159,6 +1409,34 @@ mod tests {
 #[cfg(test)]
 mod testes_monitor {
     use super::*;
+
+    #[test]
+    fn publisher_counter_generations_are_unique_and_change_on_reset() {
+        let mut first = Publisher::new(spec(true));
+        let second = Publisher::new(spec(true));
+        assert_ne!(first.report().generation, second.report().generation);
+        first.delivered.store(50000, Ordering::Relaxed);
+        let before = first.report();
+        first.close();
+        let after = first.report();
+        assert_eq!(after.delivered, 0);
+        assert!(after.generation > before.generation);
+        let wire = serde_json::to_value(after).unwrap();
+        assert!(wire["generation"].as_u64().is_some());
+    }
+
+    #[test]
+    fn srt_retry_is_owned_by_publisher_not_hidden_inside_sink() {
+        gst::init().unwrap();
+        let mut output = spec(false);
+        output.kind = Kind::Srt;
+        output.url = "srt://127.0.0.1:54321?mode=caller".to_string();
+        let pipeline = Publisher::new(output).build().unwrap();
+        let sink = pipeline.iterate_elements().into_iter().filter_map(Result::ok)
+            .find(|element| element.factory().is_some_and(|factory| factory.name() == "srtsink"))
+            .expect("SRT sink must exist");
+        assert!(!sink.property::<bool>("auto-reconnect"));
+    }
 
     fn spec(on_demand: bool) -> PublisherSpec {
         PublisherSpec {

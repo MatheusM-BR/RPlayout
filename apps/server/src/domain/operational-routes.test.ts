@@ -3,16 +3,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, runtimeFor, type App } from '../app.js'
 import { registerRoutes } from '../routes.js'
 import {reviewedPublish,reviewedRollback} from './test-operational-review.js'
-import { channels, rundowns, rundownItems, users, sessions } from '../db/schema.js'
+import { channels, rundowns, rundownItems, users, sessions,channelProjectSnapshots,operatorDecisions,channelConfigurationVersions,operationalPlaylistRevisions,mediaAssets } from '../db/schema.js'
 import { sessionDigest } from './access.js'
 import { eq } from 'drizzle-orm'
-import {channelConfigurationETag} from '@rplayout/protocol'
+import {channelConfigurationETag,projectRestoreETag} from '@rplayout/protocol'
 import {configurationRevision} from '../db/channel-configuration.js'
-import { createHash } from 'node:crypto'
+import {projectRevision} from '../db/project-revisions.js'
+import { createHash,randomUUID } from 'node:crypto'
 
 vi.mock('../config.js', async importOriginal => ({ ...await importOriginal<Record<string, unknown>>(), ENGINE_BINARY: '', MEDIAMTX_BINARY: '', DEVICES_BINARY: '', DEFAULT_ROLE: 'ADMIN' }))
 
 let app: App, server: FastifyInstance
+async function reviewedRestore(url:string,headers:Record<string,string>={}){
+  const preview=await server.inject({method:'GET',url:url.replace(/\/restore$/,'/restore-review'),headers})
+  expect(preview.statusCode,preview.body).toBe(200)
+  return server.inject({method:'POST',url,headers:{...headers,'if-match':preview.headers.etag as string},payload:{reviewToken:preview.json().review.token}})
+}
 beforeEach(async () => {
   app = await createApp(':memory:')
   const now = new Date().toISOString()
@@ -31,7 +37,163 @@ beforeEach(async () => {
 })
 afterEach(async () => { await server.close(); app.close() })
 
+describe('ajuste rápido de live conferido e idempotente',()=>{
+  async function prepare(){
+    const publication=await reviewedPublish(server,'today')
+    expect(publication.statusCode,publication.body).toBe(201)
+    const review=await server.inject({url:'/api/channels/ch/live-duration-review?itemId=live-today&expectedFrames=2500&deltaSeconds=30'})
+    expect(review.statusCode,review.body).toBe(200)
+    return {...review.json(),requestId:randomUUID()}
+  }
+  const commit=(payload:Record<string,unknown>)=>server.inject({method:'POST',url:'/api/channels/ch/live-duration',payload})
+  const revisions=()=>app.db.select().from(operationalPlaylistRevisions).all()
+  const decisions=()=>app.db.select().from(operatorDecisions).all().filter(row=>row.kind==='LIVE_DURATION_ADJUSTED')
+  it('confere sem escrever ou alterar transporte; repetição grava uma única revisão/decisão',async()=>{
+    const body=await prepare(),before=revisions().length,runtime=app.runtimes.get('ch')!,item=runtime.transport.state().onAir!.itemId
+    expect(decisions()).toHaveLength(0)
+    const response=await commit(body);expect(response.statusCode,response.body).toBe(200)
+    expect(response.json()).toMatchObject({applied:true,deduplicated:false,refreshError:null})
+    const replay=await commit(body);expect(replay.statusCode,replay.body).toBe(200)
+    expect(replay.json()).toMatchObject({revision:response.json().revision,deduplicated:true})
+    expect(revisions()).toHaveLength(before+1);expect(decisions()).toHaveLength(1)
+    expect(runtime.transport.state().onAir!.itemId).toBe(item)
+  })
+  it('identificador repetido com outro ajuste não aplica nova duração',async()=>{
+    const body=await prepare();expect((await commit(body)).statusCode).toBe(200)
+    const before=revisions().length,response=await commit({...body,input:{...body.input,deltaSeconds:60}})
+    expect(response.statusCode).toBe(409);expect(revisions()).toHaveLength(before)
+  })
+  it('dois operadores conferindo a mesma revisão: segundo ajuste fica obsoleto',async()=>{
+    const body=await prepare(),other={...body,requestId:randomUUID()}
+    expect((await commit(body)).statusCode).toBe(200)
+    const response=await commit(other);expect(response.statusCode,response.body).toBe(409)
+    expect(decisions()).toHaveLength(1)
+  })
+  it('troca de ocorrência no PGM invalida a conferência mesmo com o mesmo item',async()=>{
+    const body=await prepare(),runtime=app.runtimes.get('ch')!,before=revisions().length,state=runtime.transport.state()
+    const spy=vi.spyOn(runtime.transport,'state').mockReturnValue({...state,onAir:{...state.onAir!,startedAt:state.onAir!.startedAt+100}})
+    try{const response=await commit(body);expect(response.statusCode,response.body).toBe(409);expect(revisions()).toHaveLength(before)}finally{spy.mockRestore()}
+  })
+  it('não corrige silenciosamente a duração antiga exibida pelo cliente',async()=>{
+    await prepare()
+    const response=await server.inject({url:'/api/channels/ch/live-duration-review?itemId=live-today&expectedFrames=1&deltaSeconds=30'})
+    expect(response.statusCode).toBe(409);expect(decisions()).toHaveLength(0)
+  })
+  it('falha na auditoria desfaz também a revisão',async()=>{
+    const body=await prepare(),before=revisions().length
+    app.sqlite.exec("CREATE TRIGGER reject_live_audit BEFORE INSERT ON operator_decisions WHEN NEW.kind='LIVE_DURATION_ADJUSTED' BEGIN SELECT RAISE(ABORT,'fixture audit unavailable'); END")
+    const response=await commit(body);expect(response.statusCode).toBe(409)
+    expect(revisions()).toHaveLength(before);expect(decisions()).toHaveLength(0)
+  })
+  it('falha após commit não informa rollback e reenvio não duplica ajuste',async()=>{
+    const body=await prepare(),before=revisions().length,runtime=app.runtimes.get('ch')!
+    const refresh=vi.spyOn(runtime,'refresh').mockRejectedValue(new Error('fixture refresh unavailable'))
+    try{
+      const response=await commit(body);expect(response.statusCode,response.body).toBe(200)
+      expect(response.json().applied).toBe(true);expect(response.json().refreshError).toContain('Ajuste gravado')
+      const replay=await commit(body);expect(replay.statusCode).toBe(200);expect(replay.json().deduplicated).toBe(true)
+      expect(revisions()).toHaveLength(before+1);expect(decisions()).toHaveLength(1)
+    }finally{refresh.mockRestore()}
+  })
+  it('payload antigo sem revisão/requestId e campos extras são recusados',async()=>{
+    const body=await prepare()
+    expect((await commit({deltaSeconds:30})).statusCode).toBe(400)
+    expect((await commit({...body,extra:true})).statusCode).toBe(400)
+    expect(decisions()).toHaveLength(0)
+  })
+})
+
+describe('compensação operacional HTTP',()=>{
+  async function prepare(){
+    const now=new Date().toISOString()
+    app.db.insert(mediaAssets).values({id:'filler-asset',title:'Filler',path:'C:/fixture.mkv',contentHash:'a'.repeat(64),kind:'VIDEO',durationFrames:5000,durationNs:200_000_000_000,rateNum:25,rateDen:1,qcStatus:'APPROVED',createdAt:now}).run()
+    app.db.insert(rundownItems).values({id:'future-filler',rundownId:'today',sortOrder:1,title:'Filler',type:'FILLER',mediaId:'filler-asset',durationOverride:500,trim:{in:0,out:500},minDuration:100,elastic:{min:100,max:2000},anchor:{kind:'FLOW'},onOverrun:'PUSH',autoNext:true,loop:false,locked:false}).run()
+    expect((await reviewedPublish(server,'today')).statusCode).toBe(201)
+    const input={itemId:'future-filler',expectedFrames:500,action:'FILLER',deltaFrames:250}
+    const response=await server.inject({method:'POST',url:'/api/channels/ch/compensation-review',payload:input})
+    expect(response.statusCode,response.body).toBe(200)
+    return {input,requestId:randomUUID(),reviewToken:response.json().reviewToken}
+  }
+  const commit=(payload:Record<string,unknown>)=>server.inject({method:'POST',url:'/api/channels/ch/compensation',payload})
+  it('confirmar/repetir preserva PGM, revisa uma vez e não edita o rascunho',async()=>{
+    const body=await prepare(),runtime=app.runtimes.get('ch')!,before=runtime.transport.state().onAir!.itemId
+    const first=await commit(body);expect(first.statusCode,first.body).toBe(200)
+    const repeated=await commit(body);expect(repeated.statusCode,repeated.body).toBe(200)
+    expect(repeated.json()).toMatchObject({revision:first.json().revision,deduplicated:true})
+    expect(runtime.transport.state().onAir!.itemId).toBe(before)
+    expect(app.db.select().from(rundownItems).where(eq(rundownItems.id,'future-filler')).get()!.durationOverride).toBe(500)
+  })
+  it('dois pedidos concorrentes da mesma conferência têm apenas um commit',async()=>{
+    const body=await prepare(),before=app.db.select().from(operationalPlaylistRevisions).all().length
+    const results=await Promise.all([commit(body),commit({...body,requestId:randomUUID()})])
+    expect(results.map(response=>response.statusCode).sort()).toEqual([200,409])
+    expect(app.db.select().from(operationalPlaylistRevisions).all()).toHaveLength(before+1)
+    expect(app.db.select().from(operatorDecisions).all().filter(row=>row.kind==='OPERATIONAL_COMPENSATION')).toHaveLength(1)
+  })
+  it('CUE posterior à conferência impede mudança do seu corte',async()=>{
+    const body=await prepare();await app.runtimes.get('ch')!.transport.cue({kind:'ITEM',id:'future-filler'})
+    const response=await commit(body);expect(response.statusCode).toBe(409);expect(response.json().error).toContain('CUE')
+  })
+  it('resposta pós-commit com refresh falho é aplicada com aviso, não rollback',async()=>{
+    const body=await prepare(),refresh=vi.spyOn(app.runtimes.get('ch')!,'refresh').mockRejectedValue(new Error('fixture refresh'))
+    try{const response=await commit(body);expect(response.statusCode,response.body).toBe(200);expect(response.json()).toMatchObject({applied:true,deduplicated:false});expect(response.json().refreshError).toContain('gravada')}
+    finally{refresh.mockRestore()}
+  })
+  it('solicitação sem conferência e propriedades desconhecidas são recusadas',async()=>{
+    const body=await prepare()
+    expect((await commit({input:body.input})).statusCode).toBe(400)
+    expect((await commit({...body,extra:true})).statusCode).toBe(400)
+  })
+})
+
 describe('publicação não é troca implícita de grade', () => {
+  it('JSON semanticamente inválido é recusado antes de aplicar engine, sem devolver conteúdo privado',async()=>{
+    const project=(await server.inject({method:'POST',url:'/api/channels/ch/projects',payload:{label:'Antes'}})).json().project
+    const runtime=app.runtimes.get('ch')!;await runtime.transport.stop();await runtime.transport.cue(null)
+    const snapshot=app.db.select().from(channelProjectSnapshots).where(eq(channelProjectSnapshots.id,project.id)).get()!,payload=structuredClone(snapshot.payload) as any
+    payload.items[0].anchor={kind:'FLOW',hidden:'PRIVATE_NOT_RETURNED'}
+    app.db.update(channelProjectSnapshots).set({payload}).where(eq(channelProjectSnapshots.id,project.id)).run()
+    const url=`/api/channels/ch/projects/${project.id}/restore`,closed=vi.spyOn(runtime,'close'),before=app.db.select().from(channels).all()
+    const preview=await server.inject({url:url.replace(/\/restore$/,'/restore-review')})
+    expect(preview.statusCode,preview.body).toBe(400);expect(preview.body).not.toContain('PRIVATE_NOT_RETURNED')
+    const response=await server.inject({method:'POST',url,headers:{'if-match':projectRestoreETag({channelId:'ch',projectId:project.id,projectRevision:projectRevision(app.db,'ch')})},payload:{reviewToken:'0'.repeat(64)}})
+    expect(response.statusCode,response.body).toBe(400);expect(response.body).not.toContain('PRIVATE_NOT_RETURNED');expect(response.json().error).toContain('Conteúdo inválido')
+    expect(closed).not.toHaveBeenCalled();expect(app.db.select().from(channels).all()).toEqual(before)
+  })
+  it('conferência HTTP não troca PGM/CUE nem grava auditoria ou lease e não expõe conteúdo privado',async()=>{
+    const project=(await server.inject({method:'POST',url:'/api/channels/ch/projects',payload:{label:'Antes'}})).json().project
+    const runtime=app.runtimes.get('ch')!,state=runtime.transport.state(),audit=app.db.select().from(operatorDecisions).all(),lease=app.configurationChanges.status('ch')
+    const response=await server.inject({url:`/api/channels/ch/projects/${project.id}/restore-review`})
+    expect(response.statusCode,response.body).toBe(200);expect(response.headers['cache-control']).toBe('private, no-store')
+    expect(response.headers.etag).toBe(projectRestoreETag(response.json().review))
+    expect(response.body).not.toContain('ndi:CAM');expect(response.body).not.toContain('sourceRef')
+    const after=runtime.transport.state()
+    // A read does not freeze a running clock. Compare identity/transport fields
+    // exactly and require elapsed to advance monotonically, never reset.
+    expect(after.onAir?.elapsed).toBeGreaterThanOrEqual(state.onAir!.elapsed)
+    expect({...after,onAir:after.onAir?{...after.onAir,elapsed:state.onAir!.elapsed}:null}).toEqual(state)
+    expect(app.db.select().from(operatorDecisions).all()).toEqual(audit);expect(app.configurationChanges.status('ch')).toEqual(lease)
+  })
+  it('HTTP recusa confirmação cega e revisão ABA sem reiniciar o runtime',async()=>{
+    const project=(await server.inject({method:'POST',url:'/api/channels/ch/projects',payload:{label:'Antes'}})).json().project
+    const runtime=app.runtimes.get('ch')!;await runtime.transport.stop();await runtime.transport.cue(null)
+    const url=`/api/channels/ch/projects/${project.id}/restore`,preview=await server.inject({url:url.replace(/\/restore$/,'/restore-review')})
+    expect((await server.inject({method:'POST',url,payload:{}})).statusCode).toBe(428)
+    const proof={headers:{'if-match':preview.headers.etag as string},payload:{reviewToken:preview.json().review.token}}
+    app.db.update(rundownItems).set({title:'Mudou'}).where(eq(rundownItems.id,'live-today')).run()
+    app.db.update(rundownItems).set({title:'today'}).where(eq(rundownItems.id,'live-today')).run()
+    const closed=vi.spyOn(runtime,'close'),response=await server.inject({method:'POST',url,...proof})
+    expect(response.statusCode,response.body).toBe(409);expect(response.json().error).toContain('mudaram');expect(closed).not.toHaveBeenCalled()
+  })
+  it('duas confirmações da mesma revisão têm somente um commit',async()=>{
+    const project=(await server.inject({method:'POST',url:'/api/channels/ch/projects',payload:{label:'Antes'}})).json().project
+    const runtime=app.runtimes.get('ch')!;await runtime.transport.stop();await runtime.transport.cue(null)
+    const url=`/api/channels/ch/projects/${project.id}/restore`,preview=await server.inject({url:url.replace(/\/restore$/,'/restore-review')})
+    const request={method:'POST' as const,url,headers:{'if-match':preview.headers.etag as string},payload:{reviewToken:preview.json().review.token}}
+    const results=await Promise.all([server.inject(request),server.inject(request)])
+    expect(results.map(response=>response.statusCode).sort()).toEqual([200,409])
+    expect(app.db.select().from(operatorDecisions).all().filter(row=>row.kind==='CHANNEL_PROJECT_RESTORED')).toHaveLength(1)
+  })
   it('editar grade não autoriza restaurar entradas/saídas de um projeto', async () => {
     const project = (await server.inject({method:'POST',url:'/api/channels/ch/projects',payload:{label:'Projeto QA'}})).json().project
     const now = new Date().toISOString(), token = 'QA_RESTORE_ONLY'
@@ -53,13 +215,57 @@ describe('publicação não é troca implícita de grade', () => {
     await previous.transport.stop(); await previous.transport.cue({kind:'ITEM',id:'live-today'})
     expect((await server.inject({method:'POST',url,payload:{}})).statusCode).toBe(409)
     await previous.transport.cue(null)
-    const restored = await server.inject({method:'POST',url,payload:{}})
+    const restored = await reviewedRestore(url)
     expect(restored.statusCode).toBe(200)
     expect(restored.json()).toMatchObject({controlledInterruption:true,recoveryRequested:false})
     const current = app.runtimes.get('ch')!
     expect(current).not.toBe(previous)
     expect(current.operationalRevision?.id).toBe(revision.id)
     expect(current.transport.state().onAir).toBeNull()
+  })
+  it('captura não existe sem auditoria detalhada atômica',async()=>{
+    app.sqlite.exec("CREATE TRIGGER fail_project_save_audit BEFORE INSERT ON operator_decisions WHEN NEW.kind='CHANNEL_PROJECT_SAVED' BEGIN SELECT RAISE(ABORT,'QA save rollback'); END")
+    const result=await server.inject({method:'POST',url:'/api/channels/ch/projects',payload:{label:'Não gravar'}})
+    expect(result.statusCode).toBe(500)
+    expect(app.db.select().from(channelProjectSnapshots).all()).toHaveLength(0)
+    expect(app.db.select().from(operatorDecisions).all().filter(row=>row.kind==='CHANNEL_PROJECT_SAVED')).toHaveLength(0)
+  })
+  it('falha da auditoria de restauração reverte banco/contadores sem fechar o runtime',async()=>{
+    const project=(await server.inject({method:'POST',url:'/api/channels/ch/projects',payload:{label:'Antes'}})).json().project
+    const previous=app.runtimes.get('ch')!;await previous.transport.stop();await previous.transport.cue(null)
+    app.db.update(channels).set({width:640}).where(eq(channels.id,'ch')).run()
+    const before=app.db.select().from(channels).all(),counters=app.db.select().from(channelConfigurationVersions).all(),closed=vi.spyOn(previous,'close')
+    app.sqlite.exec("CREATE TRIGGER fail_project_restore_audit BEFORE INSERT ON operator_decisions WHEN NEW.kind='CHANNEL_PROJECT_RESTORED' BEGIN SELECT RAISE(ABORT,'QA restore rollback'); END")
+    const result=await reviewedRestore(`/api/channels/ch/projects/${project.id}/restore`)
+    expect(result.statusCode,result.body).toBe(409)
+    expect(app.db.select().from(channels).all()).toEqual(before);expect(app.db.select().from(channelConfigurationVersions).all()).toEqual(counters)
+    expect(closed).not.toHaveBeenCalled();expect(app.runtimes.get('ch')).toBe(previous)
+    expect(app.db.select().from(operatorDecisions).all().filter(row=>row.kind==='CHANNEL_PROJECT_RESTORED')).toHaveLength(0)
+  })
+  it('falha de aplicação depois do commit não anuncia rollback nem sucesso do engine',async()=>{
+    const project=(await server.inject({method:'POST',url:'/api/channels/ch/projects',payload:{label:'Antes'}})).json().project
+    const previous=app.runtimes.get('ch')!;await previous.transport.stop();await previous.transport.cue(null)
+    app.db.update(channels).set({width:640}).where(eq(channels.id,'ch')).run()
+    const closed=vi.spyOn(previous,'close').mockImplementation(()=>{throw new Error('QA project rebuild failure')})
+    const result=await reviewedRestore(`/api/channels/ch/projects/${project.id}/restore`)
+    expect(result.statusCode,result.body).toBe(200)
+    expect(result.json()).toMatchObject({ok:true,applied:true,configurationUncertain:true,automaticTake:false,physicalOutputValidated:false,engineError:'QA project rebuild failure'})
+    expect(app.db.select().from(channels).where(eq(channels.id,'ch')).get()?.width).toBe(320)
+    expect(app.db.select().from(operatorDecisions).all().filter(row=>row.kind==='CHANNEL_PROJECT_RESTORED')).toHaveLength(1)
+    expect(app.configurationChanges.status('ch').state).toBe('UNCERTAIN')
+    closed.mockRestore()
+  })
+  it('reconfere sessão/papel depois de aguardar a guarda de configuração',async()=>{
+    const project=(await server.inject({method:'POST',url:'/api/channels/ch/projects',payload:{label:'Antes'}})).json().project
+    const now=new Date().toISOString(),token='QA_PROJECT_REVOKED'
+    app.db.insert(users).values({id:'restore-user',username:'restore-user',passwordHash:'not-used',role:'SUPERVISOR',enabled:true,createdAt:now}).run()
+    app.db.insert(sessions).values({token:sessionDigest(token),userId:'restore-user',expiresAt:new Date(Date.now()+60_000).toISOString(),createdAt:now}).run()
+    const previous=app.runtimes.get('ch')!;await previous.transport.stop();await previous.transport.cue(null)
+    const ready=previous.assertReconfigurationReady.bind(previous)
+    vi.spyOn(previous,'assertReconfigurationReady').mockImplementation(()=>{app.db.update(users).set({enabled:false}).where(eq(users.id,'restore-user')).run();ready()})
+    const result=await reviewedRestore(`/api/channels/ch/projects/${project.id}/restore`,{cookie:`rplayout_session=${token}`})
+    expect(result.statusCode,result.body).toBe(403);expect(app.runtimes.get('ch')).toBe(previous)
+    expect(app.db.select().from(operatorDecisions).all().filter(row=>row.kind==='CHANNEL_PROJECT_RESTORED')).toHaveLength(0)
   })
   it('geometria passa pela proteção de recuperação antes de alterar o banco', async () => {
     const previous = app.runtimes.get('ch')!

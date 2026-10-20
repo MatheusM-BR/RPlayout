@@ -1,4 +1,6 @@
-import { spawn } from 'node:child_process'
+import { spawn,type ChildProcess } from 'node:child_process'
+import {IngestOwnership} from './ingest-ownership.js'
+import {isRecoveryRehearsal} from './recovery-rehearsal.js'
 import { createHash } from 'node:crypto'
 import { createReadStream, mkdirSync } from 'node:fs'
 import { mkdir, readdir, stat } from 'node:fs/promises'
@@ -146,7 +148,19 @@ export class Ingest {
   private measuring = true
   private batchId: string | null = null
   private closed = false
-  close(): void { this.closed = true }
+  private active:Promise<void>|null=null
+  private reconciliation:Promise<boolean>|null=null
+  private readonly abort=new AbortController()
+  private readonly probeAttempt=randomUUID()
+  private readonly children=new Map<ChildProcess,Promise<void>>()
+  private readonly ownership:IngestOwnership
+  get isDraining(){return this.active!==null||this.reconciliation!==null||this.children.size>0}
+  async settled():Promise<void>{await Promise.all([this.active,this.reconciliation]);await Promise.all(this.children.values())}
+  close():Promise<void>{this.closed=true;this.abort.abort();for(const child of this.children.keys())child.kill();return this.settled()}
+  private track(child:ChildProcess){
+    const ended=new Promise<void>(done=>{let finished=false;const finish=()=>{if(finished)return;finished=true;this.children.delete(child);done()};child.once('close',finish);child.once('error',()=>{if(!child.pid)finish()})})
+    this.children.set(child,ended)
+  }
 
   constructor(
     private readonly db: Db,
@@ -156,7 +170,7 @@ export class Ingest {
     private readonly thumbnailDir: string,
     private readonly workflow?: MediaWorkflow,
     private readonly sqlite?: Database.Database,
-  ) {}
+  ) {this.ownership=new IngestOwnership(sqlite??db.$client)}
 
   status(): IngestStatus {
     return this.state
@@ -172,14 +186,13 @@ export class Ingest {
    * resposta HTTP por isso deixaria a interface pendurada.
    */
   start(roots: string | readonly string[], measure = this.measure, resumedBatchId?: string): boolean {
-    if (this.closed || this.state.running || !this.available) return false
+    if (this.closed || this.active || this.state.running || !this.available) return false
     const pastas = (typeof roots === 'string' ? [roots] : roots).map((entry) => resolve(entry))
     if (pastas.length === 0) return false
+    const claimed=this.ownership.claim(pastas,measure,resumedBatchId)
+    if(!claimed)return false
     this.measuring = measure
-    this.batchId = resumedBatchId ?? randomUUID()
-    const now = new Date().toISOString()
-    if (resumedBatchId) this.sqlite?.prepare("UPDATE ingest_batches SET state='RUNNING',error=NULL,updated_at=? WHERE id=?").run(now, resumedBatchId)
-    else this.sqlite?.prepare('INSERT INTO ingest_batches (id,roots,measure,state,created_at,updated_at) VALUES (?,?,?,?,?,?)').run(this.batchId, JSON.stringify(pastas), measure ? 1 : 0, 'RUNNING', now, now)
+    this.batchId = claimed
     this.state = {
       running: true,
       root: pastas[0] ?? null,
@@ -195,24 +208,34 @@ export class Ingest {
       finishedAt: null,
       error: null,
     }
-    void this.run(pastas)
+    this.active=this.run(pastas).finally(()=>{
+      this.active=null
+      if(!this.closed)queueMicrotask(()=>{if(this.closed)return;try{this.resumePending()}catch{this.patch({error:'Fila de varredura indisponível; lotes preservados.'})}})
+    })
     return true
   }
 
   resumePending(): boolean {
-    const batch = this.sqlite?.prepare("SELECT id,roots,measure FROM ingest_batches WHERE state IN ('RUNNING','PENDING') ORDER BY created_at LIMIT 1").get() as { id: string; roots: string; measure: number } | undefined
+    if(this.closed||this.state.running||!this.available)return false
+    const batch = this.ownership.pending()
     if (!batch) return false
-    return this.start(JSON.parse(batch.roots) as string[], Boolean(batch.measure), batch.id)
+    return this.start(batch.roots,batch.measure,batch.id)
   }
 
   /** Confere também referências antigas que ficaram fora das raízes atuais. */
-  async reconcileAvailability(): Promise<boolean> {
+  reconcileAvailability():Promise<boolean>{
+    if(this.closed||isRecoveryRehearsal(this.sqlite??this.db.$client))return Promise.resolve(false)
+    return this.reconciliation??=this.reconcile().finally(()=>{this.reconciliation=null})
+  }
+  private async reconcile(): Promise<boolean> {
     let changed = false
     for (const row of await this.db.select().from(mediaAssets)) {
+      if(this.closed)return changed
       if (row.path.includes('://')) continue
       try {
         if (!(await stat(row.path)).isFile()) throw new Error('não é arquivo')
       } catch {
+        if(this.closed)return changed
         if (row.probeError === VANISHED) continue
         await this.db.update(mediaAssets).set({ probeError: VANISHED }).where(eq(mediaAssets.id, row.id))
         changed = true
@@ -231,6 +254,7 @@ export class Ingest {
       // que a interface mostra como progresso, e ele não pode crescer no meio.
       const files: string[] = []
       for (const root of roots) {
+        if(this.closed)return
         this.patch({ root })
         // Procurar numa pasta de rede grande leva minutos, e até aqui a
         // interface mostrava "0/0" e mais nada: do lado de fora isso é uma
@@ -238,7 +262,7 @@ export class Ingest {
         files.push(
           ...(await walk(root, (dir, achados) =>
             this.patch({ current: `procurando em ${dir} (${achados} até agora)` }),
-            (dir, error) => this.patch({ error: `Não foi possível ler ${dir}: ${error}` }),
+            (dir, error) => this.patch({ error: `Não foi possível ler ${dir}: ${error}` }),()=>this.closed,
           )),
         )
       }
@@ -259,7 +283,7 @@ export class Ingest {
       await this.markVanished(roots, unicos)
       await this.tirarListas()
       this.patch({ running: false, current: null, finishedAt: new Date().toISOString() })
-      this.onFinished?.()
+      if(!this.closed)this.onFinished?.()
     } catch (failure) {
       this.patch({
         running: false,
@@ -268,9 +292,11 @@ export class Ingest {
         error: failure instanceof Error ? failure.message : 'A varredura falhou.',
       })
       // Mesmo tendo falhado no meio, o que já entrou tem que chegar à grade.
-      this.onFinished?.()
+      if(!this.closed)this.onFinished?.()
     } finally {
-      if (!this.closed && this.batchId) this.sqlite?.prepare('UPDATE ingest_batches SET state=?,error=?,updated_at=? WHERE id=?').run(this.state.error ? 'FAILED' : 'COMPLETED', this.state.error, new Date().toISOString(), this.batchId)
+      await Promise.all(this.children.values())
+      if(this.batchId)this.ownership.finish(this.batchId,this.closed,this.state.error)
+      this.patch({running:false,current:null,finishedAt:new Date().toISOString()})
       this.batchId = null
     }
   }
@@ -293,7 +319,7 @@ export class Ingest {
 
     while (!this.closed && pendentes.length > 0 && Date.now() < limite) {
       this.patch({ current: `${pendentes[0]} (esperando a cópia terminar)` })
-      await new Promise((pronto) => setTimeout(pronto, 2_000))
+      await new Promise<void>(pronto=>{if(this.closed){pronto();return}const finish=()=>{clearTimeout(timer);this.abort.signal.removeEventListener('abort',finish);pronto()};const timer=setTimeout(finish,2000);this.abort.signal.addEventListener('abort',finish,{once:true})})
       const restam: string[] = []
       for (const arquivo of pendentes) {
         if (!(await this.absorbSafely(arquivo))) restam.push(arquivo)
@@ -362,7 +388,7 @@ export class Ingest {
     }
 
     const modifiedAt = info.mtime.toISOString()
-    const [existing] = await this.db
+    const [observed] = await this.db
       .select()
       .from(mediaAssets)
       .where(eq(mediaAssets.path, path))
@@ -376,21 +402,22 @@ export class Ingest {
     // inteiro marcado como visto, e a leitura com medição depois pulava tudo
     // -- o nivelamento automático ficava sem base para sempre, e não havia
     // como descobrir por quê.
-    const faltaMedir = this.measuring && existing?.hasAudio !== false && existing?.loudnessFile == null
+    const faltaMedir = this.measuring && observed?.hasAudio !== false && observed?.loudnessFile == null
     if (
-      existing &&
-      existing.sizeBytes === info.size &&
-      existing.modifiedAt === modifiedAt &&
-      !existing.probeError &&
+      observed &&
+      observed.sizeBytes === info.size &&
+      observed.modifiedAt === modifiedAt &&
+      !observed.probeError &&
       !faltaMedir
     ) {
-      this.workflow?.record(existing.id, existing as unknown as Record<string, unknown>)
+      this.workflow?.record(observed.id, observed as unknown as Record<string, unknown>)
       this.patch({ skipped: this.state.skipped + 1 })
       return true
     }
 
-    const contentHash = await hashFile(path)
-    const thumbnail = join(this.thumbnailDir, `${contentHash}.jpg`)
+    const contentHash = await hashFile(path,this.abort.signal)
+    if(this.closed)return true
+    const thumbnail = join(this.thumbnailDir, `${contentHash}-${this.probeAttempt}.jpg`)
     const probe = await this.probe(path, thumbnail)
     if (this.closed) return true
     const after = await stat(path)
@@ -400,12 +427,31 @@ export class Ingest {
       return true
     }
 
+    // Hash/probe may take minutes. Never write operator decisions copied before
+    // that await. Take the writer lock, reread the catalog and merge against the
+    // current title/ignored/QC/loudness. The slow work stays outside the lock.
+    const committed = this.db.transaction(
+      () => this.commitProbe(path, observed?.id ?? null, { contentHash, sizeBytes: info.size, modifiedAt }, probe),
+      { behavior: 'immediate' },
+    )
+    this.patch({ [committed.state]: this.state[committed.state] + 1 })
+    // Enqueue only committed, freshly merged data, never the pre-probe snapshot.
+    if (committed.asset) this.workflow?.record(committed.asset.id, committed.asset)
+    return true
+  }
+
+  /** Synchronous merge, called only inside the IMMEDIATE writer transaction. */
+  private commitProbe(path: string, observedId: string | null,
+    technical: {contentHash: string; sizeBytes: number; modifiedAt: string}, probe: ProbeResult) {
+    const existing = this.db.select().from(mediaAssets).where(eq(mediaAssets.path, path)).get()
+    // A pending scan must not resurrect an entry removed/replaced by somebody
+    // else, nor apply this pathname's probe to an ID moved to another path.
+    if (observedId && existing?.id !== observedId) return { state: 'skipped' as const, asset: null }
+    const { contentHash } = technical
     const base = {
-      contentHash,
+      ...technical,
       path,
       title: existing?.title ?? titleFrom(path),
-      sizeBytes: info.size,
-      modifiedAt,
     }
 
     if (!probe.ok) {
@@ -413,8 +459,7 @@ export class Ingest {
       // for PDFs, documents or unknown files. Existing records remain intact
       // for historical references; the client also filters legacy mislabels.
       if (!hasVideoFileSuffix(path) && !existing) {
-        this.patch({ skipped: this.state.skipped + 1 })
-        return true
+        return { state: 'skipped' as const, asset: null }
       }
       // O arquivo entra mesmo assim, com o motivo. Duração zero é honesta:
       // não sabemos, e fingir um número poria lixo na grade.
@@ -439,9 +484,7 @@ export class Ingest {
         qcCheckedAt: null,
         ignored: existing?.ignored ?? true,
       }
-      await this.upsert(existing?.id ?? null, row)
-      this.patch({ failed: this.state.failed + 1 })
-      return true
+      return { state: 'failed' as const, asset: this.upsert(existing?.id ?? null, row) }
     }
 
     // Uma varredura rápida pode reprobar o arquivo só para atualizar metadados.
@@ -496,11 +539,7 @@ export class Ingest {
         (!probe.video || !probe.audio ||
           (probe.video.height > 0 && probe.video.width / probe.video.height < 0.8)),
     }
-    await this.upsert(existing?.id ?? null, row)
-    this.patch(
-      existing ? { updated: this.state.updated + 1 } : { added: this.state.added + 1 },
-    )
-    return true
+    return { state: existing ? 'updated' as const : 'added' as const, asset: this.upsert(existing?.id ?? null, row) }
   }
 
   private async absorbSafely(path: string, ultimaChance = false): Promise<boolean> {
@@ -515,20 +554,16 @@ export class Ingest {
     }
   }
 
-  private async upsert(id: string | null, values: Record<string, unknown>): Promise<void> {
-    if (this.closed) return
+  private upsert(id: string | null, values: Record<string, unknown>): typeof mediaAssets.$inferSelect {
+    const assetId = id ?? randomUUID()
     if (id) {
-      await this.db.update(mediaAssets).set(values).where(eq(mediaAssets.id, id))
-      this.workflow?.record(id, values)
-      return
-    }
-    const newId = randomUUID()
-    await this.db.insert(mediaAssets).values({
-      id: newId,
+      this.db.update(mediaAssets).set(values).where(eq(mediaAssets.id, id)).run()
+    } else this.db.insert(mediaAssets).values({
+      id: assetId,
       createdAt: new Date().toISOString(),
       ...values,
-    } as typeof mediaAssets.$inferInsert)
-    this.workflow?.record(newId, values)
+    } as typeof mediaAssets.$inferInsert).run()
+    return this.db.select().from(mediaAssets).where(eq(mediaAssets.id, assetId)).get()!
   }
 
   /** Onde as miniaturas moram. A rota de quadros guarda os dela no mesmo lugar. */
@@ -555,8 +590,10 @@ export class Ingest {
    *
    * Devolve quantos quadros saíram.
    */
-  strip(path: string, quantos: number, prefixo: string, largura = 320): Promise<number> {
-    const emCurso = this.fitas.get(prefixo)
+  strip(path: string, quantos: number, prefixo: string, largura = 320, onlyFrame?:number): Promise<number> {
+    if(this.closed)return Promise.resolve(0)
+    const workKey=JSON.stringify([prefixo,onlyFrame??null])
+    const emCurso = this.fitas.get(workKey)
     if (emCurso !== undefined) return emCurso
 
     const trabalho = new Promise<number>((done) => {
@@ -580,10 +617,13 @@ export class Ingest {
         prefixo,
         '--fita',
         String(quantos),
+        ...(onlyFrame===undefined?[]:['--only-frame',String(onlyFrame)]),
         '--largura',
         String(largura),
         '--no-loudness',
-      ], { windowsHide: true, env: mediaProcessEnvironment() })
+        '--parent-pipe',
+      ], { windowsHide: true, env: mediaProcessEnvironment(),stdio:['pipe','pipe','pipe'] })
+      this.track(child)
       let settled = false
       const finish = (count: number): void => {
         if (settled) return
@@ -606,29 +646,31 @@ export class Ingest {
       child.on('close', () => {
         const line = out.trim().split('\n').pop() ?? ''
         try {
-          const resultado = JSON.parse(line) as ProbeResult
-          finish(resultado.ok ? Number(resultado.thumbnail ?? '0') : 0)
+          const resultado = JSON.parse(line) as ProbeResult & {frameRecipe?:string}
+          finish(resultado.ok && (onlyFrame===undefined || resultado.frameRecipe==='qc-frame-v3') ? Number(resultado.thumbnail ?? '0') : 0)
         } catch {
           finish(0)
         }
       })
     }).finally(() => {
-      this.fitas.delete(prefixo)
+      this.fitas.delete(workKey)
     })
 
-    this.fitas.set(prefixo, trabalho)
+    this.fitas.set(workKey, trabalho)
     return trabalho
   }
 
   /** Roda a sonda e lê a linha de JSON. Falha dela nunca derruba a varredura. */
   private probe(path: string, thumbnail: string): Promise<ProbeResult> {
+    if(this.closed)return Promise.resolve({ok:false,reason:'Scanner encerrando.'})
     return new Promise((done) => {
-      const args = [path, '--thumbnail', thumbnail]
+      const args = [path, '--thumbnail', thumbnail,'--parent-pipe']
       // Medir loudness custa decodificar o áudio inteiro de cada arquivo. Num
       // acervo grande isso são horas de CPU -- e o canal está no ar ao lado.
       if (!this.measuring) args.push('--no-loudness')
 
-      const child = spawn(this.probeBinary, args, { windowsHide: true, env: mediaProcessEnvironment() })
+      const child = spawn(this.probeBinary, args, { windowsHide: true, env: mediaProcessEnvironment(),stdio:['pipe','pipe','pipe'] })
+      this.track(child)
       let settled = false
       const finish = (result: ProbeResult): void => {
         if (settled) return
@@ -679,7 +721,7 @@ function dentroDe(root: string, alvo: string): boolean {
 }
 
 async function walk(root: string, aoEntrar?: (dir: string, achados: number) => void,
-  onError?: (dir: string, error: string) => void): Promise<string[]> {
+  onError?: (dir: string, error: string) => void,closed:()=>boolean=()=>false): Promise<string[]> {
   const found: string[] = []
   const pending = [root]
   // Atalho que aponta para uma pasta acima fecha um ciclo, e o laço nunca
@@ -687,7 +729,7 @@ async function walk(root: string, aoEntrar?: (dir: string, achados: number) => v
   // alguém cria um atalho para a raiz dentro de uma subpasta.
   const visitados = new Set<string>()
 
-  while (pending.length > 0) {
+  while (pending.length > 0&&!closed()) {
     const dir = pending.pop()
     if (dir === undefined) break
     const real = resolve(dir)
@@ -705,6 +747,7 @@ async function walk(root: string, aoEntrar?: (dir: string, achados: number) => v
     }
 
     for (const entry of entries) {
+      if(closed())break
       if (entry.name.startsWith('.') || SKIP.has(entry.name) || SYSTEM_FILES.has(entry.name.toLowerCase())) continue
       const full = join(dir, entry.name)
       // Atalho não é pasta nem arquivo para a varredura: seguir um leva a
@@ -720,13 +763,15 @@ async function walk(root: string, aoEntrar?: (dir: string, achados: number) => v
 }
 
 /** SHA-256 em fluxo: arquivo de mídia não cabe na memória. */
-function hashFile(path: string): Promise<string> {
+function hashFile(path: string,signal?:AbortSignal): Promise<string> {
   return new Promise((done, fail) => {
     const hash = createHash('sha256')
-    const stream = createReadStream(path)
+    const stream = createReadStream(path,{signal})
+    let error:Error|undefined,digest:string|undefined
     stream.on('data', (chunk) => hash.update(chunk))
-    stream.on('error', fail)
-    stream.on('end', () => done(hash.digest('hex')))
+    stream.on('error', cause=>{error=cause})
+    stream.on('end', () => {digest=hash.digest('hex')})
+    stream.on('close',()=>{if(error)fail(error);else if(digest)done(digest);else fail(new Error('Leitura encerrada antes do hash completo.'))})
   })
 }
 

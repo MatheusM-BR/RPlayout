@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { openDatabase } from '../db/client.js'
 import { getChannel } from '../db/repo.js'
 import { AsRun, listAsRun, toAsRunRecordExtended, exportAsRunCsv, exportAsRunBxf, calculateAncineCompliance } from './asrun.js'
+import {ExecutionOwnership} from './execution-ownership.js'
 
 const databases: ReturnType<typeof openDatabase>[] = []
 afterEach(() => { for (const value of databases.splice(0)) value.sqlite.close() })
@@ -15,7 +16,7 @@ async function setup() {
 }
 describe('proveniência durável do as-run', () => {
   it('API e exportações não substituem cadência ausente nem inventam fim por percentual', async () => {
-    const value = await setup(), recorder = new AsRun(value.db, value.channel, 'NATIVE')
+    const value = await setup(), recorder = new AsRun(value.db, value.channel, 'NATIVE',new ExecutionOwnership(value.db).claim(value.channel.id))
     await recorder.follow('item', null, 'rev', 0)
     const open = (await listAsRun(value.db, 'ch'))[0]!
     const legacy = { ...open, title: '=HYPERLINK("invalid")', airedFrames: 750, plannedFrames: 750, endedAt: '2026-10-01T12:00:30Z', startedAt: '2026-10-01T12:00:00Z', endedBy: 'TAKE', rateNum: null, rateDen: null }
@@ -49,7 +50,7 @@ describe('proveniência durável do as-run', () => {
     }
   })
   it('cursor nativo registra diferença, cadência e não usa tempo de espera do servidor', async () => {
-    const value = await setup(), channel = { ...value.channel, rate: { ...value.channel.rate } }, recorder = new AsRun(value.db, channel, 'NATIVE')
+    const value = await setup(), channel = { ...value.channel, rate: { ...value.channel.rate } }, recorder = new AsRun(value.db, channel, 'NATIVE',new ExecutionOwnership(value.db).claim(channel.id))
     await recorder.follow('item', null, 'rev', 500)
     channel.rate = { num: 50, den: 1 }
     await recorder.finish('LIVE_PRIORITY', 750)
@@ -59,7 +60,7 @@ describe('proveniência durável do as-run', () => {
   })
   it('simulação e cursor inválido permanecem estimados; aberto não ganha duração planejada', async () => {
     for (const kind of ['NATIVE', 'SIMULATED'] as const) {
-      const value = await setup(), recorder = new AsRun(value.db, value.channel, kind)
+      const value = await setup(), recorder = new AsRun(value.db, value.channel, kind,kind==='NATIVE'?new ExecutionOwnership(value.db).claim(value.channel.id):null)
       await recorder.follow('item', null, 'rev', 500)
       const open = (await listAsRun(value.db, 'ch'))[0]!
       const extended = toAsRunRecordExtended({ ...open, plannedFrames: 9999 })

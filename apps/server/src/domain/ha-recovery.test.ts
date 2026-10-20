@@ -38,6 +38,23 @@ beforeEach(async()=>{
 })
 afterEach(async()=>{primary.close();reserve.close();await Promise.all([primary.settled(),reserve.settled()]);app.close();vi.restoreAllMocks()})
 describe('ensaio de restauração HA real em banco isolado e sem execução',()=>{
+  // NOT_RUN: native cursor/crop regression added to the consolidated review.
+  it('prepara cursor com corte/posse nativos em quarentena e conserva a intenção exata cifrada',async()=>{
+    const original=(source.channels[0]!.checkpoint as any).value
+    original.programTrim={in:10,out:400,contentHash:hash};original.ownerRunId='11111111-1111-4111-8111-111111111111';original.graphicReceiptId='foreign-graphic'
+    await primary.tick();await copy();const asked=request(),report=await reserve.rehearse(asked)
+    expect(report).toMatchObject({phase:'RESTORED',checkpointRestored:true,promotionReady:false,automaticTake:false})
+    const restored=openDatabase(await workspace())
+    try{
+      const stopped=new Checkpoints(restored.sqlite).read('ch')!
+      expect(stopped).toMatchObject({elapsed:73,playing:false,realEngine:false});expect(stopped.programTrim).toBeUndefined();expect(stopped.ownerRunId).toBeUndefined();expect(stopped.graphicReceiptId).toBeUndefined()
+      const row=restored.sqlite.prepare('SELECT payload FROM ha_recovery_cursor WHERE id=1').get() as {payload:string}
+      const saved=JSON.parse(installationVault(false).decrypt(row.payload,`ha-recovery:v1:restore:b:${asked.requestId}:cursor`))
+      expect(saved).toMatchObject({version:1,request:asked,intent:{checkpoint:{elapsed:73,programTrim:{in:10,out:400,contentHash:hash},playing:true,realEngine:true},foreignOwnerRunId:original.ownerRunId,foreignGraphicReceiptId:'foreign-graphic',promotionReady:false}})
+      expect(saved.intent.checkpoint.ownerRunId).toBeUndefined();expect(saved.intent.checkpoint.graphicReceiptId).toBeUndefined()
+    }finally{restored.sqlite.close()}
+    expect(original).toMatchObject({programTrim:{in:10,out:400,contentHash:hash},ownerRunId:'11111111-1111-4111-8111-111111111111',playing:true})
+  })
   it('restaura publicação/cursor/QC em DB íntegro, arquivado e sem abrir canais ou saídas',async()=>{
     await copy();const report=await reserve.rehearse(request())
     expect(report).toMatchObject({phase:'RESTORED',restoredRevisions:1,verifiedMedia:1,qcBlocked:0,checkpointRestored:true,promotionReady:false,automaticTake:false,localProbeRequired:true})
@@ -122,7 +139,8 @@ describe('ensaio de restauração HA real em banco isolado e sem execução',()=
     try{expect(db.db.select().from(operationalPlaylistRevisions).all().find(row=>row.id==='old-publication')!.payload).toEqual(old.payload)}finally{db.sqlite.close()}
   })
   it('preserva política de QC e zonas congeladas sem importar vínculo físico estrangeiro',async()=>{
-    const profile={...DEFAULT_QC_PROFILE,codecs:['h264'],requireLoudness:true}
+    // Extended preservation fixture NOT_RUN in this implementation batch.
+    const profile={...DEFAULT_QC_PROFILE,codecs:['h264'],requireLoudness:true,requireProbe:true,liveSignalPolicy:{arrivalWarningEnabled:true,warningFrameIntervals:5,minimumReceivedFrames:50},renderedBusPairs:[{outputPair:1,loudness:{minLufs:-25,maxLufs:-21},maxTruePeakDbtp:-1}]}
     ;(source.channels[0]!.configuration.channel as any).qcProfile=profile
     const zones=[{id:'zone',label:'Rede ÇÃO',from:100,to:200,priority:5}]
     ;(source.channels[0]!.revisions[0]!.payload as any).rundown.protectedZones=zones

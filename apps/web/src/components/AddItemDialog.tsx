@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   durationIn,
   formatTimecode,
@@ -12,6 +12,8 @@ import { api } from '../api.js'
 import { dur } from '../format.js'
 import type { LiveSource, SourceFamily, SourceList } from '../types.js'
 import { inputName, sourceName } from './broadcast/protocol-config.js'
+import {NdiAttribution} from './broadcast/NdiAttribution.js'
+import {sourceSelectionKey} from '../domain/source-selection.js'
 
 type AnchorMode = 'FLOW' | 'FIXED' | 'SOFT'
 type Kind = 'FILE' | 'LIVE'
@@ -20,6 +22,7 @@ type Kind = 'FILE' | 'LIVE'
 export interface NewItem {
   mediaId: string | null
   sourceRef: string | null
+  configuredSourceId?: string | null
   type: 'VT' | 'LIVE'
   title: string
   anchor: Anchor
@@ -28,6 +31,7 @@ export interface NewItem {
 }
 
 interface Props {
+  channelId?:string
   assets: MediaAsset[]
   /** Arquivo já escolhido, quando a inserção começou por um clique no acervo. */
   initialAssetId?: string
@@ -52,6 +56,7 @@ const FAMILY_LABEL: Record<LiveSource['family'], string> = {
  * e o scheduler reorganiza o resto — o operador só diz o que entra e quando.
  */
 export function AddItemDialog({
+  channelId,
   assets,
   initialAssetId,
   rate,
@@ -74,41 +79,45 @@ export function AddItemDialog({
   const [liveName, setLiveName] = useState('')
   const [liveNameEdited, setLiveNameEdited] = useState(false)
   const [liveMinutes, setLiveMinutes] = useState(15)
+  const scanRevision=useRef(0)
+  useEffect(()=>{scanRevision.current++;setSources(null);setSourceRef('');setManualSource('');setLiveName('');setLiveNameEdited(false);return()=>{scanRevision.current++}},[channelId])
 
   // A descoberta só roda quando o operador pede o vivo: enumerar NDI vasculha
   // a rede, e quem só quer pôr um VT na grade não deve pagar por isso.
   useEffect(() => {
     if (kind !== 'LIVE' || sources !== null) return
     let alive = true
+    const revision=++scanRevision.current
     setScanning(true)
     api
-      .sources()
+      .sources(false,channelId)
       .then((list) => {
-        if (alive) setSources(list)
+        if (alive&&revision===scanRevision.current) {setSources(list);setScanning(false)}
       })
       .catch(() => {
-        if (alive) setSources({ sdi: FAILED, sdiOutputs: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED })
+        if (alive&&revision===scanRevision.current) {setSources({ sdi: FAILED, sdiOutputs: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED });setScanning(false)}
       })
       .finally(() => {
-        if (alive) setScanning(false)
+        if (alive&&revision===scanRevision.current) setScanning(false)
       })
     return () => {
       alive = false
     }
-  }, [kind, sources])
+  }, [kind, sources,channelId])
 
   const rescan = (): void => {
+    const revision=++scanRevision.current
     setScanning(true)
     api
-      .sources(true)
-      .then(setSources)
-      .catch(() => setSources({ sdi: FAILED, sdiOutputs: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED }))
-      .finally(() => setScanning(false))
+      .sources(true,channelId)
+      .then(list=>{if(revision===scanRevision.current)setSources(list)})
+      .catch(() => {if(revision===scanRevision.current)setSources({ sdi: FAILED, sdiOutputs: FAILED, ndi: FAILED, omt: FAILED, guests: FAILED })})
+      .finally(() => {if(revision===scanRevision.current)setScanning(false)})
   }
 
   const families: SourceFamily[] = sources ? [sources.sdi, sources.ndi, sources.omt, sources.guests] : []
-  const live = families.flatMap((family) => family.sources)
-  const chosen = live.find((source) => source.reference === sourceRef)
+  const live = families.flatMap((family) => family.sources).filter(source=>!channelId||!source.channelId||source.channelId===channelId)
+  const chosen = live.find((source) => sourceSelectionKey(source) === sourceRef)
   const sourceValue = manualSource.trim() || chosen?.reference || ''
   const liveNameValue = inputName(liveName, chosen?.label || sourceName(sourceValue, []), liveNameEdited)
 
@@ -148,6 +157,7 @@ export function AddItemDialog({
     onAdd({
       mediaId: null,
       sourceRef: sourceValue,
+      configuredSourceId: manualSource.trim() ? null : chosen?.configuredId ?? null,
       type: 'LIVE',
       title: liveNameValue.trim(),
       anchor,
@@ -214,8 +224,8 @@ export function AddItemDialog({
                     return (
                       <optgroup key={family} label={FAMILY_LABEL[family]}>
                         {group.map((source) => (
-                          <option key={source.reference} value={source.reference}>
-                            {source.label}
+                          <option key={sourceSelectionKey(source)} value={sourceSelectionKey(source)}>
+                            {source.label} {source.family==='GUEST'?'':source.discovery==='DISCOVERED'?'— descoberta; sinal não medido':'— cadastrada/origem não confirmada'}
                           </option>
                         ))}
                       </optgroup>
@@ -230,6 +240,7 @@ export function AddItemDialog({
                   aria-label="Fonte SRT ou RTMP"
                 />
                 <div className="sub">SRT caller/listener e RTMP são aceitos pelo engine; use uma URL completa.</div>
+                {live.some(source=>source.family==='NDI') && <NdiAttribution/>}
               </div>
 
               <div className="field">
@@ -336,13 +347,13 @@ const FAILED: SourceFamily = {
 }
 
 /** Uma linha por família que não tem nada a oferecer, dizendo o motivo. */
-function reasonsOf(list: SourceList): string[] {
+export function reasonsOf(list: SourceList): string[] {
   const lines: string[] = []
   const add = (family: SourceFamily, name: string, empty: string): void => {
-    if (family.sources.length > 0) return
+    if (family.sources.length > 0 && !family.reason) return
     lines.push(`${name}: ${family.reason ?? empty}`)
   }
-  add(list.sdi, 'placa', 'driver presente, nenhuma placa encontrada')
+  add(list.sdi, 'placa', 'nenhuma porta enumerada; presença de driver/placa não confirmada')
   add(list.ndi, 'NDI', 'nenhuma fonte anunciada na rede')
   add(list.omt, 'OMT', 'nenhuma fonte Open Media Transport anunciada na rede')
   add(list.guests, 'convidados', 'nenhuma chave de convidado ativa')

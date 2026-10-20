@@ -15,7 +15,7 @@ use gstreamer_base::subclass::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
-use crate::limiter::Limiter;
+use crate::limiter::BusLimiter;
 
 /// Nome com que o elemento é registrado. Prefixo próprio para nunca colidir
 /// com nada que a instalação do GStreamer traga.
@@ -35,16 +35,9 @@ mod imp {
 use super::*;
 
 pub(super) const DEFAULT_CEILING: f64 = -1.0;
-/// Cinco milissegundos de antecipação. É o que separa conduzir o transiente de
-/// cortá-lo, e é atraso pequeno demais para a sincronia com o vídeo notar.
-const DEFAULT_LOOKAHEAD_MS: f64 = 5.0;
-const DEFAULT_RELEASE_MS: f64 = 50.0;
-
 /// Estado que depende das caps, então só existe depois da negociação.
 struct Running {
-    limiters: Vec<Limiter>,
-    channels: usize,
-    link_channels: usize,
+    bus: BusLimiter,
 }
 
 #[derive(Default)]
@@ -97,7 +90,7 @@ impl ObjectImpl for LimiterImpl {
             let ceiling = value.get().unwrap_or(DEFAULT_CEILING);
             *self.ceiling.lock().unwrap() = ceiling;
             if let Some(running) = self.running.lock().unwrap().as_mut() {
-                for limiter in &mut running.limiters { limiter.set_ceiling(ceiling); }
+                running.bus.set_ceiling(ceiling);
             }
         } else if spec.name() == "pair-linked" {
             *self.pair_linked.lock().unwrap() = value.get().unwrap_or(false);
@@ -185,19 +178,10 @@ impl BaseTransformImpl for LimiterImpl {
             .map_err(|_| gst::loggable_error!(gst::CAT_DEFAULT, "caps sem canais"))?;
 
         let ceiling = *self.ceiling.lock().unwrap();
-        let channels = channels as usize;
-        let link_channels = if *self.pair_linked.lock().unwrap() { 2.min(channels) } else { channels };
-        if channels % link_channels != 0 { return Err(gst::loggable_error!(gst::CAT_DEFAULT, "barramento de pares exige canais em número par")); }
+        if rate<=0||channels<=0{return Err(gst::loggable_error!(gst::CAT_DEFAULT,"caps inválidas para limiter"));}
+        let bus=BusLimiter::new(rate as u32,channels as usize,ceiling,*self.pair_linked.lock().unwrap()).map_err(|error|gst::loggable_error!(gst::CAT_DEFAULT,"{}",error))?;
         *self.running.lock().unwrap() = Some(Running {
-            limiters: (0..channels / link_channels).map(|_| Limiter::new(
-                rate as u32,
-                link_channels,
-                ceiling,
-                DEFAULT_LOOKAHEAD_MS,
-                DEFAULT_RELEASE_MS,
-            )).collect(),
-            channels,
-            link_channels,
+            bus,
         });
         Ok(())
     }
@@ -219,33 +203,20 @@ impl BaseTransformImpl for LimiterImpl {
         let bytes = map.as_mut_slice();
         // O `capsfilter` do ramo garante F32LE intercalado; o resto é
         // aritmética de tamanho.
-        let frames = bytes.len() / (4 * running.channels);
-        let count = frames * running.channels;
+        if bytes.len()%(4*running.bus.channels())!=0{return Err(gst::FlowError::Error);}
+        let count = bytes.len()/4;
 
         let mut samples: Vec<f32> = bytes[..count * 4]
             .chunks_exact(4)
             .map(|raw| f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
             .collect();
-        if running.limiters.len() == 1 {
-            running.limiters[0].process(&mut samples);
-        } else {
-            let mut pair = vec![0f32; frames * running.link_channels];
-            for (index, limiter) in running.limiters.iter_mut().enumerate() {
-                for (source, target) in samples.chunks_exact(running.channels).zip(pair.chunks_exact_mut(running.link_channels)) {
-                    target.copy_from_slice(&source[index * running.link_channels..(index + 1) * running.link_channels]);
-                }
-                limiter.process(&mut pair);
-                for (target, source) in samples.chunks_exact_mut(running.channels).zip(pair.chunks_exact(running.link_channels)) {
-                    target[index * running.link_channels..(index + 1) * running.link_channels].copy_from_slice(source);
-                }
-            }
-        }
+        running.bus.process(&mut samples).map_err(|_|gst::FlowError::Error)?;
         for (slot, value) in bytes.chunks_exact_mut(4).zip(samples.iter()) {
             slot.copy_from_slice(&value.to_le_bytes());
         }
 
         // Telemetry is the worst protection action across embedded pairs.
-        let reduction = running.limiters.iter_mut().map(Limiter::take_reduction_db).fold(0.0, f64::max);
+        let reduction = running.bus.take_reduction_db();
         if reduction > 0.0 {
             let raw = (reduction * 1000.0) as u64;
             self.reduction.fetch_max(raw, Ordering::Relaxed);

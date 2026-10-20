@@ -27,6 +27,57 @@ async function rollbackReview(sourceId:string){const version=(await inspect()).e
 const rollback=(review:any,sourceId=review.sourceRevisionId)=>server.inject({method:'POST',url:'/api/rundowns/rd/operational-rollback',headers:header(review.editorialRevision),payload:{revisionId:sourceId,reviewToken:review.token}})
 
 describe('publicação e rollback somente do plano conferido',()=>{
+  it('protege CUE de corte automático alterado por duração de outro item',async()=>{
+    const runtime=(await runtimeFor(app,'ch'))!;await runtime.load('rd');await runtime.transport.take('rd','live-rd')
+    const origin=runtime.transport.state().onAir!.startedAt
+    for(const [order,id] of ['cue-auto','cue-boundary'].entries())app.db.insert(rundownItems).values({id,rundownId:'rd',sortOrder:order+1,title:id,type:'VT',mediaId:'reserve',durationOverride:125,trim:{in:0,out:125},minDuration:75,trimmable:id==='cue-auto',anchor:id==='cue-boundary'?{kind:'FIXED',at:origin+625}:{kind:'FLOW'},onOverrun:'PUSH',locked:false,autoNext:false,loop:false}).run()
+    await reviewedPublish(server,'rd');await runtime.transport.cue({kind:'ITEM',id:'cue-auto'})
+    const before=persisted(),original=runtime.executionView!.items.find(row=>row.item.id==='cue-auto')!.trim
+    app.db.update(rundownItems).set({durationOverride:550}).where(eq(rundownItems.id,'live-rd')).run()
+    const result=await publish(await inspect());expect(result.statusCode,result.body).toBe(409);expect(result.json().error).toContain('CUE')
+    expect(persisted()).toEqual(before);expect(runtime.executionView!.items.find(row=>row.item.id==='cue-auto')!.trim).toEqual(original)
+  })
+  it('commit de publicação com refresh falho é informado como gravado, sem repetir revisão',async()=>{
+    const runtime=(await runtimeFor(app,'ch'))!;await runtime.load('rd');await runtime.transport.take('rd','live-rd')
+    const review=await inspect(),refresh=vi.spyOn(runtime,'refresh').mockRejectedValue(new Error('fixture refresh unavailable'))
+    try{
+      const result=await publish(review);expect(result.statusCode,result.body).toBe(201)
+      expect(result.json()).toMatchObject({applied:true,executionUpdated:false,revision:1})
+      expect(result.json().refreshError).toContain('gravada')
+      expect((await publish(review)).statusCode).toBe(409)
+      expect(persisted().revisions).toHaveLength(1);expect(persisted().audit).toHaveLength(1)
+    }finally{refresh.mockRestore()}
+  })
+  it('commit de rollback com refresh falho não é apresentado como rollback recusado',async()=>{
+    const runtime=(await runtimeFor(app,'ch'))!;await runtime.load('rd');await runtime.transport.take('rd','live-rd')
+    const first=(await reviewedPublish(server,'rd')).json().id;await reviewedPublish(server,'rd')
+    const review=await rollbackReview(first),refresh=vi.spyOn(runtime,'refresh').mockRejectedValue(new Error('fixture refresh unavailable'))
+    try{
+      const result=await rollback(review);expect(result.statusCode,result.body).toBe(200)
+      expect(result.json()).toMatchObject({applied:true,executionUpdated:false,revision:3,snapshotAvailable:true})
+      expect(result.json().refreshError).toContain('gravado')
+      expect((await rollback(review)).statusCode).toBe(409);expect(persisted().revisions).toHaveLength(3)
+    }finally{refresh.mockRestore()}
+  })
+  it('publicação urgente não altera o corte do item aberto no CUE',async()=>{
+    const runtime=(await runtimeFor(app,'ch'))!;await runtime.load('rd')
+    app.db.insert(rundownItems).values({id:'cue-vt',rundownId:'rd',sortOrder:1,title:'CUE',type:'VT',mediaId:'reserve',durationOverride:null,trim:{in:0,out:250},minDuration:0,anchor:{kind:'FLOW'},onOverrun:'PUSH',locked:false,autoNext:false,loop:false}).run()
+    await reviewedPublish(server,'rd');await runtime.transport.take('rd','live-rd');await runtime.transport.cue({kind:'ITEM',id:'cue-vt'})
+    const before=persisted(),state=runtime.transport.state()
+    app.db.update(rundownItems).set({trim:{in:25,out:200}}).where(eq(rundownItems.id,'cue-vt')).run()
+    const result=await publish(await inspect());expect(result.statusCode,result.body).toBe(409);expect(result.json().error).toContain('CUE')
+    expect(persisted()).toEqual(before);expect(runtime.transport.state().preview).toEqual(state.preview)
+    expect(runtime.transport.state().onAir!.itemId).toBe('live-rd')
+  })
+  it('rollback não altera o item aberto no CUE mesmo preservando PGM',async()=>{
+    const runtime=(await runtimeFor(app,'ch'))!;await runtime.load('rd')
+    app.db.insert(rundownItems).values({id:'cue-vt',rundownId:'rd',sortOrder:1,title:'CUE',type:'VT',mediaId:'reserve',durationOverride:null,trim:{in:0,out:250},minDuration:0,anchor:{kind:'FLOW'},onOverrun:'PUSH',locked:false,autoNext:false,loop:false}).run()
+    const first=(await reviewedPublish(server,'rd')).json().id
+    app.db.update(rundownItems).set({trim:{in:25,out:200}}).where(eq(rundownItems.id,'cue-vt')).run()
+    await reviewedPublish(server,'rd');await runtime.transport.take('rd','live-rd');await runtime.transport.cue({kind:'ITEM',id:'cue-vt'})
+    const before=persisted(),review=await rollbackReview(first)
+    const result=await rollback(review);expect(result.statusCode,result.body).toBe(409);expect(result.json().error).toContain('CUE');expect(persisted()).toEqual(before)
+  })
   it('consulta é estável e não altera execução, grade ou auditoria',async()=>{
     const runtime=(await runtimeFor(app,'ch'))!;await runtime.load('rd');await runtime.transport.take('rd','live-rd')
     const before=persisted(),state=runtime.transport.state(),review=await inspect(),again=await inspect()

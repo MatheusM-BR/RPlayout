@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import {QcRenderedBusPolicyFields} from './QcRenderedBusPolicyFields.js'
 import { DEFAULT_QC_PROFILE, type Channel, type QcProfile,type QcReview } from '@rplayout/protocol'
 import { api } from '../../api'
 import {qcReviewMatches} from '../../domain/qc-review.js'
+import {LiveSignalPolicyFields} from './LiveSignalPolicyFields.js'
+import {QcProbePolicy} from './QcProbePolicy.js'
 
 export function QcWorkflowPanel({ assetId, contentHash, channel, onChanged,onReview,refreshKey=0,externalBusy=false }: {
   assetId: string; contentHash: string; channel: Channel; onChanged?: () => void
@@ -84,6 +87,7 @@ export function QcWorkflowPanel({ assetId, contentHash, channel, onChanged,onRev
   return <section className="p-3 rounded-lg bg-surface-panel border border-border-subtle text-xs" aria-label="Conferência técnica por canal">
     <div className="flex flex-wrap gap-2 justify-between mb-2"><strong>QC · {channel.name} · versão {contentHash.slice(0, 8)}</strong><button disabled={busy||externalBusy||!assessment||stale} className="text-primary underline disabled:opacity-40" onClick={toggleProfile}>Perfil técnico</button><button disabled={busy||externalBusy} className="text-primary underline" onClick={reopen}>Reabrir conferência</button></div>
     {assessment ? <>
+      <QcProbePolicy required={Boolean(assessment.profile.requireProbe)}/>
       <p className={assessment.checks.playable ? 'text-status-ok' : 'text-on-air-crimson'}>{assessment.checks.playable ? 'Verificações técnicas configuradas atendidas.' : 'Bloqueado pelas verificações técnicas.'}</p>
       {[...assessment.checks.errors, ...assessment.checks.warnings].map((issue, index) => <p key={index} className="mt-1 text-amber-200">{issue}</p>)}
       {assessment.decisions[0] && <p className="mt-1 text-outline">Última decisão aplicável ({assessment.decisions[0].channelId==='@all'?'todos os canais':'este canal'}): {assessment.decisions[0].status} · {assessment.decisions[0].notes ?? 'sem ressalva'}</p>}
@@ -93,11 +97,14 @@ export function QcWorkflowPanel({ assetId, contentHash, channel, onChanged,onRev
       {([['ANALYSIS', 'Em análise'], ['APPROVED_WITH_NOTES', 'Aprovar com ressalva'], ['BLOCKED', 'Bloquear PGM'], ['PENDING', 'Reabrir QC']] as const).map(([status, label]) => <button key={status} disabled={busy || externalBusy || stale || !assessment || (status === 'APPROVED_WITH_NOTES' && (!assessment.checks.playable || !notes.trim()))} onClick={() => void decide(status)} className="px-2 py-1 border border-outline/40 rounded disabled:opacity-40">{label}</button>)}
     </div>
     {editing && <div className="mt-3 p-2 rounded border border-primary/40 grid grid-cols-2 gap-2">
+      <QcProbePolicy required={Boolean(profile.requireProbe)} onChange={requireProbe=>setProfile({...profile,requireProbe})}/>
+      <LiveSignalPolicyFields value={profile.liveSignalPolicy} onChange={liveSignalPolicy=>setProfile({...profile,liveSignalPolicy})}/>
       <label className="col-span-2">Codecs permitidos (caps GStreamer; vazio aceita os decodificáveis)<input value={profile.codecs.join(', ')} onChange={event => setProfile({ ...profile, codecs: event.target.value.split(',').map(value => value.trim()).filter(Boolean) })} className="block w-full p-1 bg-surface-base" placeholder="video/x-h264, video/x-h265" /></label>
       {(['width', 'height', 'fps', 'minDurationSeconds', 'minLufs', 'maxLufs', 'maxTruePeakDbtp'] as const).map(field => <label key={field}>{({ width: 'Largura', height: 'Altura', fps: 'FPS', minDurationSeconds: 'Duração mínima (s)', minLufs: 'LUFS mínimo', maxLufs: 'LUFS máximo', maxTruePeakDbtp: 'True peak máximo (dBTP)' })[field]}<input type="number" step="any" value={profile[field] ?? ''} onChange={event => setProfile({ ...profile, [field]: event.target.value === '' && ['width','height','fps'].includes(field) ? null : Number(event.target.value) })} className="block w-full p-1 bg-surface-base" /></label>)}
       <label>Varredura<select value={profile.scan} onChange={event => setProfile({ ...profile, scan: event.target.value as QcProfile['scan'] })} className="block p-1 bg-surface-base"><option value="ANY">Qualquer</option><option value="PROGRESSIVE">Progressivo</option><option value="INTERLACED">Entrelaçado</option></select></label>
       <label><input type="checkbox" checked={profile.requireAudio} onChange={event => setProfile({ ...profile, requireAudio: event.target.checked })} /> Áudio obrigatório</label>
-      <label><input type="checkbox" checked={profile.requireLoudness} onChange={event => setProfile({ ...profile, requireLoudness: event.target.checked })} /> Medição e faixa de loudness obrigatórias</label>
+      <label><input type="checkbox" checked={profile.requireLoudness} onChange={event => setProfile({ ...profile, requireLoudness: event.target.checked })} /> Medição do arquivo inteiro e faixa de loudness obrigatórias (trecho/proxy não substituem o original)</label>
+      <QcRenderedBusPolicyFields profile={profile} channels={channel.audioChannels??2} onChange={setProfile}/>
       <button disabled={busy||externalBusy||stale||profileRevision===undefined} onClick={() => void saveProfile()} className="px-2 py-1 border border-primary rounded text-primary">Salvar perfil do canal</button>
     </div>}
     {message && <p role="status" className="mt-2 text-primary">{message}</p>}

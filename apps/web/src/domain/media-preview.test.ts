@@ -1,7 +1,33 @@
 import {describe,expect,it} from 'vitest'
-import {lightweightPreviewUrl,qcOriginalUrl,qcQualityFrameUrl,qcQualitySelected,qcInspectionUsesFrames,qcMonitorLabels} from './media-preview.js'
+import {lightweightPreviewUrl,qcOriginalUrl,qcQualityFrameUrl,qcQualitySelected,qcInspectionUsesFrames,qcMonitorLabels,qcInspectionFrameAtTime,qcInspectionVideoHasPicture,qcQualityFrameFailed} from './media-preview.js'
 
 describe('preview econômico nunca seleciona o arquivo original',()=>{
+  it.each([
+    [true,true,null,null,false],
+    [false,true,null,null,false],
+    [false,true,'','',false],
+    [false,true,'/frame/2?hash=A','/frame/2?hash=A',true],
+    [false,true,'/frame/2?hash=B','/frame/2?hash=A',false],
+    [false,false,'/frame/2','/frame/2',false],
+    [true,true,'/frame/2','/frame/2',false],
+  ] as const)('falha JPEG exige pedido de arquivo atual, não invalida WHEP ao vivo (%s/%s/%s)',(live,frames,request,failed,unavailable)=>{
+    expect(qcQualityFrameFailed(live,frames,request,failed)).toBe(unavailable)
+  })
+  it.each([[0,0,false],[640,0,false],[0,360,false],[NaN,360,false],[640,Infinity,false],[426,240,true],[360,640,true]])('metadata %s×%s exige imagem e não só áudio',(width,height,picture)=>{
+    expect(qcInspectionVideoHasPicture(width,height)).toBe(picture)
+  })
+  it('original usa pontos de extração nativos, não intervalos da miniatura',()=>{
+    expect(qcInspectionFrameAtTime(8,10,24,true)).toBe(18)
+    expect(qcInspectionFrameAtTime(8,10,24,false)).toBe(19)
+    expect(qcInspectionFrameAtTime(10,10,24,true)).toBe(23)
+    expect(qcInspectionFrameAtTime(4,10,1,true)).toBe(0)
+  })
+  it.each([
+    [0,10,0],[5,10,12],[10,10,23],[12,10,23],[-2,10,0],
+    [5,0,0],[NaN,10,0],[5,Infinity,0],
+  ])('fallback mantém quadro finito na posição %s de %s',(seconds,duration,frame)=>{
+    expect(qcInspectionFrameAtTime(seconds,duration)).toBe(frame)
+  })
   it.each([
     [false,false,false,'proxy leve','PICOS DO PROXY'],
     [false,true,false,'player do original','PICOS DO PLAYER'],

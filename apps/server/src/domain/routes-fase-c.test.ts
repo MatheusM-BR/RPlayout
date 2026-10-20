@@ -1,8 +1,11 @@
-import { describe, expect, it, beforeAll, afterAll } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { createApp, type App } from '../app.js'
 import { registerRoutes } from '../routes.js'
 import { asRun, channels, mediaAssets } from '../db/schema.js'
+
+// Explicit simulator fixture; no native admission/readiness bypass in product.
+vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',RELAY_BINARY:'',DEVICES_BINARY:''}))
 
 describe('Rotas e Endpoints da Fase C (Continuidade, Compliance e Sonda PGM)', () => {
   let app: App

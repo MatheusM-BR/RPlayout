@@ -2,6 +2,7 @@ import React, { useMemo } from 'react'
 import type { Rate } from '@rplayout/protocol'
 import type { ItemView } from '../../types.js'
 import { clock, dur } from '../../format.js'
+import {OperationalCompensationPanel} from './OperationalCompensationPanel.js'
 
 interface ConflictDrawerProps {
   open: boolean
@@ -11,6 +12,7 @@ interface ConflictDrawerProps {
   /** Conflitos calculados pelo scheduler a cada atualização da grade. */
   conflicts: readonly { kind: string; itemId: string; frames: number; severity: string; message: string }[]
   onAutoFill: () => void
+  channelId?:string
 }
 
 interface DetectedIssue {
@@ -29,6 +31,7 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
   rate,
   conflicts,
   onAutoFill,
+  channelId,
 }) => {
   const issues = useMemo(() => {
     const list: DetectedIssue[] = []
@@ -138,8 +141,9 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
           className="w-full mt-1 py-1.5 px-space-sm rounded bg-armed-amber hover:bg-armed-amber-hover text-surface-base font-label-caps text-label-caps font-bold flex items-center justify-center gap-space-xs transition-colors shadow-sm"
         >
           <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>
-          Preencher com Filler / Color Bar
+          Abrir preenchimento editorial
         </button>
+        {channelId&&<OperationalCompensationPanel channelId={channelId} items={items} rate={rate} conflicts={conflicts}/>}
       </div>
 
       {/* List of Conflicts */}
@@ -147,9 +151,9 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
         {issues.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-space-md text-outline">
             <span className="material-symbols-outlined text-status-ok text-[40px] mb-2">check_circle</span>
-            <div className="font-label-caps text-label-caps font-bold text-on-surface uppercase">Grade 100% Contínua</div>
+            <div className="font-label-caps text-label-caps font-bold text-on-surface uppercase">Sem conflitos calculados</div>
             <div className="font-body-sm text-body-sm text-outline mt-1">
-              Nenhum gap, mídia ausente ou sobreposição na grade 24h.
+              Nenhum conflito nesta visão. Confira sinal, cobertura de horário e saídas.
             </div>
           </div>
         ) : (
@@ -184,7 +188,7 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
       {/* Footer Info */}
       <div className="p-space-xs bg-surface-panel border-t border-border-subtle font-label-mono text-[10px] text-outline flex items-center justify-between">
         <span>VARREDURA EM TEMPO REAL</span>
-        <span className="text-status-ok font-bold">24/7 PROTEÇÃO</span>
+        <span className="text-outline">TIMING ESTIMADO</span>
       </div>
     </aside>
   )

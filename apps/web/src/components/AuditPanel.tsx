@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { csvRows } from '../domain/csv.js'
 import { api } from '../api.js'
+import {auditActionLabel,auditDetails} from '../domain/audit-summary.js'
 
 interface Props {
   onClose: () => void
@@ -50,8 +51,8 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
   )
 
   const csv = '\uFEFF' + csvRows([
-    ['usuário', 'ação', 'item', 'data UTC (relógio local)'],
-    ...filtered.map(entry => [entry.actorUsername ?? 'sessão local', entry.kind, entry.itemId ?? '', entry.createdAt]),
+    ['usuário', 'ação', 'item', 'data UTC (relógio local)', 'detalhes'],
+    ...filtered.map(entry => [entry.actorUsername ?? 'sessão local', entry.kind, entry.itemId ?? '', entry.createdAt,auditDetails(entry.kind,entry.payload)]),
   ], ';')
 
   const content = (
@@ -104,7 +105,7 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
               <option value="">Todas as ações</option>
               {[...new Set(entries.map((entry) => entry.kind))].map((kind) => (
                 <option key={kind} value={kind}>
-                  {kind}
+                  {auditActionLabel(kind)}
                 </option>
               ))}
             </select>
@@ -149,15 +150,15 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
                     {entry.actorUsername ?? 'Sessão Local'}
                   </td>
                   <td className="py-2 px-space-sm">
-                    <span className="inline-block px-1.5 py-0.5 rounded bg-surface-card text-accent-ice font-bold border border-border-subtle">
-                      {entry.kind}
+                    <span title={entry.kind} className="inline-block px-1.5 py-0.5 rounded bg-surface-card text-accent-ice font-bold border border-border-subtle">
+                      {auditActionLabel(entry.kind)}
                     </span>
                   </td>
                   <td className="py-2 px-space-sm text-outline truncate max-w-[120px]" title={entry.itemId ?? '—'}>
                     {entry.itemId ?? '—'}
                   </td>
-                  <td className="py-2 px-space-sm text-[11px] text-on-surface-variant truncate max-w-md font-mono" title={JSON.stringify(entry.payload)}>
-                    {JSON.stringify(entry.payload)}
+                  <td className="py-2 px-space-sm text-[11px] text-on-surface-variant truncate max-w-md font-mono" title={auditDetails(entry.kind,entry.payload)}>
+                    {auditDetails(entry.kind,entry.payload)}
                   </td>
                 </tr>
               ))}

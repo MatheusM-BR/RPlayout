@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { link, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -12,6 +12,36 @@ beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'RPlayout-priv
 afterEach(async () => { await rm(directory, { recursive: true, force: true }) })
 
 describe('configuração gerada com chave de ingest', () => {
+  it('recusa troca de temporário após a prova nativa final e antes de publicar',async()=>{
+    const target=join(directory,'mediamtx.yml'),moved=join(directory,'own-protected-config');await writeFile(target,'ORIGINAL_BYTES')
+    let checks=0
+    const verify=async()=>{if(++checks===2){const temporary=(await readdir(directory)).find(name=>name.includes('.private-'))!;await rename(join(directory,temporary),moved);await writeFile(join(directory,temporary),'FORGED',{flag:'wx'})}}
+    await expect(writePrivateConfig(target,'PRIVATE_NEW_KEY',()=>{},verify)).rejects.toThrow('Arquivo temporário mudou antes da publicação')
+    expect(await readFile(target,'utf8')).toBe('ORIGINAL_BYTES');expect(await readFile(moved,'utf8')).toBe('PRIVATE_NEW_KEY')
+    expect((await readdir(directory)).sort()).toEqual(['mediamtx.yml','own-protected-config'])
+  },15000)
+  it('recusa substituição do temporário antes da gravação, sem divulgar a chave ou alterar destino',async()=>{
+    const target=join(directory,'mediamtx.yml'),moved=join(directory,'empty-original');await writeFile(target,'ORIGINAL_BYTES')
+    let checks=0
+    const verify=async()=>{if(++checks===1){const temporary=(await readdir(directory)).find(name=>name.includes('.private-'))!;await rename(join(directory,temporary),moved);await writeFile(join(directory,temporary),'',{flag:'wx'})}}
+    await expect(writePrivateConfig(target,'PRIVATE_NEW_KEY',()=>{},verify)).rejects.toThrow('Arquivo temporário mudou')
+    expect(await readFile(target,'utf8')).toBe('ORIGINAL_BYTES');expect(await readFile(moved,'utf8')).toBe('')
+    expect((await readdir(directory)).sort()).toEqual(['empty-original','mediamtx.yml'])
+  },15000)
+  it('prova nativa recusada após ACL ou imediatamente antes de rename preserva destino e hardlink',async()=>{
+    const original=join(directory,'foreign.txt'),target=join(directory,'mediamtx.yml');await writeFile(original,'ORIGINAL_BYTES');await link(original,target)
+    for(const denyAt of[1,2]){
+      let checks=0;const verify=async()=>{if(++checks===denyAt)throw new Error('NATIVE_PORT_CHANGED')}
+      await expect(writePrivateConfig(target,'PRIVATE_NEW_KEY',()=>{},verify)).rejects.toThrow('NATIVE_PORT_CHANGED')
+      expect(await readFile(target,'utf8')).toBe('ORIGINAL_BYTES');expect(await readFile(original,'utf8')).toBe('ORIGINAL_BYTES');expect((await readdir(directory)).sort()).toEqual(['foreign.txt','mediamtx.yml'])
+    }
+  },15000)
+  it('posse revogada antes do rename preserva bytes anteriores e limpa só temporário próprio',async()=>{
+    const path=join(directory,'mediamtx.yml');await writeFile(path,'ORIGINAL_BYTES')
+    let checks=0;const authorize=()=>{if(++checks===3)throw new Error('OWNERSHIP_REVOKED')}
+    await expect(writePrivateConfig(path,'PRIVATE_NEW_KEY',authorize)).rejects.toThrow('OWNERSHIP_REVOKED')
+    expect(checks).toBe(3);expect(await readFile(path,'utf8')).toBe('ORIGINAL_BYTES');expect(await readdir(directory)).toEqual(['mediamtx.yml'])
+  },15000)
   it('publica arquivo completo e verifica permissões reais do Windows/Unix', async () => {
     const path = join(directory, 'CONFIGURAÇÃO — ação.yml')
     await writePrivateConfig(path, 'paths:\n  guest/PRIVATE_TEST_KEY:\n')

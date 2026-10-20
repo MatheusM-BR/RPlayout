@@ -131,6 +131,7 @@ export const toItem = (row: ItemRow): RundownItem => {
     title: row.title,
     mediaId: row.mediaId,
     sourceRef: row.sourceRef,
+    configuredSourceId: row.configuredSourceId,
     trim: row.trim ?? null,
     audio: row.audio ?? null,
     durationOverride: row.durationOverride,

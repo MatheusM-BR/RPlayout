@@ -2,9 +2,77 @@
 
 ## Objetivo
 
+Política de aviso live configurável por canal no Perfil técnico QC: chegada ao
+decoder em intervalos de quadro e aquecimento, sem alterar TAKE ou critérios
+de arquivo. Campo persistido/auditado com revisão existente.158 testes afetados,
+tipos/build servidor/interface PASS; homologação interativa/física pendente.
+
+Frente atual EXEC-03 integrada na fonte do backend/MediaMTX/engine/relays;
+identidade nativa de encarnação e sockets antes/depois da prontidão HTTP.
+Kernel b6c5b7/cliente 95b936 reais PASS, 8 Rust/24 IPC, rodada atual44 PASS.
+Repetição final compilada sTtEOU recusou ACL antes de abrir MediaMTX; correção
+com auxiliar Windows de arquivos embutido tem4 Rust reais PASS. Compilado final
+gW0s1R PASS com engine/relay reais em loopback e recuperação do relay.
+Fechamento local por cobertura com replay: integral2.168 PASS/10 FAIL em5
+fixtures; após reparo apenas de testes,36/36 PASS,2.142 PASS inalterados fora
+do replay. Total distinto2.178/221 arquivos; NÃO integral única verde.
+Grupo1 fechado; sem homologação física/HA/navegador ou pacote final.
+Inventário fixo em docs/PENDENCIAS-NUMERADAS.md: 10 grupos/53 verificações.
+Grupo2 em andamento: canal18/18 PASS, OMT oficial local1/1 PASS,
+arquivamento/posse47/47 PASS e replay nativo dirigido PASS. Engine atualizado
+compilado; decoder por software padrão evita seleção automática do driver Intel
+DXVA onde houve crash. Opt-in de aceleração requer homologação. Não é validação
+física nem suíte integral única verde; falhas/replay/hashes registrados na matriz.
+Totais:1 grupo concluído/9 abertos;4 verificações concluídas/12 em andamento/37
+pendentes. Demais requisitos do relatório permanecem no escopo.
+Grupo4 primeira integração compilada/nativa PASS: publicação/timing imutáveis,
+corte automático prioritário, ajuste+120s, rollback com PGM preservado e retorno
+VT desde cursor nativo357. Sem UI/hardware homologados;4.1..4.5 em andamento.
+QC3.5 em andamento: inspeção live pela API compilada com imagem1280x720 e
+áudio reais, preview428x240, sem conexão extra da fonte; navegador/arquivos
+ainda não homologados. Cenário QC antes do PGM passou na rodada25502 com
+servidor DE7F54E e resultado persistido pós-cleanup. A captura anterior sem
+terminal mantém atribuição histórica incompleta; não é usada como aprovação.
+QC3.7 em andamento: validade temporal de pixels live e cadência de scopes
+corrigidas;21 testes/tipos/build web PASS. Medição de consumo/responsividade
+remota e freeze por conteúdo ainda não homologados.
+Os2135 PASS e compilado EXEC-02 abaixo não validam a fonte nova.
+
+Checkpoint anterior EXEC-02 validada localmente: proteção global de MediaMTX/config/relays
+no SQLite compartilhado, migração33. Não transfere posse por prazo e aguarda
+exit real antes de reiniciar/substituir recursos. Instância alheia não altera
+distribuição nem transporte; configuração privada revalida antes de publicar.
+33 novos; direcionadas70/45 PASS sobrepostas e final7 arquivos/82 PASS;
+tipos/build44153 e compilado12975/9BJZRR com MediaMTX real local PASS.
+Integral3978 terminal215 arquivos/2135 testes PASS,803,16s, um worker;
+reporter persistente conferido e hashes iguais ao compilado. Não comprova isolamento entre
+bancos, propriedade de portas/API, sinal físico ou HA. Nenhum deploy/push.
+Os2102 PASS/ensaios seguintes são históricos EXEC-01, não prova da fonte atual.
+
+Checkpoint anterior EXEC-01: proteção de execução nativa por vida de processo,
+token de spawn e identidade opaca do SO, migração32. Peer não abre segundo
+engine nem envia CUE/TAKE/STOP, não sobrescreve cursor nem encerra as-run alheio.
+56 novos/213 direcionados PASS, tipos/build e ensaios nativos locais yop8U7 e
+sN053O PASS; integral final212 arquivos/2102 testes PASS,08h29m52 BRT,750,21s,
+um worker, reporter persistente conferido. NULL/fakesink com vídeo
+sintético real, não prova de placa/rede/HA. O predecessor engine não sobreviveu
+ao pai no compilado; caso órfão vivo é teste de fixture, não ensaio físico.
+A build SEC-22I abaixo é histórica. Permanecem legado/reparo explícito,
+diagnóstico na interface, posse global MediaMTX/relays, outros contratos,
+homologação física/visual e pacote portátil atualizado. Nenhum deploy ou push.
+
 A versão 1.1 organiza o produto como um aplicativo de operação: o Master mantém o PGM protegido, janelas secundárias cuidam de playlist/gestão, e cada estado crítico tem confirmação visual e registro.
 
-Estado de referência: 03/10/2026. A matriz
+Checkpoint local anterior: SEC-22I, 06/10/2026 — remoção/limpeza conferidas,
+fallbacks preservados, fila nativa reservada antes do microtask e override MAM
+limitado à revisão/hash originais. QC por canal invalida conferência antiga;
+fase durável desconhecida não presume canal livre. 89 testes novos, última
+direcionada117 PASS, tipos/build e compilado kYCBbt PASS. Integral final I PASS:
+209 arquivos/2046 testes,07h07m14 BRT,867,80s. Relatório persistente conferido;
+2038 PASS intermediários pertencem à fonte anterior ao complemento. Não é pacote
+final ou homologação de hardware/navegador/HA. Ver checkpoint ao final.
+
+Estado de referência histórico: 03/10/2026. A matriz
 `IMPLEMENTACOES-BROADCAST-2026-09-30.md` distingue implementação, teste de
 software e homologação física. As notas de bundles ao final são históricas;
 não identificam a versão portátil em operação. O pacote r18 é intermediário,
@@ -501,3 +569,270 @@ Migração 23 persiste revisões QC; startup e restauração validam suas
 proteções. Ensaio com dois servidores compilados/SQLite compartilhado
 comprovou concorrência, rollback, restart e backup. Não é replicação/HA,
 decodificação de mídia, sinal físico nem homologação visual do navegador.
+
+### Integridade da restauração de projetos — SEC-21A
+
+Capturar projeto grava um snapshot consistente e a auditoria na mesma
+transação. Restauração confere IDs, donos e referências antes de remover dados;
+recusa colisões com outro canal, seção truncada, mídia ausente, vínculos externos
+e remoção de grade com histórico publicado/importado/as-run. Eventos locais
+são substituídos sem apagar os de outro canal. Falha de auditoria reverte tudo.
+
+Restauração continua exigindo Supervisor/Administrador, PGM parado e CUE limpo.
+Se os dados foram gravados mas o reinício falhou, a tela informa aplicação não
+confirmada; a configuração fica inconclusiva, sem repetição/TAKE automáticos.
+Não tratar isso como rollback nem como engine pronto.
+
+A conferência SEC-21B mostra formato e quantidades atuais/a restaurar, remoções
+de grade, publicações preservadas e saídas/destinos/chaves habilitados. Confirmar
+envia a revisão original vista pelo operador; alteração por qualquer escritor,
+inclusive mudança seguida de reversão, exige reabrir a conferência. Não há
+renovação automática para autorizar uma confirmação antiga. Ausência de revisão,
+prova malformada ou conflito são recusados sem restaurar dados.
+
+Contadores persistentes são validados na abertura do banco e no backup. Mudanças
+de mídia, QC, equipamentos ou modelos compartilhados invalidam conservadoramente
+as conferências de todos os canais, podendo exigir nova conferência durante ingestão.
+A tela mantém o rascunho em falha e isola respostas atrasadas ao trocar de canal;
+não exibe conteúdo privado, endpoints ou chaves no relatório de impacto.
+
+A SEC-21C também recusa conteúdo fora do contrato salvo: tipos/limites,
+cortes e âncoras incoerentes, datas/zonas inválidas, áudio/matriz malformados,
+preview full, eventos com comandos ocultos ou estado executado e automação
+com equipamento ausente/desabilitado. Confere ao capturar, abrir a prévia e
+aplicar, antes da escrita; não corrige silenciosamente o snapshot. Validação
+de equipamento não envia comandos nem aprova execução, e estrutura de medição
+não autentica loudness nem autoriza AUTO. Compatibilidade explícita de snapshots
+v1 anteriores é preservada; conteúdo inválido exige correção pelo operador.
+
+Software: 169 arquivos/1507 testes, tipos/build e ensaio compilado ZlsA6p PASS.
+A frente não é homologação integral: SVG e payloads não foram renderizados,
+destinos genéricos não foram conectados, e outros mutadores ainda precisam de
+guardas equivalentes. Não confundir markup com operação visual remota nem
+snapshot válido com mídia aprovada/sinal físico. Ensaio compilado é SIMULATED;
+navegador, pacote final e homologação DeckLink/NDI/OMT continuam pendentes.
+
+### Cadastro de entradas ao vivo com conferência original — SEC-22A
+
+Criar, editar ou remover uma entrada NDI/OMT/SDI/SRT/RTMP usa a revisão da
+lista que o operador abriu. Se outra estação alterar as fontes ou o canal,
+inclusive alterar e reverter, a confirmação antiga é recusada. Rascunho fica
+preservado e exige reabrir explicitamente; a tela não renova a revisão para
+autorizar a ação antiga. Acesso é reconferido na gravação, junto da auditoria.
+
+O campo Nome continua abaixo da seleção, sugerido pela fonte encontrada;
+alias manual pode ser mantido ou substituído explicitamente pelo nome da
+fonte. Renomear preserva conexão/credenciais protegidas. Cadastro não sintoniza,
+não dá TAKE e não altera o PGM/PVW. Entrada cadastrada ou descoberta não
+significa sinal validado. Pares primário/reserva precisam pertencer ao mesmo
+canal; remover fonte referenciada exige desfazer o vínculo primeiro.
+
+Migração 25 protege revisões persistentes no startup/backup. Suíte completa
+174 arquivos/1553 testes, tipos/build e três verificadores compilados PASS.
+Dois servidores isolados comprovaram vencedor único, recusa de ABA/dono errado,
+rollback de auditoria, credencial/revisão após restart e PGM/PVW preservados.
+Transporte SIMULATED, sem decodificação ou homologação visual/física/HA.
+Force-failover, outros mutadores, pacote portátil final e Windows limpo ainda
+precisam das verificações específicas; não é publicação 100% homologada.
+
+### Papel inválido não concede operação — SEC-22B
+
+Conta com papel inválido não é tratada como Operador: não autentica, não recebe
+sessão nova e perde acesso HTTP/WebSocket. Permissões só aceitam os quatro
+papéis válidos exatos; configuração local ou header inválidos não concedem
+ações de operação. O diagnóstico é Acesso não autorizado, sem criar um quinto
+papel cadastrável. Se a instalação estiver em modo local sem contas, leituras
+anônimas previamente permitidas continuam assim; isso não as torna privadas.
+
+Depois de verificar a senha, o login reconfere conta habilitada, nome/hash,
+papel e estação na gravação. Sessão de 12h (somente hash do token no banco) e
+auditoria são atômicas; falha de auditoria não deixa sessão nem cookie de sucesso.
+Tipos/build, 84 testes direcionados, integral 176 arquivos/1600 testes e
+servidor compilado jSBHVN PASS; resultados e reparos registrados na matriz.
+Ensaio compilado é SIMULATED, sem homologação visual, mídia, hardware ou HA.
+Administração/bootstrap inicial e demais mutadores ainda precisam das guardas
+específicas; não declarar toda a segurança concluída por esta etapa.
+
+### Layout multiview compartilhado por canal — SEC-22C
+
+A aba Multiview da Engenharia permite conferir e salvar o layout do canal.
+Trocar a visualização é local; **Salvar layout no canal** compartilha somente
+o layout. Outra estação que altere canal/fontes/configuração invalida a
+conferência antiga, inclusive se alterar e reverter. Recusa preserva o layout
+local; **Reabrir conferência** exige confirmação antes de descartar rascunho.
+Gravação, revisão e auditoria são atômicas; não reiniciam engine nem dão TAKE.
+
+Global e canal de ID `default` não sobrescrevem um ao outro. Ausência de
+configuração tem consulta estável, sem timestamp inventado. Conexões/células
+privadas são preservadas ao salvar só layout; telemetria/tally salvos são
+históricos e não demonstram sinal. Cards continuam usando dados do engine.
+Dashboard permanece visualização local; editor completo de células é pendência.
+
+Migração 26 verificada na abertura e backup. 44 testes novos, 184 direcionados,
+tipos/build, ensaio compilado 6pc34o e integral 181 arquivos/1644 testes PASS.
+Ensaio SIMULATED, não homologação de navegador, hardware, decodificação ou HA.
+Pacote portátil final e demais frentes continuam pendentes.
+
+### Faixas da pauta e montagem diária por conferência — SEC-22D
+
+Criar, alterar ou remover faixas exige a lista conferida do canal. Alteração
+posterior, inclusive alterar e reverter, recusa a ação antiga. Checagem de
+sobreposição, gravação e auditoria são juntas; falha reverte todos os dados.
+Horários encostados e dias distintos são válidos. Captura/restauração de
+projeto também recusam faixas sobrepostas, sem descartar ou corrigir legado
+silenciosamente. Cadastro é editorial: não publica e não altera PGM/PVW.
+
+O editor de AutoFill permite dias/categorias/horários e mantém os campos em
+conflito. **Reabrir conferência das faixas** pede confirmação antes de descartar
+rascunho. Trocar de aba não reabre automaticamente a conferência; falha de
+consulta não significa lista vazia. Remover outra faixa não renova a prova de
+edição já iniciada. Campos antigos bloqueiam nova gravação até reabrir ou
+iniciar explicitamente um rascunho novo.
+
+Proposta do dia inteiro inclui revisão durável da pauta. Alterar e reverter
+não autoriza montagem antiga; confirmação não refaz a seleção. Outro canal
+não invalida proposta local. Propostas DAY anteriores a este vínculo precisam
+de nova conferência; preencher janela permanece independente das faixas.
+
+65 novos testes, tipos/build, integral 186 arquivos/1709 testes e três ensaios
+compilados PASS (pauta 8WyocI, projetos bvhDba e multiview qG8G1M), na mesma
+build. Evidências e reparos na matriz. Ensaios SIMULATED/metadata placeholder, sem vídeo
+decodificado, homologação visual/física ou HA. Pacote final ainda pendente.
+
+### Cadastro de artes e apresentação técnica conferidos — SEC-22E
+
+No gerador de caracteres, marcar a apresentação técnica faz a escolha local.
+**Salvar apresentação técnica** confirma a configuração conferida; não é TAKE
+nem disparo de emergência. Se outra estação mudar o canal ou artes compartilhadas,
+mesmo alterando e revertendo, a escolha antiga é recusada e preservada na tela.
+**Reabrir conferência das artes** é explícito e confirma descarte do rascunho.
+
+**Gerenciar artes** abre cadastro separado do disparo: nome, SVG como texto,
+campos/rótulos/defaults, transição e tempo de retirada. Artes locais pertencem
+ao canal; compartilhadas exigem acesso não restrito para editar. SVG fica
+escapado no textarea, sem execução no navegador. Ocultar cadastro preserva
+rascunho; lista nova não renova a prova dos campos antigos. Falha de consulta
+não é tratada como lista vazia. Excluir recusa arte ainda vinculada à grade ou
+apresentação técnica, sem apagar referências ou histórico publicado.
+
+Gravação, revisão e auditoria são atômicas. Falha de auditoria não chega ao
+runtime; falha pós-commit informa configuração gravada com aviso, sem alegar
+rollback ou entrega física. Cadastro não dá TAKE/recria engine. Os comandos
+de disparo/retirada/layers e slate de emergência continuam uma frente separada.
+
+Migração 28 protegida no startup/backup. 67 novos testes, 112 direcionados,
+tipos/build, compilados JihJIy/xWEU0z e integral 191 arquivos/1776 testes PASS.
+Primeira tentativa e seus reparos permanecem registrados na matriz. Ensaio
+SIMULATED, sem homologação visual, SVG renderizado, mídia, hardware ou HA.
+Demais requisitos e pacote portátil final permanecem no objetivo ativo.
+
+### Artes de fábrica preservam suas decisões — SEC-22F
+
+Renomear ou excluir uma arte de fábrica não faz com que ela reapareça ao reiniciar.
+Instalações existentes, mesmo sem artes, mantêm seus IDs, conteúdo e referências;
+somente banco novo pode receber o catálogo inicial. Uma arte local com o mesmo
+nome não impede a criação da compartilhada. Inicialização, revisões e registro
+de conclusão são atômicos, com proteção contra reset e validação no backup.
+
+20 novos testes/51 direcionados, tipos/build, dois ensaios compilados e integral
+192 arquivos/1796 testes PASS. Ensaios SIMULATED, sem nova
+homologação visual, física ou HA. Reconciliação de histórico entre processos,
+administração (implementada na SEC-22G abaixo), demais requisitos e pacote final
+permanecem no objetivo ativo.
+
+### Usuários e acesso com confirmação explícita — SEC-22G
+
+Editar papel, habilitação, senha, canais ou estações mantém um rascunho local.
+**Salvar conta/acesso conferido** aplica somente a lista que foi conferida;
+mudança em outra estação, mesmo alterada e revertida, recusa a edição antiga.
+Lista e campos são preservados em erro. **Reabrir conferência das contas** pede
+confirmação antes de descartar. Consultas nunca mostram senha, hash ou tokens.
+
+**Conferir sessões** mostra datas e quantidade de registros, inclusive expirados.
+**Encerrar sessões conferidas** preserva a conta e recusa se houve novo login
+desde a conferência. Salvar conta/acesso também encerra suas sessões; alterar a
+própria conta exige novo login. O último administrador acessível e a própria
+estação são protegidos. Primeiro administrador só é criado na instalação vazia
+e na página local; contas desabilitadas não reabrem modo anônimo.
+
+Escrita, revisões e auditoria são atômicas. Falha de auditoria não aplica parte
+da conta nem encerra sessões parcialmente. Operações administrativas não dão
+TAKE nem mudam PGM/PVW. Migração 30 validada no startup/backup.
+87 novos testes/121 direcionados, tipos/build e ensaios b3GGxR/N0huIK/ywtS43 PASS.
+Revogação também fecha WebSocket autenticado (4401) sem alterar PGM/PVW.
+Integral desta build: 198 arquivos/1883 testes PASS, 23h42m33 BRT, 240,95s.
+SSR/HTTP/WebSocket/SIMULATED não são homologação visual, mídia ou hardware.
+Demais requisitos, segurança de escritores SQL externos, HA e pacote final
+continuam pendentes. Evidências e limitações completas na matriz.
+
+### Conferência de título e categoria do acervo — SEC-22H
+
+Na biblioteca da playlist ou no detalhe do item, **Conferir título / categoria**
+abre o editor do arquivo. Digitar/selecionar não grava. **Salvar metadados
+conferidos** usa a versão original recebida; mudança em outra estação, ingest
+ou QC, inclusive alterada e revertida, recusa a edição antiga. Campos ficam
+preservados até **Reabrir conferência do arquivo**, com aviso de descarte.
+
+Título/categoria são compartilhados entre canais. Conta restrita pode consultar,
+mas não alterar esses dados globais. Categoria vazia remove a classificação;
+categoria nova não dispara cadastro de cor automaticamente. Salvar não altera
+título editorial da linha, arquivo no disco, aprovação QC nem PGM/PVW. Revisões
+e auditoria são juntas; falha não deixa atualização parcial. Editor não renova
+prova QC usando dados de metadata, e falha de consulta não significa acervo vazio.
+
+Entradas NDI/OMT/SDI da biblioteca abrem **Configurar entrada ao vivo** e não
+recebem ações de metadata/ignorar de arquivos. Vídeo da categoria Ao Vivo
+continua sendo arquivo. A varredura não copia mais decisões anteriores à sonda:
+relê título, ignorado, QC e medição sob writer antes de gravar. Mesmo conteúdo
+preserva decisões atuais; conteúdo novo volta a PENDING. Análise atrasada não
+recria ID removido/substituído. Probe falho permanece FAILED, sem fingir aprovação.
+
+74 novos testes/125 direcionados distintos em duas rodadas, tipos/build PASS.
+Primeira integral: 1945 PASS/2 FAIL na proteção Windows de configuração;
+cinco testes repetidos isoladamente PASS. Guarda não relaxada, causa exata não
+comprovada. Três compilados atuais (metadata tRbSQP, contas A8yKEo e artes
+ZsVUNC) PASS, com preservação de PGM/PVW simulados, rollback/restart/backup.
+Tentativa anterior de metadata recusada pelo cofre Windows antes de iniciar
+servidores; não substituiu chave nem relaxou proteção. Integral final terminal
+PASS: 203 arquivos/1957 testes, 00h29m35 BRT, 815,22s, um worker, sem build/
+verificador concorrente ou edição de fonte durante a rodada. ACL/DPAPI passam
+com limites originais; causas das falhas anteriores continuam não comprovadas.
+Ensaios SIMULATED/SSR, não homologação de navegador/mídia/hardware/HA. Remoção,
+limpeza, cadastro/cores de categoria, pastas/scan e integrações continuam frentes
+separadas, assim como pacote Windows final e demais requisitos do objetivo.
+
+### Remoção e limpeza conferidas do acervo — SEC-22I
+
+O menu MAM agora oferece **Conferir remoção e vínculos**; o rodapé oferece
+**Conferir limpeza**. A página apresenta os vídeos, os itens diretos a remover,
+os fallbacks a desvincular sem apagar a entrada ao vivo e os bloqueios de uso.
+É preciso selecionar arquivos e confirmar seus vínculos antes de aplicar.
+Se a grade, fonte de prova, sessão/permissão ou operação mudar, a tela preserva
+a seleção e exige reabrir o impacto explicitamente. Não existe force=1 ou retry
+automático. Entrada ao vivo não recebe ação de arquivo MAM.
+
+Remover oculta o registro. Limpar apaga somente os registros de vídeos falhos
+selecionados desta conferência, nunca imagens ou novos candidatos descobertos
+depois. Nenhum arquivo físico é apagado; publicações, projetos e as-run permanecem.
+Publicações/projetos e operações protegidas podem impedir a remoção. Modificações
+editoriais exigem conferir timing e publicar novamente; remover não faz TAKE,
+CUE, STOP ou publicação. A decisão e seus vínculos são gravados juntos e auditados.
+
+89 novos testes, última direcionada117 PASS, tipos/build e ensaio compilado
+kYCBbt PASS. Duas instâncias temporárias verificaram vencedor único, rollback,
+restart/backup e PGM/PVW simulados preservados; bytes do arquivo placeholder
+permaneceram iguais. O override local de ignorado já não sobrepõe QC/catálogo
+mais novo. Mudança de QC por canal invalida a original mesmo sem editar o ativo;
+fases de operação desconhecidas recusam a conferência. Integral final I PASS:
+209 arquivos/2046 testes,07h07m14 BRT,867,80s,um worker; relatório persistente
+conferido. Nenhuma fonte foi alterada durante a rodada; limites de ACL/DPAPI
+preservados.2038 PASS intermediários são anteriores a esse complemento.
+Esse ensaio não valida vídeo real, navegador,
+DeckLink/NDI/OMT, dois engines ativos, redundância ou pacote Windows final.
+Ver matriz para falhas anteriores, limites e roteiro das demais implementações.
+Primeira integral I:2036 PASS/2 FAIL em fixtures legadas; correções de testes
+passaram14/14 e tipos, sem mudar produto/guardas. Repetição intermediária2038 PASS;
+fonte final possui o resultado2046 PASS acima. Sessão24515 perdeu seu identificador
+antes de resultado observado: causa/exit code desconhecidos, não é PASS/FAIL.
+Não chamar essa etapa de
+publicação100% validada.

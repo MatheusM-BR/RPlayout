@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it,vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { createApp, type App } from '../app.js'
 import { registerRoutes } from '../routes.js'
@@ -7,6 +7,11 @@ import { eq } from 'drizzle-orm'
 import { SECRET_PREFIX } from './secret-vault.js'
 import {configurationRevision} from '../db/channel-configuration.js'
 import {channelConfigurationETag} from '@rplayout/protocol'
+import {EngineTransport} from './engine.js'
+
+// This is repository/HTTP/profile coverage, not a physical publisher test.
+// Never discover and start installation runtimes or external targets here.
+vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',DEVICES_BINARY:'',AUTH_USER:'',AUTH_PASSWORD:'',DEFAULT_ROLE:'ADMIN'}))
 
 describe('presets persistentes de transmissão', () => {
   let app: App
@@ -27,7 +32,7 @@ describe('presets persistentes de transmissão', () => {
 
   afterAll(async () => { await server.close();app.close() })
 
-  it('protege segredo no SQLite, preserva aplicação ao engine e mascara respostas', async () => {
+  it('protege segredo no SQLite, preserva aplicação ao perfil e mascara respostas', async () => {
     const srtSecret = 'SenhaSrtNaoPodeVazar'
     const create = await server.inject({ method: 'POST', url: '/api/channels/preset-channel/transmission-presets', headers:headers(), payload: {
       name: 'SRT Afiliada', kind: 'SRT', target: `srt://198.51.100.40:9000?mode=caller&passphrase=${srtSecret}`,
@@ -42,6 +47,7 @@ describe('presets persistentes de transmissão', () => {
 
     const applied = await server.inject({ method: 'POST', url: `/api/channels/preset-channel/transmission-presets/${presetId}/apply`, headers:headers(), payload: {} })
     expect(applied.statusCode).toBe(201)
+    expect(app.runtimes.get('preset-channel')?.transport).not.toBeInstanceOf(EngineTransport)
     expect(applied.body).not.toContain(srtSecret)
     const stored = app.sqlite.prepare('SELECT target FROM transmission_presets WHERE id=?').get(presetId) as { target: string }
     expect(stored.target).toMatch(new RegExp('^' + SECRET_PREFIX))
@@ -65,6 +71,7 @@ describe('presets persistentes de transmissão', () => {
     const created = await server.inject({ method: 'POST', url: '/api/channels/preset-channel/transmission-presets', headers:headers(), payload: {
       name: 'Temporário', kind: 'RTMP', target: 'rtmp://localhost/live/chave-temporaria',
     } })
+    expect(created.statusCode,created.body).toBe(201)
     const id = JSON.parse(created.body).preset.id as string
     const removed = await server.inject({ method: 'DELETE', url: `/api/channels/preset-channel/transmission-presets/${id}`,headers:headers() })
     expect(removed.statusCode).toBe(200)

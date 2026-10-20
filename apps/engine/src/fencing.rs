@@ -93,6 +93,16 @@ pub fn wait_initial() -> Result<()> {
 }
 pub fn abort() { if let Some(fence) = FENCE.get() { if let Ok(mut state) = fence.state.lock() { state.expired = true; } } }
 
+/// Publication admission binds to this native owner and its STILL VALID term.
+/// A historical Node/witness ACK cannot open hardware/network sinks.
+pub fn authorize_publication(owner: &str, term: u64) -> Result<()> {
+    let fence=FENCE.get().ok_or_else(|| anyhow!("Admissão de publicação exige cerca HA nativa."))?;
+    if fence.owner!=owner { return Err(anyhow!("Admissão de outro engine.")); }
+    let mut state=fence.state.lock().map_err(|_| anyhow!("Cerca HA indisponível."))?;
+    if !state.observe(fence.now()) || state.term!=term { return Err(anyhow!("Termo HA ausente, expirado ou alterado; saídas continuam retidas.")); }
+    Ok(())
+}
+
 /// All sink inputs, including SDI, NDI, OMT appsinks and mux/network sinks,
 /// refuse new buffers after expiry even if the command/service loop blocks.
 /// This does not certify external routing or purge packets already in flight.

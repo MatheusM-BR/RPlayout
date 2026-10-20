@@ -1,5 +1,7 @@
 /** Papéis operacionais do playout. */
 export type Role = 'OPERATOR' | 'PROGRAMMER' | 'SUPERVISOR' | 'ADMIN'
+/** Denied is a diagnostic result, never a role assignable to an account. */
+export type AccessRole = Role | 'DENIED'
 
 export type Action =
   | 'TRANSPORT'
@@ -17,20 +19,21 @@ const grants: Record<Role, readonly Action[]> = {
   ADMIN: ['TRANSPORT', 'PLAYLIST_EDIT', 'PLAYLIST_PUBLISH', 'OUTPUT_CONTROL', 'CHANNEL_STOP', 'USER_MANAGE', 'REPORT_EXPORT'],
 }
 
-export function can(role: Role, action: Action): boolean {
-  return grants[role].includes(action)
+export function can(role: AccessRole, action: Action): boolean {
+  return Object.hasOwn(grants, role) && grants[role as Role].includes(action)
 }
 
-export function parseRole(value: unknown): Role {
-  if (value === 'PROGRAMMER' || value === 'SUPERVISOR' || value === 'ADMIN') return value
-  return 'OPERATOR'
+export function parseRole(value: unknown): AccessRole {
+  if (value === 'OPERATOR' || value === 'PROGRAMMER' || value === 'SUPERVISOR' || value === 'ADMIN') return value
+  return 'DENIED'
 }
 
-export function roleLabel(role: Role): string {
+export function roleLabel(role: AccessRole): string {
   return {
     OPERATOR: 'Operador',
     PROGRAMMER: 'Programador',
     SUPERVISOR: 'Supervisor',
     ADMIN: 'Administrador',
+    DENIED: 'Acesso não autorizado',
   }[role]
 }

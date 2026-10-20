@@ -122,6 +122,7 @@ fn fail(reason: String) -> ! {
 }
 
 struct Args {
+    parent_pipe: bool,
     path: String,
     thumbnail: Option<String>,
     /// Medir loudness custa decodificar o áudio inteiro. Vale desligar quando
@@ -140,6 +141,7 @@ struct Args {
     /// quadros saem como `<prefixo>-0.jpg`, `<prefixo>-1.jpg`, e assim por
     /// diante, onde o prefixo é o que veio em `--thumbnail`.
     fita: Option<u32>,
+    only_frame: Option<u32>,
     /// Largura da miniatura em pixels. A régua do in/out quer quadro pequeno,
     /// para encher rápido; a tela de conferência quer quadro grande, para dar
     /// para ver onde cortar.
@@ -149,15 +151,21 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut path = None;
     let mut thumbnail = None;
+    let mut only_frame = None;
     let mut measure = true;
     let mut at = None;
     let mut largura = 320i32;
     let mut fita = None;
+    let mut parent_pipe = false;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
+            "--only-frame" => {
+                index+=1;
+                only_frame=Some(args.get(index).ok_or_else(||anyhow!("--only-frame precisa de um índice"))?.parse::<u32>()?);
+            }
             "--thumbnail" => {
                 index += 1;
                 thumbnail = Some(
@@ -167,6 +175,7 @@ fn parse_args() -> Result<Args> {
                 );
             }
             "--no-loudness" => measure = false,
+            "--parent-pipe" => parent_pipe = true,
             "--at" => {
                 index += 1;
                 at = Some(
@@ -198,12 +207,15 @@ fn parse_args() -> Result<Args> {
         index += 1;
     }
 
+    if only_frame.is_some() && fita.is_none(){return Err(anyhow!("--only-frame requer --fita"));}
     Ok(Args {
+        parent_pipe,
         path: path.ok_or_else(|| anyhow!("falta o caminho do arquivo"))?,
         thumbnail,
         measure,
         at,
         fita: fita.map(|n: u32| n.clamp(1, 64)),
+        only_frame,
         // Largura ímpar quebra a subamostragem de croma do JPEG; e uma largura
         // absurda transformaria a sonda num gerador de imagem enorme.
         largura: inspection_width(largura),
@@ -216,9 +228,20 @@ fn inspection_width(requested: i32) -> i32 {
     requested.clamp(64, 3840) & !1
 }
 
+// Square-pixel JPEGs bounded by UHD in both axes, without baked letterbox or
+// source upscaling. Decoder PAR matters for legacy SD/anamorphic masters.
+fn inspection_raster(width:i32,height:i32,par_num:i32,par_den:i32,requested:i32)->Result<(i32,i32)>{
+    if width<2 || height<2 || par_num<=0 || par_den<=0 {return Err(anyhow!("geometria de inspeção inválida"));}
+    let maximum=inspection_width(requested);
+    let display_width=f64::from(width)*f64::from(par_num)/f64::from(par_den);
+    let scale=(f64::from(maximum)/display_width).min(2160.0/f64::from(height)).min(1.0);
+    let even=|value:f64,limit:i32| ((value/2.0).round() as i32*2).clamp(2,limit);
+    Ok((even(display_width*scale,maximum),even(f64::from(height)*scale,2160)))
+}
+
 #[cfg(test)]
 mod inspection_width_tests {
-    use super::inspection_width;
+    use super::{inspection_width,inspection_raster};
     #[test]
     fn keeps_economical_default_and_allows_explicit_4k() {
         assert_eq!(inspection_width(320), 320);
@@ -231,6 +254,17 @@ mod inspection_width_tests {
         assert_eq!(inspection_width(-1), 64);
         assert_eq!(inspection_width(1921), 1920);
     }
+    #[test]
+    fn inspection_picture_geometry_is_bounded_and_square_pixel(){
+        assert_eq!(inspection_raster(3840,2160,1,1,3840).unwrap(),(3840,2160));
+        assert_eq!(inspection_raster(2160,3840,1,1,3840).unwrap(),(1216,2160));
+        assert_eq!(inspection_raster(640,480,1,1,3840).unwrap(),(640,480));
+        assert_eq!(inspection_raster(360,640,1,1,320).unwrap(),(320,568));
+        assert_eq!(inspection_raster(720,576,16,15,320).unwrap(),(320,240));
+        assert_eq!(inspection_raster(720,576,16,15,1920).unwrap(),(768,576));
+        assert!(inspection_raster(0,1080,1,1,3840).is_err());
+        assert!(inspection_raster(1920,1080,0,1,3840).is_err());
+    }
 }
 
 fn uri_for(path: &str) -> Result<String> {
@@ -241,8 +275,19 @@ fn uri_for(path: &str) -> Result<String> {
 }
 
 fn main() -> Result<()> {
-    gst::init().context("GStreamer não inicializou")?;
     let args = parse_args()?;
+    if args.parent_pipe {
+        // The pipe belongs to the spawning server, not a guessed/reusable PID.
+        // EOF ends only this isolated helper, including a stalled decoder.
+        std::thread::spawn(|| {
+            use std::io::Read;
+            let mut byte = [0u8; 1];
+            while matches!(std::io::stdin().read(&mut byte), Ok(n) if n > 0) {}
+            eprintln!("[probe] servidor encerrou durante a análise");
+            std::process::exit(1);
+        });
+    }
+    gst::init().context("GStreamer não inicializou")?;
 
     if !args.path.contains("://") && !std::path::Path::new(&args.path).is_file() {
         fail("o arquivo não existe ou não é um arquivo".to_string());
@@ -307,6 +352,8 @@ fn main() -> Result<()> {
     let measure = args.measure;
     let largura_thumb = args.largura;
     let thumb_flag = Arc::clone(&thumbnail_done);
+    let captured_pts=Arc::new(AtomicU64::new(u64::MAX));
+    let thumb_pts=Arc::clone(&captured_pts);
     let porteiro_video = Arc::clone(&liberado);
     let counted_video = Arc::clone(&decoded_video);
     let counted_audio = Arc::clone(&decoded_audio);
@@ -326,6 +373,7 @@ fn main() -> Result<()> {
                 &seen_video,
                 &want_thumbnail,
                 &thumb_flag,
+                &thumb_pts,
                 &porteiro_video,
                 largura_thumb,
             ) {
@@ -355,7 +403,8 @@ fn main() -> Result<()> {
         }
     });
 
-    if let Err(error) = pipeline.set_state(gst::State::Playing) {
+    let initial_state=if args.only_frame.is_some(){gst::State::Paused}else{gst::State::Playing};
+    if let Err(error) = pipeline.set_state(initial_state) {
         fail(format!("não consegui abrir: {error}"));
     }
 
@@ -397,12 +446,19 @@ fn main() -> Result<()> {
             .clone()
             .unwrap_or_else(|| "quadro".to_string());
         let mut escritos = 0u32;
+        let mut requested_position=0u64;
 
-        for i in 0..quantos {
+        let first=args.only_frame.unwrap_or(0).min(quantos-1);
+        let last=if args.only_frame.is_some(){first+1}else{quantos};
+        for i in first..last {
             // O quadro sai do meio da fatia, não da borda: a borda de uma
             // fatia é a mesma imagem da vizinha, e a fita sairia com pares
             // repetidos.
-            let alvo_ns = ((i as f64 + 0.5) / quantos as f64 * total as f64) as u64;
+            let frame_ns=video_info.lock().unwrap().as_ref().map(|info|1_000_000_000u64*info.rate_den.max(1) as u64/info.rate_num.max(1) as u64).unwrap_or(40_000_000);
+            let alvo_ns = if args.only_frame.is_some(){
+                ((i as f64 / (quantos-1).max(1) as f64 * total as f64) as u64).min(total.saturating_sub(frame_ns))
+            }else{((i as f64 + 0.5) / quantos as f64 * total as f64) as u64};
+            requested_position=alvo_ns;
 
             liberado.store(false, Ordering::Release);
             thumbnail_done.store(0, Ordering::Release);
@@ -410,7 +466,7 @@ fn main() -> Result<()> {
 
             if pipeline
                 .seek_simple(
-                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                    gst::SeekFlags::FLUSH | if args.only_frame.is_some(){gst::SeekFlags::ACCURATE}else{gst::SeekFlags::KEY_UNIT},
                     gst::ClockTime::from_nseconds(alvo_ns),
                 )
                 .is_err()
@@ -420,18 +476,19 @@ fn main() -> Result<()> {
             }
             let _ = pipeline.state(gst::ClockTime::from_seconds(15));
             liberado.store(true, Ordering::Release);
+            if args.only_frame.is_some(){pipeline.set_state(gst::State::Playing)?;}
 
             // Espera o quadro chegar. Quem escreve é a callback do appsink, e
             // ela avisa pelo contador -- sem isso o próximo salto derrubaria o
             // quadro atual antes de ele virar arquivo.
             let limite = std::time::Instant::now() + std::time::Duration::from_secs(15);
-            while thumbnail_done.load(Ordering::Acquire) == 0 {
+            while thumbnail_done.load(Ordering::Acquire) < 2 {
                 if std::time::Instant::now() > limite {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            if thumbnail_done.load(Ordering::Acquire) > 0 {
+            if thumbnail_done.load(Ordering::Acquire) >= 2 {
                 escritos += 1;
             }
         }
@@ -451,7 +508,14 @@ fn main() -> Result<()> {
             // quadros saíram -- é o que o servidor precisa saber.
             thumbnail: Some(format!("{escritos}")),
         };
-        println!("{}", serde_json::to_string(&probe)?);
+        let mut receipt=serde_json::to_value(&probe)?;
+        if args.only_frame.is_some(){
+            receipt["frameRecipe"]=serde_json::json!("qc-frame-v3");
+            receipt["requestedPositionNs"]=serde_json::json!(requested_position);
+            let pts=captured_pts.load(Ordering::Acquire);
+            receipt["framePtsNs"]=if pts==u64::MAX{serde_json::Value::Null}else{serde_json::json!(pts)};
+        }
+        println!("{}", receipt);
         return Ok(());
     }
 
@@ -517,7 +581,7 @@ fn main() -> Result<()> {
         audio_tracks: std::mem::take(&mut *audio_tracks.lock().unwrap()),
         thumbnail: args
             .thumbnail
-            .filter(|_| thumbnail_done.load(Ordering::Relaxed) > 0),
+            .filter(|_| thumbnail_done.load(Ordering::Relaxed) >= 2),
     };
     println!("{}", serde_json::to_string(&probe)?);
     Ok(())
@@ -559,6 +623,7 @@ fn attach_video(
     // Destino do próximo quadro. Vazio quer dizer "não escreva nada".
     thumbnail: &Arc<Mutex<Option<String>>>,
     done: &Arc<AtomicU64>,
+    captured_pts: &Arc<AtomicU64>,
     // Enquanto `liberado` for falso, o quadro que chega é descartado: com
     // `--at`, o pipeline entrega o primeiro quadro do arquivo antes de o salto
     // acontecer, e capturá-lo daria sempre a mesma miniatura.
@@ -575,23 +640,16 @@ fn attach_video(
     let source_height: i32 = structure.get("height").unwrap_or(0);
 
     let convert = gst::ElementFactory::make("videoconvert").build()?;
-    let scale = gst::ElementFactory::make("videoscale").build()?;
+    let scale = gst::ElementFactory::make("videoscale").property("add-borders",false).build()?;
     let caps = gst::ElementFactory::make("capsfilter").build()?;
-    // Altura calculada da proporção do arquivo. Fixar só a largura deixa o
-    // `videoscale` manter a altura original, e um 16:9 chega ao explorador
-    // esticado -- foi o que aconteceu.
-    let thumb_width = largura;
-    let thumb_height = if source_width > 0 && source_height > 0 {
-        let scaled = (thumb_width as i64 * source_height as i64 / source_width as i64) as i32;
-        (scaled + scaled % 2).max(2)
-    } else {
-        thumb_width * 9 / 16
-    };
+    let par=structure.get::<gst::Fraction>("pixel-aspect-ratio").unwrap_or_else(|_|gst::Fraction::new(1,1));
+    let (thumb_width,thumb_height)=inspection_raster(source_width,source_height,par.numer(),par.denom(),largura)?;
     caps.set_property(
         "caps",
         gst::Caps::builder("video/x-raw")
             .field("width", thumb_width)
             .field("height", thumb_height)
+            .field("pixel-aspect-ratio",gst::Fraction::new(1,1))
             .build(),
     );
     let encoder = gst::ElementFactory::make("jpegenc").build()?;
@@ -626,6 +684,7 @@ fn attach_video(
     // uma sonda sem `--thumbnail` passou a travar sessenta segundos.
     let target = Arc::clone(thumbnail);
     let flag = Arc::clone(done);
+    let pts=Arc::clone(captured_pts);
     let porteiro = Arc::clone(liberado);
     let app_sink = sink
         .clone()
@@ -651,9 +710,11 @@ fn attach_video(
                 {
                     if let Some(buffer) = sample.buffer() {
                         if let Ok(map) = buffer.map_readable() {
-                            if std::fs::write(&destino, map.as_slice()).is_err() {
+                            let temporary=format!("{destino}.part-{}",std::process::id());
+                            if std::fs::write(&temporary,map.as_slice()).and_then(|_|std::fs::rename(&temporary,&destino)).is_err() {
+                                let _=std::fs::remove_file(&temporary);
                                 flag.store(0, Ordering::Relaxed);
-                            }
+                            }else{pts.store(buffer.pts().map(|timestamp|timestamp.nseconds()).unwrap_or(u64::MAX),Ordering::Release);flag.store(2,Ordering::Release);}
                         }
                     }
                 }

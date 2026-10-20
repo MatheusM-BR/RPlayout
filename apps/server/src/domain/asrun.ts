@@ -16,6 +16,8 @@ import type { Db } from '../db/client.js'
 import { asRun } from '../db/schema.js'
 import type { RundownView } from './plan.js'
 import { emitIntegrationEvent } from './integrations.js'
+import type {ExecutionLease} from './execution-ownership.js'
+import {readExecutionOwner,executionAsRunSignature} from '../db/execution-ownership.js'
 
 /** Uma linha do as-run como ela sai para a interface e para o relatório. */
 type Provenance = 'revisionId' | 'mediaHash' | 'startPositionFrames' | 'endPositionFrames' | 'rateNum' | 'rateDen' | 'executionKind' | 'durationEvidence'
@@ -38,6 +40,7 @@ export class AsRun {
   private reconciledAfterStartup = false
   private serial: Promise<void> = Promise.resolve()
   private exitReasons = new Map<string, { reason: string; frames: number }>()
+  private deferredEvents:Array<()=>void>|null=null
 
   noteExit(itemId: string, reason: string, frames: number): void {
     this.exitReasons.set(itemId, { reason, frames: Math.max(0, Math.floor(frames)) })
@@ -47,7 +50,8 @@ export class AsRun {
     private readonly db: Db,
     private readonly channel: Channel,
     private readonly executionKind: 'NATIVE' | 'SIMULATED' | 'UNKNOWN' = 'UNKNOWN',
-  ) {}
+    private readonly lease:ExecutionLease|null=null,
+  ) {if(executionKind==='NATIVE'&&!lease)throw new Error('Registro nativo de as-run exige dono durável de execução.')}
 
   /**
    * Atualiza o log com base no item atualmente em exibição no PGM.
@@ -58,25 +62,48 @@ export class AsRun {
     return this.enqueue(() => this.followSerial(itemId, view, revisionId, positionFrames, newTake))
   }
 
-  private enqueue(action: () => Promise<void>): Promise<void> {
+  /** Serialized synchronous SQL transaction; no awaited native/HTTP work here. */
+  followHeldWithCommit(itemId:string,view:RundownView|null,revisionId:string|null,positionFrames:number,commit:()=>void):Promise<void>{
+    return this.enqueue(()=>{
+      if(this.executionKind!=='NATIVE'||!this.lease)throw new Error('Commit pausado exige as-run nativo e posse.')
+      const open=this.open,reconciled=this.reconciledAfterStartup,reasons=new Map(this.exitReasons),events:Array<()=>void>=[]
+      this.deferredEvents=events
+      try{
+        this.db.transaction(()=>{
+          this.followSerial(itemId,view,revisionId,positionFrames,false)
+          const result:unknown=commit()
+          if(result&&typeof result==='object'&&'then' in result)throw new Error('Commit pausado deve ser síncrono dentro da transação.')
+        },{behavior:'immediate'})
+      }catch(error){this.open=open;this.reconciledAfterStartup=reconciled;this.exitReasons=reasons;throw error}
+      finally{this.deferredEvents=null}
+      for(const event of events)event()
+    })
+  }
+
+  private integration(event:string,payload:Record<string,unknown>):void{
+    const send=()=>{void emitIntegrationEvent(this.db,event,payload,this.channel.id)}
+    if(this.deferredEvents)this.deferredEvents.push(send);else send()
+  }
+
+  private enqueue(action: () => void|Promise<void>): Promise<void> {
     const operation = this.serial.then(action)
     this.serial = operation.catch(() => {})
     return operation
   }
 
-  private async followSerial(itemId: string | null, view: RundownView | null, revisionId: string | null, positionFrames: number, newTake: boolean): Promise<void> {
-    await this.reconcileAfterStartup()
+  private followSerial(itemId: string | null, view: RundownView | null, revisionId: string | null, positionFrames: number, newTake: boolean): void {
+    this.reconcileAfterStartup()
     if (this.open && this.open.itemId === itemId && !newTake) return
 
     if (this.open) {
       const exit = this.exitReasons.get(this.open.itemId)
-      await this.close(this.open, exit?.reason ?? (itemId ? 'NEXT' : 'STOP'), exit?.frames)
+      this.close(this.open, exit?.reason ?? (itemId ? 'NEXT' : 'STOP'), exit?.frames)
       this.exitReasons.delete(this.open.itemId)
       this.open = null
     }
 
     if (!itemId) {
-      void emitIntegrationEvent(this.db, 'asrun.gap', { startedAt: new Date().toISOString() }, this.channel.id)
+      this.integration('asrun.gap', { startedAt: new Date().toISOString() })
       return
     }
 
@@ -85,7 +112,10 @@ export class AsRun {
     const now = framesSinceMidnight(new Date(), this.channel.rate)
 
     const id = randomUUID()
-    await this.db.insert(asRun).values({
+    this.db.transaction(tx=>{
+    if(this.lease)this.lease.assertOwned()
+    else if(readExecutionOwner(this.db.$client,this.channel.id))throw new Error('As-run protegido por posse nativa; outro runtime não pode gravar execução presumida.')
+    tx.insert(asRun).values({
       id,
       channelId: this.channel.id,
       rundownId: view?.rundown.id ?? null,
@@ -108,20 +138,28 @@ export class AsRun {
       plannedFrames: scheduled?.duration ?? null,
       endedBy: null,
       createdAt: new Date().toISOString(),
-    })
-    void emitIntegrationEvent(this.db, 'asrun.started', { itemId, title: entry?.item.title ?? 'item desconhecido', startedAt: new Date().toISOString() }, this.channel.id)
+    }).run()
+    this.lease?.bindAsRun(id)
+    },{behavior:'immediate'})
+    this.integration('asrun.started', { itemId, title: entry?.item.title ?? 'item desconhecido', startedAt: new Date().toISOString() })
     this.open = { id, itemId, startedMs: Date.now(), startPositionFrames: Math.max(0, Math.floor(positionFrames)), rate: { ...this.channel.rate } }
   }
 
-  /** Fecha apenas linhas órfãs de processos anteriores, uma única vez. */
-  private async reconcileAfterStartup(): Promise<void> {
+  /** Only the predecessor whose process/engines were proved dead may close.
+   * Untagged legacy and foreign live writers are not inferred orphaned. */
+  private reconcileAfterStartup(): void {
     if (this.reconciledAfterStartup) return
+    this.db.transaction(()=>{
+      if(this.lease){
+        const owner=this.lease.assertOwned()
+        if(owner.channelId!==this.channel.id)throw new Error('As-run de outro canal.')
+        for(const runId of this.lease.recoverablePredecessorRunIds()){
+          for(const row of this.db.$client.prepare('SELECT asrun_id,signature FROM execution_owner_asrun WHERE run_id=?').all(runId) as {asrun_id:string;signature:string}[])if(row.signature!==executionAsRunSignature(row.asrun_id,runId))throw new Error('Vínculo de predecessor do as-run adulterado; reconciliação recusada.')
+          this.db.$client.prepare("UPDATE as_run SET ended_at=?,ended_by='RESTART' WHERE channel_id=? AND ended_at IS NULL AND id IN (SELECT asrun_id FROM execution_owner_asrun WHERE run_id=?)").run(new Date().toISOString(),this.channel.id,runId)
+        }
+      }else if(readExecutionOwner(this.db.$client,this.channel.id))throw new Error('As-run possui dono nativo. Reconciliação estrangeira recusada; histórico preservado.')
+    },{behavior:'immediate'})
     this.reconciledAfterStartup = true
-    const endedAt = new Date().toISOString()
-    await this.db
-      .update(asRun)
-      .set({ endedAt, endedBy: 'RESTART' })
-      .where(and(eq(asRun.channelId, this.channel.id), isNull(asRun.endedAt)))
   }
 
   /** Fecha a linha aberta, se houver. Chamado ao encerrar o canal. */
@@ -134,11 +172,13 @@ export class AsRun {
     })
   }
 
-  private async close(open: NonNullable<AsRun['open']>, reason: string, endPositionFrames?: number): Promise<void> {
+  private close(open: NonNullable<AsRun['open']>, reason: string, endPositionFrames?: number): void {
     const positionConfirmed = this.executionKind === 'NATIVE' && Number.isSafeInteger(endPositionFrames) && endPositionFrames! >= open.startPositionFrames
     const aired = positionConfirmed ? endPositionFrames! - open.startPositionFrames : msToFrames(Math.max(0, Date.now() - open.startedMs), open.rate)
-    await this.db
-      .update(asRun)
+    this.db.transaction(tx=>{
+    if(this.lease&&!this.lease.ownsAsRun(open.id))throw new Error('As-run não pertence à execução atual.')
+    if(!this.lease&&readExecutionOwner(this.db.$client,this.channel.id))throw new Error('As-run de runtime não nativo não pode encerrar execução protegida.')
+    tx.update(asRun)
       .set({
         endedAt: new Date().toISOString(),
         airedFrames: Math.max(0, aired),
@@ -146,8 +186,9 @@ export class AsRun {
         endedBy: reason,
         endPositionFrames: endPositionFrames ?? null,
       })
-      .where(eq(asRun.id, open.id))
-    void emitIntegrationEvent(this.db, 'asrun.ended', { itemId: open.itemId, endedAt: new Date().toISOString(), reason, airedFrames: Math.max(0, aired) }, this.channel.id)
+      .where(eq(asRun.id, open.id)).run()
+    },{behavior:'immediate'})
+    this.integration('asrun.ended', { itemId: open.itemId, endedAt: new Date().toISOString(), reason, airedFrames: Math.max(0, aired) })
   }
 }
 

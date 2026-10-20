@@ -104,7 +104,9 @@ describe('controle manual autenticado pela página, separado do token de serviç
   })
   it('sessão e permissão são obrigatórias; header de serviço não autoriza a rota da página', async () => {
     const now = new Date().toISOString(), token = 'readonly-session'
-    app.sqlite.prepare('INSERT INTO users VALUES (?,?,?,?,?,?)').run('viewer', 'viewer', 'not-a-login-hash', 'VIEWER', 1, now)
+      // OPERATOR is valid but has no OUTPUT_CONTROL grant; VIEWER is not an
+      // assignable role and now correctly fails authentication with HTTP 401.
+      app.sqlite.prepare('INSERT INTO users VALUES (?,?,?,?,?,?)').run('viewer', 'viewer', 'not-a-login-hash', 'OPERATOR', 1, now)
     app.sqlite.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run(sessionDigest(token), 'viewer', '2099-01-01', now)
     const execute = vi.spyOn(globalStudioAutomationGateway, 'execute'), payload = { requestId: randomUUID(), action: 'PING' }
     expect((await server.inject({ method: 'POST', url: '/api/external/devices/a/control', payload })).statusCode).toBe(401)
@@ -114,4 +116,15 @@ describe('controle manual autenticado pela página, separado do token de serviç
     expect((await server.inject({ method: 'POST', url: `/api/external/commands/${randomUUID()}/acknowledge`, headers: { cookie: `rplayout_session=${token}` }, payload: { note: 'Conferência sem permissão' } })).statusCode).toBe(403)
     expect(execute).not.toHaveBeenCalled()
   })
+    it('papel inválido não autentica nem usa token de serviço para comandar pela página',async()=>{
+      const now=new Date().toISOString(),token='invalid-role-session'
+      app.sqlite.prepare('INSERT INTO users VALUES(?,?,?,?,?,?)').run('invalid','invalid','not-a-login-hash','VIEWER',1,now)
+      app.sqlite.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(sessionDigest(token),'invalid','2099-01-01',now)
+      const execute=vi.spyOn(globalStudioAutomationGateway,'execute'),headers={cookie:`rplayout_session=${token}`,authorization:'Bearer PRIVATE_INTERNAL_SERVICE_TOKEN','x-rplayout-role':'ADMIN'}
+      for(const url of ['/api/external/devices/a/control',`/api/external/commands/${randomUUID()}/acknowledge`]){
+        expect((await server.inject({method:'POST',url,headers,payload:{requestId:randomUUID(),action:'PING',note:'Sem acesso'}})).statusCode).toBe(401)
+      }
+      expect((await server.inject({url:'/api/external/commands',headers})).statusCode).toBe(401)
+      expect(execute).not.toHaveBeenCalled()
+    })
 })

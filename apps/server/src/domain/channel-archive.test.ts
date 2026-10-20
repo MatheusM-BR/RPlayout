@@ -5,7 +5,7 @@ import {createApp,runtimeFor,syncDistribution,type App} from '../app.js'
 import {registerRoutes} from '../routes.js'
 import {channels,rundowns,rundownItems,asRun,operatorDecisions,operationalPlaylistRevisions,guestKeys} from '../db/schema.js'
 import {getChannel,listChannels} from '../db/repo.js'
-import {Checkpoints} from './checkpoints.js'
+import {Checkpoints,type ChannelCheckpoint} from './checkpoints.js'
 import {setChannelArchived} from './channel-archive.js'
 import {publishOperationalPlaylist} from './operational-playlist.js'
 import {sessionDigest} from './access.js'
@@ -31,6 +31,23 @@ beforeEach(async()=>{
 })
 afterEach(async()=>{await server.close();app.close();vi.restoreAllMocks()})
 describe('arquivo de canais conserva execução e desativa operação',()=>{
+  it('conserva checkpoint nativo de STOP sem sobrescrever identidade protegida',()=>{
+    const saved:ChannelCheckpoint={version:1,channelId:'a',rundownId:'rd-a',revisionId,itemId:null,playing:false,realEngine:true,elapsed:0,ownerRunId:'735c0811-ae38-46e3-ad53-7c8c4faf2046',rate:{num:25,den:1}}
+    const payload=JSON.stringify(saved)
+    app.sqlite.prepare('INSERT INTO channel_checkpoints (channel_id,payload,saved_at) VALUES (?,?,?)').run('a',payload,new Date().toISOString())
+    expect(()=>new Checkpoints(app.sqlite).write(saved)).toThrow('Checkpoint protegido')
+    expect(setChannelArchived(app.sqlite,'a',true,'admin').archived).toBe(true)
+    expect(app.sqlite.prepare('SELECT payload FROM channel_checkpoints WHERE channel_id=?').get('a')).toEqual({payload})
+  })
+  it('não transforma checkpoint nativo ainda tocando em STOP por ausência de runtime',()=>{
+    const saved:ChannelCheckpoint={version:1,channelId:'a',rundownId:'rd-a',revisionId,itemId:'item-a',playing:true,realEngine:true,elapsed:123,ownerRunId:'735c0811-ae38-46e3-ad53-7c8c4faf2046'}
+    const payload=JSON.stringify(saved)
+    app.sqlite.prepare('INSERT INTO channel_checkpoints (channel_id,payload,saved_at) VALUES (?,?,?)').run('a',payload,new Date().toISOString())
+    expect(()=>setChannelArchived(app.sqlite,'a',true,'admin')).toThrow('Checkpoint protegido')
+    expect(app.sqlite.prepare('SELECT archived_at FROM channels WHERE id=?').get('a')).toEqual({archived_at:null})
+    expect(app.sqlite.prepare('SELECT payload FROM channel_checkpoints WHERE channel_id=?').get('a')).toEqual({payload})
+    expect(app.db.select().from(operatorDecisions).where(eq(operatorDecisions.kind,'CHANNEL_ARCHIVED')).all()).toHaveLength(0)
+  })
   it('backup restaurado/reaberto conserva migração, arquivo, histórico e STOP',async()=>{
     const directory=await mkdtemp(join(tmpdir(),'RPlayout-archive-backup-'))
     let restored:ReturnType<typeof openDatabase>|undefined

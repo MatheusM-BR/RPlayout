@@ -21,8 +21,20 @@ const [{ openDatabase }, { getChannel }, { ChannelRuntime }, { Checkpoints }, { 
   import('../apps/server/src/db/client.js'), import('../apps/server/src/db/repo.js'), import('../apps/server/src/app.js'),
   import('../apps/server/src/domain/checkpoints.js'), import('../apps/server/src/domain/operational-playlist.js'),
 ])
+const {ExecutionOwnership}=await import('../apps/server/src/domain/execution-ownership.js')
 let database = openDatabase(join(directory, 'recovery.db'))
+let ownership=new ExecutionOwnership(database.db)
 let runtime: InstanceType<typeof ChannelRuntime> | null = null
+const gone=(pid:number)=>{try{process.kill(pid,0);return false}catch(error){return(error as NodeJS.ErrnoException).code==='ESRCH'}}
+async function closeNativeRuntime(){
+  if(!runtime)return
+  const pid=runtime.transport.processId()
+  await runtime.asRun.finish('TEST_RUNTIME_RESTART')
+  runtime.close();ownership.close()
+  const end=performance.now()+10000
+  while(pid&&!gone(pid)&&performance.now()<end)await new Promise(resolve=>setTimeout(resolve,50))
+  assert.ok(!pid||gone(pid),'Own engine must exit before closing its durable owner DB')
+}
 async function waitFor(description: string, predicate: () => boolean, timeout = 15_000) {
   const deadline = performance.now() + timeout
   while (performance.now() < deadline) {
@@ -47,7 +59,8 @@ try {
   await database.db.insert(secondaryEvents).values({id:'secondary-test',channelId:'recovery',itemId:'vt',
     definition:{id:'secondary-test',channelId:'recovery',rundownItemId:'vt',name:'Logo congelado',targetLayer:'STATION_LOGO',type:'GRAPHICS_OVERLAY',triggerMode:'OFFSET_FROM_START',offsetFrames:0,templateId:'',payload:{title:'RECUPERAÇÃO'},enabled:true},createdAt:now,updatedAt:now})
   const revision = await publishOperationalPlaylist(database.db, channel, 'rd', '@process-test')
-  runtime = new ChannelRuntime(channel, database.db, ['null'], null, new Set(), new Map(), null, new Checkpoints(database.sqlite))
+  let lease=ownership.claim('recovery')
+  runtime = new ChannelRuntime(channel, database.db, ['null'], null, new Set(), new Map(), null, new Checkpoints(database.sqlite,lease),null,null,null,null,null,null,lease)
   await runtime.load('rd')
   await waitFor('Engine não ficou pronto', () => runtime!.transport.health().ready)
   await runtime.transport.take('rd', 'vt')
@@ -70,9 +83,10 @@ try {
   assert.equal(saved.revisionId, revision.id)
   assert.equal(saved.executionId,executionId,'Watchdog must keep the same execution identity')
   assert.ok(saved.elapsed > before)
-  runtime.close(); await runtime.asRun.finish('TEST_RUNTIME_RESTART'); database.sqlite.close()
+  await closeNativeRuntime();database.sqlite.close();runtime=null
   database = openDatabase(join(directory, 'recovery.db'))
-  runtime = new ChannelRuntime(channel, database.db, ['null'], null, new Set(), new Map(), null, new Checkpoints(database.sqlite))
+  ownership=new ExecutionOwnership(database.db);lease=ownership.claim('recovery')
+  runtime = new ChannelRuntime(channel, database.db, ['null'], null, new Set(), new Map(), null, new Checkpoints(database.sqlite,lease),null,null,null,null,null,null,lease)
   assert.equal(await runtime.recoverCheckpoint(), true)
   await waitFor('Checkpoint não restaurou PGM', () => runtime!.transport.health().ready && runtime!.transport.state().onAir?.itemId === 'vt')
   assert.ok(Math.floor(runtime.transport.state().onAir!.elapsed) >= saved.elapsed)
@@ -88,7 +102,6 @@ try {
   assert.ok(asRun.every(row => row.revision_id === revision.id))
   console.log(JSON.stringify({ result: 'PASS', evidence: 'NATIVE_ENGINE_FAKESINK_AND_RUNTIME_RESTART', directory, killedPid, beforeFrames: before, watchdogFrames: recovered, checkpointFrames: saved.elapsed, restartedFrames: runtime.transport.state().onAir!.elapsed, revisionId: revision.id, executionId,secondaryDispatches:1,asRun,physicalOutputValidated: false }))
 } finally {
-  runtime?.close()
-  await runtime?.asRun.finish('TEST_END')
+  await closeNativeRuntime()
   database.sqlite.close()
 }

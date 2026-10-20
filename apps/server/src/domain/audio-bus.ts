@@ -1,17 +1,24 @@
 import {eq} from 'drizzle-orm'
-import {resolveAudio,validateAuxiliaryPairs,knownInputAudioChannels,type AudioLevel,type MediaAsset,type RundownItem} from '@rplayout/protocol'
+import {resolveAudio,audioCutIdentity,hasMatchingAudioMeasurement,validateAuxiliaryPairs,knownInputAudioChannels,type Rate,type AudioLevel,type MediaAsset,type RundownItem} from '@rplayout/protocol'
 import type {Db} from '../db/client.js'
 import {channels,mediaAssets,rundowns,rundownItems} from '../db/schema.js'
 import {toAsset,toItem} from '../db/repo.js'
+import {declaredFileTrim} from './execution-trim.js'
 
 export function auxiliaryAudioError(audio:AudioLevel|undefined|null,outputChannels:number,asset:MediaAsset|null,track=0):string|null {
   const input=knownInputAudioChannels(asset,track)
   return validateAuxiliaryPairs(audio?.auxiliaryPairs??[],outputChannels,input)
 }
-export function assertPublishedAudio(outputChannels:number,items:readonly RundownItem[],assets:readonly MediaAsset[]=[]):void {
+export function assertPublishedAudio(outputChannels:number,items:readonly RundownItem[],assets:readonly MediaAsset[]=[],rate?:Rate):void {
   const byId=new Map(assets.map(a=>[a.id,a]))
   for(const item of items){
     const asset=item.mediaId?byId.get(item.mediaId)??null:null
+    const level=item.audio??asset?.defaultAudio
+    if(rate&&level?.mode==='AUTO'&&level.measured?.scope==='TRIM'){
+      if(!asset)throw new Error(`${item.title}: medição de áudio do trecho exige versão congelada da mídia.`)
+      const mounted=declaredFileTrim(item,asset,rate)
+      if(!hasMatchingAudioMeasurement(level,asset.contentHash,item.audioTrack??0,audioCutIdentity(mounted,rate)))throw new Error(`${item.title}: corte não corresponde à medição de áudio. Meça novamente ou use ganho manual antes de publicar/operar.`)
+    }
     const error=auxiliaryAudioError(asset?resolveAudio(item.audio,asset,item.audioTrack??0).value:item.audio,outputChannels,asset,item.audioTrack??0)
     if(error)throw new Error(`${item.title}: ${error} Confira os pares antes de publicar/operar.`)
   }

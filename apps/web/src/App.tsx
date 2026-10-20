@@ -3,8 +3,10 @@ import type { ReactNode } from 'react'
 import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
 import type { AudioLevel, Channel, EditScope, Fit, Trim, ScheduleEventType, TimingFlags } from '@rplayout/protocol'
 import { api } from './api.js'
+import {ScanCommandDialog} from './components/ScanCommandDialog.js'
 import { liveSnapshot } from './domain/live-snapshot.js'
 import { loadSessionOperation } from './domain/session-load.js'
+import {JoinedRead} from './domain/joined-read.js'
 import { clientContext, ContextCommandQueue, SupersededContextError } from './domain/client-context.js'
 import { commitSnapshot } from './domain/snapshot-commit.js'
 import { clock, dur } from './format.js'
@@ -52,14 +54,16 @@ import { BroadcastHeader } from './components/broadcast/BroadcastHeader.js'
 import { DocsView } from './views/DocsView.js'
 import { SettingsView } from './views/SettingsView.js'
 import { SessionAlertsDialog } from './components/broadcast/SessionAlertsDialog.js'
+import {AssetRemovalDialog} from './components/AssetRemovalDialog.js'
 
 type Dialog =
+  | {kind:'asset-removal';assetId:string|null}
   | { kind: 'trim'; view: ItemView }
   | { kind: 'playlists';revision?:number }
   | { kind: 'still'; view: ItemView }
   | { kind: 'audio'; view: ItemView; channel:Channel }
   | { kind: 'add'; assetId?: string; rundownId?: string; onApplied?: (snapshot: Snapshot) => void; revision?:number }
-  | { kind: 'distribution' }
+  | { kind: 'distribution'; initialTab?: 'saude' }
   | { kind: 'alerts' }
   | { kind: 'graphics' }
   | { kind: 'itemGraphics'; view: ItemView;channelId:string }
@@ -109,6 +113,8 @@ export function App() {
   const [live, setLive] = useState<Live | null>(null)
   const [folders, setFolders] = useState<LibraryFolder[]>([])
   const [categorias, setCategorias] = useState<Categoria[]>([])
+  const [libraryLoaded,setLibraryLoaded]=useState(false),[libraryError,setLibraryError]=useState<string|null>(null)
+  const libraryReads=useRef(new JoinedRead<ScanStatus>())
   const [dialog, setDialog] = useState<Dialog>(null)
   const addingItem=useRef(false)
   const [isAddingItem,setIsAddingItem]=useState(false)
@@ -126,6 +132,7 @@ export function App() {
   const [monitors, setMonitors] = useState<MonitorFeeds | null>(null)
   /** Situação da varredura do acervo. */
   const [scan, setScan] = useState<ScanStatus | null>(null)
+  const [scanRequest,setScanRequest]=useState<boolean|null>(null)
   /** Canais existentes e a grade de cada um, para a troca de canal. */
   const [channels, setChannels] = useState<Channel[]>([])
   const [rundownOf, setRundownOf] = useState<Record<string, string>>({})
@@ -162,9 +169,12 @@ export function App() {
   const toastTimer = useRef<number | null>(null)
   const clearSessionOperation = useCallback(() => {
     clientContext.nextSession()
+    libraryReads.current.cancel()
+    setFolders([]);setCategorias([]);setScan(null);setLibraryLoaded(false);setLibraryError(null)
     channelRef.current = null
     setView(null); setExecutionView(null); setLive(null); setMonitors(null)
     setChannels([]); setRundownOf({}); setDialog(null); setMarked(new Set())
+    setScanRequest(null)
     setProblemas([]); vistos.current.clear()
   }, [])
 
@@ -245,7 +255,10 @@ export function App() {
   const absorb = useCallback((snapshot: Snapshot) => {
     commitSnapshot(clientContext,snapshot,channelRef.current,value=>{
       if(value.view){
-        if(channelRef.current!==value.view.channel.id){setMarked(new Set());setDialog(null);setError(null)}
+        if(channelRef.current!==value.view.channel.id){
+          libraryReads.current.cancel();setFolders([]);setCategorias([]);setScan(null);setLibraryLoaded(false);setLibraryError(null)
+          setMarked(new Set());setDialog(null);setError(null)
+        }
         channelRef.current=value.view.channel.id;setView(value.view)
       }
       setExecutionView(executionFromSnapshot(value))
@@ -295,21 +308,26 @@ export function App() {
   )
 
   const refreshLibrary = useCallback(async () => {
-    const [library, status, cats] = await Promise.all([
-      api.library(channelRef.current ?? undefined),
-      api.scanStatus(),
-      api.categories(),
-    ])
-    setFolders(library.folders)
-    setScan(status)
-    setCategorias(cats.categories)
-    return status
+    const ticket=clientContext.capture(),channelId=channelRef.current
+    try{
+      return await libraryReads.current.run(JSON.stringify([ticket.session,ticket.view,channelId]),
+        signal=>Promise.all([api.library(channelId??undefined,signal),api.scanStatus(signal),api.categories(signal)]),
+        ([library,status,cats])=>{
+          if(!clientContext.current(ticket)||channelRef.current!==channelId)throw new SupersededContextError()
+          setFolders(library.folders);setScan(status);setCategorias(cats.categories);setLibraryLoaded(true);setLibraryError(null)
+          return status
+        },'A consulta do acervo demorou demais. Dados anteriores preservados; a grade carregada não foi interrompida.')
+    }catch(cause){
+      if(clientContext.current(ticket)&&channelRef.current===channelId&&!(cause instanceof SupersededContextError))setLibraryError(cause instanceof Error?cause.message:'Acervo não consultado.')
+      throw cause
+    }
   }, [])
 
   useEffect(() => {
     let active = true
+    const controller=new AbortController()
     void loadSessionOperation({
-      service:api, refreshLibrary, active:()=>active,
+      service:api, refreshLibrary, active:()=>active,signal:controller.signal,
       onSession:session=>{
         setSessionRole(session.label)
         setAuthRequired(session.required)
@@ -331,10 +349,11 @@ export function App() {
         setInitializationFailed(true)
         setError(failure instanceof Error ? failure.message : 'Servidor fora do ar.')
       },
+      onLibraryError:failure=>{if(!(failure instanceof SupersededContextError))anotar('SERVIDOR',failure instanceof Error?failure.message:'Acervo não consultado; grade preservada.')},
       onDone:()=>setLoading(false),
     })
-    return () => { active = false }
-  }, [absorb, refreshLibrary, sessionRefresh, clearSessionOperation])
+    return () => { active = false;controller.abort();libraryReads.current.cancel() }
+  }, [absorb, refreshLibrary, sessionRefresh, clearSessionOperation,anotar])
 
   useEffect(() => {
     const ended = () => { clearSessionOperation(); setAuthRequired(true); setAuthenticated(false); setAuthError('A sessão encerrou. Entre novamente para continuar.'); setSessionRefresh(value=>value+1) }
@@ -361,13 +380,7 @@ export function App() {
    * a resposta do disparo.
    */
   const startScan = useCallback(async (measure: boolean) => {
-    try {
-      setScan(await api.scan(measure))
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Não consegui ler a pasta.')
-      return
-    }
-
+    setScanRequest(measure)
   }, [])
 
   // Acompanha também varreduras iniciadas pelo servidor ou por outro operador.
@@ -380,11 +393,11 @@ export function App() {
       try {
         const status = await refreshLibrary()
         if (cancelled) return
-        if (wasRunning && !status.running) say(status.error ??
-          `Acervo lido: ${status.added} novos, ${status.updated} atualizados, ${status.failed} sem abrir.`)
-        wasRunning = status.running
+        const occupied=status.globalBusy??status.running
+        if (wasRunning && !occupied) say('Scanner não está mais ocupado. Confira o resultado do lote; disponibilidade não significa aprovação da mídia.')
+        wasRunning = occupied
       } catch (failure) {
-        if (!cancelled) anotar('SERVIDOR', failure instanceof Error ? failure.message : 'Falha ao atualizar acervo.')
+        if (!cancelled&&!(failure instanceof SupersededContextError)) anotar('SERVIDOR', failure instanceof Error ? failure.message : 'Falha ao atualizar acervo.')
       } finally {
         if (!cancelled) timer = window.setTimeout(() => void poll(), wasRunning ? 1500 : 10_000)
       }
@@ -446,7 +459,7 @@ export function App() {
         | { type: 'library' }
 
       if (payload.type === 'library') {
-        void refreshLibrary().catch((failure: Error) => anotar('SERVIDOR', failure.message))
+        void refreshLibrary().catch((failure: Error) => {if(!(failure instanceof SupersededContextError))anotar('SERVIDOR', failure.message)})
         return
       }
 
@@ -473,7 +486,7 @@ export function App() {
 
   useEffect(() => {
     if (!view?.channel.id || (authRequired && !authenticated)) return
-    void refreshLibrary().catch((failure: Error) => anotar('SERVIDOR', failure.message))
+    void refreshLibrary().catch((failure: Error) => {if(!(failure instanceof SupersededContextError))anotar('SERVIDOR', failure.message)})
   }, [view?.channel.id, authRequired, authenticated, refreshLibrary, anotar])
 
   const rate = view?.channel.rate ?? { num: 30000, den: 1001 }
@@ -865,42 +878,11 @@ export function App() {
   }
 
   const removerDoAcervo = (assetId: string): void => {
-    const asset = assets.find((candidate) => candidate.id === assetId)
-    void guard(async () => {
-      const resultado = await api.removeAsset(assetId)
-      if (resultado.conflito) {
-        // Arquivo em uso não sai calado: a grade que aponta para ele perderia a
-        // referência, e quem decide isso é o operador.
-        const quantos = resultado.items ?? 0
-        if (!window.confirm(`${resultado.conflito}\n\nTirar mesmo assim remove ${quantos} item(ns) da grade.`)) {
-          return
-        }
-        await api.removeAsset(assetId, true)
-      }
-      await refreshLibrary()
-      absorb(await api.rundown(view!.rundown.id))
-      say(`${asset?.title ?? 'Arquivo'} saiu do acervo. O arquivo em disco não foi tocado.`)
-    })
-  }
-
-  const categorizar = (assetId: string, categoryId: string | null): void => {
-    void guard(async () => {
-      await api.patchAsset(assetId, { categoryId })
-      await refreshLibrary()
-      say(categoryId ? `Categoria: ${categoryId}.` : 'Categoria removida.')
-    })
+    setDialog({kind:'asset-removal',assetId})
   }
 
   const limparQuebrados = (): void => {
-    void guard(async () => {
-      const resultado = await api.pruneAssets()
-      await refreshLibrary()
-      if (view) absorb(await api.rundown(view.rundown.id))
-      say(
-        `${resultado.removed} arquivo(s) que não abriram saíram do acervo` +
-          (resultado.removedItems > 0 ? `, e ${resultado.removedItems} item(ns) da grade.` : '.'),
-      )
-    })
+    setDialog({kind:'asset-removal',assetId:null})
   }
 
   const setTrack = (id: string, audioTrack: number): void => {
@@ -1086,8 +1068,14 @@ export function App() {
 
   return (
     <div className="w-screen h-screen bg-surface-base text-on-surface select-none overflow-hidden font-sans">
+      {(!libraryLoaded||libraryError)&&<aside role={libraryError?'alert':'status'} aria-label="Estado da consulta do acervo" className="fixed bottom-3 right-3 z-[60] max-w-md rounded border border-armed-amber bg-surface-panel p-3 text-xs shadow-lg">
+        <p>{libraryError??'Acervo ainda não conferido; isso não é confirmação de acervo vazio.'}</p>
+        <button className="mt-2 rounded border px-2 py-1" onClick={()=>void refreshLibrary().catch(cause=>{if(!(cause instanceof SupersededContextError))anotar('SERVIDOR',cause instanceof Error?cause.message:'Acervo não consultado.')})}>Reconsultar acervo</button>
+      </aside>}
+      {scanRequest!==null&&<div className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center"><ScanCommandDialog measure={scanRequest} onClose={()=>setScanRequest(null)} onRegistered={()=>{}}/></div>}
       {currentWorkspace === 'master' && (
         <MasterControlView
+          libraryLoaded={libraryLoaded}
           channel={view.channel}
           channels={channels}
           view={executionView ?? view}
@@ -1135,12 +1123,12 @@ export function App() {
           onPreviewAsset={(asset: LibraryAsset) => void command('cue', { assetId: asset.id })}
           onPreviewLiveSource={(sourceRef: string, title: string) => void command('cue', { sourceRef, sourceTitle: title })}
           onInsertAsset={inserirItemNaGrade}
-          onOpenConflicts={() => setDialog({ kind: 'distribution' })}
         />
       )}
 
       {currentWorkspace === 'playlist' && (
         <PlaylistScheduleView
+          libraryLoaded={libraryLoaded}
           channel={view.channel}
           channels={channels}
           view={view}
@@ -1205,11 +1193,14 @@ export function App() {
             removerItensEmLote(ids, rundownId, onRemoved,revision)
           }
           onOpenSettings={() => navigateWorkspace('settings')}
+          onRemoveAsset={removerDoAcervo}
+          onPruneAssets={limparQuebrados}
         />
       )}
 
       {currentWorkspace === 'qc' && (
         <QualityControlView
+          libraryLoaded={libraryLoaded}
           isLiveOnAir={Boolean(live?.transport.playing && live?.transport.onAir)}
           channel={view.channel}
           channels={channels}
@@ -1226,14 +1217,16 @@ export function App() {
           monitors={monitors}
           onPreviewLiveSource={(sourceRef: string, title: string) => void command('cue', { sourceRef, sourceTitle: title })}
           signals={live?.transport.liveSources ?? []}
+          transportMode={live?.transport.mode}
           previewTarget={live?.transport.preview}
-          onMediaChanged={() => void refreshLibrary()}
+          onMediaChanged={() => void refreshLibrary().catch(cause=>{if(!(cause instanceof SupersededContextError))anotar('SERVIDOR',cause instanceof Error?cause.message:'Acervo não consultado.')})}
         />
       )}
 
       {currentWorkspace === 'monitor' && (
         <EngineeringDistributionView
           channel={view.channel}
+          onOpenHealth={() => setDialog({ kind: 'distribution', initialTab: 'saude' })}
           channels={channels}
           onNavigate={navigateWorkspace}
           onSelectChannel={trocarCanal}
@@ -1435,6 +1428,7 @@ export function App() {
           onMessage={say}
         />
       )}
+      {dialog?.kind==='asset-removal'&&<AssetRemovalDialog key={dialog.assetId??'@prune'} assetId={dialog.assetId} onCancel={()=>setDialog(null)} onApplied={message=>{say(message);void guard(async()=>{await refreshLibrary()})}}/>}
       {dialog?.kind === 'trim' && (
         <TrimDialog
           view={dialog.view}
@@ -1468,6 +1462,7 @@ export function App() {
       )}
       {dialog?.kind === 'add' && (
         <AddItemDialog
+          channelId={view.channel.id}
           assets={assets}
           initialAssetId={dialog.assetId}
           rate={rate}
@@ -1574,6 +1569,7 @@ export function App() {
       {dialog?.kind === 'graphics' && (
         <GraphicsPanel
           channelId={view.channel.id}
+          key={view.channel.id}
           slateTemplateId={view.channel.slateTemplateId}
           onAir={live?.graphic ?? null}
           onClose={() => setDialog(null)}
@@ -1599,6 +1595,7 @@ export function App() {
       {dialog?.kind === 'distribution' && (
         <Distribution
           channelId={view.channel.id}
+          initialTab={dialog.initialTab}
           onClose={() => {
             if (window.location.hash === '#distribuicao') window.location.hash = ''
             setDialog(null)

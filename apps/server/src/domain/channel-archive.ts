@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { Checkpoints } from './checkpoints.js'
+import { Checkpoints,stoppedCheckpoint } from './checkpoints.js'
 import { installationVault } from './secret-vault.js'
 
 /** Atomic last-active guard; never deletes editorial, operational or as-run
@@ -14,7 +14,11 @@ export function setChannelArchived(sqlite:Database.Database,id:string,archive:bo
     const at=new Date().toISOString(),archivedAt=archive ? at : null
     if (archive) {
       const checkpoints=new Checkpoints(sqlite),saved=checkpoints.read(id)
-      if (saved) checkpoints.write({...saved,playing:false,itemId:null,elapsed:0,contingency:undefined})
+      // The owning runtime already persisted its confirmed STOP. Preserve that
+      // native checkpoint byte-for-byte: this editorial transaction has no
+      // execution lease and must not impersonate its owner. A protected playing
+      // checkpoint remains rejected by Checkpoints.write; empty runtime != STOP.
+      if (saved?.playing) checkpoints.write(stoppedCheckpoint(saved))
     }
     sqlite.prepare('UPDATE channels SET archived_at=? WHERE id=?').run(archivedAt,id)
     sqlite.prepare('INSERT INTO operator_decisions (id,rundown_id,item_id,kind,payload,actor_username,created_at) VALUES (?,?,?,?,?,?,?)')

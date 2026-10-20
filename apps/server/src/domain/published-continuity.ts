@@ -12,6 +12,7 @@ import { boundaryAuthority, boundaryProcessesGone, inspectBoundary, PlaylistBoun
 import { CollaborativeEditError } from './collaborative-edit.js'
 import { EngineTransport } from './engine.js'
 import { assertOperationalCadence } from './operational-cadence.js'
+import {isRecoveryRehearsal} from './recovery-rehearsal.js'
 
 export interface ContinuityPolicy {
   channelId:string;version:number;state:'ENABLED'|'DISABLED'|'SUSPENDED';mode:'PUBLISHED_ONLY';maxLateMinutes:number
@@ -116,7 +117,7 @@ export class PublishedContinuity {
   private owns(policy:ContinuityPolicy){return policy.worker.host===hostname()&&policy.worker.pid===process.pid&&policy.worker.boot===this.boot}
   private worker(runtime:ChannelRuntime){return {host:hostname(),pid:process.pid,boot:this.boot,enginePid:runtime.transport.processId()!}}
   async tick(){
-    if(this.busy||this.closed)return;this.busy=true
+    if(this.busy||this.closed||isRecoveryRehearsal(this.app.db.$client))return;this.busy=true
     try{for(const runtime of this.app.runtimes.values())await this.advance(runtime)}finally{this.busy=false}
   }
   private async advance(runtime:ChannelRuntime){

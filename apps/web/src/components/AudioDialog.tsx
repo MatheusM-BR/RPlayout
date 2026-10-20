@@ -23,6 +23,7 @@ import { ScopePicker } from './ScopePicker.js'
 import {EditScopeReviewPanel,useEditScopeReview} from './EditScopeReviewPanel.js'
 import {api} from '../api.js'
 import {AuxiliaryAudioPairsEditor} from './broadcast/AuxiliaryAudioPairsEditor.js'
+import {validFileLoudness,audioCutIdentity,sameAudioCut} from '@rplayout/protocol'
 
 interface Props {
   view: ItemView
@@ -52,17 +53,20 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
   const [pending,setPending]=useState(false)
   const [operationError,setOperationError]=useState<string|null>(null)
   const [analysis,setAnalysis]=useState<AudioMixAnalysisView|null>(null)
+  const [analysisScope,setAnalysisScope]=useState<'FILE'|'TRIM'>('FILE')
   const [analysisPending,setAnalysisPending]=useState(false)
   const [analysisError,setAnalysisError]=useState<string|null>(null)
   const routeKey=audioRoutingKey(routing),hash=view.asset?.contentHash
-  const contextKey=`${view.item.id}:${hash}:${track}:${routeKey}`
+  let cut:ReturnType<typeof audioCutIdentity>|undefined
+  try{cut=audioCutIdentity(view.trim,channel.rate)}catch{}
+  const contextKey=`${view.item.id}:${hash}:${track}:${routeKey}:${analysisScope}:${analysisScope==='TRIM'?JSON.stringify(cut):''}`
   const contextRef=useRef(contextKey);contextRef.current=contextKey
   const mounted=useRef(true);useEffect(()=>{mounted.current=true;return()=>{mounted.current=false}},[])
-  const matchingAnalysis=analysis&&analysis.contentHash===hash&&analysis.audioTrack===track&&audioRoutingKey(analysis.routing)===routeKey?analysis:null
+  const matchingAnalysis=analysis&&analysis.contentHash===hash&&analysis.audioTrack===track&&audioRoutingKey(analysis.routing)===routeKey&&(analysisScope==='TRIM'?sameAudioCut(analysis.trim,cut):!analysis.trim)?analysis:null
   const startAnalysis=async()=>{
-    if(!hash||analysisPending||pending||validateAudioRouting(routing,inputChannels))return
+    if(!hash||analysisPending||pending||validateAudioRouting(routing,inputChannels)||(analysisScope==='TRIM'&&!cut))return
     const context=contextKey;setAnalysisPending(true);setAnalysisError(null)
-    try{const result=await api.analyzeAudioMix(view.item.id,hash,track,routing,view.editorialRevision);if(mounted.current&&contextRef.current===context)setAnalysis(result.analysis)}
+    try{const result=await api.analyzeAudioMix(view.item.id,hash,track,routing,view.editorialRevision,analysisScope);if(mounted.current&&contextRef.current===context)setAnalysis(result.analysis)}
     catch(error){if(mounted.current&&contextRef.current===context)setAnalysisError(error instanceof Error?error.message:'Não foi possível medir o mix.')}
     finally{if(mounted.current)setAnalysisPending(false)}
   }
@@ -81,9 +85,11 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
     try{await onApply(next,scope,track,scopeReview.review?.token)}catch(error){setOperationError(error instanceof Error?error.message:'Não foi possível gravar o áudio.')}finally{setPending(false)}
   }
 
-  const storedMix=hasMatchingAudioMeasurement({...view.audio,routing},hash,track)?view.audio.measured:null
+  const storedMix=hasMatchingAudioMeasurement({...view.audio,routing},hash,track,cut)?view.audio.measured:null
   const mixMeasurement=matchingAnalysis?.state==='READY'?matchingAnalysis.measurement:storedMix
-  const measured = mixMeasurement ?? (routing.mode==='DEFAULT'&&track===0 ? view.audio.analysisId?null:view.audio.measured??view.asset?.loudnessFile??null : null)
+  const candidate = mixMeasurement ?? (routing.mode==='DEFAULT'&&track===0 ? view.audio.analysisId?null:view.asset?.loudnessFile??view.audio.measured??null : null)
+  const candidateAnalysisId=matchingAnalysis?.state==='READY'?matchingAnalysis.id:view.audio.analysisId
+  const measured=validFileLoudness(candidate,hash)||hasMatchingAudioMeasurement({...view.audio,routing,measured:candidate,analysisId:candidateAnalysisId},hash,track,cut)?candidate:null
   const auto = computeAutoGain(measured, channel.targetLufs, channel.ceilingDbtp)
 
   const next: AudioLevel = {
@@ -138,6 +144,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
         </div>
 
         <div className="p-space-lg flex flex-col gap-space-md overflow-y-auto scrollbar-thin">
+          {measured&&<p role="note" className="text-[11px] text-outline">{measured.scope==='TRIM'?'Medição do trecho selecionado, vinculada à versão, trilha, mix e corte. Alterar o trecho exige nova medição.':'Medição do arquivo inteiro. A projeção com ganho não comprova a loudness do trecho cortado.'} A projeção não comprova o resultado após o limiter; confira o áudio no QC.</p>}
           {/* Telemetria de Loudness (Readouts) */}
           {measured ? (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-space-sm">
@@ -146,7 +153,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
                 <span className="font-headline-md text-headline-md text-on-surface font-bold tabular-nums">
                   {lufs(measured.integratedLufs)}
                 </span>
-                <span className="text-[10px] text-outline block">{mixMeasurement?'MIX ESCOLHIDO · ARQUIVO INTEIRO':'ARQUIVO BRUTO · TRILHA INICIAL'}</span>
+                <span className="text-[10px] text-outline block">{measured.scope==='TRIM'?'MIX ESCOLHIDO · TRECHO SELECIONADO':mixMeasurement?'MIX ESCOLHIDO · ARQUIVO INTEIRO':'ARQUIVO BRUTO · TRILHA INICIAL'}</span>
               </div>
 
               <div className="bg-surface-container-lowest p-space-sm rounded border border-border-subtle font-label-mono text-label-mono">
@@ -345,8 +352,9 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
                 </div>}
                 {routingError&&<div role="alert" className="note warn">{routingError}</div>}
                 {view.asset&&<div className="space-y-1">
-                  <button type="button" onClick={()=>void startAnalysis()} disabled={pending||analysisPending||Boolean(validateAudioRouting(routing,inputChannels))||Boolean(matchingAnalysis&&['PENDING','RUNNING'].includes(matchingAnalysis.state))} className="px-2 py-2 border border-border-subtle rounded bg-surface-panel disabled:opacity-50">{analysisPending?'Solicitando análise…':matchingAnalysis?.state==='RUNNING'?'Medindo mix…':matchingAnalysis?.state==='PENDING'?'Aguardando medição…':'Medir mix escolhido'}</button>
-                  <p className="text-[10px] text-outline">Mede o arquivo inteiro, antes do ganho/limiter, na versão, trilha e canais selecionados. Não aplica áudio, não muda o PGM e não aprova QC.</p>
+                  <button type="button" onClick={()=>void startAnalysis()} disabled={pending||analysisPending||Boolean(validateAudioRouting(routing,inputChannels))||(analysisScope==='TRIM'&&!cut)||Boolean(matchingAnalysis&&['PENDING','RUNNING'].includes(matchingAnalysis.state))} className="px-2 py-2 border border-border-subtle rounded bg-surface-panel disabled:opacity-50">{analysisPending?'Solicitando análise…':matchingAnalysis?.state==='RUNNING'?'Medindo mix…':matchingAnalysis?.state==='PENDING'?'Aguardando medição…':analysisScope==='TRIM'?'Medir trecho selecionado':'Medir mix escolhido'}</button>
+                  <label className="text-[11px] text-outline">Escopo da medição <select aria-label="Escopo da medição" value={analysisScope} onChange={event=>setAnalysisScope(event.target.value as 'FILE'|'TRIM')} disabled={pending||analysisPending} className="bg-surface-panel border border-border-subtle rounded"><option value="FILE">Arquivo inteiro</option><option value="TRIM" disabled={!cut}>Trecho selecionado</option></select></label>
+                  <p className="text-[10px] text-outline">Mede {analysisScope==='TRIM'?'somente o trecho selecionado':'o arquivo inteiro'}, antes do ganho/limiter, na versão, trilha e canais selecionados. Não aplica áudio, não muda o PGM e não aprova QC.</p>
                   {matchingAnalysis?.state==='READY'&&<p role="status">Mix medido. Ganho automático disponível; confirme o escopo antes de aplicar.</p>}
                   {matchingAnalysis?.state==='FAILED'&&<p role="alert">{matchingAnalysis.error}</p>}
                   {analysisError&&<p role="alert">{analysisError}</p>}

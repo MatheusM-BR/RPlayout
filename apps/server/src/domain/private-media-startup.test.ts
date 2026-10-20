@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Channel } from '@rplayout/protocol'
 import { EngineTransport } from './engine.js'
 import { RelaySupervisor } from './relays.js'
-import { mediaProcessEnvironment } from './media-process-environment.js'
+import { engineProcessEnvironment, mediaProcessEnvironment } from './media-process-environment.js'
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
 const secret = 'PRIVATE_PROCESS_CREDENTIAL'
@@ -21,6 +21,24 @@ function processFixture() {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.mocked(spawn).mockReset() })
 
 describe('endereços privados entre servidor e processos de mídia', () => {
+  it.each([undefined, '', '0', 'true', ' 1 ', secret])('mantém software sem opt-in exato: %s', value => {
+    const environment = { RPLAYOUT_HARDWARE_DECODE: value, RPLAYOUT_VAULT_KEY: secret, GST_PLUGIN_PATH: 'plugins' }
+    expect(engineProcessEnvironment(environment)).toEqual({GST_PLUGIN_PATH:'plugins'})
+  })
+  it('encaminha opt-in canônico somente ao engine, sem herdar credenciais', () => {
+    const environment = { rplayout_hardware_decode:'1', RPLAYOUT_CONTROL_TOKEN:secret, RPLAYOUT_ENGINE_OUTPUT:uri }
+    expect(engineProcessEnvironment(environment)).toEqual({RPLAYOUT_HARDWARE_DECODE:'1'})
+    expect(mediaProcessEnvironment(environment)).toEqual({})
+  })
+  it('inicialização real do supervisor passa opt-in ao spawn do engine', () => {
+    vi.stubEnv('RPLAYOUT_HARDWARE_DECODE','1');vi.stubEnv('RPLAYOUT_CONTROL_TOKEN',secret)
+    processFixture()
+    const engine = new EngineTransport(channel, () => null, () => null, { binary:'own-fake-engine', outputs:[uri], preview:null, bitrateKbps:500 })
+    try {
+      expect(vi.mocked(spawn).mock.calls[0]?.[2]?.env).toHaveProperty('RPLAYOUT_HARDWARE_DECODE','1')
+      expect(JSON.stringify(vi.mocked(spawn).mock.calls)).not.toContain(secret)
+    }finally{engine.close()}
+  })
   it('engine recebe saída/preview pelo pipe sem argv/ambiente com credenciais', () => {
     vi.stubEnv('RPLAYOUT_ENGINE_OUTPUT', uri); vi.stubEnv('RPLAYOUT_VAULT_KEY', secret)
     const fixture = processFixture()

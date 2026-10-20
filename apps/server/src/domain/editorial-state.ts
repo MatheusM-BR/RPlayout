@@ -6,6 +6,7 @@ import {EditorialVersions} from '../db/editorial-revisions.js'
 import {configurationRevision} from '../db/channel-configuration.js'
 import {applyQcDecisionsNow} from './qc-workflow.js'
 import {buildView,type RundownView} from './plan.js'
+import type {OnAirState} from '@rplayout/protocol'
 
 /** No awaits inside the read transaction: attach only the version of these
  * actual rows, never a late/current version to stale cached runtime data. */
@@ -30,6 +31,6 @@ export function readEditorialState(db:Db,rundownId:string){
 export function withEditorialRevision(view:RundownView,editorialRevision:number):RundownView{
   return {...view,editorialRevision,items:view.items.map(entry=>({...entry,editorialRevision}))}
 }
-export function editorialView(state:NonNullable<ReturnType<typeof readEditorialState>>,now:number|null=null,onAir:{itemId:string;startedAt:number;elapsed:number}|null=null){
+export function editorialView(state:NonNullable<ReturnType<typeof readEditorialState>>,now:number|null=null,onAir:OnAirState|null=null){
   return withEditorialRevision(buildView({...state.rundown,publicationRequired:state.rundown.publicationRequired||state.requiresPublishedCadence},state.channel,state.items,state.assets,now,onAir),state.editorialRevision)
 }

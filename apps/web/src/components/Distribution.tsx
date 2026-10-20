@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState,useRef } from 'react'
 import { api } from '../api.js'
 import { ServerFileTargetDialog } from './ServerFileTargetDialog.js'
 import {captureConfigurationRevision} from '../domain/channel-configuration.js'
+import {BoundedLatestRead,incidentHistoryWindow} from '../domain/bounded-latest-read.js'
+import {IncidentContextDetails} from './IncidentContextDetails.js'
 import type {
   Distribution as Payload,
   OutputProfile,
@@ -12,6 +14,7 @@ import type {
 
 interface Props {
   channelId: string
+  initialTab?: TabKey
   onClose: () => void
   onMessage: (text: string) => void
 }
@@ -68,18 +71,26 @@ function profileSummary(output: OutputProfile): string {
 
 type TabKey = 'resumo' | 'saidas' | 'destinos' | 'processos' | 'saude' | 'convidados'
 
-export function Distribution({ channelId, onClose, onMessage }: Props) {
-  return <DistributionContent key={channelId} channelId={channelId} onClose={onClose} onMessage={onMessage}/>
+export function Distribution({ channelId, onClose, onMessage, initialTab }: Props) {
+  return <DistributionContent key={channelId} channelId={channelId} onClose={onClose} onMessage={onMessage} initialTab={initialTab}/>
 }
-function DistributionContent({channelId,onClose,onMessage}:Props){
-  const [activeTab, setActiveTab] = useState<TabKey>('resumo')
+function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:Props){
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab)
   const [data, setData] = useState<Payload | null>(null)
   const [processes, setProcesses] = useState<Awaited<ReturnType<typeof api.processes>>['processes']>([])
   const [healthEvents, setHealthEvents] = useState<Awaited<ReturnType<typeof api.healthEvents>>['events']>([])
   const [scheduler, setScheduler] = useState<Awaited<ReturnType<typeof api.schedulerStatus>>['channels'][number] | null>(null)
   const [n1, setN1] = useState<Awaited<ReturnType<typeof api.n1Status>> | null>(null)
   const [timeline, setTimeline] = useState<Awaited<ReturnType<typeof api.timeline>>['items']>([])
-  const [healthFilter, setHealthFilter] = useState<'ALL' | 'WARN' | 'CRITICAL'>('ALL')
+  const [healthFilter, setHealthFilter] = useState<'ALL' | 'INFO' | 'WARN' | 'CRITICAL'>('ALL')
+  const [healthAckFilter,setHealthAckFilter]=useState<'ALL'|'PENDING'|'ACKNOWLEDGED'>('ALL')
+  const [healthNavigation,setHealthNavigation]=useState<Array<{until:string;beforeAt:string;beforeId:string}>>([])
+  const [healthAnchor,setHealthAnchor]=useState<string|null>(null)
+  const [healthPage,setHealthPage]=useState<Awaited<ReturnType<typeof api.healthEvents>>['page']|null>(null)
+  const [healthPending,setHealthPending]=useState<{critical:number;warn:number}|null>(null)
+  const [healthRisk,setHealthRisk]=useState<Awaited<ReturnType<typeof api.healthEvents>>['risk']|null>(null)
+  const [healthLoading,setHealthLoading]=useState(true)
+  const healthWindow=healthNavigation.at(-1)
   const [processKind, setProcessKind] = useState<'ALL' | 'ENGINE' | 'OUTPUT' | 'MEDIAMTX'>('ALL')
   const [processChannel, setProcessChannel] = useState<'ALL' | 'CURRENT'>('CURRENT')
   const [outputs, setOutputs] = useState<OutputProfile[]>([])
@@ -97,10 +108,13 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
   const [srtStreamId, setSrtStreamId] = useState('')
   const [srtPassphrase, setSrtPassphrase] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [acknowledgingHealth,setAcknowledgingHealth]=useState<string|null>(null)
+  const [healthActionError,setHealthActionError]=useState<string|null>(null)
   const [rascunho, setRascunho] = useState<Record<string, {value:string;revision:number|undefined}>>({})
   const [operation,setOperation]=useState<ConfigurationOperation|null>(null)
   const [outputRevision,setOutputRevision]=useState<number|undefined>()
   const draftRevision=useRef<number|undefined>()
+  const reads=useRef(new BoundedLatestRead(10000))
   const [busy,setBusy]=useState(false),busyRef=useRef(false),mounted=useRef(true),sequence=useRef(0)
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sequence.current++}},[])
 
@@ -115,17 +129,19 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
     })
   }, [outKind])
 
-  const refresh = useCallback(async (reopen=false) => {
+  const refresh = useCallback(async (reopen=false,replace=true) => {
+    const read=reads.current.start(replace);if(!read)return
     const generation=++sequence.current
+    setHealthLoading(true)
     try {
       const [payload, profiles, processReport, healthReport, schedulerReport, n1Report, timelineReport] = await Promise.all([
-        api.distribution(),
-        api.outputs(channelId),
-        api.processes(),
-        api.healthEvents(channelId),
-        api.schedulerStatus(),
-        api.n1Status(),
-        api.timeline(channelId),
+        api.distribution(read.signal),
+        api.outputs(channelId,read.signal),
+        api.processes(read.signal),
+        api.healthEvents(channelId,{severity:healthFilter,acknowledgement:healthAckFilter,...incidentHistoryWindow(healthAnchor,healthWindow)},read.signal),
+        api.schedulerStatus(read.signal),
+        api.n1Status(read.signal),
+        api.timeline(channelId,read.signal),
       ])
       if(!mounted.current || generation!==sequence.current)return
       const captured=captureConfigurationRevision(channelId,draftRevision.current,profiles.configurationRevision,reopen)
@@ -135,21 +151,27 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
       if(reopen){setRascunho({});setOutName('');setOutTarget('')}
       setProcesses(processReport.processes)
       setHealthEvents(healthReport.events)
+      setHealthPage(healthReport.page);setHealthPending(healthReport.pending);setHealthRisk(healthReport.risk)
       setScheduler(schedulerReport.channels.find((entry) => entry.channelId === channelId) ?? null)
       setN1(n1Report)
       setTimeline(timelineReport.items)
       setError(null)
     } catch (failure) {
-      if(mounted.current && generation===sequence.current)setError(failure instanceof Error ? failure.message : 'Falha ao ler a distribuição.')
+      if(mounted.current && generation===sequence.current&&read.isCurrent())setError(read.timedOut()?'A consulta excedeu 10 segundos. Tente atualizar novamente.':failure instanceof Error ? failure.message : 'Falha ao ler a distribuição.')
+    } finally {
+      read.finish()
+      if(mounted.current && generation===sequence.current)setHealthLoading(false)
     }
-  }, [channelId])
+  }, [channelId,healthFilter,healthAckFilter,healthWindow,healthAnchor])
 
   useEffect(() => {
     let active = true
+    let polling = false
     let timer = 0
     const poll = async (): Promise<void> => {
-      if (!active) return
-      if (document.visibilityState === 'visible') await refresh()
+      if (!active || polling) return
+      polling=true
+      try{if (document.visibilityState === 'visible') await refresh(false,false)}finally{polling=false}
       if (!active) return
       timer = window.setTimeout(() => void poll(), document.visibilityState === 'visible' ? 3000 : 15000)
     }
@@ -162,6 +184,7 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
     document.addEventListener('visibilitychange', resume)
     return () => {
       active = false
+      sequence.current++;reads.current.cancel()
       window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', resume)
     }
@@ -211,13 +234,14 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
   }
 
   const channel = data?.channels.find((entry) => entry.channelId === channelId)
-  const criticalPending = healthEvents.filter((event) => event.severity === 'CRITICAL' && !event.acknowledgedAt).length
-  const warnPending = healthEvents.filter((event) => event.severity === 'WARN' && !event.acknowledgedAt).length
+  const criticalPending = healthPending?.critical ?? null
+  const warnPending = healthPending?.warn ?? null
   const visibleProcesses = processes.filter((process) =>
     (processKind === 'ALL' || process.kind === processKind) &&
     (processChannel === 'ALL' || process.channelId === channelId || (process.kind === 'MEDIAMTX' && processChannel === 'CURRENT')),
   )
-  const visibleHealthEvents = healthEvents.filter((event) => healthFilter === 'ALL' || event.severity === healthFilter)
+  const visibleHealthEvents = healthEvents
+  const resetHealthPage=()=>{setHealthEvents([]);setHealthPage(null);setHealthNavigation([]);setHealthAnchor(null);setHealthLoading(true)}
 
   const tipoReal = (output: OutputProfile): string => {
     const alvo = output.resolvedTarget ?? ''
@@ -303,6 +327,10 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
         </div>}
 
         {/* NAVEGAÇÃO DE ABAS */}
+        {healthActionError && <div role="alert" className="shrink-0 px-6 py-2.5 bg-red-500/10 border-b border-red-500/30 text-red-400 text-xs flex items-center justify-between gap-3">
+          <span>Reconhecimento não gravado: {healthActionError} O incidente continua pendente; confira antes de tentar novamente.</span>
+          <button type="button" onClick={()=>setHealthActionError(null)}>FECHAR AVISO</button>
+        </div>}
         <div className="px-6 pt-3 pb-0 bg-surface-base border-b border-border-subtle/70 flex items-center gap-2 shrink-0 overflow-x-auto broadcast-scroll">
           <button
             onClick={() => setActiveTab('resumo')}
@@ -368,11 +396,11 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
           >
             <span className="material-symbols-outlined text-[16px]">vital_signs</span>
             Saúde &amp; Telemetria
-            {criticalPending > 0 ? (
+            {criticalPending !== null && criticalPending > 0 ? (
               <span className="ml-1 px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 font-label-mono text-[9px] font-bold">
                 {criticalPending}
               </span>
-            ) : warnPending > 0 ? (
+            ) : warnPending !== null && warnPending > 0 ? (
               <span className="ml-1 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-label-mono text-[9px] font-bold">
                 {warnPending}
               </span>
@@ -1164,26 +1192,36 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
                   </span>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 font-label-mono text-xs font-bold border border-red-500/30">
-                      Críticos: {criticalPending}
+                      Críticos sem reconhecimento: {criticalPending??'N/D'}
                     </span>
                     <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-label-mono text-xs font-bold border border-amber-500/30">
-                      Atenção: {warnPending}
+                      Atenção sem reconhecimento: {warnPending??'N/D'}
                     </span>
                   </div>
                 </div>
               </div>
 
+              <section aria-label="Incidentes nativos sem recuperação medida" className="p-3 rounded border border-armed-amber/40 text-xs">
+                <h3 className="font-semibold">INCIDENTES NATIVOS QUE AINDA EXIGEM CONFERÊNCIA</h3>
+                <p>Sem recuperação ou fim de observação registrado: {healthRisk?.observedUnresolved??'N/D'} · Observação encerrada sem recuperação: {healthRisk?.observationEndedUnresolved??'N/D'} · Sem contexto histórico: {healthRisk?.withoutContext??'N/D'}</p>
+                <p className="text-outline mt-1">Abrange PGM, entradas e saídas de todo o canal, mesmo reconhecidos. Histórico não confirma defeito ou sinal saudável agora; confira a sonda e o destino físico.</p>
+              </section>
               {/* Barra de Ações & Filtro */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
                 <div className="flex items-center gap-2">
                   <select
+                    aria-label="Severidade dos incidentes"
                     value={healthFilter}
-                    onChange={(event) => setHealthFilter(event.target.value as typeof healthFilter)}
+                    onChange={(event) => {resetHealthPage();setHealthFilter(event.target.value as typeof healthFilter)}}
                     className="bg-surface-panel border border-border-subtle text-on-surface text-xs font-label-mono px-3 py-1.5 rounded-lg focus:outline-none"
                   >
                     <option value="ALL">Todos os níveis de severidade</option>
                     <option value="CRITICAL">Somente Críticos</option>
                     <option value="WARN">Somente Atenção</option>
+                    <option value="INFO">Somente Informativos</option>
+                  </select>
+                  <select aria-label="Reconhecimento dos incidentes" value={healthAckFilter} onChange={event=>{resetHealthPage();setHealthAckFilter(event.target.value as typeof healthAckFilter)}} className="bg-surface-panel border border-border-subtle text-xs p-1.5 rounded">
+                    <option value="ALL">Todos os reconhecimentos</option><option value="PENDING">Sem reconhecimento</option><option value="ACKNOWLEDGED">Reconhecidos</option>
                   </select>
                 </div>
 
@@ -1193,8 +1231,17 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
                   download
                 >
                   <span className="material-symbols-outlined text-[16px]">download</span>
-                  BAIXAR CSV DE TELEMETRIA
+                  BAIXAR CSV (ATÉ 10.000 RECENTES)
                 </a>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 text-xs" aria-label="Navegação dos incidentes">
+                <button type="button" disabled={!healthAnchor||healthLoading} onClick={resetHealthPage}>MAIS RECENTES</button>
+                <button type="button" disabled={!healthNavigation.length||healthLoading} onClick={()=>{setHealthEvents([]);setHealthPage(null);setHealthLoading(true);setHealthNavigation(value=>value.slice(0,-1))}}>PÁGINA ANTERIOR</button>
+                <span>Página {healthNavigation.length+1} · {healthPage?`${healthPage.totalMatching} eventos na janela`:'consulta pendente'}</span>
+                <button type="button" disabled={healthLoading||!healthPage?.nextBefore} onClick={()=>{if(healthPage?.nextBefore){const {occurredAt,id}=healthPage.nextBefore;setHealthAnchor(healthPage.until);setHealthEvents([]);setHealthLoading(true);setHealthNavigation(value=>[...value,{until:healthPage.until,beforeAt:occurredAt,beforeId:id}]);setHealthPage(null)}}}>REGISTROS ANTERIORES</button>
+                <button type="button" disabled={healthLoading} onClick={()=>void refresh()}>{healthLoading?'CONSULTANDO…':'ATUALIZAR PÁGINA'}</button>
+                <p className="w-full text-outline">Mais recentes primeiro. Contagens de pendentes abrangem todo o canal, não apenas esta página. Reconhecimento não confirma recuperação.{healthAnchor?' Janela de datas fixa até MAIS RECENTES; reconhecimento e retenção refletem o estado atual.':''}{error?' Consulta falhou; registros e contagens anteriores podem estar desatualizados.':''}</p>
               </div>
 
               {/* Tabela de Eventos */}
@@ -1210,7 +1257,7 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleHealthEvents.slice(0, 30).map((event) => (
+                    {visibleHealthEvents.map((event) => (
                       <tr key={event.id} className="border-b border-border-subtle/50 hover:bg-surface-panel/60 transition-colors">
                         <td className="py-2.5 px-3 text-outline">
                           {event.occurredAt.replace('T', ' ').slice(0, 19)}
@@ -1229,21 +1276,26 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
                             {event.severity}
                           </span>
                         </td>
-                        <td className="py-2.5 px-3 text-outline">{event.state}</td>
+                        <td className="py-2.5 px-3 text-outline">{event.state}
+                          {event.resolvedAt&&<span className="block text-primary">RECUPERADO POR MEDIÇÃO</span>}
+                          {!event.resolvedAt&&event.observationEndedAt&&<span className="block text-armed-amber">OBSERVAÇÃO ENCERRADA · NÃO RESOLVIDO</span>}
+                        </td>
                         <td className="py-2.5 px-3 text-on-surface">
                           <div className="flex items-center justify-between gap-3">
-                            <span>{event.message ?? '—'}</span>
+                            <div><span>{event.message ?? '—'}</span><IncidentContextDetails context={event.context}/></div>
                             {event.acknowledgedAt ? (
                               <span className="px-2 py-0.5 rounded bg-surface-base text-outline text-[10px] font-bold">
-                                RECONHECIDO
+                                RECONHECIDO · NÃO CONFIRMA RECUPERAÇÃO
                               </span>
                             ) : (
                               <button
                                 type="button"
                                 className="px-2.5 py-1 rounded bg-primary/20 hover:bg-primary/30 text-primary text-[10px] font-label-caps font-bold cursor-pointer transition-colors shrink-0"
-                                onClick={() => void api.acknowledgeHealth(event.id).then(()=>refresh())}
+                                disabled={acknowledgingHealth!==null}
+                                title="Registra sua conferência; não confirma que o sinal foi recuperado."
+                                onClick={() => {setHealthActionError(null);setAcknowledgingHealth(event.id);void api.acknowledgeHealth(event.id).then(()=>refresh()).catch(failure=>{if(mounted.current)setHealthActionError(failure instanceof Error?failure.message:'Não foi possível reconhecer o alerta.')}).finally(()=>{if(mounted.current)setAcknowledgingHealth(null)})}}
                               >
-                                RECONHECER
+                                {acknowledgingHealth===event.id?'REGISTRANDO…':'RECONHECER'}
                               </button>
                             )}
                           </div>
@@ -1253,7 +1305,7 @@ function DistributionContent({channelId,onClose,onMessage}:Props){
                     {visibleHealthEvents.length === 0 && (
                       <tr>
                         <td colSpan={5} className="py-6 text-center text-outline">
-                          Nenhum evento registrado para os filtros selecionados.
+                          {healthLoading?'Consultando incidentes…':error?'Não foi possível conferir os incidentes.':healthPage?'Nenhum evento registrado para os filtros selecionados.':'Incidentes ainda não consultados.'}
                         </td>
                       </tr>
                     )}

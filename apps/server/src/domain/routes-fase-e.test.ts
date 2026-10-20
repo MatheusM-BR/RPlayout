@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { eq } from 'drizzle-orm'
 import { createApp, type App } from '../app.js'
@@ -13,6 +13,10 @@ import {
   itemGraphics,
 } from '../db/schema.js'
 import type { Channel } from '@rplayout/protocol'
+
+// Editorial/simulator contracts require an explicit simulator fixture, not an
+// unstarted MediaMTX found on the developer's machine. Expectations stay strict.
+vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',RELAY_BINARY:'',DEVICES_BINARY:''}))
 
 describe('Fase E — Timeline Visual Multicamada e Operação Distribuída', () => {
   let app: App

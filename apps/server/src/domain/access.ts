@@ -1,7 +1,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { AUTH_USER, AUTH_PASSWORD, DEFAULT_ROLE } from '../config.js'
-import { parseRole, type Role } from './permissions.js'
+import { parseRole, type Role, type AccessRole } from './permissions.js'
+export {trustedHttpOrigin as trustedOrigin} from './http-origin-policy.js'
 
 export interface AccessRequest { headers: Record<string, string | string[] | undefined>; ip?: string }
 export const normalizedIp = (ip: string) => ip.startsWith('::ffff:') ? ip.slice(7) : ip
@@ -20,11 +21,6 @@ export function secretEquals(received: string, expected: string): boolean {
   const left = Buffer.from(received), right = Buffer.from(expected)
   return left.length === right.length && timingSafeEqual(left, right)
 }
-export function trustedOrigin(origin: string | undefined, host: string | undefined, extras: readonly string[] = []): boolean {
-  if (!origin) return true // CLI/service requests still need authentication.
-  if (extras.includes(origin)) return true
-  try { const parsed = new URL(origin); return ['http:', 'https:'].includes(parsed.protocol) && parsed.host === host && parsed.origin === origin } catch { return false }
-}
 
 /** Sessions are read on every command, so disabling/revoking takes effect now. */
 export class AccessControl {
@@ -37,13 +33,17 @@ export class AccessControl {
     const token = sessionToken(request)
     if (!token || token.length > 256) return null
     const row = this.sqlite.prepare(`SELECT u.id, u.username, u.role, s.expires_at AS expiresAt FROM sessions s
-      JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires_at>? AND u.enabled=1`)
-      .get(sessionDigest(token), new Date().toISOString()) as { id: string; username: string; role: string; expiresAt: string } | undefined
+      JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.enabled=1`)
+      .get(sessionDigest(token)) as { id: string; username: string; role: string; expiresAt: string } | undefined
     if (!row) return null
+    const expiry=Date.parse(row.expiresAt)
+    if(!Number.isFinite(expiry)||expiry<=Date.now())return null
+    const role = parseRole(row.role)
+    if (role === 'DENIED') return null
     try {
       const policy = this.policy(row.id)
       if (policy.stationIps !== null && !policy.stationIps.includes(normalizedIp(request.ip ?? ''))) return null
-      return { ...row, role: parseRole(row.role), ...policy }
+      return { ...row, role, ...policy }
     } catch { return null }
   }
   policy(userId: string): { channelIds: string[] | null; stationIps: string[] | null } {
@@ -54,11 +54,12 @@ export class AccessControl {
     const identity = this.identity(request)
     return identity ? identity.channelIds === null || identity.channelIds.includes(channelId) : !this.required()
   }
-  role(request: AccessRequest): Role {
+  role(request: AccessRequest): AccessRole {
     const identity = this.identity(request)
     if (identity) return identity.role
-    if (this.required()) return 'OPERATOR'
+    if (this.required()) return 'DENIED'
     const base = parseRole(DEFAULT_ROLE), requested = parseRole(request.headers['x-rplayout-role'] ?? base)
+    if (base === 'DENIED' || requested === 'DENIED') return 'DENIED'
     const order: Role[] = ['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']
     // A caller can voluntarily restrict its local role, never raise it.
     return order.indexOf(requested) < order.indexOf(base) ? requested : base

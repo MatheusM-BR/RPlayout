@@ -20,6 +20,16 @@ beforeEach(()=>{
 })
 afterEach(()=>value.sqlite.close())
 describe('contrato editorial/operacional dos auxiliares',()=>{
+  it('publicação e reexecução recusam TRIM AUTO cujo corte diverge do medido',async()=>{
+    const routing={mode:'STEREO_1_2' as const},level={mode:'AUTO' as const,gainDb:0,analysisId:'job',routing,measured:{scope:'TRIM' as const,integratedLufs:-28,lra:2,truePeakDbtp:-6,measuredAt:new Date().toISOString(),input:{contentHash:'a'.repeat(64),audioTrack:0,routing,trim:{inNs:0,outNs:10e9}}}}
+    value.db.update(rundownItems).set({audio:level}).where(eq(rundownItems.id,'eight')).run()
+    const channel=(await getChannel(value.db,'eight'))!,row=await publishOperationalPlaylist(value.db,channel,'eight','QA'),payload=readOperationalPayload(row.payload)
+    expect(()=>assertOperationalCadence(value.db,channel,payload)).not.toThrow()
+    const changed={...payload,items:payload.items.map(item=>({...item,durationOverride:200}))}
+    expect(()=>assertOperationalCadence(value.db,channel,changed)).toThrow('medição de áudio')
+    value.db.update(rundownItems).set({durationOverride:200}).where(eq(rundownItems.id,'eight')).run()
+    expect(()=>inspectOperationalPlaylist(value.db,'eight')).toThrow('medição de áudio')
+  })
   it('escopo amplo e padrão compartilhado rejeitam canal estéreo sem escrita parcial',async()=>{
     const before=value.db.select().from(rundownItems).all()
     for(const scope of ['ALL_RUNDOWNS','ASSET_DEFAULT'] as const)await expect(applyAudio(value.db,'eight',audio,scope,undefined,0)).rejects.toThrow('2 canais')

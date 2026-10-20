@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import {thirdPartyNotices} from './build/third-party-notices.js'
 
 /**
  * De onde saiu esta build.
@@ -67,7 +68,7 @@ function carimboEmArquivo(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), carimboEmArquivo()],
+  plugins: [react(), carimboEmArquivo(), thirdPartyNotices()],
   define: {
     __BUILD_COMMIT__: JSON.stringify(carimbo()),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),

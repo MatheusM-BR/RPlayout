@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type NextPlaylistReview, type NextPlaylistStatus } from '../../api.js'
 import { PublishedContinuityPanel } from './PublishedContinuityPanel.js'
+import {ReviewedOperationConfirm} from './ReviewedOperationConfirm.js'
 
 const labels={QUEUED:'Enfileirada para o fim da grade',PREPARING:'Preparando a passagem',SWITCHING:'Aguardando confirmação do PGM',CONFIRMED:'Passagem confirmada no engine',FAILED:'Passagem recusada — confira o PGM',CANCELLED:'Passagem cancelada',UNCERTAIN:'Resultado incerto — nenhum TAKE será repetido'}
 export function NextPlaylistPanel({channelId,defaultOpen=false}:{channelId:string;defaultOpen?:boolean}) {
@@ -25,8 +26,8 @@ export function NextPlaylistPanel({channelId,defaultOpen=false}:{channelId:strin
   const execute=async(action:'REVIEW'|'QUEUE'|'CANCEL'|'RECONCILE')=>{
     if(busy.current)return
     const origin=channelId,captured=review,run=status?.current
-    if(action==='QUEUE' && (!captured || !window.confirm(`Autorizar a passagem de “${captured.sourceName}” para “${captured.targetName}” ao terminar a grade? Só esta revisão será usada; o primeiro vídeo precisa ser confirmado no PGM. Não altera o CUE ou o PGM agora.`)))return
-    if(action==='RECONCILE' && !window.confirm('Confirmar que o canal está parado, o CUE está limpo e os processos anteriores estão encerrados? O pedido será fechado sem repetir TAKE.'))return
+    if(action==='QUEUE'&&!matching)return
+    if(action==='RECONCILE'&&(!run||!status?.canReconcile))return
     busy.current=true;setPending(true);setFailure(null)
     try {
       if(action==='REVIEW') {
@@ -55,12 +56,16 @@ export function NextPlaylistPanel({channelId,defaultOpen=false}:{channelId:strin
       </label>
       <div className="flex flex-wrap gap-2">
         <button type="button" className="rounded border border-border-subtle p-2 disabled:opacity-40" disabled={pending||!revisionId||Boolean(active)||!status?.canConfigure} onClick={()=>void execute('REVIEW')}>CONFERIR PASSAGEM</button>
-        <button type="button" className="rounded border border-status-ok p-2 text-status-ok disabled:opacity-40" disabled={pending||!matching||Boolean(active)||!status?.nativeEngine||!status.canConfigure} onClick={()=>void execute('QUEUE')}>ENFILEIRAR AO FIM DA GRADE</button>
         <button type="button" className="rounded border border-armed-amber p-2 disabled:opacity-40" disabled={pending||!status?.canConfigure||!status.current||!['QUEUED','PREPARING','FAILED'].includes(status.current.state)} onClick={()=>void execute('CANCEL')}>CANCELAR PASSAGEM</button>
-        {status?.current&&['PREPARING','SWITCHING','UNCERTAIN'].includes(status.current.state)&&<button type="button" className="rounded border border-armed-amber p-2 disabled:opacity-40" disabled={pending||!status.canReconcile} onClick={()=>void execute('RECONCILE')}>RECONHECER INCERTEZA COM CANAL PARADO</button>}
       </div>
       {review&&<p>Conferido: {review.sourceName} → {review.targetName} ({review.targetDate}); primeiro vídeo: {review.firstItemTitle}. Não entra antes de {new Date(review.notBeforeMs).toLocaleString('pt-BR')}.</p>}
       {review&&!matching&&<p className="text-armed-amber">A seleção/origem mudou. Confira novamente; a conferência anterior não será reaproveitada.</p>}
+      <ReviewedOperationConfirm reviewKey={matching&&review?`${channelId}:${review.requestId}:${review.token}`:null} label="ENFILEIRAR AO FIM DA GRADE"
+        confirmation={`Autorizo a passagem de “${review?.sourceName??''}” para “${review?.targetName??''}” ao terminar a grade, somente na revisão conferida. O primeiro vídeo precisa ser confirmado no PGM. Não altera CUE/PGM agora.`}
+        disabled={pending||!matching||Boolean(active)||!status?.nativeEngine||!status.canConfigure} onConfirm={()=>execute('QUEUE')}/>
+      {status?.current&&['PREPARING','SWITCHING','UNCERTAIN'].includes(status.current.state)&&<ReviewedOperationConfirm reviewKey={`${channelId}:${status.current.id}:${status.current.state}`} label="RECONHECER INCERTEZA COM CANAL PARADO"
+        confirmation="Verifiquei que o canal está parado, o CUE está limpo e os processos anteriores estão encerrados. Reconhecer não encerra processos nem repete TAKE."
+        disabled={pending||!status.canReconcile} onConfirm={()=>execute('RECONCILE')}/>}
       {status&&!status.nativeEngine&&<p className="text-armed-amber">Canal simulado: consulta disponível, mas passagem automática real não pode ser autorizada.</p>}
       {status?.current&&<p>{labels[status.current.state]} · {status.current.plan.targetName}{status.current.message?` · ${status.current.message}`:''}</p>}
       {failure&&<p role="alert" className="text-armed-amber">{failure}</p>}

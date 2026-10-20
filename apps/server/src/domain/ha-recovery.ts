@@ -1,9 +1,10 @@
-import type Database from 'better-sqlite3'
+import Database from 'better-sqlite3'
 import {mkdir,mkdtemp,lstat,open} from 'node:fs/promises'
-import {join} from 'node:path'
+import {join,resolve,dirname,sep} from 'node:path'
 import {hostname} from 'node:os'
 import {randomUUID} from 'node:crypto'
 import {z} from 'zod'
+import {renderedBusPairsSchema} from './rendered-bus-policy-schema.js'
 import {openDatabase} from '../db/client.js'
 import {channels,rundowns,operationalPlaylistRevisions,mediaAssets,qcDecisions} from '../db/schema.js'
 import {installationVault} from './secret-vault.js'
@@ -13,8 +14,14 @@ import type {HaSnapshot} from './ha-replication.js'
 import {readOperationalPayload} from './operational-playlist.js'
 import {qcApproved,type MediaAsset,type QcStatus} from '@rplayout/protocol'
 import {assessLocalProbe,localFileStamp,probeRuntimeHash,runLocalProbe,type LocalProbeRunner} from './ha-local-probe.js'
+import type {HaBindings} from './ha-bindings.js'
+import {materializeHaPayload,type LocalMountCheck} from './ha-local-payload.js'
+import {stoppedHaCheckpoint,haResumeIntent} from './ha-recovery-cursor.js'
+import {readHaPromotionCandidate} from './ha-promotion-candidate.js'
+import {assertSchemaCompatibility} from '../db/schema-compatibility.js'
+import {existsSync} from 'node:fs'
 
-export const haRecoveryRequest=z.object({requestId:z.string().uuid(),sequence:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),channelId:z.string().min(1).max(128)}).strict()
+export const haRecoveryRequest=z.object({requestId:z.string().uuid(),sequence:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),channelId:z.string().min(1).max(128),bindingPlanId:z.string().uuid().optional()}).strict()
 export type HaRecoveryRequest=z.infer<typeof haRecoveryRequest>
 export class HaRecoveryError extends Error {}
 export interface HaRecoveryReport {
@@ -23,10 +30,13 @@ export interface HaRecoveryReport {
   automaticTake:false;promotionReady:false;localProbeRequired:boolean;reason:string
   localValidation?:{state:'PASSED'|'FAILED';runtimeHash:string;checkedAt:string;required:number;decoded:number;technicalBlocked:number}
   reconciled?:{at:string;actor:string|null}
+  bindingPlanId?:string;snapshotSequence?:number
+  localMounts?:{checked:number;blocked:number;livePending:number;selectedMixPending:number;externalAutomationBlocked:number;graphicPending:number;issues:Array<LocalMountCheck>;issuesTruncated:boolean}
 }
+export interface HaPreparationContext {plan:ReturnType<HaBindings['executionBindings']>;snapshot:HaSnapshot;sequence:number;assertCurrent:()=>void}
 type Ledger={request_id:string;intent:string;report:string;workspace:string|null;owner:string|null}
 const text=z.string().min(1),integer=z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
-const qcProfileSchema=z.object({codecs:z.array(z.string()),width:integer.positive().nullable(),height:integer.positive().nullable(),fps:z.number().finite().positive().nullable(),scan:z.enum(['ANY','PROGRESSIVE','INTERLACED']),requireAudio:z.boolean(),minDurationSeconds:z.number().finite().nonnegative(),requireLoudness:z.boolean(),minLufs:z.number().finite(),maxLufs:z.number().finite(),maxTruePeakDbtp:z.number().finite()})
+const qcProfileSchema=z.object({renderedBusPairs:renderedBusPairsSchema.optional(),requireProbe:z.boolean().optional(),liveSignalPolicy:z.object({arrivalWarningEnabled:z.boolean(),warningFrameIntervals:z.number().finite().min(0.5).max(20),minimumReceivedFrames:z.number().int().min(1).max(10000)}).strict().optional(),codecs:z.array(z.string()),width:integer.positive().nullable(),height:integer.positive().nullable(),fps:z.number().finite().positive().nullable(),scan:z.enum(['ANY','PROGRESSIVE','INTERLACED']),requireAudio:z.boolean(),minDurationSeconds:z.number().finite().nonnegative(),requireLoudness:z.boolean(),minLufs:z.number().finite(),maxLufs:z.number().finite(),maxTruePeakDbtp:z.number().finite()})
 const channelSchema=z.object({id:text,name:text,rateNum:integer.positive(),rateDen:integer.positive(),width:integer.positive().max(16384),height:integer.positive().max(16384),scan:z.enum(['PROGRESSIVE','INTERLACED']),fieldOrder:z.enum(['TFF','BFF']),targetLufs:z.number().finite(),ceilingDbtp:z.number().finite(),limiterLookaheadMs:integer,audioChannels:z.union([z.literal(2),z.literal(8),z.literal(16)]),qcProfile:qcProfileSchema.nullable().optional(),createdAt:z.string().datetime()}).passthrough()
 const revisionSchema=z.object({id:text,rundownId:text,revision:integer.positive(),state:z.enum(['PUBLISHED','SUPERSEDED']),active:z.boolean(),publishedAt:z.string().datetime(),publishedBy:z.string().nullable(),activatedAt:z.string().datetime().nullable(),payload:z.record(z.unknown())})
 const zoneSchema=z.object({id:text,label:z.string(),from:integer,to:integer,priority:z.union([z.literal(1),z.literal(2),z.literal(3),z.literal(4),z.literal(5)])}).refine(zone=>zone.to>zone.from)
@@ -43,6 +53,7 @@ export class HaRecovery {
   private closed=false
   private pending=new Set<Promise<unknown>>()
   private abort=new AbortController()
+  private preparations=new Map<string,HaPreparationContext>()
   private readonly owner=JSON.stringify({host:hostname(),pid:process.pid,boot:randomUUID()})
   constructor(private readonly database:Database.Database,private readonly root:string,
     private readonly current:()=>{sequence:number;snapshot:HaSnapshot|null},
@@ -55,16 +66,59 @@ export class HaRecovery {
   private key(id:string){return `ha-recovery:v1:${this.context}:${id}`}
   private read(row:Ledger):HaRecoveryReport{return JSON.parse(installationVault(false).decrypt(row.report,this.key(row.request_id)))}
   private matches(row:Ledger,request:HaRecoveryRequest){
-    try{const saved=haRecoveryRequest.parse(JSON.parse(row.intent));return saved.requestId===request.requestId&&saved.channelId===request.channelId&&saved.sequence===request.sequence}catch{return false}
+    try{const saved=haRecoveryRequest.parse(JSON.parse(row.intent));return saved.requestId===request.requestId&&saved.channelId===request.channelId&&saved.sequence===request.sequence&&saved.bindingPlanId===request.bindingPlanId}catch{return false}
   }
   private store(report:HaRecoveryReport,workspace:string|null=null){
     const result=this.database.prepare('UPDATE ha_recovery SET report=?,workspace=coalesce(?,workspace) WHERE request_id=? AND owner=?').run(installationVault().encrypt(JSON.stringify(report),this.key(report.requestId)),workspace,report.requestId,this.owner)
     if(result.changes!==1)throw new Error('Posse do ensaio mudou; relatório anterior preservado.')
   }
   status(){return (this.database.prepare('SELECT * FROM ha_recovery ORDER BY rowid DESC LIMIT 20').all() as Ledger[]).map(row=>this.read(row))}
-  async rehearse(value:unknown):Promise<HaRecoveryReport>{
+  /** Domain-only handoff preparation. Paths are recovered from our protected
+   * ledger, never a browser parameter. The returned object is NOT a grant. */
+  async activationCandidate(value:unknown,plan:ReturnType<HaBindings['executionBindings']>,assertCurrent:()=>void,verifyLocalBindings:()=>Promise<void>){
+    if(this.closed)throw new HaRecoveryError('Reserva encerrando.')
+    const request=haRecoveryRequest.parse(value)
+    assertCurrent()
+    await verifyLocalBindings();assertCurrent()
+    const row=this.database.prepare('SELECT * FROM ha_recovery WHERE request_id=?').get(request.requestId) as Ledger|undefined
+    if(!row||!this.matches(row,request)||!row.workspace)throw new HaRecoveryError('Preparação local exata não encontrada.')
+    const report=this.read(row)
+    if(report.phase!=='RESTORED'||report.bindingPlanId!==plan.planId||report.qcBlocked||report.localProbeRequired||report.localValidation?.state!=='PASSED'||!report.localMounts||report.localMounts.blocked)throw new HaRecoveryError('Preparação ainda possui mídia/QC/montagem bloqueados ou não analisados localmente.')
+    const file=resolve(row.workspace),prefix=resolve(this.root)+sep
+    if(!file.startsWith(prefix))throw new HaRecoveryError('Workspace HA fora da pasta de ensaio própria.')
+    let ancestor=dirname(file)
+    while(true){const info=await lstat(ancestor);if(!info.isDirectory()||info.isSymbolicLink())throw new HaRecoveryError('Workspace HA não pode atravessar links/junções.');const parent=dirname(ancestor);if(parent===ancestor)break;ancestor=parent}
+    const info=await lstat(file)
+    if(!info.isFile()||info.isSymbolicLink()||info.nlink!==1||existsSync(file+'-wal')||existsSync(file+'-shm'))throw new HaRecoveryError('Workspace deve estar fechado, sem links/WAL/SHM de outro processo.')
+    const stamp=await localFileStamp(file),databaseHash=await probeRuntimeHash(file)
+    let sql:Database.Database|null=null
+    let candidate:ReturnType<typeof readHaPromotionCandidate>
+    try{
+      sql=new Database(file,{readonly:true,fileMustExist:true});assertSchemaCompatibility(sql,true)
+      candidate=sql.transaction(()=>readHaPromotionCandidate(sql!,this.key(request.requestId),request,plan)).deferred()
+    }finally{sql?.close()}
+    for(const asset of candidate.media){
+      if(await this.resolveMedia(asset.hash)!==asset.path)throw new HaRecoveryError('SHA/caminho local mudou após a preparação; candidato não será admitido.')
+      assertCurrent()
+    }
+    if(!this.localProbe||await probeRuntimeHash(this.localProbe.binary)!==report.localValidation.runtimeHash)throw new HaRecoveryError('Runtime de análise mudou após a preparação; reanalise a mídia local.')
+    const verifyCurrent=async()=>{
+      assertCurrent()
+      if(this.closed||await localFileStamp(file)!==stamp||await probeRuntimeHash(file)!==databaseHash)throw new HaRecoveryError('Banco da preparação mudou antes da admissão nativa.')
+      const latest=this.database.prepare('SELECT * FROM ha_recovery WHERE request_id=?').get(request.requestId) as Ledger|undefined
+      if(!latest||latest.report!==row.report||latest.workspace!==row.workspace||latest.intent!==row.intent)throw new HaRecoveryError('Ledger da preparação mudou; nenhum efeito nativo autorizado.')
+      for(const asset of candidate.media){if(await this.resolveMedia(asset.hash)!==asset.path)throw new HaRecoveryError('Mídia local mudou antes da admissão nativa.');assertCurrent()}
+      if(await probeRuntimeHash(this.localProbe!.binary)!==report.localValidation!.runtimeHash)throw new HaRecoveryError('Runtime de análise mudou antes da admissão nativa.')
+      await verifyLocalBindings()
+      assertCurrent()
+    }
+    await verifyCurrent()
+    return {get candidate(){return structuredClone(candidate)},databaseFile:file,databaseHash,verifyCurrent,automaticTake:false as const,promotionReady:false as const}
+  }
+  async rehearse(value:unknown,preparation?:HaPreparationContext):Promise<HaRecoveryReport>{
     if(this.closed)return Promise.reject(new Error('Ensaio de recuperação encerrando.'))
     const request=haRecoveryRequest.parse(value),intent=JSON.stringify(request)
+    if(Boolean(request.bindingPlanId)!==Boolean(preparation)||preparation&&preparation.plan.planId!==request.bindingPlanId)throw new HaRecoveryError('Preparação exige o plano local exato; não será tratada como restauração genérica.')
     const existing=this.database.prepare('SELECT * FROM ha_recovery WHERE request_id=?').get(request.requestId) as Ledger|undefined
     if(existing){if(!this.matches(existing,request))return Promise.reject(new HaRecoveryError('Pedido de recuperação pertence a outra edição/canal.'));return Promise.resolve(this.read(existing))}
     const initial:HaRecoveryReport={...request,phase:'CHECKING',createdAt:new Date().toISOString(),restoredRevisions:0,verifiedMedia:0,qcBlocked:0,checkpointRestored:false,automaticTake:false,promotionReady:false,localProbeRequired:true,reason:'Ensaio em andamento ou interrompido. Pedido repetido apenas consulta; não autoriza PGM.'}
@@ -74,7 +128,8 @@ export class HaRecovery {
       if((this.database.prepare('SELECT * FROM ha_recovery').all() as Ledger[]).some(row=>this.read(row).phase==='CHECKING'))throw new HaRecoveryError('Outro ensaio em andamento ou interrompido. Confira o pedido anterior antes de repetir.')
       this.database.prepare('INSERT INTO ha_recovery(request_id,intent,report,workspace,owner) VALUES(?,?,?,NULL,?)').run(request.requestId,intent,installationVault().encrypt(JSON.stringify(initial),this.key(request.requestId)),this.owner)
     }).immediate()
-    const work=this.run(request,initial);this.pending.add(work);void work.finally(()=>this.pending.delete(work)).catch(()=>{});return work
+    if(preparation)this.preparations.set(request.requestId,preparation)
+    const work=this.run(request,initial);this.pending.add(work);void work.finally(()=>{this.pending.delete(work);this.preparations.delete(request.requestId)}).catch(()=>{});return work
   }
   /** Closes only a dead local builder's intent. Never resumes work, touches a
    * workspace or permits PGM. Repetition only queries the durable result. */
@@ -98,6 +153,8 @@ export class HaRecovery {
     }).immediate()
   }
   private unchanged(request:HaRecoveryRequest){
+    const preparation=this.preparations.get(request.requestId)
+    if(preparation){if(this.closed)throw new Error('Reserva encerrando.');preparation.assertCurrent();return preparation.snapshot}
     const current=this.current()
     if(this.closed||current.sequence!==request.sequence||!current.snapshot)throw new Error('Edição espelhada mudou ou reserva encerrando. Nenhum PGM foi aberto.')
     return current.snapshot
@@ -200,12 +257,23 @@ export class HaRecovery {
       destination=openDatabase(file)
       destination.sqlite.pragma('synchronous = FULL')
       const qcBlocked=[...versions.values()].filter(asset=>!qcApproved(decisions.filter(row=>row.assetId===asset.id&&row.contentHash===asset.contentHash).at(-1)?.status)||evidence.has(asset.contentHash)&&!evidence.get(asset.contentHash)!.checks.playable).length
+      const preparation=this.preparations.get(request.requestId),mountChecks:LocalMountCheck[]=[],revisionIds=new Map<string,string>()
+      const localAssets=new Map<string,MediaAsset>()
+      for(const [key,asset] of versions){const local=evidence.get(asset.contentHash),probe=local?.probe
+        localAssets.set(key,{...asset,path:paths.get(asset.contentHash)!,durationNs:probe?.durationNs??null,probe:probe?.video?{width:probe.video.width,height:probe.video.height,rate:{num:probe.video.rateNum,den:probe.video.rateDen},interlaceMode:probe.video.interlaceMode,hasAudio:Boolean(probe.audio),audioChannels:probe.audio?.channels??0,audioTracks:probe.audioTracks??[]}:null,audioMetadata:{hasAudio:Boolean(probe?.audio),channels:probe?.audio?.channels??0,tracks:probe?.audioTracks??[]},loudnessFile:local?.loudnessFile??null,probeError:local?.decoded?null:'Decodificação local não comprovada.'})
+      }
+      const prepared=parsed.filter(entry=>!preparation||entry.revision.active||demanded.has(entry.revision.id)).map(entry=>{
+        if(!preparation){revisionIds.set(entry.revision.id,entry.revision.id);return entry}
+        const variant=materializeHaPayload(entry.revision.payload,entry.revision.id,preparation.plan,paths,localAssets,{num:channel.rateNum,den:channel.rateDen},channel.audioChannels)
+        mountChecks.push(...variant.checks.map(check=>({...check,revisionId:entry.revision.id})));revisionIds.set(entry.revision.id,variant.id)
+        return {...entry,payload:variant.payload,revision:{...entry.revision,id:variant.id,payload:variant.payload}}
+      })
       destination.db.transaction(tx=>{
         // Deliberately archived: even opening this DB with a normal backend
         // must not create a channel runtime, an SDI master or a publisher.
         tx.insert(channels).values({...channel,qcProfile:channel.qcProfile??null,programSdiDeviceId:null,slateTemplateId:null,archivedAt:initial.createdAt}).run()
         const grades=new Set<string>()
-        for(const {rundown,revision} of parsed){
+        for(const {rundown,revision} of prepared){
           if(!grades.has(rundown.id)){tx.insert(rundowns).values({...rundown,protectedZones:rundown.protectedZones??[],publicationRequired:true}).run();grades.add(rundown.id)}
           tx.insert(operationalPlaylistRevisions).values(revision).run()
         }
@@ -219,16 +287,29 @@ export class HaRecovery {
             probeError:local?.decoded?null:local?'Sonda local não comprovou decodificação; confira mídia e runtime.':'Ensaio HA: sonda local e vínculos de saída ainda não homologados.'}).run()
         }
         for(const decision of decisions)tx.insert(qcDecisions).values(decision).run()
-        if(checkpoint)new Checkpoints(destination!.sqlite).write({...checkpoint,playing:false,realEngine:false})
+        if(checkpoint)new Checkpoints(destination!.sqlite).write(stoppedHaCheckpoint(checkpoint,channel.id,revisionIds))
+        destination!.sqlite.exec('CREATE TABLE ha_recovery_cursor(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)')
+        const resume={version:1,request,revisionIds:[...revisionIds],intent:haResumeIntent(checkpoint,channel.id,revisionIds,snapshot.capturedAt)}
+        destination!.sqlite.prepare('INSERT INTO ha_recovery_cursor VALUES(1,?)').run(installationVault().encrypt(JSON.stringify(resume),this.key(request.requestId)+':cursor'))
         destination!.sqlite.exec('CREATE TABLE ha_recovery_origin(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)')
         const provenance={version:1,request,channel:source,asRun:snapshot.asRun.filter(row=>row.channelId===channel.id),journals:snapshot.journals.filter(row=>row.channelId===channel.id||typeof row.rundownId==='string'&&grades.has(row.rundownId)),capturedAt:snapshot.capturedAt}
         destination!.sqlite.prepare('INSERT INTO ha_recovery_origin VALUES(1,?)').run(installationVault().encrypt(JSON.stringify(provenance),this.key(request.requestId)+':origin'))
         destination!.sqlite.exec('CREATE TABLE ha_recovery_media(content_hash TEXT PRIMARY KEY,payload TEXT NOT NULL)')
         for(const [hash,validation] of evidence)destination!.sqlite.prepare('INSERT INTO ha_recovery_media VALUES(?,?)').run(hash,installationVault().encrypt(JSON.stringify({version:1,request,runtimeHash:localValidation!.runtimeHash,checkedAt:localValidation!.checkedAt,...validation}),this.key(request.requestId)+':media:'+hash))
+        if(preparation){
+          destination!.sqlite.exec('CREATE TABLE ha_recovery_plan(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)')
+          destination!.sqlite.prepare('INSERT INTO ha_recovery_plan VALUES(1,?)').run(installationVault().encrypt(JSON.stringify({version:1,request,snapshotSequence:preparation.sequence,plan:preparation.plan,revisionIds:[...revisionIds],mountChecks,automaticTake:false,promotionReady:false}),this.key(request.requestId)+':local-plan'))
+        }
       })
       this.unchanged(request)
       if(destination.sqlite.pragma('integrity_check',{simple:true})!=='ok'||(destination.sqlite.pragma('foreign_key_check') as unknown[]).length)throw new Error('Banco de ensaio não passou na validação de integridade.')
       const report:HaRecoveryReport={...initial,phase:'RESTORED',restoredRevisions:parsed.length,verifiedMedia:paths.size,qcBlocked,checkpointRestored:Boolean(checkpoint),localProbeRequired:!localValidation||localValidation.decoded!==localValidation.required,...(localValidation?{localValidation}:{}),reason:localValidation?.state==='PASSED'?'Edições restauradas e mídia decodificada localmente com perfil técnico de QC verificado. Aprovação editorial, trims/mixes, vínculos, posse nativa e promoção são etapas separadas. Canal permanece arquivado e parado, sem saídas.':'Edições restauradas em banco isolado, canal arquivado e cursor parado. Análise local ausente ou com falha técnica; confira QC/runtime. Sem saídas ou autoridade de promoção.'}
+      if(preparation){
+        const issues=mountChecks.filter(row=>row.errors.length||row.warnings.length)
+        report.bindingPlanId=preparation.plan.planId;report.snapshotSequence=preparation.sequence;report.restoredRevisions=prepared.length
+        report.localMounts={checked:mountChecks.length,blocked:mountChecks.filter(row=>row.errors.length).length,livePending:mountChecks.filter(row=>row.livePending).length,selectedMixPending:mountChecks.filter(row=>row.warnings.includes('LOCAL_SELECTED_MIX_RENDER_PENDING')).length,externalAutomationBlocked:mountChecks.filter(row=>row.errors.includes('EXTERNAL_AUTOMATION_LOCAL_BINDING_REQUIRED')).length,graphicPending:mountChecks.filter(row=>row.warnings.includes('LOCAL_GRAPHIC_RENDER_PENDING')).length,issues:issues.slice(0,200),issuesTruncated:issues.length>200}
+        report.reason='Variantes locais derivadas com mídia SHA e vínculos explícitos, preservando grade/trims/mixes e origem. Canal arquivado/parado. Confira relatório de montagens, QC, mixes, grafismos e live; plano preparado não autoriza promoção ou PGM.'
+      }
       this.store(report);return report
     }catch{
       const report:HaRecoveryReport={...initial,phase:'REFUSED',reason:'Ensaio recusado: confira edição/cursor, cópias SHA, metadados, QC e pasta local. Qualquer banco parcial foi preservado e permanece isolado; nenhum PGM aberto.'}

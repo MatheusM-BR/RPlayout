@@ -1,8 +1,11 @@
 ﻿import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { api } from '../../api.js'
+import {useRef} from 'react'
+import {latestRequestGate} from '../../domain/latest-request.js'
 import type { SourceList, LiveSource } from '../../types.js'
 import { initialProtocolConfig, sourceName } from './protocol-config.js'
 import { ServerFileTargetDialog } from '../ServerFileTargetDialog.js'
+import {NdiAttribution} from './NdiAttribution.js'
 
 export type ProtocolKind = 'NDI' | 'SDI' | 'SRT' | 'RTMP' | 'FILE' | 'OMT'
 
@@ -81,13 +84,16 @@ export function CanonicalProtocolSelector({
   const [selectedOmtSource, setSelectedOmtSource] = useState(defaultKind === 'OMT' ? initialUri : '')
   const [omtOutputName, setOmtOutputName] = useState(defaultKind === 'OMT' && initialUri ? initial.name : 'RPLAYOUT_PGM')
   const sdiFamily = mode === 'INPUT' ? sources?.sdi : sources?.sdiOutputs
+  const discoveryGeneration=useRef(latestRequestGate())
 
   // Busca fontes físicas e de rede
   const fetchSources = useCallback(async (refresh = false) => {
+    const isCurrent=discoveryGeneration.current.begin()
     setIsLoadingSources(true)
     setSourcesError(null)
     try {
       const data = await api.sources(refresh)
+      if(!isCurrent())return
       setSources(data)
 
       // Atualiza seleção inicial se houver dispositivos detectados
@@ -96,15 +102,17 @@ export function CanonicalProtocolSelector({
       setSelectedNdiSource((current) => current || data.ndi.sources[0]?.reference || '')
       setSelectedOmtSource((current) => current || data.omt.sources[0]?.reference || '')
     } catch (err: any) {
+      if(!isCurrent())return
       console.warn('Não foi possível consultar fontes de hardware:', err)
       setSourcesError('Driver de hardware ou serviço de descoberta indisponível.')
     } finally {
-      setIsLoadingSources(false)
+      if(isCurrent())setIsLoadingSources(false)
     }
   }, [mode])
 
   useEffect(() => {
     void fetchSources()
+    return()=>{discoveryGeneration.current.invalidate()}
   }, [fetchSources])
 
   // Lista de protocolos disponíveis
@@ -134,7 +142,7 @@ export function CanonicalProtocolSelector({
         if (mode === 'INPUT') {
           const hasSources = (sources?.ndi.sources.length ?? 0) > 0
           if (!hasSources || useManualNdi) {
-            const cleanName = manualNdiSource.trim().replace(/^ndi:(\/\/)?/, '')
+            const cleanName = (useManualNdi?manualNdiSource:selectedNdiSource||manualNdiSource).trim().replace(/^ndi:(\/\/)?/i, '')
             uri = cleanName ? `ndi:${cleanName}` : ''
             nameRec = cleanName
           } else {
@@ -301,6 +309,7 @@ export function CanonicalProtocolSelector({
           </div>
 
           {/* Verificação estrita de hardware: só lista se tiver placa instalada */}
+          {sdiFamily?.reason && sdiFamily.available && sdiFamily.sources.length>0 && <p role="status" className="text-[10px] text-armed-amber">{sdiFamily.reason}</p>}
           {!useManualSdi && (!sdiFamily?.available || sdiFamily.sources.length === 0) ? (
             <div className="p-2.5 rounded bg-armed-amber/10 border border-armed-amber/30 text-armed-amber flex flex-col gap-1.5">
               <div className="flex items-center gap-1.5 text-xs font-bold">
@@ -354,7 +363,7 @@ export function CanonicalProtocolSelector({
                   const devIdx = s.reference.replace(/^sdi:/, '')
                   return (
                     <option key={s.reference} value={devIdx}>
-                      {s.reference} — {s.label}
+                      {s.reference} — {s.label} {s.discovery==='DISCOVERED'?'— enumerada; sinal não medido':'— cadastrada; enumeração não confirmada'}
                     </option>
                   )
                 })}
@@ -377,6 +386,7 @@ export function CanonicalProtocolSelector({
             </span>
           </div>
 
+          {mode==='INPUT' && sources?.ndi.reason && <p role="status" className="text-[10px] text-armed-amber">{sources.ndi.reason}</p>}
           {mode === 'INPUT' ? (
             sources && sources.ndi.sources.length > 0 && !useManualNdi ? (
               <div className="flex flex-col gap-1">
@@ -388,6 +398,7 @@ export function CanonicalProtocolSelector({
                   onChange={(e) => setSelectedNdiSource(e.target.value)}
                   className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary cursor-pointer"
                 >
+                  {selectedNdiSource&&!sources.ndi.sources.some(source=>source.reference===selectedNdiSource)&&<option value={selectedNdiSource}>{sourceName(selectedNdiSource,[])} — seleção anterior; não listada nesta consulta</option>}
                   {sources.ndi.sources.map((s) => (
                     <option key={s.reference} value={s.reference}>
                       {s.label} {s.discovery === 'CONFIGURED' ? '— cadastrada; descoberta não confirmada' : ''}
@@ -396,7 +407,7 @@ export function CanonicalProtocolSelector({
                 </select>
                 <button
                   type="button"
-                  onClick={() => setUseManualNdi(true)}
+                  onClick={() => {setManualNdiSource(initialProtocolConfig(selectedNdiSource).name);setUseManualNdi(true)}}
                   className="self-start text-[9.5px] font-bold text-accent-ice hover:underline mt-1 cursor-pointer"
                 >
                   + Digitar nome de stream NDI personalizado
@@ -415,8 +426,8 @@ export function CanonicalProtocolSelector({
                 </label>
                 <input
                   type="text"
-                  value={manualNdiSource}
-                  onChange={(e) => setManualNdiSource(e.target.value)}
+                  value={useManualNdi?manualNdiSource:initialProtocolConfig(selectedNdiSource).name||manualNdiSource}
+                  onChange={(e) => {setUseManualNdi(true);setManualNdiSource(e.target.value)}}
                   placeholder="ex: ESTUDIO-MASTER/PGM ou TRICASTER-1"
                   className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
                 />
@@ -667,12 +678,13 @@ export function CanonicalProtocolSelector({
                 <select
                   value={selectedOmtSource}
                   onChange={(event) => setSelectedOmtSource(event.target.value)}
-                  disabled={!sources?.omt.sources.length}
+                  disabled={!sources?.omt.sources.length&&!selectedOmtSource}
                   className="min-w-0 flex-1 bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary disabled:opacity-50"
                 >
-                  {!sources?.omt.sources.length && <option value="">Nenhuma fonte OMT encontrada</option>}
+                  {!sources?.omt.sources.length&&!selectedOmtSource && <option value="">Nenhuma fonte OMT encontrada</option>}
+                  {selectedOmtSource&&!sources?.omt.sources.some(source=>source.reference===selectedOmtSource)&&<option value={selectedOmtSource}>{sourceName(selectedOmtSource,[])} — seleção anterior; não listada nesta consulta</option>}
                   {sources?.omt.sources.map((source) => (
-                    <option key={source.reference} value={source.reference}>{source.label}</option>
+                    <option key={source.reference} value={source.reference}>{source.label} {source.discovery==='DISCOVERED'?'— descoberta':'— cadastrada; descoberta não confirmada'}</option>
                   ))}
                 </select>
                 <button type="button" onClick={() => void fetchSources(true)} className="px-2 rounded border border-border-subtle text-accent-ice hover:border-primary" title="Escanear fontes OMT">
@@ -681,9 +693,10 @@ export function CanonicalProtocolSelector({
               </div>
               <div className="rounded border border-border-subtle bg-surface-base p-2 text-[10px] text-outline leading-snug">
                 {sources?.omt.sources.length
-                  ? 'Selecione a fonte anunciada por DNS-SD. OMT usa nomes de fontes, sem endereço IP manual.'
+                  ? 'Selecione uma fonte descoberta ou cadastrada. Cadastro não confirma anúncio DNS-SD nem sinal. OMT usa nomes de fontes, sem endereço IP manual.'
                   : (sources?.omt.reason ?? 'Escaneando DNS-SD OMT (_omt._tcp.local)…')}
               </div>
+              {sources?.omt.sources.length && sources.omt.reason ? <p role="status" className="text-[10px] text-armed-amber">{sources.omt.reason}</p>:null}
             </div>
           ) : (
             <div className="flex flex-col gap-1">
@@ -704,6 +717,7 @@ export function CanonicalProtocolSelector({
       )}
 
       {/* URI Broadcast Canônico Calculado */}
+      {kind==='NDI' && <NdiAttribution/>}
       <div className="p-2 rounded bg-surface-base border border-border-subtle/80 flex items-center justify-between text-[10px] font-label-mono">
         <span className="text-outline">URI Canônico:</span>
         <span

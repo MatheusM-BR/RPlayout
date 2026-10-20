@@ -82,7 +82,7 @@ export function labelFor(path: string): string {
  * perde o acervo por causa desta mudança, e quem está começando também não
  * fica com o acervo vazio e sem lugar para procurar.
  */
-export async function listRoots(db: Db, fallback: string): Promise<MediaRoot[]> {
+export async function initializeRoots(db: Db, fallback: string): Promise<MediaRoot[]> {
   if (fallback && fallback.trim() !== '') {
     const fallbackPath = resolve(fallback.trim())
     if (!existsSync(fallbackPath)) {
@@ -93,17 +93,24 @@ export async function listRoots(db: Db, fallback: string): Promise<MediaRoot[]> 
       }
     }
   }
-  const rows = await db.select().from(mediaRoots)
-  if (rows.length === 0 && fallback !== '') {
+  db.transaction(tx=>{
+  const rows = tx.select().from(mediaRoots).all()
+  if (rows.length === 0 && fallback.trim() !== '') {
     const semente = {
       id: randomUUID(),
       path: resolve(fallback),
       label: labelFor(fallback),
       createdAt: new Date().toISOString(),
     }
-    await db.insert(mediaRoots).values(semente)
-    return [{ ...semente, present: existe(semente.path) }]
+    tx.insert(mediaRoots).values(semente).run()
   }
+  },{behavior:'immediate'})
+  return listRoots(db,fallback)
+}
+
+/** Consulta sem criar diretórios ou cadastrar uma pasta implicitamente. */
+export async function listRoots(db:Db,_fallback=''):Promise<MediaRoot[]> {
+  const rows=await db.select().from(mediaRoots)
   return rows
     .map((row) => ({ id: row.id, path: row.path, label: row.label, present: existe(row.path) }))
     .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'))
@@ -164,9 +171,10 @@ export function contem(raiz: string, alvo: string): boolean {
   // O Windows trata letras de unidade e nomes de pasta sem diferenciar caixa.
   // Normalizar aqui evita aceitar a mesma raiz duas vezes e evita perder
   // arquivos quando o caminho vem com capitalização diferente do banco.
-  const a = resolve(raiz).toLocaleLowerCase()
-  const b = resolve(alvo).toLocaleLowerCase()
-  return b === a || b.startsWith(a + sep)
+  const normalize=(path:string)=>process.platform==='win32'?resolve(path).toLowerCase():resolve(path)
+  const a = normalize(raiz)
+  const b = normalize(alvo)
+  return b === a || b.startsWith(a.endsWith(sep)?a:a+sep)
 }
 
 /** O caminho está dentro de alguma das pastas do acervo? */

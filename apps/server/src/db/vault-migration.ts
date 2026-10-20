@@ -2,6 +2,12 @@ import type Database from 'better-sqlite3'
 import { installationVault, SECRET_PREFIX } from '../domain/secret-vault.js'
 import { protectedColumns } from './protected-columns.js'
 
+function hasIncidentContextColumn(sqlite:Database.Database){
+  const exists=(sqlite.prepare('PRAGMA table_info(health_events)').all() as {name:string}[]).some(row=>row.name==='context')
+  if(!exists&&sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=48').get())throw new Error('Backup protegido incompleto: falta contexto de incidentes.')
+  return exists
+}
+
 export function validateDatabaseSecrets(sqlite: Database.Database): { protectedSecrets: 'verified' | 'not-present'; vaultFingerprint?: string } {
   if (!sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='vault_metadata' AND type='table'").get()) return { protectedSecrets: 'not-present' }
   const metadata = sqlite.prepare('SELECT key_fingerprint, scrub_pending FROM vault_metadata WHERE id=1').get() as { key_fingerprint: string; scrub_pending: number } | undefined
@@ -17,6 +23,7 @@ export function validateDatabaseSecrets(sqlite: Database.Database): { protectedS
       throw new Error('Backup protegido está incompleto: falta tabela '+table+'.')
     }
     const legacyDiagnostic = table === 'health_events' && !sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=12').get()
+    if(table==='health_events'&&column==='context'&&!hasIncidentContextColumn(sqlite))continue
     for (const row of sqlite.prepare(`SELECT "${column}" AS value FROM "${table}" WHERE "${column}" IS NOT NULL`).all() as Array<{ value: string }>) {
       if (legacyDiagnostic && !row.value.startsWith(SECRET_PREFIX)) continue
       vault.decrypt(row.value, `${table}.${column}`)
@@ -28,7 +35,7 @@ export function validateDatabaseSecrets(sqlite: Database.Database): { protectedS
 /** Called before application readers/writers start. A transaction preserves the
  * old database on failure; secure-delete + checkpoint + vacuum remove legacy
  * values from SQLite's free pages and journal, not just from selected rows. */
-export function migrateSecretVault(sqlite: Database.Database) {
+export function migrateSecretVault(sqlite: Database.Database,options:{deferCleanup?:boolean}={}) {
   sqlite.pragma('secure_delete = ON')
   // Acquire the write reservation before the first read. A deferred transaction
   // cannot upgrade an old WAL snapshot after another process commits.
@@ -39,7 +46,7 @@ export function migrateSecretVault(sqlite: Database.Database) {
     const metadata = hasMetadata ? sqlite.prepare('SELECT key_fingerprint, scrub_pending FROM vault_metadata WHERE id=1').get() as { key_fingerprint: string; scrub_pending: number } | undefined : undefined
     const rows = protectedColumns.map(([table, column]) => ({
       table, column,
-      values: sqlite.prepare(`SELECT rowid AS row_id, "${column}" AS value FROM "${table}" WHERE "${column}" IS NOT NULL`).all() as Array<{ row_id: number; value: string }>,
+      values: table==='health_events'&&column==='context'&&!hasIncidentContextColumn(sqlite)?[]:sqlite.prepare(`SELECT rowid AS row_id, "${column}" AS value FROM "${table}" WHERE "${column}" IS NOT NULL`).all() as Array<{ row_id: number; value: string }>,
     }))
     const hasEncrypted = rows.some(field => field.values.some(row => row.value.startsWith(SECRET_PREFIX)))
     const vault = installationVault(!metadata && !hasEncrypted)
@@ -52,6 +59,7 @@ export function migrateSecretVault(sqlite: Database.Database) {
     if(metadata && !hasPlaintext && sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=9').get() && sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=12').get())return Boolean(metadata.scrub_pending)
     sqlite.exec('CREATE TABLE IF NOT EXISTS vault_metadata (id INTEGER PRIMARY KEY CHECK(id=1), key_fingerprint TEXT NOT NULL, scrub_pending INTEGER NOT NULL)')
     for (const field of rows) {
+      if(!field.values.length)continue
       const update = sqlite.prepare(`UPDATE "${field.table}" SET "${field.column}"=? WHERE rowid=?`)
       for (const row of field.values) if (!row.value.startsWith(SECRET_PREFIX)) update.run(vault.encrypt(row.value, `${field.table}.${field.column}`), row.row_id)
     }
@@ -60,7 +68,12 @@ export function migrateSecretVault(sqlite: Database.Database) {
     sqlite.prepare('INSERT OR IGNORE INTO schema_migrations VALUES (12,?,?)').run('protected-health-diagnostics', new Date().toISOString())
     return hasPlaintext || Boolean(metadata?.scrub_pending)
   }).immediate()
-  if (cleanup) {
+  if (cleanup&&!options.deferCleanup) finishVaultCleanup(sqlite)
+  return cleanup
+}
+/** VACUUM must run after the admission/migration transaction commits. The
+ * backend incarnation is already registered before this storage cleanup. */
+export function finishVaultCleanup(sqlite:Database.Database){
     // Retry this cleanup on next startup if interrupted; never claim it finished
     // merely because the encrypted rows committed successfully.
     const checkpoint = sqlite.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number }>
@@ -68,5 +81,4 @@ export function migrateSecretVault(sqlite: Database.Database) {
     sqlite.exec('VACUUM')
     sqlite.prepare('UPDATE vault_metadata SET scrub_pending=0 WHERE id=1').run()
     sqlite.pragma('wal_checkpoint(TRUNCATE)')
-  }
 }

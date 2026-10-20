@@ -2,14 +2,27 @@ import { eq } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
 import { integrations, integrationDeliveries, healthEvents } from '../db/schema.js'
 import { randomUUID } from 'node:crypto'
+import {isRecoveryRehearsal} from './recovery-rehearsal.js'
+
+/** Called inside the incident transaction: queue or incident cannot half-commit. */
+export function enqueueIntegrationEvent(db:Pick<Db,'select'|'insert'>,event:string,payload:Record<string,unknown>,channelId:string|null,occurredAt:string):void{
+  const rows=db.select().from(integrations).where(eq(integrations.enabled,true)).all()
+  for(const row of rows.filter(row=>(row.channelId===null||row.channelId===channelId)&&row.events.includes(event))){
+    const id=randomUUID()
+    db.insert(integrationDeliveries).values({id,integrationId:row.id,channelId,event,target:row.url,
+      payload:{id,type:event,channelId,occurredAt,payload},state:'QUEUED',attempts:0,nextAttemptAt:occurredAt,createdAt:occurredAt}).run()
+  }
+}
 
 /** Persist before network delivery. No browser or reachable gateway is needed
  * to retain the alert. Callers never wait for a slow external endpoint. */
 export async function emitIntegrationEvent(db: Db, event: string, payload: Record<string, unknown>, channelId?: string | null): Promise<void> {
   try {
+    if(isRecoveryRehearsal(db.$client))return
     const rows = await db.select().from(integrations).where(eq(integrations.enabled, true))
     const now = new Date().toISOString()
     for (const row of rows.filter((row) => (row.channelId === null || row.channelId === channelId) && row.events.includes(event))) {
+      if(isRecoveryRehearsal(db.$client))return
       const id = randomUUID()
       await db.insert(integrationDeliveries).values({ id, integrationId:row.id, channelId:channelId ?? null, event,
         target:row.url,payload:{ id, type:event,channelId:channelId ?? null,occurredAt:now,payload },

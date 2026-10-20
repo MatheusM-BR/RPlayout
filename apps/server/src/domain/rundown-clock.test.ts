@@ -5,6 +5,11 @@ import type { Channel, Rundown } from '@rplayout/protocol'
 
 const rate = { num: 25, den: 1 }
 describe('relógio ancorado à data da grade', () => {
+  it('preserva duração nativa montada ao rebasear somente o relógio da grade',()=>{
+    const original={itemId:'pgm',startedAt:0,elapsed:50,mountedDuration:75}
+    const rebased=rundownClock('2026-10-08',rate,new Date(2026,9,8,12),original)
+    expect(rebased.onAir?.mountedDuration).toBe(75);expect(original).toEqual({itemId:'pgm',startedAt:0,elapsed:50,mountedDuration:75})
+  })
   it('continua acima de 24h à meia-noite, inclusive em cadência fracionária', () => {
     const before = new Date(2026,8,30,23,59,59), after = new Date(2026,9,1,0,0,1)
     expect(rundownFrames('2026-09-30',rate,before)).toBe(24*3600*25-25)

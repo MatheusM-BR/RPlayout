@@ -14,6 +14,7 @@ export class MediaVersionError extends Error {
  * Open-handle and pathname identity must both remain stable during hashing. */
 export class FileVersionVerifier {
   private readonly checked = new Map<string, { signature: string; hash: string; valid: boolean }>()
+  private readonly inFlight=new Map<string,Promise<string|null>>()
   constructor(private readonly capacity = 512) {}
 
   async matches(path: string, expectedHash: string): Promise<boolean> {
@@ -27,6 +28,17 @@ export class FileVersionVerifier {
     if (!before.isFile()) return null
     const identity = mediaFileIdentity(before), cached = this.checked.get(path)
     if (cached?.signature === identity && cached.hash === hash) return cached.valid ? identity : null
+    const key=JSON.stringify([path,identity,hash])
+    let pending=this.inFlight.get(key)
+    if(!pending){pending=this.hashStable(path,hash,identity);this.inFlight.set(key,pending)}
+    try{
+      const result=await pending
+      // Every caller checks the pathname again, including callers sharing I/O.
+      return result&&mediaFileIdentity(await stat(path,{bigint:true}))===identity?result:null
+    }finally{if(this.inFlight.get(key)===pending)this.inFlight.delete(key)}
+  }
+
+  private async hashStable(path:string,hash:string,identity:string):Promise<string|null>{
     const handle = await open(path, 'r')
     try {
       if (mediaFileIdentity(await handle.stat({ bigint: true })) !== identity) return null
