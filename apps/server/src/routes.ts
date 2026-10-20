@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
+import {NativeLiveReplacementUnknown} from './domain/native-live-replacement.js'
 import {GraphicCommandLedger} from './domain/graphic-command-ledger.js'
 import { setChannelArchived } from './domain/channel-archive.js'
 import {assertChannelAudioChange} from './domain/audio-bus.js'
@@ -4271,6 +4272,54 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if(result.run.phase!=='CONFIRMED')return reply.code(409).send({error:result.run.message??'Retorno em andamento ou inconclusivo; nenhum TAKE será repetido.',...result})
       return {ok:true,...result,cursorEvidence:'LAST_ENGINE_REPORT'}
     }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:'Retorno não confirmado; confira a pendência.')})}
+  })
+  // Native live source replacement (PREPARE/COMMIT/CANCEL/STATUS). Inert with
+  // an engine that does not advertise the protocol: nativeLiveSelection and
+  // the wire refuse before any byte. Never a LOAD/TAKE or metadata fallback.
+  const replacementTransaction=z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+  const replacementSession=(request:FastifyRequest,id:string)=>{
+    assertInterruptionAccess(request,id,'TRANSPORT')
+    const runtime=app.runtimes.get(id)
+    if(!runtime||!(runtime.transport instanceof EngineTransport))throw new CollaborativeEditError(409,{error:'Canal sem engine nativo ativo; troca de fonte indisponível.'})
+    const identity=access.identity(request),actorId=identity?.id??null
+    // Re-run per command inside the engine queue: session expiry, role,
+    // channel scope, same operator and same runtime instance.
+    return runtime.nativeReplacementSession({id:actorId,name:identity?.username??null},()=>{
+      assertInterruptionAccess(request,id,'TRANSPORT')
+      if((access.identity(request)?.id??null)!==actorId)throw new CollaborativeEditError(403,{error:'A sessão mudou de operador; nenhum comando de troca foi enviado.'})
+      if(app.runtimes.get(id)!==runtime)throw new CollaborativeEditError(409,{error:'O runtime do canal mudou; confira novamente a troca.'})
+    })
+  }
+  const replacementError=(reply:import('fastify').FastifyReply,error:unknown)=>{
+    if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload)
+    return reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:'Troca de fonte não confirmada.'),
+      outcomeUnknown:error instanceof NativeLiveReplacementUnknown,nativeProgramConfirmed:false,physicalOutputValidated:false})
+  }
+  server.post('/api/channels/:id/live-replacement',async(request,reply)=>{
+    const {id}=request.params as {id:string}
+    const body=z.object({targetSourceId:z.string().min(1).max(256)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe a fonte alternativa (par cadastrado) da live no PGM.'})
+    try{
+      const result=await replacementSession(request,id).prepare(request.headers['idempotency-key'],body.data.targetSourceId)
+      onChange();return {ok:true,...result}
+    }catch(error){onChange();return replacementError(reply,error)}
+  })
+  server.get('/api/channels/:id/live-replacement/:transactionId',async(request,reply)=>{
+    const {id,transactionId}=request.params as {id:string;transactionId:string}
+    if(!replacementTransaction.safeParse(transactionId).success)return reply.code(400).send({error:'Transação inválida.'})
+    try{return replacementSession(request,id).receipt(transactionId)}catch(error){return replacementError(reply,error)}
+  })
+  server.post('/api/channels/:id/live-replacement/:transactionId/:operation',async(request,reply)=>{
+    const {id,transactionId,operation}=request.params as {id:string;transactionId:string;operation:string}
+    if(!replacementTransaction.safeParse(transactionId).success||!['commit','cancel','status'].includes(operation))return reply.code(400).send({error:'Transação ou operação inválida.'})
+    if(operation!=='status'&&!z.object({confirm:z.literal(true)}).strict().safeParse(request.body).success)return reply.code(400).send({error:'Confirme explicitamente o corte/cancelamento da fonte no PGM.'})
+    try{
+      const session=replacementSession(request,id)
+      const result=operation==='commit'?await session.commit(transactionId):operation==='cancel'?await session.cancel(transactionId):await session.status(transactionId)
+      onChange()
+      if(operation==='commit'&&!result.nativeProgramConfirmed)return reply.code(409).send({error:'Corte nativo não confirmado; consulte a mesma transação, sem reenviar COMMIT.',...result})
+      return {ok:true,...result}
+    }catch(error){onChange();return replacementError(reply,error)}
   })
   server.post('/api/channels/:id/interruptions/:interruptionId/acknowledge',async(request,reply)=>{
     const {id,interruptionId}=request.params as {id:string;interruptionId:string}

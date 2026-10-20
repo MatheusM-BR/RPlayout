@@ -28,6 +28,8 @@ const request=async()=>({action:'RESUME',requestId:randomUUID(),reviewToken:(awa
 function native(work:(lifecycle:TakeLifecycle)=>Promise<void>){
   const runtime=app.runtimes.get('ch')!,simulated=runtime.transport,double=Object.create(EngineTransport.prototype)
   for(const key of Object.getOwnPropertyNames(Object.getPrototypeOf(simulated)))if(key!=='constructor'&&typeof(simulated as any)[key]==='function')double[key]=(simulated as any)[key].bind(simulated)
+  // Teardown must not run EngineTransport internals on an uninitialised double.
+  double.closeGracefully=async()=>({ownedNativeProcessesStopped:true,graceful:true,forceRequested:false});double.closeConfirmed=async()=>{}
   double.takeWithLifecycle=vi.fn(async(_rd:string,_vt:string,_frames:number,lifecycle:TakeLifecycle)=>work(lifecycle));double.processId=()=>null;double.mutatePlaylist=async(action:()=>Promise<unknown>)=>action()
   Object.defineProperty(runtime,'transport',{value:double});return double
 }

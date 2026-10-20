@@ -73,7 +73,8 @@ import { PgmProbe } from './domain/pgm-probe.js'
 import { activeOperationalPlaylist, readOperationalPayload } from './domain/operational-playlist.js'
 import { Checkpoints, type ChannelCheckpoint } from './domain/checkpoints.js'
 import {resolveLiveProgramBinding} from './domain/live-program-binding.js'
-import {assertPersistedLiveReplacementReceipt} from './domain/native-live-replacement-ledger.js'
+import {assertPersistedLiveReplacementReceipt,type NativeLiveReplacementContext} from './domain/native-live-replacement-ledger.js'
+import {createNativeReplacementSession,resolveStoppedPredecessorJournals,type NativeReplacementActor,type NativeReplacementAuthorization,type NativeReplacementRuntimePort,type NativeReplacementSession} from './domain/native-live-replacement-session.js'
 import {assertProgramTrim} from './domain/program-trim.js'
 import {programDurationFrames} from '@rplayout/protocol'
 import {ExecutionOwnership,type ExecutionLease} from './domain/execution-ownership.js'
@@ -302,6 +303,7 @@ export class ChannelRuntime {
             catch(error){this.recoveryError='Recuperação pausada do watchdog inconclusiva: '+(error instanceof Error?error.message:String(error));throw error}
             finally{this.recovering=false}
           },
+          onStopDurable:proof=>this.resolveReplacementJournalsAfterStop(proof),
           onStopConfirmed:()=>{this.pendingRecovery=null;this.recoveryAttempt=null;this.recoveryRetryAt=0;this.recoveryRetryCount=0;this.recoveryCheckpointProtected=false;this.executionLease?.acknowledgeStoppedPredecessor()},
           onProgramCleared: (reason, position) => {
             if (this.closed) return
@@ -675,6 +677,62 @@ export class ChannelRuntime {
     this.executionItemId=proof.itemId;this.pendingRecovery=null;this.recoveryAttempt=null
     this.recoveryRetryAt=0;this.recoveryRetryCount=0;this.recoveryError=null
     this.recoveryCheckpointProtected=false
+  }
+
+  /** Port for the native live replacement factory. Every member reads the
+   * CURRENT runtime; nothing is captured from the request that created it. */
+  private nativeReplacementPort():NativeReplacementRuntimePort{
+    const transport=this.transport
+    if(!(transport instanceof EngineTransport)||!this.checkpoints||!this.executionLease)throw new Error('Troca nativa exige engine real, checkpoint durável e posse do canal.')
+    const lease=this.executionLease
+    return {
+      channelId:this.channel.id,db:this.db,checkpoints:this.checkpoints,transport,
+      ownerRunId:()=>lease.assertOwned().id,
+      stoppedPredecessorRunIds:()=>lease.recoverablePredecessorRunIds(),
+      context:()=>this.nativeReplacementContext(),
+      capture:()=>this.replacementCursor(),
+    }
+  }
+  private nativeReplacementContext():NativeLiveReplacementContext{
+    if(this.closed||!(this.transport instanceof EngineTransport))throw new Error('Canal sem engine nativo ativo.')
+    const owner=this.executionLease?.assertOwned()
+    if(!owner)throw new Error('Troca nativa exige posse durável do canal.')
+    const blocked=this.recovering||this.pendingRecovery||this.recoveryAttempt?'Aguarde a recuperação do PGM antes de trocar a fonte.'
+      :this.contingencyPending?'Aguarde a troca de contingência antes de trocar a fonte.'
+      :this.interruptionCommands?.blockedReason(this.channel.id)
+        ??(new PlaylistBoundaryLedger(this.db,this.channel.id).list().some(run=>['PREPARING','SWITCHING','UNCERTAIN'].includes(run.state))?'Há passagem de playlist sem conclusão durável.':null)
+    if(blocked)throw new Error(blocked)
+    const view=this.executionView,revision=this.operationalRevision,occurrence=this.asRun.openOccurrence(),selection=this.transport.nativeLiveSelection()
+    if(!view||!revision||!this.executionId||!occurrence||occurrence.itemId!==selection.itemId||this.transport.state().onAir?.itemId!==selection.itemId)throw new Error('PGM sem ocorrência publicada/registrada para esta live; aguarde o as-run da entrada.')
+    return {channelId:this.channel.id,rundownId:view.rundown.id,revisionId:revision.id,executionId:this.executionId,occurrenceId:occurrence.id,
+      ownerRunId:owner.id,engineGeneration:selection.engineGeneration,itemId:selection.itemId,decoderId:selection.decoderId,sourceId:selection.sourceId,
+      sourceConnectionSignature:selection.sourceConnectionSignature,policySignature:selection.policySignature}
+  }
+  /** Same fields as the periodic checkpoint; the commit helper adds v2/binding. */
+  private replacementCursor():ChannelCheckpoint{
+    const state=this.transport.state()
+    return {version:1,channelId:this.channel.id,rundownId:this.executionView?.rundown.id??null,revisionId:this.operationalRevision?.id??null,
+      itemId:state.onAir?.itemId??null,elapsed:Math.max(0,Math.floor(state.onAir?.elapsed??0)),playing:state.playing,
+      graphicReceiptId:new GraphicCommandLedger(this.db,this.channel.id).latestNativeCompositionId()??undefined,
+      realEngine:this.transport instanceof EngineTransport,programTrim:state.programTrim??undefined,rate:this.channel.rate,
+      audioChannels:this.channel.audioChannels??2,executionId:this.executionId,contingency:this.contingencyOrigin??undefined}
+  }
+  /** Authorized factory: one session per operator action. `authorize` is called
+   * again at each command inside the engine queue (session/role/channel). */
+  nativeReplacementSession(actor:NativeReplacementActor,authorize:NativeReplacementAuthorization):NativeReplacementSession{
+    return createNativeReplacementSession(this.nativeReplacementPort(),actor,authorize)
+  }
+  private resolveReplacementJournalsAfterStop(proof:{engineGeneration:string|null;nativeRequestId:number}):void{
+    if(!(this.transport instanceof EngineTransport)||!this.checkpoints||!this.executionLease)return
+    const transport=this.transport
+    try{
+      const result=resolveStoppedPredecessorJournals(this.nativeReplacementPort(),proof,id=>transport.ownsNativeReplacementSession(id))
+      if(result.preserved.length)this.recoveryError='Há troca nativa de outra execução sem parada comprovada; novas trocas continuam bloqueadas até reconciliação.'
+    }catch(error){
+      // A failed journal write keeps the rows open (blocking new cuts); it
+      // must not turn a confirmed native STOP into an uncertain program.
+      this.recoveryError='Journal de troca nativa não resolvido no STOP: '+(error instanceof Error?error.message:String(error))
+    }
   }
 
   checkpoint(force = false): void {

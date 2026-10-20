@@ -66,6 +66,12 @@ export interface NativeReplacementPersistence {
  receipt:(receipt:NativeLiveReplacementReceipt,currentProgramContext:boolean)=>LiveProgramBinding|undefined
  stopped:(proof:NativeReplacementStopProof)=>void
 }
+/** Authorization of ONE queued command. Installed inside the transport queue
+ * for that command only, never retained for later commands or receipts. */
+export interface NativeReplacementAction {
+ validate:(operation:NativeLiveReplacementOperation,request:NativeLiveReplacementRequest)=>void
+ beforeSend:(operation:NativeLiveReplacementOperation,request:NativeLiveReplacementRequest)=>void
+}
 
 /** O que o engine precisa saber para pôr um item no ar. */
 interface EngineItem {
@@ -157,6 +163,9 @@ export interface EngineOptions {
   /** Terminal refusal of the exact native live opening, after its positive ACK. */
   readonly onRecoveryRejected?: (attempt:{rundownId:string;itemId:string;frames:number},error:EngineCommandRejected)=>void
   readonly onStopConfirmed?:()=>void
+  /** Runs inside the durable STOP section (after the owned sessions' journal),
+   * so a refusal keeps the same native-selection block as a session failure. */
+  readonly onStopDurable?:(proof:{engineGeneration:string|null;nativeRequestId:number})=>void
   readonly onProgramCleared?: (reason: string, lastPositionFrames: number) => void
   /** Runs inside the native command queue at a natural, non-looping EOS.
    * The provider must NOT enqueue another transport operation. */
@@ -427,7 +436,7 @@ export class EngineTransport implements Transport {
   private boundRecoveryInProgress=false
   private stopAwaitingDurable=false
   private replacementWire:NativeLiveReplacementWire|null=null
-  private readonly replacementSessions=new Map<string,{request:NativeLiveReplacementRequest;persistence:NativeReplacementPersistence;child:ChildProcess;executionId:string;revisionId:string;start:number|null}>()
+  private readonly replacementSessions=new Map<string,{request:NativeLiveReplacementRequest;persistence:NativeReplacementPersistence;child:ChildProcess;executionId:string;revisionId:string;start:number|null;action?:NativeReplacementAction|null}>()
   private pendingReplacementBinding:{request:NativeLiveReplacementRequest;binding:LiveProgramBinding;spec:EngineItem;start:number|null}|null=null
   private pendingProgramAdmission:{ownerId:string;term:number;itemId:string|null;decoderId:number|null;minimumElapsed:number;trim:ProgramTrim|null;paused?:boolean}|null=null
   private nativeProgramAdmissionProof:NativeProgramAdmission|null=null
@@ -491,9 +500,9 @@ export class EngineTransport implements Transport {
           const actual=this.nativeLiveSelection()
           if(actual.engineGeneration!==request.engineGeneration||actual.itemId!==request.itemId||actual.decoderId!==request.expectedDecoderId||actual.sourceId!==request.expectedSourceId||this.mountedLiveSpec?.source===request.targetSource||!this.replacementContextCurrent(request.transactionId))throw new Error('Contexto do PGM mudou antes da troca.')
         }
-        session.persistence.validate(operation,request)
+        if(session.action)session.action.validate(operation,request);else session.persistence.validate(operation,request)
       },
-      beforeSend:(operation,request)=>this.replacementSessions.get(request.transactionId)!.persistence.beforeSend(operation,request),
+      beforeSend:(operation,request)=>{const session=this.replacementSessions.get(request.transactionId)!;if(session.action)session.action.beforeSend(operation,request);else session.persistence.beforeSend(operation,request)},
       fence:()=>this.fenceBinding(),
       write:(message,failed)=>{if(!this.alive||this.closed||!this.ready||!this.child.stdin?.writable)throw new Error('Pipe nativo indisponível.');this.child.stdin.write(JSON.stringify(message)+'\n',error=>{if(error)failed(error)})},
       recordReceipt:receipt=>{
@@ -518,7 +527,15 @@ export class EngineTransport implements Transport {
     this.replacementWire.ready({engineGeneration:this.nativeReplacementCapability.engineGeneration,liveReplacementProtocol:this.nativeReplacementCapability.supported?1:0,decoderIdentity:this.decoderIdentity})
     return this.replacementWire
   }
-  prepareNativeLiveReplacement(request:NativeLiveReplacementRequest,persistence:NativeReplacementPersistence):Promise<NativeLiveReplacementReceipt>{
+  /** Installs the caller's per-command authorization inside the queue slot and
+   * removes it when that command settles (ACK, timeout or refusal). */
+  private async withReplacementAction<T>(transactionId:string,action:NativeReplacementAction|undefined,work:()=>Promise<T>):Promise<T>{
+    const session=this.replacementSessions.get(transactionId)
+    if(!session||!action)return work()
+    session.action=action
+    try{return await work()}finally{if(session.action===action)session.action=null}
+  }
+  prepareNativeLiveReplacement(request:NativeLiveReplacementRequest,persistence:NativeReplacementPersistence,action?:NativeReplacementAction):Promise<NativeLiveReplacementReceipt>{
     return this.enqueue(async()=>{
       await this.awaitNativeReady()
       if(!this.replacementSessions.has(request.transactionId)){
@@ -526,18 +543,20 @@ export class EngineTransport implements Transport {
         if(this.replacementSessions.size>=256)throw new Error('Limite de transações nativas da sessão atingido.')
         const executionId=this.options.executionOccurrenceId?.(),revisionId=this.options.executionIdentity?.()
         if(!executionId||!revisionId)throw new Error('Troca exige ocorrência e revisão publicadas.')
-        this.replacementSessions.set(request.transactionId,{request:structuredClone(request),persistence,child:this.child,executionId,revisionId,start:this.onAirStartedAt})
+        this.replacementSessions.set(request.transactionId,{request:structuredClone(request),persistence,child:this.child,executionId,revisionId,start:this.onAirStartedAt,action:null})
       }
-      return this.replacementTransport().prepare(request)
+      return this.withReplacementAction(request.transactionId,action,()=>this.replacementTransport().prepare(request))
     })
   }
-  nativeLiveReplacementCommand(operation:'COMMIT'|'CANCEL'|'STATUS',transactionId:string):Promise<NativeLiveReplacementReceipt>{
+  nativeLiveReplacementCommand(operation:'COMMIT'|'CANCEL'|'STATUS',transactionId:string,action?:NativeReplacementAction):Promise<NativeLiveReplacementReceipt>{
     return this.enqueue(async()=>{
       if(!this.replacementSessions.has(transactionId))throw new Error('Transação não pertence à sessão nativa; consultar journal durável.')
       const wire=this.replacementTransport()
-      return operation==='COMMIT'?wire.commit(transactionId):operation==='CANCEL'?wire.cancel(transactionId):wire.status(transactionId)
+      return this.withReplacementAction(transactionId,action,()=>operation==='COMMIT'?wire.commit(transactionId):operation==='CANCEL'?wire.cancel(transactionId):wire.status(transactionId))
     })
   }
+  /** Lets the runtime tell whether this process still owns a journal's session. */
+  ownsNativeReplacementSession(transactionId:string):boolean{return this.replacementSessions.has(transactionId)}
 
   constructor(
     private readonly channel: Channel,
@@ -2153,6 +2172,7 @@ export class EngineTransport implements Transport {
           if(session.child!==child&&!previousOwnedGenerationExited)throw new Error('Geração anterior sem saída observada; journal de corte preservado.')
           session.persistence.stopped({engineGeneration:generation,nativeRequestId,previousOwnedGenerationExited})
         }
+        this.options.onStopDurable?.({engineGeneration:this.nativeReplacementCapability.engineGeneration,nativeRequestId})
       }catch(error){this.nativeSelectionUncertain=true;this.fail('STOP nativo confirmado, registro durável pendente; novas trocas bloqueadas.');throw error}
       this.replacementWire?.confirmStopped();this.pendingReplacementBinding=null;this.replacementReceiptUncertain=null;this.nativeReportedSelectionUncertain=false
       this.nativeSelectionUncertain=false

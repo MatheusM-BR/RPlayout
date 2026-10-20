@@ -186,7 +186,7 @@ it('evento novo com frame nativo antigo não comprova vídeo recente',()=>{
   const now=Date.now();expect(transport.signalSample(now).videoProbe?.freezeDurationMs).toBe(650)
   expect(transport.signalSample(now+1451).videoProbe).toBeNull()
 })
-function start(value: RundownView, onTakeConfirmed?: ConstructorParameters<typeof EngineTransport>[3]['onTakeConfirmed'], currentView = () => value, executionIdentity?: () => string | null, boundary:Partial<Pick<ConstructorParameters<typeof EngineTransport>[3],'onPlaylistEnd'|'onPreparePlaylistEnd'|'canRecoverProgram'|'canStartProgram'|'fenceLease'|'assertExecutionOwned'|'beforeProcessStart'|'onProcessStarted'|'onProcessExited'|'canRestartEngine'|'onSignalObservation'|'holdProgramOutputs'|'preview'|'executionOccurrenceId'>>={}): void {
+function start(value: RundownView, onTakeConfirmed?: ConstructorParameters<typeof EngineTransport>[3]['onTakeConfirmed'], currentView = () => value, executionIdentity?: () => string | null, boundary:Partial<Pick<ConstructorParameters<typeof EngineTransport>[3],'onPlaylistEnd'|'onPreparePlaylistEnd'|'canRecoverProgram'|'canStartProgram'|'fenceLease'|'assertExecutionOwned'|'beforeProcessStart'|'onProcessStarted'|'onProcessExited'|'canRestartEngine'|'onSignalObservation'|'holdProgramOutputs'|'preview'|'executionOccurrenceId'|'onStopDurable'>>={}): void {
   transport = new EngineTransport(channel, currentView, () => null,
     { binary: 'fake-engine', outputs: ['null'], preview: null, bitrateKbps: 500, onLivePriority: event => priorityEvents.push(event),onTakeConfirmed, executionIdentity,...boundary })
   // A decoder ACK requires the real process to have built its pipeline first.
@@ -419,6 +419,56 @@ describe('owning native replacement bridge (simulated child, no physical media c
   owned.mockImplementation(()=>{throw new Error('OWNER_LOST')})
   await expect(transport.prepareNativeLiveReplacement(request,persistence)).rejects.toThrow('OWNER_LOST')
   expect(commands).toEqual([]);expect(persistence.beforeSend).not.toHaveBeenCalled()
+ })
+ it('each command uses only its own per-action authorization, installed inside the queue slot',async()=>{
+  const {request,persistence}=await fixture()
+  const first={validate:vi.fn(),beforeSend:vi.fn()},second={validate:vi.fn(),beforeSend:vi.fn()}
+  await transport.prepareNativeLiveReplacement(request,persistence,first)
+  await transport.nativeLiveReplacementCommand('COMMIT',request.transactionId,second)
+  expect(first.beforeSend.mock.calls.map(call=>call[0])).toEqual(['PREPARE'])
+  expect(second.beforeSend.mock.calls.map(call=>call[0])).toEqual(['COMMIT'])
+  expect(first.validate.mock.calls.every(call=>call[0]==='PREPARE')).toBe(true)
+  expect(persistence.validate).not.toHaveBeenCalled();expect(persistence.beforeSend).not.toHaveBeenCalled()
+  // Receipts are engine facts: recorded by durable persistence, not the action.
+  expect(persistence.receipt).toHaveBeenCalled()
+ })
+ it('a refused later authorization sends no COMMIT bytes; the first action is not reused',async()=>{
+  const {request,persistence}=await fixture()
+  const first={validate:vi.fn(),beforeSend:vi.fn()}
+  await transport.prepareNativeLiveReplacement(request,persistence,first)
+  const expired={validate:vi.fn(()=>{throw new Error('SESSION_EXPIRED')}),beforeSend:vi.fn()}
+  await expect(transport.nativeLiveReplacementCommand('COMMIT',request.transactionId,expired)).rejects.toThrow('SESSION_EXPIRED')
+  expect(commands.map(value=>value.cmd)).toEqual(['prepareLiveReplacement'])
+  expect(expired.beforeSend).not.toHaveBeenCalled();expect(first.validate).toHaveBeenCalledTimes(first.validate.mock.calls.length)
+  expect(first.validate.mock.calls.some(call=>call[0]==='COMMIT')).toBe(false)
+ })
+ it('the action is removed when its command settles; a later command without one falls to persistence',async()=>{
+  const {request,persistence}=await fixture()
+  const first={validate:vi.fn(),beforeSend:vi.fn()}
+  await transport.prepareNativeLiveReplacement(request,persistence,first)
+  vi.mocked(persistence.validate).mockImplementation(()=>{throw new Error('NO_CURRENT_ACTION')})
+  await expect(transport.nativeLiveReplacementCommand('STATUS',request.transactionId)).rejects.toThrow('NO_CURRENT_ACTION')
+  expect(first.validate.mock.calls.some(call=>call[0]==='STATUS')).toBe(false)
+  expect(commands.map(value=>value.cmd)).toEqual(['prepareLiveReplacement'])
+ })
+})
+
+describe('durable STOP hook for journals of other server processes (simulated child)',()=>{
+ it('runs inside the durable STOP section; a refusal keeps the native block until it succeeds',async()=>{
+  const value=view(['live'])
+  Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:PRIMARY',configuredSourceId:'primary',durationOverride:250,autoNext:false},asset:null})
+  const durable=vi.fn((_proof:{engineGeneration:string|null;nativeRequestId:number})=>{throw new Error('PREDECESSOR_SQL_REFUSED')})
+  start(value,undefined,()=>value,()=> 'rev',{executionOccurrenceId:()=> 'exec',onStopDurable:durable})
+  event({event:'ready',channelId:channel.id,decoderIdentity:true,liveReplacementProtocol:1,engineGeneration:'00000000-0000-4000-8000-000000000020'})
+  child.stdin.removeAllListeners('data')
+  child.stdin.on('data',(chunk:Buffer)=>{const command=JSON.parse(chunk.toString());commands.push(command);queueMicrotask(()=>{if(command.cmd==='stop')event({event:'state'});ack(command.id)})})
+  commands=[]
+  await expect(transport.stop()).rejects.toThrow('PREDECESSOR_SQL_REFUSED')
+  expect(transport.health()).toMatchObject({ready:false,nativeLiveReplacement:{selectionUncertain:true}})
+  durable.mockImplementation(()=>{})
+  await transport.stop()
+  expect(durable).toHaveBeenLastCalledWith({engineGeneration:'00000000-0000-4000-8000-000000000020',nativeRequestId:expect.any(Number)})
+  expect(transport.health().nativeLiveReplacement.selectionUncertain).toBe(false)
  })
 })
 

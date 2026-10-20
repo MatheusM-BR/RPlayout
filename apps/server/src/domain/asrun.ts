@@ -32,6 +32,8 @@ export type AsRunEntry = Omit<typeof asRun.$inferSelect, Provenance> & Partial<P
  */
 export class AsRun {
   private open: { id: string; itemId: string; startedMs: number; startPositionFrames: number; rate: Rate } | null = null
+  /** Read-only identity of the as-run occurrence currently open (no timing). */
+  openOccurrence(): { id: string; itemId: string } | null { return this.open ? { id: this.open.id, itemId: this.open.itemId } : null }
   /**
    * O as-run em memória é recriado junto com o servidor. Sem esta
    * reconciliação, uma queda/reinício deixa a linha anterior com `endedAt`

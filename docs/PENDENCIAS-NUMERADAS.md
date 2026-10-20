@@ -2,6 +2,16 @@
 
 ## Estado atual — r87 instalada; ciclo r86→r87→r86 conferido no D:
 
+20/10 — 6.2/7.3: fábrica de sessão autorizada no ChannelRuntime, autorização
+por comando instalada dentro da fila do engine (sem reaproveitar a da primeira
+requisição), rotas HTTP de PREPARE/COMMIT/CANCEL/STATUS (inertes sem protocolo
+nativo; failover manual segue só metadado), intenção abandonada antes do envio
+e resolução no STOP de journal de execução anterior comprovadamente parada.
+Projeto movido para D:\RPlayout. Tipos PASS; 375 testes/14 arquivos PASS (24
+novos); suíte completa 3163 PASS/13 FAIL, falhas idênticas no c50ce22 (ambiente
+Linux). FABRICA-SESSAO-TROCA-LIVE-2026-10-20.md. Falta Rust compilado/testado,
+IPC/mídia real, UI, r88. Totais10/53:8concluídas/34andamento/4pendentes/7v3.
+
 19/10 — 6.2/7.3: ponte de troca ligada à fila/pipe do filho próprio no
 EngineTransport; preservação de relógio/CUE/as-run, reconciliação sem segundo
 COMMIT, helper de recibo+binding+checkpoint atômico e STOP durável implementados.

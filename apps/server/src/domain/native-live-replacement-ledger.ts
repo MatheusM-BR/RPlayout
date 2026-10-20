@@ -24,15 +24,19 @@ interface Payload {
  prepareSent:boolean;commitSent:boolean;cancelSent:boolean;closed:boolean;
  receipt:NativeLiveReplacementReceipt|null
  stopResolution?:{engineGeneration:string;nativeRequestId:number;previousOwnedGenerationExited:boolean;recordedAt:string}
+ /** Closed before any byte reached the engine (prepareSent was durably false). */
+ abandonedBeforeSend?:{reason:string;recordedAt:string}
 }
 const payloadSchema=z.object({version:z.literal(1),digest:z.string().regex(/^[A-Za-z0-9_-]{43}$/),actorId:id.nullable(),context:contextSchema,
  targetSourceId:id,selectionRevision:z.string().regex(/^[A-Za-z0-9_-]{43}$/),transactionId:z.string().regex(/^[A-Za-z0-9_-]{43}$/),
  prepareSent:z.boolean(),commitSent:z.boolean(),cancelSent:z.boolean(),closed:z.boolean(),receipt:nativeLiveReplacementReceiptSchema.nullable(),
  stopResolution:z.object({engineGeneration:z.string().uuid(),nativeRequestId:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),previousOwnedGenerationExited:z.boolean(),recordedAt:z.string().datetime()}).strict().optional(),
+ abandonedBeforeSend:z.object({reason:z.string().min(1).max(500),recordedAt:z.string().datetime()}).strict().optional(),
 }).strict().superRefine((value,ctx)=>{
  if(value.commitSent&&!value.prepareSent||value.receipt&&!value.prepareSent
   ||value.receipt?.phase==='COMMITTED'&&!value.commitSent||value.receipt?.phase==='CANCELLED'&&!value.cancelSent
-  ||value.closed!==Boolean(value.stopResolution||value.receipt&&nativeReplacementTerminal(value.receipt.phase)&&value.receipt.phase!=='UNCERTAIN'))ctx.addIssue({code:'custom',message:'Journal nativo com transições inconsistentes.'})
+  ||value.abandonedBeforeSend&&(value.prepareSent||value.receipt||value.stopResolution)
+  ||value.closed!==Boolean(value.abandonedBeforeSend||value.stopResolution||value.receipt&&nativeReplacementTerminal(value.receipt.phase)&&value.receipt.phase!=='UNCERTAIN'))ctx.addIssue({code:'custom',message:'Journal nativo com transições inconsistentes.'})
 })
 interface Authority {
  authorize:(channelId:string)=>void
@@ -56,6 +60,16 @@ export function assertPersistedLiveReplacementReceipt(db:Db,binding:LiveProgramB
   ||row?.rundownId!=='@native-live-replacement:'+parsed.data.context.channelId||!expected||!matchesNativeLiveReplacement(binding.receipt,expected)
   ||JSON.stringify(parsed.data.receipt)!==JSON.stringify(nativeLiveReplacementReceiptSchema.parse(binding.receipt))
   ||(['channelId','rundownId','revisionId','executionId','occurrenceId','itemId'] as const).some(key=>parsed.data.context[key]!==binding.context[key]))throw new Error('Checkpoint da fonte alternativa sem recibo durável correspondente; não selecionar a fonte original por fallback.')
+}
+
+/** Journals of this channel without a terminal receipt or STOP resolution.
+ * Identity only: never an authorization to send a command for them. */
+export function unresolvedNativeReplacementJournals(db:Db,channelId:string):Array<{transactionId:string;ownerRunId:string;engineGeneration:string;prepareSent:boolean}>{
+ return db.select().from(operatorDecisions).where(eq(operatorDecisions.rundownId,'@native-live-replacement:'+channelId)).all()
+  .filter(row=>row.kind===kind).map(row=>payloadSchema.safeParse(row.payload))
+  .map(parsed=>{if(!parsed.success)throw new Error('Journal de troca nativa ilegível; não resolver automaticamente.');return parsed.data})
+  .filter(payload=>!payload.closed&&payload.context.channelId===channelId)
+  .map(payload=>({transactionId:payload.transactionId,ownerRunId:payload.context.ownerRunId,engineGeneration:payload.context.engineGeneration,prepareSent:payload.prepareSent}))
 }
 
 /** All command intents are durable before stdin. Payload's existing encrypted
@@ -201,12 +215,24 @@ export class NativeLiveReplacementLedger {
   },{behavior:'immediate'})
  }
 
+ /** Durable close of an intent that never reached stdin. Refuses once PREPARE
+  * was recorded: from then on only a native receipt or STOP may close it. */
+ abandonUnsent(transactionId:string,reason:string):void{
+  this.db.transaction(tx=>{
+   const {row,payload}=this.stored(tx,transactionId);this.authority.assertOwner(payload.context.ownerRunId)
+   if(payload.abandonedBeforeSend)return
+   if(payload.prepareSent||payload.closed)reject(409,'PREPARE já registrado; consultar a transação, não abandonar.')
+   payload.abandonedBeforeSend={reason:reason.slice(0,500)||'Recusada antes do envio.',recordedAt:new Date().toISOString()};payload.closed=true
+   this.update(tx,row.id,payload);this.audit(tx,payload,'ABANDONED_BEFORE_SEND')
+  },{behavior:'immediate'})
+ }
+
  receipt(transactionId:string){
   return this.db.transaction(tx=>{
    const {payload}=this.stored(tx,transactionId);this.authority.authorize(payload.context.channelId)
    if(payload.actorId!==this.actorId)reject(403,'Transação pertence a outro operador.')
    return {transactionId,targetSourceId:payload.targetSourceId,selectionRevision:payload.selectionRevision,context:structuredClone(payload.context),receipt:payload.receipt?structuredClone(payload.receipt):null,
-    prepareSent:payload.prepareSent,commitSent:payload.commitSent,cancelSent:payload.cancelSent,closed:payload.closed,stopResolution:payload.stopResolution??null,
+    prepareSent:payload.prepareSent,commitSent:payload.commitSent,cancelSent:payload.cancelSent,closed:payload.closed,stopResolution:payload.stopResolution??null,abandonedBeforeSend:payload.abandonedBeforeSend??null,
     nativeProgramConfirmed:payload.receipt?.phase==='COMMITTED',physicalOutputValidated:false as const,currentExecutionObserved:false as const}
   },{behavior:'immediate'})
  }
