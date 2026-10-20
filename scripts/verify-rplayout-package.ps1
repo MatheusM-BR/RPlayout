@@ -137,6 +137,9 @@ try {
   $start.RedirectStandardInput = $true
   $start.RedirectStandardOutput = $true
   $start.RedirectStandardError = $true
+  # Under code page 65001 .NET Framework writes a UTF-8 BOM on the first stdin
+  # write; the engine tolerates it, but send clean JSON anyway.
+  try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}
   $engine = New-Object System.Diagnostics.Process
   $engine.StartInfo = $start
   try {

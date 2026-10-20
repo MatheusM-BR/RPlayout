@@ -127,6 +127,7 @@ Step '13 engine instalado anuncia a troca nativa' -ContinueOnFailure {
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.FileName = $engine; $start.Arguments = '--channel-id r88-probe --width 320 --height 180 --fps-num 25 --fps-den 1 --output null'
     $start.UseShellExecute = $false; $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.CreateNoWindow = $true
+    try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}
     $process = [Diagnostics.Process]::Start($start)
     $ready = $null; $deadline = (Get-Date).AddSeconds(30)
     $pending = $null

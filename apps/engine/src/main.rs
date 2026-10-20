@@ -37,6 +37,12 @@ const METER_EVERY: Duration = Duration::from_millis(100);
 const LIVE_RETRY: Duration = Duration::from_secs(2);
 const OUTPUT_EVERY: Duration = Duration::from_secs(1);
 
+/// A UTF-8 BOM can precede the first line when the parent console is in
+/// code page 65001 (.NET Framework writes it on its first stdin write). It is
+/// encoding noise, not a command: strip it instead of rejecting a valid
+/// shutdown/TAKE as invalid JSON.
+fn command_text(line: &str) -> &str { line.strip_prefix('\u{feff}').unwrap_or(line) }
+
 fn parse_args(input: &mut impl BufRead) -> Result<(Config, Option<String>, Option<Output>,bool)> {
     let mut channel_id = String::from("canal");
     let mut width = 1920;
@@ -496,8 +502,9 @@ fn main() -> Result<()> {
     std::thread::spawn(move || {
         for line in input.lines() {
             let Ok(line) = line else { break };
+            let line = command_text(&line);
             if line.trim().is_empty() { continue; }
-            match serde_json::from_str::<Envelope>(&line) {
+            match serde_json::from_str::<Envelope>(line) {
                 Ok(Envelope { id, command: Command::FenceGrant { owner_id, nonce, term, ttl_ms } }) => {
                     let result = fencing::grant(&owner_id, nonce, term, ttl_ms);
                     if result.is_ok() { Event::FenceApplied { nonce, term }.emit(); }
@@ -710,6 +717,17 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_bom_before_a_command_is_encoding_noise_not_invalid_json() {
+        let line = "\u{feff}{\"id\":1,\"cmd\":\"shutdown\"}";
+        assert!(serde_json::from_str::<Envelope>(line).is_err(), "fixture must reproduce the rejected line");
+        let envelope: Envelope = serde_json::from_str(command_text(line)).unwrap();
+        assert!(matches!(envelope.command, Command::Shutdown));
+        assert_eq!(command_text("{\"id\":2}"), "{\"id\":2}");
+        // Only a leading BOM is removed; a BOM inside the payload is not rewritten.
+        assert!(serde_json::from_str::<Envelope>(command_text("{\"id\":3,\"cmd\":\"\u{feff}shutdown\"}")).is_err());
+    }
 
     #[test]
     fn live_recovery_cannot_override_stop_take_or_operator_arming() {
