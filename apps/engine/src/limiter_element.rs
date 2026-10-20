@@ -214,6 +214,14 @@ impl BaseTransformImpl for LimiterImpl {
         for (slot, value) in bytes.chunks_exact_mut(4).zip(samples.iter()) {
             slot.copy_from_slice(&value.to_le_bytes());
         }
+        drop(map);
+        // The lookahead delay emits the previous audible tail inside the next
+        // buffer. If that input was flagged GAP (silence), keeping the flag
+        // would make downstream `volume` skip it, so a muted/held PGM leaked
+        // real audio. GAP only stays when the output is actually silent.
+        if buffer.flags().contains(gst::BufferFlags::GAP) && samples.iter().any(|value| *value != 0.0) {
+            buffer.unset_flags(gst::BufferFlags::GAP);
+        }
 
         // Telemetry is the worst protection action across embedded pairs.
         let reduction = running.bus.take_reduction_db();
@@ -226,4 +234,41 @@ impl BaseTransformImpl for LimiterImpl {
     }
 }
 
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use gstreamer as gst;
+    use gst::prelude::*;
+    use gstreamer_app as gst_app;
+
+    /// Audible block, then GAP-flagged silence: the lookahead tail lands in the
+    /// second output buffer and must lose GAP; a later fully silent one keeps it.
+    #[test]
+    fn lookahead_tail_inside_a_gap_buffer_is_not_left_flagged_as_silence() {
+        gst::init().unwrap();
+        if gst::ElementFactory::find(super::FACTORY).is_none() { super::register().unwrap(); }
+        let pipeline = gst::parse::launch("appsrc name=src format=time caps=audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3 ! rplayoutlimiter ! appsink name=sink sync=false").unwrap().downcast::<gst::Pipeline>().unwrap();
+        let src = pipeline.by_name("src").unwrap().downcast::<gst_app::AppSrc>().unwrap();
+        let sink = pipeline.by_name("sink").unwrap().downcast::<gst_app::AppSink>().unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let block = |index: u64, value: f32, gap: bool| {
+            let samples: Vec<u8> = (0..960 * 2).flat_map(|_| value.to_le_bytes()).collect();
+            let mut buffer = gst::Buffer::from_mut_slice(samples);
+            { let buffer = buffer.get_mut().unwrap(); buffer.set_pts(gst::ClockTime::from_mseconds(index * 20)); buffer.set_duration(gst::ClockTime::from_mseconds(20)); if gap { buffer.set_flags(gst::BufferFlags::GAP); } }
+            buffer
+        };
+        for (index, (value, gap)) in [(0.3, false), (0.0, true), (0.0, true), (0.0, true)].into_iter().enumerate() { src.push_buffer(block(index as u64, value, gap)).unwrap(); }
+        let mut outputs = Vec::new();
+        for _ in 0..4 {
+            let sample = sink.try_pull_sample(gst::ClockTime::from_seconds(5)).expect("limiter output");
+            let buffer = sample.buffer().unwrap();
+            let peak = buffer.map_readable().unwrap().as_slice().chunks_exact(4).map(|raw| f32::from_le_bytes(raw.try_into().unwrap()).abs()).fold(0f32, f32::max);
+            outputs.push((peak, buffer.flags().contains(gst::BufferFlags::GAP)));
+        }
+        pipeline.set_state(gst::State::Null).unwrap();
+        assert!(outputs[1].0 > 0.01, "fixture must place the lookahead tail in the GAP input: {outputs:?}");
+        for (peak, gap) in &outputs { assert!(!(*gap && *peak > 0.0), "audible output still flagged GAP: {outputs:?}"); }
+        assert!(outputs[3].1 && outputs[3].0 == 0.0, "fully silent output keeps GAP: {outputs:?}");
+    }
 }

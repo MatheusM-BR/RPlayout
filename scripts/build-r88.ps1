@@ -48,8 +48,11 @@ Step '01 pre-requisitos' {
   if ($node -ne $base.node) { throw "Node $node difere do runtime da base ($($base.node)). Instale Node $($base.node) para empacotar." }
   $head = (& git rev-parse HEAD); $dirty = @(& git status --porcelain | Where-Object { $_ -notmatch 'state\.json|undefined' })
   if ($dirty.Count) { throw "Arvore com alteracoes nao commitadas: $($dirty -join '; ')" }
-  if ((Test-Path -LiteralPath (Join-Path $Output "$Edition-instalador.zip"))) { throw 'ZIP da r88 ja existe; nada sera sobrescrito. Renomeie/mova o anterior.' }
-  [ordered]@{ head = $head; node = $node; gstreamer = $env:GSTREAMER_1_0_ROOT_MSVC_X86_64; base = $BasePackage }
+  # Never overwrite or delete an earlier attempt: pick the next free edition name.
+  $baseEdition = $Edition; $attempt = 1
+  while (Test-Path -LiteralPath (Join-Path $Output "$Edition-instalador.zip")) { $attempt++; $script:Edition = "$baseEdition-$attempt"; $Edition = $script:Edition }
+  $summary.edition = $Edition
+  [ordered]@{ head = $head; node = $node; gstreamer = $env:GSTREAMER_1_0_ROOT_MSVC_X86_64; base = $BasePackage; edition = $Edition }
 }
 Step '02 dependencias (lockfile congelado)' { Run 'pnpm.cmd' @('install','--frozen-lockfile') 'pnpm install'; 'ok' }
 Step '03 typecheck servidor e interface' { Run 'pnpm.cmd' @('typecheck') 'typecheck'; 'ok' }
@@ -118,7 +121,14 @@ Step '13 engine instalado anuncia a troca nativa' -ContinueOnFailure {
     $start.UseShellExecute = $false; $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.CreateNoWindow = $true
     $process = [Diagnostics.Process]::Start($start)
     $ready = $null; $deadline = (Get-Date).AddSeconds(30)
-    while (!$ready -and (Get-Date) -lt $deadline) { $line = $process.StandardOutput.ReadLine(); if ($line -and $line -match '"event":"ready"') { $ready = $line | ConvertFrom-Json } }
+    $pending = $null
+    while (!$ready -and (Get-Date) -lt $deadline) {
+      if (!$pending) { $pending = $process.StandardOutput.ReadLineAsync() }
+      if (!$pending.Wait(500)) { continue }
+      $line = $pending.Result; $pending = $null
+      if ($null -eq $line) { break }
+      if ($line -match '"event":"ready"') { $ready = $line | ConvertFrom-Json }
+    }
     $process.StandardInput.WriteLine('{"id":1,"cmd":"shutdown"}'); $process.StandardInput.Flush()
     if (!$process.WaitForExit(15000)) { $process.Kill() }
   } finally { $env:PATH = $saved; Remove-Item Env:GST_PLUGIN_PATH, Env:GST_PLUGIN_SYSTEM_PATH -ErrorAction SilentlyContinue }

@@ -1,4 +1,4 @@
-param([string]$Package = "release/RPlayout-1.1",[switch]$SkipDeferredHa)
+﻿param([string]$Package = "release/RPlayout-1.1",[switch]$SkipDeferredHa)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path $Package).Path
 $required = @(

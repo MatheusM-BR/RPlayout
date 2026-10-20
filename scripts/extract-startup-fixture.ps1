@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Archive,[Parameter(Mandatory=$true)][string]$Destination)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'lib/available-memory.ps1')
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $scratch=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../scratch')).TrimEnd('\','/')+'\'
 $target=[IO.Path]::GetFullPath($Destination)
@@ -8,8 +9,7 @@ $outer=[IO.Compression.ZipFile]::OpenRead([IO.Path]::GetFullPath($Archive))
 $memory=$null;$zip=$null
 try{
  $payload=$outer.GetEntry('RPlayout-payload.zip');if(!$payload){throw 'Payload ausente'}
- [GC]::Collect();$metric=[GC]::GetGCMemoryInfo()
- if($payload.Length -gt [int]::MaxValue -or $metric.TotalAvailableMemoryBytes-$metric.MemoryLoadBytes -lt 3*$payload.Length){throw 'Margem de memoria insuficiente'}
+ if($payload.Length -gt [int]::MaxValue -or (Get-RPlayoutAvailableMemoryBytes) -lt 3*$payload.Length){throw 'Margem de memoria insuficiente'}
  $memory=[IO.MemoryStream]::new([int]$payload.Length);$input=$payload.Open()
  try{$input.CopyTo($memory)}finally{$input.Dispose()}
  $memory.Position=0;$zip=[IO.Compression.ZipArchive]::new($memory,[IO.Compression.ZipArchiveMode]::Read,$false)

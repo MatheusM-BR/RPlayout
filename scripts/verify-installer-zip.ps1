@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Archive,[Parameter(Mandatory=$true)][string]$EvidenceDirectory,[switch]$InMemory)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'lib/available-memory.ps1')
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $taskRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $qaRoot=[IO.Path]::GetFullPath($EvidenceDirectory)
@@ -13,8 +14,7 @@ try{
   $payload=$outer.GetEntry('RPlayout-payload.zip')
   if(!$payload){throw 'Payload ausente'}
   if($InMemory){
-    [GC]::Collect();$memory=[GC]::GetGCMemoryInfo()
-    if($payload.Length -gt [int]::MaxValue -or $memory.TotalAvailableMemoryBytes-$memory.MemoryLoadBytes -lt 3*$payload.Length){throw 'Margem de memoria insuficiente; nada sera extraido.'}
+    if($payload.Length -gt [int]::MaxValue -or (Get-RPlayoutAvailableMemoryBytes) -lt 3*$payload.Length){throw 'Margem de memoria insuficiente; nada sera extraido.'}
     $payloadMemory=[IO.MemoryStream]::new([int]$payload.Length)
     $source=$payload.Open()
     try{$source.CopyTo($payloadMemory);$payloadMemory.Position=0}catch{$payloadMemory.Dispose();throw}finally{$source.Dispose()}
