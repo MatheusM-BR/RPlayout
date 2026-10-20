@@ -40,6 +40,7 @@ import {registerLauncherDiscovery} from './domain/launcher-discovery.js'
 
 /** Cadência do estado ao vivo. Vinte por segundo já engana o olho no medidor. */
 const LIVE_HZ = 20
+const SOCKET_AUTH_TTL_MS = 1_000
 
 async function main(): Promise<void> {
   startupTrace('main entered')
@@ -117,15 +118,32 @@ async function main(): Promise<void> {
     server.log.error('Banco indisponível; tarefas agendadas desta instância suspensas, sem reabertura ou reenvio automático.')
   },(task,error)=>server.log.error({err:error,task},'Falha em tarefa de segundo plano; nenhum reenvio feito por esta chamada.'))
 
+  // The live feed goes out 20x per second per channel. Re-reading users,
+  // session and access policy from storage for every socket on every frame
+  // was the largest storage load with several Master/QC windows open. The
+  // decision per socket is reused for at most one second: a revoked session
+  // or narrowed channel scope takes effect within that second.
+  const socketAuth = new WeakMap<object, { at: number; closed: boolean; channelIds: string[] | null }>()
+  const authFor = (socket: object, request: { headers: Record<string, unknown>; ip?: string }) => {
+    const now = Date.now(), cached = socketAuth.get(socket)
+    if (cached && now - cached.at < SOCKET_AUTH_TTL_MS) return cached
+    const identity = access.identity(request as never), required = identity ? true : access.required()
+    // Same rules as AccessControl.channelAllowed: identity scope, or open
+    // installation (no users) allows everything; required without identity closes.
+    const decision = { at: now, closed: required && !identity, channelIds: identity ? identity.channelIds : null }
+    socketAuth.set(socket, decision)
+    return decision
+  }
   const broadcast = (payload: unknown): void => {
     const data = JSON.stringify(sourceWire().publicValue(payload))
     for (const [socket, request] of sockets) {
       try {
-        if (access.required() && !access.identity(request)) {
+        const auth = authFor(socket, request)
+        if (auth.closed) {
           socket.close(4401, 'Sessão encerrada. Entre novamente.'); sockets.delete(socket); continue
         }
         const channelId = payload && typeof payload === 'object' && 'channelId' in payload ? (payload as { channelId?: unknown }).channelId : null
-        if (typeof channelId === 'string' && !access.channelAllowed(request, channelId)) continue
+        if (typeof channelId === 'string' && auth.channelIds !== null && !auth.channelIds.includes(channelId)) continue
         socket.send(data)
       } catch {
         try{socket.close(storageConnected()?1011:4503,'Controle indisponível; confira o servidor.')}catch{}

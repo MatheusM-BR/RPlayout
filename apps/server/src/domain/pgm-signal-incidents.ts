@@ -35,8 +35,9 @@ export function endPreviousPgmObservation(db:Db,channelId:string,lease:Execution
 /** Stable identity allows safe retry after DB failure or a repeated sample.
  * Acknowledgement and observation-ended are never signal recovery. */
 export function persistPgmSignalIncidents(db:Db,channelId:string,probe:PgmProbe):number{
-  if(isRecoveryRehearsal(db.$client))return 0
+  // No transition (the usual 20 Hz case) needs no storage read at all.
   const pending=probe.pendingTransitions();if(!pending.length)return 0
+  if(isRecoveryRehearsal(db.$client))return 0
   const count=db.transaction(tx=>{
     if(isRecoveryRehearsal(db.$client))throw new Error('Incidentes em quarentena; fila externa não autorizada.')
     let inserted=0

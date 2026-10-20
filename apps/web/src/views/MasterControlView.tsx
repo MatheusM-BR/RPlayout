@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags,LiveSourceReview,RootCatalogReview,RootAddReview } from '@rplayout/protocol'
-import { qcApproved,programDurationFrames } from '@rplayout/protocol'
+import { qcApproved,programDurationFrames,durationIn } from '@rplayout/protocol'
 import { clock, dur, formatStandardRate } from '../format.js'
 import {PreviewFrameStatus} from '../components/broadcast/PreviewFrameStatus.js'
 import type {
@@ -97,6 +97,12 @@ const getItemDuration = (item: ItemView | null | undefined): number => {
   if (!item) return 0
   if (item.trim) return Math.max(0, item.trim.out - item.trim.in)
   return item.item?.durationOverride ?? item.asset?.durationFrames ?? 0
+}
+
+/** Library rows carry the probed length in ns; `durationFrames` is a legacy
+ * field (0 for every probed file), so the MAM list showed 00:00 for all. */
+export function libraryFrames(asset:{durationNs?:number|null;durationFrames:number},rate:{num:number;den:number}):number{
+  return durationIn({durationNs:asset.durationNs??null,durationFrames:asset.durationFrames},rate)
 }
 
 export function MasterControlView({
@@ -533,7 +539,7 @@ export function MasterControlView({
   }
   const previewKind = activePreviewAsset?.kind ?? (cueItem?.item.type === 'LIVE' || directPreview ? 'AO VIVO' : armedItem?.asset?.kind ?? 'COMERCIAL')
   const activePreviewDuration = selectedPreviewAsset
-    ? selectedPreviewAsset.durationFrames
+    ? libraryFrames(selectedPreviewAsset, channel.rate)
     : cueItem
     ? getItemDuration(cueItem)
     : 0
@@ -1190,7 +1196,7 @@ export function MasterControlView({
 
                         <div className="flex items-center gap-2 shrink-0 font-label-mono text-[9px] text-outline">
                           <span className="text-on-surface font-semibold tabular-nums">
-                            {dur(asset.durationFrames, rate)}
+                            {dur(libraryFrames(asset, rate), rate)}
                           </span>
 
                           <button
@@ -2002,7 +2008,7 @@ export function MasterControlView({
                                     AO VIVO
                                   </span>
                                 )}
-                                <span>{dur(asset.durationFrames, rate)}</span>
+                                <span>{dur(libraryFrames(asset, rate), rate)}</span>
                               </div>
                             </div>
                           )

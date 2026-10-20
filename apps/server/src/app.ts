@@ -123,6 +123,9 @@ const short = (url: string): string => url.split('/').slice(-2).join('/')
  * mídia -- piscar isso a cada F5 seria pior do que deixar ligado.
  */
 const MONITOR_OCIOSO_MS = 20_000
+const MONITOR_REAFIRMAR_MS = 5_000
+const TELEMETRY_REFRESH_MIN_MS = 1_000
+const CHECKPOINT_IDLE_REWRITE_MS = 30_000
 
 export class ChannelRuntime {
   private lastIncidentCapture=0
@@ -201,6 +204,9 @@ export class ChannelRuntime {
   private contingencyOrigin: ChannelCheckpoint['contingency'] | null = null
   private pendingContingency: Promise<void> | null = null
   private pendingTelemetryRefresh: Promise<RundownView | null> | null = null
+  private lastTelemetryRefreshAt = 0
+  private lastCheckpointKey: string | null = null
+  private lastCheckpointWrittenAt = 0
   get contingencyPending(): boolean { return this.pendingContingency !== null }
   get contingencyState() {
     return this.contingencyOrigin ? { ...this.contingencyOrigin, active: this.transport.state().rundownId === this.contingencyOrigin.loopRundownId } : null
@@ -552,7 +558,12 @@ export class ChannelRuntime {
    * telemetry refresh is pending. Explicit editorial loads still supersede it. */
   refreshForTelemetry(): Promise<RundownView | null> {
     if (this.pendingTelemetryRefresh) return this.pendingTelemetryRefresh
-    const work = this.refresh()
+    // Live source telemetry marks the transport dirty several times per
+    // second; each refresh re-reads the whole grade from storage. At most one
+    // per second, the later one coalescing every mark made meanwhile.
+    const wait = TELEMETRY_REFRESH_MIN_MS - (Date.now() - this.lastTelemetryRefreshAt)
+    const start = (): Promise<RundownView | null> => { this.lastTelemetryRefreshAt = Date.now(); return this.closed ? Promise.resolve(this.view) : this.refresh() }
+    const work = wait > 0 ? new Promise<void>(done => setTimeout(done, wait)).then(start) : start()
     this.pendingTelemetryRefresh = work
     void work.finally(() => { if (this.pendingTelemetryRefresh === work) this.pendingTelemetryRefresh = null }).catch(() => {})
     return work
@@ -788,13 +799,23 @@ export class ChannelRuntime {
     const held=hold?.status==='HELD'&&hold.itemId===state.onAir?.itemId?hold:null
     if(held&&(!state.programTrim||!this.operationalRevision)){this.recoveryError='Pausa sem corte/revisão confirmados; checkpoint anterior preservado.';return}
     const liveProgramBinding=this.transport instanceof EngineTransport?this.transport.liveProgramBindingSnapshot?.()??undefined:undefined
-    try{this.checkpoints.write({ version: liveProgramBinding?2:1,liveProgramBinding,channelId: this.channel.id, rundownId: this.executionView?.rundown.id ?? null,
-      revisionId: this.operationalRevision?.id ?? null, itemId: state.onAir?.itemId ?? null,
-      elapsed: held?.frames??Math.max(0, Math.floor(state.onAir?.elapsed ?? 0)), playing: held?false:state.playing,
-      programHold:held?{status:'HELD',decoderId:held.decoderId,frames:held.frames!}:undefined,
-      graphicReceiptId:new GraphicCommandLedger(this.db,this.channel.id).latestNativeCompositionId()??undefined,
-      realEngine: this.transport instanceof EngineTransport, programTrim:state.programTrim??undefined, rate: this.channel.rate,audioChannels:this.channel.audioChannels??2, executionId: this.executionId, contingency: this.contingencyOrigin ?? undefined })}catch(error){this.recoveryError=error instanceof Error?error.message:String(error);return}
-    this.lastCheckpointAt = Date.now()
+    const now=Date.now()
+    try{
+      const value={ version: liveProgramBinding?2 as const:1 as const,liveProgramBinding,channelId: this.channel.id, rundownId: this.executionView?.rundown.id ?? null,
+        revisionId: this.operationalRevision?.id ?? null, itemId: state.onAir?.itemId ?? null,
+        elapsed: held?.frames??Math.max(0, Math.floor(state.onAir?.elapsed ?? 0)), playing: held?false:state.playing,
+        programHold:held?{status:'HELD' as const,decoderId:held.decoderId,frames:held.frames!}:undefined,
+        graphicReceiptId:new GraphicCommandLedger(this.db,this.channel.id).latestNativeCompositionId()??undefined,
+        realEngine: this.transport instanceof EngineTransport, programTrim:state.programTrim??undefined, rate: this.channel.rate,audioChannels:this.channel.audioChannels??2, executionId: this.executionId, contingency: this.contingencyOrigin ?? undefined }
+      // Nothing on air: the cursor does not move, so rewriting the same row
+      // every second only cost a write transaction. Still rewritten at least
+      // every 30 s, and always when anything in it changes or when forced.
+      const key=JSON.stringify(value)
+      if(!force&&!state.onAir&&key===this.lastCheckpointKey&&now-this.lastCheckpointWrittenAt<CHECKPOINT_IDLE_REWRITE_MS){this.lastCheckpointAt=now;return}
+      this.checkpoints.write(value as Parameters<Checkpoints['write']>[0])
+      this.lastCheckpointKey=key;this.lastCheckpointWrittenAt=now
+    }catch(error){this.lastCheckpointKey=null;this.recoveryError=error instanceof Error?error.message:String(error);return}
+    this.lastCheckpointAt = now
   }
 
   /** Cancel runtime persistence before terminating its owned engine. */
@@ -1326,6 +1347,7 @@ export class ChannelRuntime {
    */
   private readonly olhando = new Map<'pvw' | 'mon', number>()
   private readonly monitorLigado = new Map<'pvw' | 'mon', boolean>()
+  private readonly monitorReafirmado = new Map<'pvw' | 'mon', number>()
   /** Monitores que alguém tentou abrir e que este canal não tem. */
   private readonly monitorPedidoSemExistir = new Set<'pvw' | 'mon'>()
 
@@ -1350,10 +1372,22 @@ export class ChannelRuntime {
       this.monitorPedidoSemExistir.add(bus)
       return
     }
-    this.olhando.set(bus, Date.now())
+    const agora = Date.now()
+    this.olhando.set(bus, agora)
     if (this.monitorLigado.get(bus) !== true) {
       this.monitorLigado.set(bus, true)
+      this.monitorReafirmado.set(bus, agora)
       console.info(`[monitor] ligando ${bus}: alguém abriu a janela`)
+      this.transport.setMonitor(bus, true)
+      return
+    }
+    // A primeira ordem pode se perder: chegar antes de o engine criar as
+    // saídas, ou cair entre uma reconfiguração e outra. Sem reafirmar, o
+    // monitor ficava desligado para sempre enquanto a janela continuasse
+    // avisando (o "PGM/PVW não abrem"). Ligar o que já está ligado não mexe
+    // na saída do engine; no máximo uma linha a cada 5 s por monitor.
+    if (agora - (this.monitorReafirmado.get(bus) ?? 0) >= MONITOR_REAFIRMAR_MS) {
+      this.monitorReafirmado.set(bus, agora)
       this.transport.setMonitor(bus, true)
     }
   }

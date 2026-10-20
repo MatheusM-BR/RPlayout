@@ -26,6 +26,19 @@ export interface BroadcastMonitorProps {
   className?: string
 }
 
+/** Same cadence as the Whep heartbeat; the server idles a monitor after 20 s. */
+export const MONITOR_HEARTBEAT_MS = 5_000
+/** A failed WHEP offer is retried; meanwhile the file preview (if any) shows. */
+export const MONITOR_RETRY_MS = 6_000
+
+/** While WHEP is down: heartbeat now and every 5 s, then remount WHEP once. */
+export function monitorRecovery(beat:()=>void,retry:()=>void):()=>void{
+  beat()
+  const heartbeat=setInterval(beat,MONITOR_HEARTBEAT_MS)
+  const again=setTimeout(retry,MONITOR_RETRY_MS)
+  return ()=>{clearInterval(heartbeat);clearTimeout(again)}
+}
+
 export function BroadcastMonitor({
   bus,
   title,
@@ -61,6 +74,24 @@ export function BroadcastMonitor({
   const [isScrubbing, setIsScrubbing] = useState(false)
   const [webrtcFailed, setWebrtcFailed] = useState(false)
   const failedMonitor=useCallback(()=>setWebrtcFailed(true),[])
+  const onWatchingRef=useRef(onWatching)
+  useEffect(()=>{onWatchingRef.current=onWatching},[onWatching])
+
+  // WHEP failed (typically 404: the engine only publishes the monitor after
+  // someone watches, so the first offer races it). The Whep element is gone,
+  // and with it its heartbeat; without these two the server stopped the
+  // monitor 20 s later and the window stayed on "Nenhum item armado" forever.
+  // Keep telling the server this window is open and try WHEP again.
+  useEffect(()=>{
+    if(!webrtcPath||!webrtcFailed)return undefined
+    const beat=()=>{
+      const notify=onWatchingRef.current
+      if(!notify)return
+      if(notify.length>0)(notify as (bus:'pgm'|'pvw',watching:boolean)=>void)(bus,true)
+      else (notify as ()=>void)()
+    }
+    return monitorRecovery(beat,()=>setWebrtcFailed(false))
+  },[webrtcPath,webrtcFailed,bus])
 
   // O áudio é desmutado se isAudioMonitored for explicitamente verdadeiro
   const effectiveMuted = isAudioMonitored !== undefined ? !isAudioMonitored : isMuted
