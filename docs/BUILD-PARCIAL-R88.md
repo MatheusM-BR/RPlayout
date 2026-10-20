@@ -1,5 +1,30 @@
 # RPlayout r88 — marco utilizável (build parcial, NÃO homologada)
 
+## GERADA — r88-3, 20/10/2026 (Windows, commit b9baa54)
+
+- Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-3-instalador.zip`
+  SHA256 `ACB893F8D504D3F28314747035BCAD00CD44D47DF83B85C393B742E89251BE3D`.
+- Instalação QA: `D:\RPlayout-builds\qa\r88-installed-20261020-161251`
+  (atalhos em `qa\r88-shortcuts-20261020-161251`). Resumo:
+  `D:\RPlayout-builds\r88-summary-20261020-161251.json`.
+- 13/13 etapas PASS: tipos; testes JS do núcleo; builds; **Rust 124 PASS / 0 FAIL
+  / 4 ignorados (GStreamer 1.28)**; **ensaio real da troca de fonte com o engine
+  release (PREPARE→READY→COMMIT→reserva no PGM, mesmo relógio/as-run, checkpoint
+  v2, replay, STOP)**; ZIP conferido; instalação isolada; pacote instalado
+  (plugins, Node/SQLite, NDI runtime, CRT, engine ready/shutdown) e engine
+  instalado anunciando liveReplacementProtocol=1.
+- r88 e r88-2 no mesmo diretório são tentativas anteriores (não apagadas):
+  r88 sem instalação QA; r88-2 sem a correção de BOM do engine. Use a r88-3.
+
+Defeitos encontrados pela execução real e corrigidos antes da r88-3:
+1. Limitador marcava como GAP (silêncio) um buffer que levava o rabo audível
+   do lookahead; o `volume` pulava o buffer e o PGM pausado/mutado vazava áudio
+   (16 canais com par auxiliar; falhava em Linux e Windows). Teste unitário.
+2. Engine rejeitava como JSON inválido um comando precedido de BOM UTF-8
+   (console em code page 65001 + .NET Framework); o shutdown não era aceito.
+3. Scripts de QA usavam API só do PowerShell 7 e não rodavam no 5.1; script de
+   verificação sem BOM; verificação do protocolo não drenava o stdout.
+
 Uso interno e testes, sem distribuição. Não substitui instalações anteriores,
 não altera bancos operacionais e não instala drivers DeckLink.
 

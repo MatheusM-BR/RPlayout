@@ -1,6 +1,17 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r87 instalada; ciclo r86→r87→r86 conferido no D:
+## Estado atual — r88-3 gerada e instalada em QA (D:\RPlayout-builds)
+
+20/10 final — r88-3 GERADA no Windows (b9baa54): 13/13 etapas automáticas PASS,
+Rust 124/0/4 no GStreamer 1.28, ensaio REAL da troca de fonte com engine
+release PASS, instalação QA isolada e pacote instalado verificados. Corrigidos
+pela execução real: vazamento de áudio no PGM pausado (limitador/GAP), comando
+com BOM rejeitado pelo engine, scripts de QA incompatíveis com PowerShell 5.1.
+BUILD-PARCIAL-R88.md tem caminhos/SHA256. Não validado: DeckLink física, NDI/OMT
+externo, saída broadcast real, Windows limpo, soak 24/48h, estações remotas,
+interface clicada contra engine real, licença NDI, grupo 8 (v3). 10.1 continua
+concluída, agora com evidência da r88-3; nenhum outro item fechado por esta build.
+Totais10/53:8concluídas/34andamento/4pendentes/7v3.
 
 20/10 posterior — r88 definida como marco utilizável. Engine Rust compilado e
 testado pela primeira vez (Linux/GStreamer1.24): 220PASS/3FAIL/4ign; 12 testes da
