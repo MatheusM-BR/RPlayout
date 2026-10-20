@@ -7,7 +7,32 @@ const normalize=(sql:string)=>sql.replace(/\s+/g,' ').trim()
 export const restoredActivationSchema=z.object({version:z.literal(1),id:z.string().uuid(),requestId:z.string().uuid(),instanceId:z.string().uuid(),phase:z.enum(['STARTING','CONFIRMED','FAILED']),startedAt:z.string().datetime(),finishedAt:z.string().datetime().nullable(),nativeReadyChannels:z.array(z.string()),resumedChannels:z.array(z.string()),message:z.string().nullable(),originTable:z.string().regex(/^restored_origin_[a-f0-9]{32}$/).nullable(),automaticPromotion:z.literal(false),physicalOutputValidated:z.literal(false)}).strict().refine(row=>(row.phase==='STARTING')===(row.finishedAt===null)).refine(row=>(row.phase==='CONFIRMED')===(row.originTable!==null)).refine(row=>new Set(row.nativeReadyChannels).size===row.nativeReadyChannels.length&&new Set(row.resumedChannels).size===row.resumedChannels.length&&row.resumedChannels.every(id=>row.nativeReadyChannels.includes(id)))
 export type RestoredActivation=z.infer<typeof restoredActivationSchema>
 export const restoredActivationSignature=(row:RestoredActivation)=>installationVault(false).reviewIdentity(JSON.stringify(restoredActivationSchema.parse(row)),'restored-activation:v1')
+/** One-statement fingerprint of everything the signed read depends on: schema
+ * (tables, triggers, quarantine/origin tables: any DDL bumps schema_version),
+ * the migration marker and every row byte. Null when a dependency is absent;
+ * callers then take the full uncached path. Taken BEFORE the full read, so a
+ * concurrent change can only cause an extra miss, never a stale hit. */
+export function restoredActivationFingerprint(sqlite:Database.Database):string|null{
+  try{
+    const row=sqlite.prepare("SELECT (SELECT schema_version FROM pragma_schema_version) AS v,(SELECT count(*) FROM schema_migrations WHERE version=44) AS m,(SELECT count(*) FROM restored_activation_runs) AS n,(SELECT group_concat(id||char(2)||payload||char(2)||signature,char(1)) FROM (SELECT id,payload,signature FROM restored_activation_runs ORDER BY rowid)) AS d").get() as {v:number;m:number;n:number;d:string|null}|undefined
+    return row?JSON.stringify([row.v,row.m,row.n,row.d]):null
+  }catch{return null}
+}
+const verifiedReads=new WeakMap<object,{fingerprint:string;rows:RestoredActivation[]}>()
+/** Hot path (every request, signal observation and background tick). The
+ * full validation (schema, triggers, signatures) reruns whenever anything it
+ * reads changes; otherwise the verified result is reused. Failures are never
+ * cached. */
 export function readRestoredActivations(sqlite:Database.Database):RestoredActivation[]{
+  const fingerprint=restoredActivationFingerprint(sqlite)
+  const cached=fingerprint?verifiedReads.get(sqlite):undefined
+  if(cached&&cached.fingerprint===fingerprint)return structuredClone(cached.rows)
+  const rows=readRestoredActivationsUncached(sqlite)
+  if(fingerprint)verifiedReads.set(sqlite,{fingerprint,rows:structuredClone(rows)})
+  else verifiedReads.delete(sqlite)
+  return rows
+}
+function readRestoredActivationsUncached(sqlite:Database.Database):RestoredActivation[]{
   const present=sqlite.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='restored_activation_runs'").get() as {sql:string}|undefined
   const marked=sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()&&sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=44').get()
   if(!marked){if(present)throw new Error('Ativação sem registro de migração.');return []}

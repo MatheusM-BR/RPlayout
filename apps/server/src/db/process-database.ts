@@ -77,8 +77,20 @@ export class ProcessDatabase {
   }
   private recordLatency(started:number){this.lastMs=performance.now()-started;this.calls++;this.totalMs+=this.lastMs;this.maxMs=Math.max(this.maxMs,this.lastMs)}
   storageStatus(){return {mode:'PROCESS' as const,connected:this.open&&!this.poisoned,backendPid:process.pid,storagePid:this.storagePid,automaticReconnect:false,automaticReplay:false,latency:{calls:this.calls,lastMs:this.lastMs,maxMs:this.maxMs,meanMs:this.calls?this.totalMs/this.calls:0},validation:'PENDING' as const}}
+  /** Statement metadata already validated by the service. Every query carries
+   * its SQL and the service prepares/caches it itself, so a repeated prepare()
+   * needs no extra round trip (each one crosses worker + process IPC). DDL via
+   * exec() clears it; an SQL invalidated by another connection's DDL still
+   * fails at execution, never silently. */
+  private readonly prepared=new Map<string,{reader:boolean;readonly:boolean}>()
   prepare(sql:string){
-    const info=this.call({op:'prepare',sql}),database=this
+    let info=this.prepared.get(sql)
+    if(!info){
+      info=this.call({op:'prepare',sql}) as {reader:boolean;readonly:boolean}
+      if(this.prepared.size>=512)this.prepared.delete(this.prepared.keys().next().value!)
+      this.prepared.set(sql,{reader:info.reader,readonly:info.readonly})
+    }
+    const database=this
     let raw=false,pluck=false,safeIntegers=false,bound:unknown[]|null=null
     const query=(op:string,args:unknown[]=[])=>database.call({op,sql,raw,pluck,safeIntegers,args:bound??args})
     const stmt={source:sql,database:this,reader:info.reader,readonly:info.readonly,
@@ -93,7 +105,7 @@ export class ProcessDatabase {
     }
     return stmt
   }
-  exec(sql:string){this.call({op:'exec',sql});return this}
+  exec(sql:string){if(!/^\s*(BEGIN|COMMIT|SAVEPOINT|RELEASE|ROLLBACK)\b/i.test(sql))this.prepared.clear();this.call({op:'exec',sql});return this}
   pragma(sql:string,options?:Record<string,unknown>){return this.call({op:'pragma',sql,options})}
   transaction<T extends (...args:any[])=>any>(work:T){
     const execute=(behavior:string,self:unknown,args:unknown[])=>{

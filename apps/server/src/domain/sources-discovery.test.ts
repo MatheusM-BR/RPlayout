@@ -84,6 +84,27 @@ describe('descoberta real de dispositivos', () => {
     child.emit('close', 1)
     expect((await pending).sdi.reason).toContain('GStreamer não inicializou')
   })
+  it('resultado vencido volta na hora e a nova varredura roda em segundo plano; reescanear espera',async()=>{
+    const first=probeChild(),second=probeChild(),third=probeChild()
+    spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second).mockReturnValueOnce(third)
+    const sources=new Sources(fakeDb(),'devices',1_000)
+    const pending=sources.list();first.stdout.emit('data',Buffer.from(JSON.stringify(result())));first.emit('close',0)
+    const initial=await pending
+    await vi.advanceTimersByTimeAsync(1_001)
+    expect(await sources.list()).toBe(initial)
+    expect(spawnMock).toHaveBeenCalledTimes(2)
+    expect(await sources.list()).toBe(initial) // same background scan, no third spawn
+    expect(spawnMock).toHaveBeenCalledTimes(2)
+    second.stdout.emit('data',Buffer.from(JSON.stringify({...result(),ndi:family([{reference:'ndi:NEW',label:'Nova'}])})));second.emit('close',0)
+    await vi.advanceTimersByTimeAsync(0)
+    expect((await sources.list()).ndi.sources.map(row=>row.reference)).toEqual(['ndi:NEW'])
+    let settled=false
+    const forced=sources.list(true).then(value=>{settled=true;return value})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBe(false)
+    third.stdout.emit('data',Buffer.from(JSON.stringify(result())));third.emit('close',0)
+    expect((await forced).ndi.sources.map(row=>row.reference)).toEqual(['ndi:CAM'])
+  })
   it('rejeita resposta inválida e informa necessidade de atualizar o pacote', async () => {
     const child = probeChild()
     spawnMock.mockReturnValue(child)

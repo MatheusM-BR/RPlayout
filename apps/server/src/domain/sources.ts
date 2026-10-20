@@ -129,10 +129,17 @@ export class Sources {
   async list(force = false): Promise<SourceList> {
     if (!force && this.cached && Date.now() - this.cachedAt < this.ttlMs) return this.cached
     // Duas aberturas simultâneas do diálogo não devem virar duas varreduras.
-    this.running ??= this.build().finally(() => {
+    const running = this.running ??= this.build().finally(() => {
       this.running = null
     })
-    return this.running
+    // A varredura leva segundos (provedores esperam anúncios na rede). Abrir
+    // um diálogo não pode esperar por ela quando já existe resultado: devolve
+    // o último e atualiza em segundo plano. "Reescanear" (force) espera.
+    if (!force && this.cached) {
+      running.catch(() => {})
+      return this.cached
+    }
+    return running
   }
 
   private async build(): Promise<SourceList> {

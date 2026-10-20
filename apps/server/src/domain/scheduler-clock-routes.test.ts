@@ -73,5 +73,11 @@ describe('relógio e horizonte HTTP usam a execução congelada',()=>{
     expect(created.statusCode,created.body).toBe(200)
     expect(app.db.select().from(rundowns).where(eq(rundowns.id,created.json().rundownId)).get()?.date).toBe('2026-09-30')
     expect((await server.inject('/api/playlists')).json().date).toBe('2026-09-30')
+    // Without a restart, the new channel's runtime holds its grade: CUE no
+    // longer answers "Canal sem grade carregada". Nothing is cued or aired.
+    const fresh=app.runtimes.get(created.json().channelId)!
+    expect(fresh.view?.rundown.id).toBe(created.json().rundownId)
+    expect(fresh.transport.state().onAir).toBeNull()
+    expect(fresh.transport.state().preview).toBeNull()
   })
 })

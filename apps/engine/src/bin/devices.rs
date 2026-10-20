@@ -359,26 +359,35 @@ fn main() -> Result<()> {
     gst::init().context("GStreamer não inicializou")?;
     trace("gstreamer:ready");
 
-    let devices = Devices {
-        decklink: enumerate(
-            "decklinkdeviceprovider",
-            "sdi",
-            "o plugin da Decklink não está nesta instalação do GStreamer",
-            "Source",
-        ),
-        decklink_outputs: enumerate(
-            "decklinkdeviceprovider",
-            "sdi",
-            "o plugin de saída DeckLink não está nesta instalação do GStreamer",
-            "Sink",
-        ),
-        ndi: enumerate(
-            "ndideviceprovider",
-            "ndi",
-            "o plugin NDI (`ndisrc`) não está nesta instalação do GStreamer",
-            "Source",
-        ),
-        omt: {
+    // Each provider waits SETTLE_MS for announcements and OMT waits for its own
+    // discovery; done one after the other the operator waited ~5 s per scan.
+    // Independent families run in parallel. Both DeckLink directions stay on
+    // one thread (same driver/provider), so its enumeration order is unchanged.
+    let (decklink, decklink_outputs, ndi, omt) = std::thread::scope(|scope| {
+        let decklink = scope.spawn(|| {
+            let sources = enumerate(
+                "decklinkdeviceprovider",
+                "sdi",
+                "o plugin da Decklink não está nesta instalação do GStreamer",
+                "Source",
+            );
+            let outputs = enumerate(
+                "decklinkdeviceprovider",
+                "sdi",
+                "o plugin de saída DeckLink não está nesta instalação do GStreamer",
+                "Sink",
+            );
+            (sources, outputs)
+        });
+        let ndi = scope.spawn(|| {
+            enumerate(
+                "ndideviceprovider",
+                "ndi",
+                "o plugin NDI (`ndisrc`) não está nesta instalação do GStreamer",
+                "Source",
+            )
+        });
+        let omt = scope.spawn(|| {
             trace("omt:discover");
             let found = omt_runtime::discover();
             trace("omt:discovered");
@@ -392,7 +401,21 @@ fn main() -> Result<()> {
                 },
                 Err(error) => Family { available: false, reason: Some(format!("{error:#}")), sources: Vec::new() },
             }
-        },
+        });
+        let failed = |family: &str| Family {
+            available: false,
+            reason: Some(format!("a descoberta de {family} falhou internamente; tente reescanear no servidor")),
+            sources: Vec::new(),
+        };
+        let (decklink, decklink_outputs) = decklink.join().unwrap_or_else(|_| (failed("DeckLink"), failed("saídas DeckLink")));
+        (decklink, decklink_outputs, ndi.join().unwrap_or_else(|_| failed("NDI")), omt.join().unwrap_or_else(|_| failed("OMT")))
+    });
+
+    let devices = Devices {
+        decklink,
+        decklink_outputs,
+        ndi,
+        omt,
         plugins: Plugins {
             missing: {
                 trace("plugins:survey");

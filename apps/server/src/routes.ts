@@ -464,7 +464,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   // Called inside the old transport queue: old queued commands fail closed,
   // and the replacement restores the confirmed PGM rather than just its grade.
   const rebuildChannel = async (id: string, beforeCreate?: () => Promise<void>,checkpointAlreadyHandled=false) => {
-    const previous = app.runtimes.get(id), rundownId = previous?.view?.rundown.id ?? null
+    // A runtime that never had a grade (channel created in this session) falls
+    // back to the channel's first grade, exactly like startup.
+    const previous = app.runtimes.get(id), rundownId = previous?.view?.rundown.id ?? (await listRundowns(app.db, id))[0]?.id ?? null
     if (previous) {
       if(!checkpointAlreadyHandled)previous.checkpoint(true)
       previous.close()
@@ -1651,7 +1653,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     // O servidor de mídia ganha o caminho do canal novo, e o canal ganha suas
     // saídas gerenciadas: sem isto ele existiria na tela e em lugar nenhum.
     await syncDistribution(app)
-    await runtimeFor(app, id)
+    // Same as startup: the new channel's grade must be the runtime's grade, or
+    // the Master shows it while CUE answers "Canal sem grade carregada" until a
+    // server restart. Editorial load only; nothing is cued or put on air.
+    const created = await runtimeFor(app, id)
+    if (created && !created.view) await created.load(rundownId)
     onChange()
     return { channelId: id, rundownId }
   })
