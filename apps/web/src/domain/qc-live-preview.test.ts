@@ -4,7 +4,7 @@ import type {Live} from '../types.js'
 
 describe('Aviso de sintonia do QC acompanha apenas a seleção pendente',()=>{
   it('some ao receber vídeo pronto, sem esperar um clique no botão de qualidade',()=>{
-    expect(qcLiveTuningFeedback('one','one','Estúdio ÇÃÓ',false)).toBe('Sintonizando Estúdio ÇÃÓ diretamente no preview…')
+    expect(qcLiveTuningFeedback('one','one','Estúdio ÇÃÓ',false)).toBe('Abrindo Estúdio ÇÃÓ no decodificador do QC…')
     expect(qcLiveTuningFeedback('one','one','Estúdio ÇÃÓ',true)).toBeNull()
   })
   it('não reaparece por perda posterior após consumir a solicitação pronta',()=>{

@@ -702,6 +702,7 @@ export class EngineTransport implements Transport {
       }
       this.onAirItemId = null
       this.requestedLivePreview = null
+      this.qcOpenSource = null
       this.armedItemId = null
       this.armedSpecification = null
       this.meter = SILENCE
@@ -2476,15 +2477,37 @@ export class EngineTransport implements Transport {
     })
   }
 
-  /** No CUE/LOAD/TAKE; serialized with them and bound to the active source. */
+  /** Live source open in the QC's own decoder (never the Master's PVW). */
+  private qcOpenSource:string|null=null
+  qcSource():string|null { return this.qcOpenSource }
+
+  /** Opens/closes the QC decoder. No CUE/LOAD/TAKE; PVW and PGM untouched. */
+  openQcSource(source:string|null,authorize:()=>void=()=>{}):Promise<void> {
+    return this.enqueue(async()=>{
+      authorize()
+      if(!this.options.qcPreview)throw new Error('Inspeção ao vivo em qualidade indisponível nesta instalação.')
+      if(source===null){
+        this.qcOpenSource=null
+        await this.request({cmd:'qcSource',item:null})
+        return
+      }
+      const resolved=resolveSource(source)
+      if(!resolved)throw new Error('Fonte ao vivo inválida para o QC.')
+      if(this.qcOpenSource===resolved)return
+      this.qcOpenSource=null
+      await this.request({cmd:'qcSource',item:{itemId:`qc:${resolved}`,path:'',source:resolved,trimIn:0,trimOut:0,gainDb:0}})
+      this.qcOpenSource=resolved
+    })
+  }
+
+  /** No CUE/LOAD/TAKE; serialized with them and bound to the QC decoder. */
   qcMonitor(source:string,on:boolean,authorize:()=>void=()=>{}):Promise<void> {
     return this.enqueue(async()=>{
       authorize()
       if(!this.options.qcPreview)throw new Error('Inspeção ao vivo em qualidade indisponível nesta instalação.')
-      const target=this.preview
-      const spec=target?.kind==='SOURCE'?this.specForPreview(target):null
-      if(!spec?.source || spec.source!==resolveSource(source))throw new Error('A fonte do QC não é mais o preview ativo.')
-      await this.request({cmd:'qcMonitor',itemId:spec.itemId,on})
+      const resolved=resolveSource(source)
+      if(!resolved || this.qcOpenSource!==resolved)throw new Error('A fonte não está aberta no decodificador do QC.')
+      await this.request({cmd:'qcMonitor',itemId:`qc:${resolved}`,on})
     })
   }
 

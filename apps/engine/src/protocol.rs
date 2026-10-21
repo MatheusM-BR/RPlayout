@@ -161,8 +161,10 @@ fn default_fade() -> u64 {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Command {
-    /// Bound to the current preview, never a CUE, LOAD or TAKE.
+    /// Bound to the QC decoder's source, never a CUE, LOAD or TAKE.
     QcMonitor { item_id: String, on: bool },
+    /// Opens/closes the QC's own live decoder. Never touches PVW or PGM.
+    QcSource { item: Option<ItemSpec> },
     /// Private owning server only, before or during pipeline construction.
     FenceGrant { owner_id: String, nonce: u64, term: u64, ttl_ms: u64 },
     ReleaseProgramOutputs { owner_id:String,term:u64,item_id:Option<String>,decoder_id:Option<u64> },

@@ -348,13 +348,16 @@ export class ChannelRuntime {
         })
       : new SimulatedTransport(channel.id, () => this.executionView)
 
-    this.qcInspection=new QcLiveInspection(()=>{
-      const preview=this.transport.state().preview
-      return preview?.kind==='SOURCE'?preview.source:null
-    },async(source,on,authorize)=>{
+    // QC inspects live sources in its own engine decoder: the Master's PVW is
+    // never selected, replaced or closed by the QC (and vice versa).
+    const qcEngine=()=>{
       if(!(this.transport instanceof EngineTransport) || !this.qcPreviewOutput)throw new Error('Inspeção ao vivo em qualidade exige engine e servidor de mídia ativos.')
-      await this.transport.qcMonitor(source,on,authorize)
-    })
+      return this.transport
+    }
+    this.qcInspection=new QcLiveInspection(
+      async(source,authorize)=>{await qcEngine().openQcSource(source,authorize)},
+      async(source,on,authorize)=>{await qcEngine().qcMonitor(source,on,authorize)},
+    )
 
     const deviceAutomation = new ScheduledDeviceAutomation(db)
     this.graphics = new Graphics(channel, this.transport, {

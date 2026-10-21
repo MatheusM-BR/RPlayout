@@ -6,7 +6,7 @@ import {assessLiveSignal} from '@rplayout/protocol'
  * signal loss. Readiness must still come from qcLivePreviewReady, not an ACK. */
 export function qcLiveTuningFeedback(requestKey:string|null,selectionKey:string,sourceName:string|undefined,previewReady:boolean):string|null {
   return requestKey!==null && requestKey===selectionKey && sourceName && !previewReady
-    ? `Sintonizando ${sourceName} diretamente no preview…` : null
+    ? `Abrindo ${sourceName} no decodificador do QC…` : null
 }
 
 /** Never label another operator's PVW, or PGM-only readiness, as this QC source. */

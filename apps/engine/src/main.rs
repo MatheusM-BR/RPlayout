@@ -391,6 +391,11 @@ fn run_command(channel: &mut Channel, command: Command, request_id:u64) -> Resul
             }
             Ok(true)
         }
+        Command::QcSource { item } => {
+            channel.qc_source(item)?;
+            for report in channel.outputs_report() { Event::Publisher { report }.emit(); }
+            Ok(true)
+        }
         Command::QcMonitor { item_id, on } => {
             channel.set_qc_monitor(&item_id, on)?;
             for report in channel.outputs_report() { Event::Publisher { report }.emit(); }

@@ -14,7 +14,7 @@ import { QcInspectionControls } from '../components/broadcast/QcInspectionContro
 import { QcSafeAreaOverlay } from '../components/broadcast/QcSafeAreaOverlay.js'
 import {qcOriginalUrl,qcQualityFrameUrl,qcQualitySelected,qcInspectionUsesFrames,qcMonitorLabels,qcInspectionFrameAtTime,qcInspectionVideoHasPicture,qcQualityFrameFailed} from '../domain/media-preview.js'
 import {useQcLiveInspection} from '../domain/use-qc-live-inspection.js'
-import {qcLivePreviewReady,qcLiveTuningFeedback} from '../domain/qc-live-preview.js'
+import {qcLiveTuningFeedback} from '../domain/qc-live-preview.js'
 import {qcFrameProgress,qcLiveFrameRecent,qcScopePixels,qcStableMeasurements,type QcFrameProgress} from '../domain/qc-scope-sample.js'
 import {QcRenderCost} from '../domain/qc-render-cost.js'
 import {drawQcParade} from '../domain/qc-parade-draw.js'
@@ -128,12 +128,13 @@ function QualityControlSession({
   const [liveTuningKey,setLiveTuningKey]=useState<string|null>(null)
   const liveQualityKey=JSON.stringify([channel.id,selectedLiveSourceId,liveSourceRef])
   const liveQualityActive=Boolean(selectedLiveSource && liveQualitySelection?.key===liveQualityKey)
-  const livePreviewReady=qcLivePreviewReady(liveSourceRef,previewTarget,signals,transportMode)
+  // The QC opens live sources in its OWN engine decoder: selecting one here
+  // never CUEs the Master's PVW, and a Master CUE never closes this view.
+  const liveInspection=useQcLiveInspection(channel.id,liveSourceRef,liveQualityActive,liveQualitySelection?.id)
+  const livePreviewReady=liveQualityActive && liveInspection.ready
   useEffect(()=>{
     if(livePreviewReady && liveTuningKey===liveQualityKey)setLiveTuningKey(null)
   },[livePreviewReady,liveTuningKey,liveQualityKey])
-  const liveInspection=useQcLiveInspection(channel.id,liveSourceRef,liveQualityActive && livePreviewReady,liveQualitySelection?.id)
-  const watchLightPreview=useCallback(()=>{void api.watching(channel.id,'pvw').catch(()=>{})},[channel.id])
 
   const selectLiveSource = useCallback((source: ManagedLiveSource) => {
     if(!liveCatalog.canSelect||!source.enabled)return
@@ -142,9 +143,10 @@ function QualityControlSession({
     setSelectedAssetId(null)
     setSelectedLiveSourceId(source.id)
     setQcStatusFeedback(null)
-    setLiveTuningKey(JSON.stringify([channel.id,source.id,canonicalLiveSourceRef(source)]))
-    onPreviewLiveSource?.(canonicalLiveSourceRef(source), source.name)
-  }, [onPreviewLiveSource,channel.id,liveCatalog.canSelect])
+    const key=JSON.stringify([channel.id,source.id,canonicalLiveSourceRef(source)])
+    setLiveTuningKey(key)
+    setLiveQualitySelection({key,id:commandRequestId()})
+  }, [channel.id,liveCatalog.canSelect])
 
   // O QC de acervo não tenta decodificar NDI/SRT/RTMP no browser. Ele mostra a
   // mesma lista de ingest do servidor e as métricas que o processo realmente
@@ -1471,21 +1473,20 @@ function QualityControlSession({
                 </button>
                 <div className="relative w-full h-full aspect-video overflow-hidden bg-black">
                   {selectedLiveSource ? (
-                    !livePreviewReady ? (
+                    !liveQualityActive ? (
                       <div role="status" className="w-full h-full flex items-center justify-center text-center text-outline font-body-sm text-[11px] px-6">
-                        Aguardando quadro válido desta fonte no PVW. Se o CUE foi alterado em outra tela, selecione a entrada novamente.
+                        Inspeção pausada. Ative a qualidade para abrir esta entrada no decodificador do QC (o PVW do Master não é usado).
                       </div>
-                    ) : liveQualityActive && !liveInspection.ready ? (
+                    ) : !livePreviewReady ? (
                       <div role="status" className="w-full h-full flex items-center justify-center text-center text-outline font-body-sm text-[11px] px-6">
-                        {liveInspection.error ?? 'Ativando inspeção ao vivo em qualidade…'}
+                        {liveInspection.error ?? 'Abrindo a entrada no decodificador do QC…'}
                       </div>
-                    ) : monitors?.preview ? (
+                    ) : monitors?.inspection ? (
                       <Whep
-                        key={`${liveQualityKey}:${liveQualityActive?'quality':'light'}`}
-                        path={liveQualityActive?monitors.inspection ?? null:monitors.preview}
+                        key={`${liveQualityKey}:quality`}
+                        path={monitors.inspection}
                         port={monitors.port}
                         frameRate={fps}
-                        onWatching={liveQualityActive?undefined:watchLightPreview}
                         hideControls
                         muted
                         onVideoElement={attachSharedPreviewVideo}

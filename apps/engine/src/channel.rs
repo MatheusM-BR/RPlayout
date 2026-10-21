@@ -682,6 +682,10 @@ pub struct Channel {
     held_qc_preview: Option<Output>,
     qc_video_channel: Option<String>,
     qc_deadline: Option<Instant>,
+    /// Dedicated QC decoder: QC inspects a live source without touching the
+    /// Master's PVW (they used to share it and knocked each other out).
+    qc_item: Option<Item>,
+    qc_reopen_at: Option<Instant>,
     previewing: Option<Item>,
     /// Medidor de loudness do programa e a torneira de onde ele bebe.
     meter: Meter,
@@ -1488,6 +1492,8 @@ impl Channel {
             held_qc_preview: None,
             qc_video_channel: None,
             qc_deadline: None,
+            qc_item: None,
+            qc_reopen_at: None,
             previewing: None,
             meter: Meter::new(48_000, 2),
             meter_sink: meter_sink
@@ -1841,12 +1847,7 @@ impl Channel {
     /// encostar no que vai entrar no ar.
     pub fn preview(&mut self, spec: Option<ItemSpec>) -> Result<()> {
         self.invalidate_live_replacement();
-        self.qc_deadline = None;
-        // Closing/replacing CUE must stop the old HQ encoder too. The next
-        // source remains lightweight until a fresh, source-bound QC request.
-        for publisher in &mut self.publishers {
-            if publisher.role() == "qc" { publisher.set_wanted(false); }
-        }
+        // The QC decoder is independent: a Master CUE no longer closes it.
         if let Some(previous) = self.previewing.take() {
             discard(previous);
         }
@@ -1858,7 +1859,7 @@ impl Channel {
         self.preview_meter.reset();
 
         let mut item =
-            self.build_item(&spec, &video_channel, &audio_channel, &self.preview_caps(), true)?;
+            self.build_item(&spec, &video_channel, &audio_channel, &self.preview_caps(), true, false)?;
         item.pipeline
             .set_state(gst::State::Paused)
             .with_context(|| open_failure(&spec, " no preview"))?;
@@ -2095,9 +2096,39 @@ impl Channel {
         Ok(())
     }
 
+    /// Open (or close) the QC's own decoder for a live source. Its program
+    /// sinks go to private, unconsumed surfaces; only the gated HQ branch is
+    /// published, and only while a QC viewer holds the native lease.
+    pub fn qc_source(&mut self, spec: Option<ItemSpec>) -> Result<()> {
+        self.qc_deadline = None;
+        for publisher in &mut self.publishers {
+            if publisher.role() == "qc" { publisher.set_wanted(false); }
+        }
+        if let Some(previous) = self.qc_item.take() { discard(previous); }
+        let Some(spec) = spec else { return Ok(()) };
+        if !spec.is_live() { return Err(anyhow!("o decodificador do QC aceita somente fonte ao vivo")); }
+        if self.qc_video_channel.is_none() { return Err(anyhow!("inspeção ao vivo indisponível nesta instalação")); }
+        let video_channel = format!("{}-qcsrc-video", self.config.channel_id);
+        let audio_channel = format!("{}-qcsrc-audio", self.config.channel_id);
+        let mut item = self.build_item(&spec, &video_channel, &audio_channel, &self.preview_caps(), true, true)?;
+        item.pipeline.set_state(gst::State::Paused).with_context(|| open_failure(&spec, " no QC"))?;
+        item.pipeline.set_state(gst::State::Playing)?;
+        item.on_air = true;
+        self.qc_item = Some(item);
+        Ok(())
+    }
+
+    pub fn qc_source_id(&self) -> Option<String> {
+        self.qc_item.as_ref().map(|item| item.spec.item_id.clone())
+    }
+
+    pub fn qc_live_ready(&self) -> bool {
+        self.qc_item.as_ref().is_some_and(Item::live_ready)
+    }
+
     pub fn set_qc_monitor(&mut self, item_id: &str, on: bool) -> Result<()> {
-        let item = self.previewing.as_ref().filter(|item| item.spec.item_id == item_id && item.spec.is_live())
-            .ok_or_else(|| anyhow!("a fonte do QC não é mais o preview ativo"))?;
+        let item = self.qc_item.as_ref().filter(|item| item.spec.item_id == item_id && item.spec.is_live())
+            .ok_or_else(|| anyhow!("a fonte do QC não está aberta no decodificador do QC"))?;
         let valve = item.qc_valve.as_ref().ok_or_else(|| anyhow!("inspeção ao vivo indisponível nesta instalação"))?;
         if on && !item.source_statistics.lock().map_err(|_| anyhow!("estado de sinal indisponível"))?
             .report(item.video_ready.load(Ordering::Acquire)).video_present {
@@ -2211,15 +2242,36 @@ impl Channel {
         completed.store(true,Ordering::Release);result
     }
 
+    /// The QC decoder has no command-loop bus reader: drain it here so state
+    /// and QoS messages cannot accumulate, and reopen the same source (at
+    /// most every 2 s) when it reports an error, like the live PGM recovery.
+    fn service_qc_decoder(&mut self) {
+        let Some(bus) = self.qc_item.as_ref().and_then(|item| item.pipeline.bus()) else { return };
+        let mut failed = false;
+        while let Some(message) = bus.pop() {
+            if matches!(message.view(), gst::MessageView::Error(_) | gst::MessageView::Eos(_)) { failed = true; }
+        }
+        if !failed { return; }
+        let now = Instant::now();
+        if self.qc_reopen_at.is_some_and(|at| now < at) { return; }
+        self.qc_reopen_at = Some(now + Duration::from_secs(2));
+        let spec = self.qc_item.as_ref().map(|item| item.spec.clone());
+        let monitoring = self.qc_deadline.is_some();
+        if self.qc_source(spec).is_ok() && monitoring {
+            eprintln!("[engine] decodificador do QC reaberto após erro da fonte");
+        }
+    }
+
     pub fn service_outputs(&mut self) -> Vec<Report> {
+        self.service_qc_decoder();
         if self.qc_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             self.qc_deadline = None;
-            if let Some(valve) = self.previewing.as_ref().and_then(|item| item.qc_valve.as_ref()) { valve.set_property("drop", true); }
+            if let Some(valve) = self.qc_item.as_ref().and_then(|item| item.qc_valve.as_ref()) { valve.set_property("drop", true); }
             for publisher in &mut self.publishers { if publisher.role() == "qc" { publisher.set_wanted(false); } }
         }
         // Do not start encoding the black default surface before the gated
         // branch has actually delivered a fresh original-size buffer.
-        if self.qc_deadline.is_some() && self.previewing.as_ref().is_some_and(|item| item.qc_ready.load(Ordering::Acquire)) {
+        if self.qc_deadline.is_some() && self.qc_item.as_ref().is_some_and(|item| item.qc_ready.load(Ordering::Acquire)) {
             for publisher in &mut self.publishers { if publisher.role() == "qc" { publisher.set_wanted(true); } }
         }
         self.publishers
@@ -2397,7 +2449,7 @@ impl Channel {
         self.replacement_journal.begin(request.clone(), Instant::now())?;
         let prepared = (|| -> Result<Item> {
             let mut item = self.build_item(&spec, &format!("{}-{slot}", self.video_channel),
-                &format!("{}-{slot}", self.audio_channel), &self.video_caps(), false)?;
+                &format!("{}-{slot}", self.audio_channel), &self.video_caps(), false, false)?;
             item.slot = slot;
             if item.pipeline.set_state(gst::State::Playing).is_err() {
                 discard(item);
@@ -2533,6 +2585,7 @@ impl Channel {
             &format!("{}-{slot}", self.audio_channel),
             &self.video_caps(),
             false,
+            false,
         )?;
         item.slot = slot;
 
@@ -2593,6 +2646,7 @@ impl Channel {
         audio_channel: &str,
         caps: &gst::Caps,
         metered: bool,
+        qc_tap: bool,
     ) -> Result<Item> {
         spec.audio_routing.validate()?;
         crate::audio_bus::validate_pairs(&spec.auxiliary_pairs, self.config.audio_channels)?;
@@ -2658,7 +2712,7 @@ impl Channel {
         // upstream processing from blocking the next pad's first buffer.
         let mut video_elements = vec![vqueue, vconv, vdeint];
         let qc_ready = Arc::new(AtomicBool::new(false));
-        let (qc_branch, qc_valve) = if metered && spec.is_live() {
+        let (qc_branch, qc_valve) = if qc_tap && spec.is_live() {
             if let Some(channel) = &self.qc_video_channel {
                 let tee = make("tee")?;
                 let main_queue = make("queue")?;
@@ -3253,6 +3307,9 @@ impl Channel {
         if let Some(item) = self.previewing.take() {
             discard(item);
         }
+        if let Some(item) = self.qc_item.take() {
+            discard(item);
+        }
         for publisher in &mut self.publishers {
             publisher.shutdown();
         }
@@ -3596,7 +3653,7 @@ mod file_preroll_tests {
     }
 
     #[test]
-    fn qc_native_lease_closes_raw_branch_without_backend_or_program_change() {
+    fn qc_dedicated_decoder_lease_is_independent_of_master_pvw() {
         gst::init().unwrap();
         if gst::ElementFactory::find("rplayoutlimiter").is_none() { crate::limiter_element::register().unwrap(); }
         let unique=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
@@ -3608,38 +3665,39 @@ mod file_preroll_tests {
         channel.0.attach_qc_preview(&output).unwrap();channel.0.start().unwrap();
         let uri=gst::glib::filename_to_uri(&file,None).unwrap().to_string();
         let spec:ItemSpec=serde_json::from_value(serde_json::json!({"itemId":"qc-source","source":uri,"trimIn":0,"trimOut":0,"gainDb":0})).unwrap();
-        channel.0.preview(Some(spec.clone())).unwrap();
+        channel.0.qc_source(Some(spec.clone())).unwrap();
         assert!(!channel.0.set_monitor("qc",true),"generic monitor cannot bypass source binding");
         assert!(channel.0.set_qc_monitor("wrong-source",true).is_err());
         let deadline=Instant::now()+Duration::from_secs(3);
-        while channel.0.preview_live_ready().is_none() && Instant::now()<deadline {std::thread::sleep(Duration::from_millis(5));}
-        assert!(channel.0.preview_live_ready().is_some());
-        let preview=channel.0.previewing.as_ref().unwrap();
-        assert!(preview.qc_valve.as_ref().unwrap().property::<bool>("drop"));
+        while !channel.0.qc_live_ready() && Instant::now()<deadline {std::thread::sleep(Duration::from_millis(5));}
+        assert!(channel.0.qc_live_ready());
+        assert!(channel.0.preview_id().is_none(),"the QC decoder never occupies the Master's PVW");
+        let qc=channel.0.qc_item.as_ref().unwrap();
+        assert!(qc.qc_valve.as_ref().unwrap().property::<bool>("drop"));
         assert!(channel.0.publishers.iter().filter(|p|p.role()=="qc").all(|p|p.report().health==crate::output::Health::Idle));
         channel.0.set_qc_monitor("qc-source",true).unwrap();
-        assert!(!channel.0.previewing.as_ref().unwrap().qc_valve.as_ref().unwrap().property::<bool>("drop"));
+        assert!(!channel.0.qc_item.as_ref().unwrap().qc_valve.as_ref().unwrap().property::<bool>("drop"));
+        // A Master CUE (PVW open/replace/close) leaves the QC decoder alone.
+        let pvw:ItemSpec=serde_json::from_value(serde_json::json!({"itemId":"master-cue","source":uri,"trimIn":0,"trimOut":0,"gainDb":0})).unwrap();
+        channel.0.preview(Some(pvw)).unwrap();
+        assert_eq!(channel.0.preview_id().as_deref(),Some("master-cue"));
+        assert!(channel.0.previewing.as_ref().unwrap().qc_valve.is_none(),"PVW decoder has no QC tap: no second writer on the QC surfaces");
+        channel.0.preview(None).unwrap();
+        assert_eq!(channel.0.qc_source_id().as_deref(),Some("qc-source"));
+        assert!(!channel.0.qc_item.as_ref().unwrap().qc_valve.as_ref().unwrap().property::<bool>("drop"),"Master CUE must not close the QC inspection");
         // Native monotonic deadline is authoritative even with no server
         // timeout/HTTP call. Expiry closes before any publisher can start.
         channel.0.qc_deadline=Some(Instant::now()-Duration::from_millis(1));
         channel.0.service_outputs();
         assert!(channel.0.qc_deadline.is_none());
-        assert!(channel.0.previewing.as_ref().unwrap().qc_valve.as_ref().unwrap().property::<bool>("drop"));
+        assert!(channel.0.qc_item.as_ref().unwrap().qc_valve.as_ref().unwrap().property::<bool>("drop"));
         assert!(channel.0.publishers.iter().filter(|p|p.role()=="qc").all(|p|p.report().health==crate::output::Health::Idle));
-        assert_eq!(channel.0.preview_id().as_deref(),Some("qc-source"));assert!(channel.0.on_air_id().is_none());
-        let first=channel.0.preview_live_ready_identity().unwrap();
-        let mut ready_cache=Some(first.clone());
-        let discarded=channel.0.previewing.as_ref().unwrap().pipeline.downgrade();
-        channel.0.preview(Some(spec)).unwrap();
-        let deadline=Instant::now()+Duration::from_secs(3);
-        while channel.0.preview_live_ready_identity().is_none() && Instant::now()<deadline {std::thread::sleep(Duration::from_millis(5));}
-        let reopened=channel.0.preview_live_ready_identity().expect("new opening must deliver real buffers");
-        assert_eq!(first.0,reopened.0,"editorial source identity must stay the same");
-        assert_ne!(first.1,reopened.1,"each decoder opening has a different identity");
-        assert_eq!(crate::new_ready_opening(&mut ready_cache,Some(reopened)),Some("qc-source".into()));
-        assert!(discarded.upgrade().is_none(),"the prior decoder must actually be released");
-        assert!(channel.0.on_air_id().is_none(),"repeated QC cannot TAKE");
-        channel.0.preview(None).unwrap();assert!(channel.0.set_qc_monitor("qc-source",true).is_err());
+        let discarded=channel.0.qc_item.as_ref().unwrap().pipeline.downgrade();
+        channel.0.qc_source(Some(spec)).unwrap();
+        assert!(discarded.upgrade().is_none(),"the prior QC decoder must actually be released");
+        assert!(channel.0.on_air_id().is_none(),"QC cannot TAKE");
+        channel.0.qc_source(None).unwrap();assert!(channel.0.set_qc_monitor("qc-source",true).is_err());
+        assert!(channel.0.qc_source(Some(serde_json::from_value(serde_json::json!({"itemId":"file","path":"x.mkv","trimIn":0,"trimOut":25,"gainDb":0})).unwrap())).is_err(),"QC decoder is for live sources only");
     }
 
     #[test]
@@ -3683,7 +3741,9 @@ mod file_preroll_tests {
         let mut channel=RunningChannel(Channel::new(Config{channel_id:id.clone(),width:320,height:180,fps_n:25,fps_d:1,bitrate_kbps:450,ceiling_dbtp:-1.,audio_channels:2,scan:Scan::Progressive,top_field_first:true,outputs:vec![Output::Null],preview:Some(output.clone())}).unwrap());
         channel.0.attach_qc_preview(&output).unwrap();channel.0.start().unwrap();
         let item:ItemSpec=serde_json::from_value(serde_json::json!({"itemId":"source","source":gst::glib::filename_to_uri(&file,None).unwrap().to_string(),"trimIn":0,"trimOut":0,"gainDb":0})).unwrap();
-        channel.0.preview(Some(item)).unwrap();
+        channel.0.preview(Some(item.clone())).unwrap();
+        // The QC opens its own decoder for the same live source.
+        channel.0.qc_source(Some(ItemSpec{item_id:"qc-source".into(),..item})).unwrap();
         let pvw=channel.0.publishers.iter().find(|publisher|publisher.role()=="pvw").unwrap().audio_channel().to_owned();
         let qc=channel.0.publishers.iter().find(|publisher|publisher.role()=="qc").unwrap().audio_channel().to_owned();
         assert_ne!(pvw,qc,"independent consumers cannot drain one interaudio FIFO");

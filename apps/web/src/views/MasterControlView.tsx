@@ -105,11 +105,6 @@ export function libraryFrames(asset:{durationNs?:number|null;durationFrames:numb
   return durationIn({durationNs:asset.durationNs??null,durationFrames:asset.durationFrames},rate)
 }
 
-/** QC and Master share one PVW: make the conflict visible before a CUE. */
-export function qcSharedPreviewWarning(viewers:number):string{
-  return `PVW em uso pelo QC (${viewers===1?'1 tela':viewers+' telas'} em inspeção de qualidade). Um CUE aqui troca o PVW e encerra essa inspeção.`
-}
-
 /** Why TAKE is unavailable, shown next to the button instead of a silent no-op. */
 export function takeBlockedReason(publicationRequired:boolean,preview:unknown):string|null{
   if(publicationRequired)return 'TAKE bloqueado: publique a grade revisada em PLAYLIST.'
@@ -903,7 +898,6 @@ export function MasterControlView({
 
             {/* COLUNA 3: MONITOR PVW */}
             <div className="xl:col-span-3 flex flex-col h-full">
-              {live.qcInspection&&<div role="alert" className="mb-1 rounded border border-armed-amber/50 bg-armed-amber/10 px-2 py-1 text-[10px] text-armed-amber">{qcSharedPreviewWarning(live.qcInspection.viewers)}</div>}
               <BroadcastMonitor
                 bus="pvw"
                 className="w-full h-full"

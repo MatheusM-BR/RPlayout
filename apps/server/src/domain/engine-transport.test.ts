@@ -1013,22 +1013,29 @@ describe('transporte real confirmado pelo engine', () => {
     await expect(failed).rejects.toThrow('indisponível')
     expect(transport.hasPendingCommand()).toBe(false);expect(transport.commandRevision()).toBe(before+3)
   })
-  it('qualidade do QC usa somente comando ligado à fonte vigente, sem LOAD/TAKE ou outro CUE',async()=>{
+  it('QC abre a fonte no decodificador próprio: PVW/PGM intactos e CUE do Master não derruba o QC',async()=>{
     transport=new EngineTransport(channel,()=>view([]),()=>null,{binary:'fake-engine',outputs:['null'],preview:'srt://local/pvw',qcPreview:'srt://local/qc',bitrateKbps:500})
     event({event:'ready',channelId:channel.id})
-    await transport.cue({kind:'SOURCE',source:'ndi:ESTÚDIO'})
+    await transport.cue({kind:'SOURCE',source:'omt:MASTER'})
     const before=transport.state(),count=commands.length
-    await transport.qcMonitor('ndi:ESTÚDIO',true);await transport.qcMonitor('ndi:ESTÚDIO',false)
-    expect(commands.slice(count)).toMatchObject([{cmd:'qcMonitor',itemId:'source:ndi:ESTÚDIO',on:true},{cmd:'qcMonitor',itemId:'source:ndi:ESTÚDIO',on:false}])
+    await expect(transport.qcMonitor('ndi:ESTÚDIO',true)).rejects.toThrow('não está aberta')
+    await transport.openQcSource('ndi:ESTÚDIO');await transport.openQcSource('ndi:ESTÚDIO')
+    await transport.qcMonitor('ndi:ESTÚDIO',true)
+    expect(commands.slice(count)).toMatchObject([{cmd:'qcSource',item:{itemId:'qc:ndi:ESTÚDIO',source:'ndi:ESTÚDIO'}},{cmd:'qcMonitor',itemId:'qc:ndi:ESTÚDIO',on:true}])
+    expect(commands.slice(count).some(command=>['preview','load','take'].includes(String(command.cmd)))).toBe(false)
     expect(transport.state()).toMatchObject({preview:before.preview,onAir:before.onAir,playing:before.playing,preparedItemId:before.preparedItemId})
+    // A Master CUE afterwards keeps the QC source open and monitorable.
     await transport.cue({kind:'SOURCE',source:'omt:NOVA'})
-    const changed=commands.length
-    await expect(transport.qcMonitor('ndi:ESTÚDIO',true)).rejects.toThrow('preview ativo')
-    expect(commands).toHaveLength(changed)
+    expect(transport.qcSource()).toBe('ndi:ESTÚDIO')
+    await transport.qcMonitor('ndi:ESTÚDIO',true)
+    await transport.openQcSource(null)
+    expect(commands.at(-1)).toMatchObject({cmd:'qcSource',item:null});expect(transport.qcSource()).toBeNull()
+    await expect(transport.qcMonitor('ndi:ESTÚDIO',true)).rejects.toThrow('não está aberta')
   })
   it('QC em qualidade indisponível não finge sucesso no transporte sem destino dedicado',async()=>{
     start(view([]));await transport.cue({kind:'SOURCE',source:'ndi:ESTÚDIO'})
     const count=commands.length
+    await expect(transport.openQcSource('ndi:ESTÚDIO')).rejects.toThrow('indisponível')
     await expect(transport.qcMonitor('ndi:ESTÚDIO',true)).rejects.toThrow('indisponível')
     expect(commands).toHaveLength(count)
   })
