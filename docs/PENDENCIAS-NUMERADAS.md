@@ -1,6 +1,12 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-9 (análise ponta a ponta, D:\RPlayout-builds)
+## Estado atual — r88-11 (QC com decodificador próprio, D:\RPlayout-builds)
+
+21/10 manhã — r88-11 (5e9fbad) 13/13: QC "em qualidade" deixou de usar o PVW do
+Master (decodificador próprio no engine); regressão completa na r88-11 com fonte
+NDI de teste sem queda do QC durante CUE/TAKE no Master. Aberto: áudio do vMix
+(vMix fechado durante os ensaios). Totais inalterados.
+
 
 21/10 madrugada — relato do operador na r88-3 analisado (registro decifrado da
 sessão) e reproduzido nas r88-7/8/9 de QA com fonte NDI e tom de 1 kHz: áudio

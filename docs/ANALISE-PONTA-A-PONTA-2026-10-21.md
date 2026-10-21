@@ -89,6 +89,14 @@ Conferido na r88-10 de QA (13/13, Rust 125/0/4) com a fonte NDI de teste:
   primeiro quadro"), 1 a 2 s. A tela do QC agora mostra isso como "Abrindo a
   entrada…" e não como erro (r88-11).
 
+## Regressão final — r88-11 (5e9fbad, 13/13)
+
+Banco novo, fonte NDI de teste: primeira busca achou a fonte (2,7 s); QC aprovou
+o arquivo; grade publicada; QC inspecionando a entrada ao vivo durante todo o
+ensaio. CUE do vídeo → PVW −21 dBFS; TAKE → PGM −21 dBFS; CUE do ao vivo → PVW
+−12 dBFS; TAKE → PGM −12 dBFS. QC: 2 respostas "aguardando o primeiro quadro"
+na abertura (tela mostra "Abrindo…"), depois 200 em todas.
+
 ## Limites
 
 Ensaios com emissor NDI local, não o vMix nem outra máquina. A imagem dos

@@ -1,6 +1,17 @@
 # RPlayout r88 — marco utilizável (build parcial, NÃO homologada)
 
-## GERADA — r88-9, 21/10/2026 (Windows, commit 9463076) — USAR ESTA
+## GERADA — r88-11, 21/10/2026 (Windows, commit 5e9fbad) — USAR ESTA
+
+- Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-11-instalador.zip`
+  SHA256 `1C8A5AD4FCA25C4A70CA34AEF1B2B306936896F608E7A816F4807093DE8714D1`.
+- QA: `D:\RPlayout-builds\qa\r88-installed-20261021-080025`; 13/13 PASS, Rust 125/0/4.
+- Sobre a r88-9: QC "em qualidade" com decodificador próprio (não usa mais o
+  PVW do Master); abertura do QC mostrada como "Abrindo…". Regressão na própria
+  r88-11 com fonte NDI de teste: busca 2,7 s; CUE/TAKE de vídeo (−21 dBFS) e
+  de ao vivo (−12 dBFS) com o QC inspecionando ao mesmo tempo, sem queda.
+- r88-10 fica no lugar (sem a mensagem de abertura); use a r88-11.
+
+## GERADA — r88-9, 21/10/2026 (Windows, commit 9463076)
 
 - Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-9-instalador.zip`
   SHA256 `2593707A8A66237B1D74E4E09B01ADB3AA38C53597FE5EF791460EC26598D41A`.
