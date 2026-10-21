@@ -593,31 +593,44 @@ export function App() {
   // after the item on air and takes it, instead of refusing the operator.
   const takeLiveFromPreview = useCallback(
     (sourceRef: string, title: string) =>
-      enqueueTransportCommand(() => guard(async () => {
+      enqueueTransportCommand(async () => {
         if (!view || view.channel.id !== channelRef.current) return
-        const onAirId = live?.transport.onAir?.itemId
-        const index = view.items.findIndex((entry) => entry.item.id === onAirId)
-        const fps = view.channel.rate.num / view.channel.rate.den
-        const existing = new Set(view.items.map((entry) => entry.item.id))
-        const inserted = await api.addItem(view.rundown.id, {
-          sourceRef, type: 'LIVE', title,
-          durationOverride: Math.round(15 * 60 * fps),
-          anchor: { kind: 'FLOW' },
-          atIndex: index >= 0 ? index + 1 : undefined,
-        }, view.editorialRevision)
-        absorb(inserted)
-        const added = inserted.view?.items.find((entry) => !existing.has(entry.item.id) && entry.item.sourceRef === sourceRef)
-        if (!added) throw new Error('A entrada não foi confirmada na grade; nada foi publicado nem levado ao ar.')
-        // What goes on air is the PUBLISHED plan. Publish only this insertion.
-        const simulation = await api.simulateOperationalPlaylist(view.rundown.id)
-        if (simulation.activeRevision !== null) {
-          if (!liveOnlyInsertion(simulation.differences, added.item.id)) throw new Error(`"${title}" foi inserida na grade, mas há outras alterações pendentes de publicação. Revise e publique em PROGRAMAÇÃO e faça o TAKE de novo; o PGM não foi alterado.`)
-          await api.publishOperationalPlaylist(view.rundown.id, simulation.review.editorialRevision, simulation.review.token)
+        // Errors here are shown and logged explicitly: the generic guard drops
+        // failures when a live WebSocket update changes the screen context,
+        // which happens every few hundred ms on a running channel.
+        try {
+          const rundownId = view.rundown.id, channelId = view.channel.id
+          const onAirId = live?.transport.onAir?.itemId
+          const index = view.items.findIndex((entry) => entry.item.id === onAirId)
+          const fps = view.channel.rate.num / view.channel.rate.den
+          const existing = new Set(view.items.map((entry) => entry.item.id))
+          const inserted = await api.addItem(rundownId, {
+            sourceRef, type: 'LIVE', title,
+            durationOverride: Math.round(15 * 60 * fps),
+            anchor: { kind: 'FLOW' },
+            atIndex: index >= 0 ? index + 1 : undefined,
+          }, view.editorialRevision)
+          const pick = (items: readonly { item: { id: string; sourceRef?: string | null; type: string } }[] | undefined) =>
+            items?.find((entry) => !existing.has(entry.item.id) && entry.item.sourceRef === sourceRef)
+            ?? items?.find((entry) => !existing.has(entry.item.id) && entry.item.type === 'LIVE')
+          const added = pick(inserted.view?.items) ?? pick((await api.rundown(rundownId)).view?.items)
+          if (!added) throw new Error('A entrada não foi confirmada na grade; nada foi publicado nem levado ao ar.')
+          // What goes on air is the PUBLISHED plan. Publish only this insertion.
+          const simulation = await api.simulateOperationalPlaylist(rundownId)
+          if (simulation.activeRevision !== null) {
+            if (!liveOnlyInsertion(simulation.differences, added.item.id)) throw new Error(`"${title}" foi inserida na grade, mas há outras alterações pendentes de publicação. Revise e publique em PROGRAMAÇÃO e faça o TAKE de novo; o PGM não foi alterado.`)
+            await api.publishOperationalPlaylist(rundownId, simulation.review.editorialRevision, simulation.review.token)
+          }
+          const taken = await api.transport(channelId, 'take')
+          try { absorb(taken) } catch { /* the WebSocket brings the same state */ }
+          say(`Entrada "${title}" inserida na grade após o item no ar, publicada e levada ao PGM.`)
+        } catch (failure) {
+          const texto = failure instanceof Error ? failure.message : 'TAKE do ao vivo não confirmado.'
+          console.error('[RPlayout] TAKE de ao vivo fora da grade:', texto)
+          setError(texto); anotar('SERVIDOR', texto)
         }
-        absorb(await api.transport(view.channel.id, 'take'))
-        say(`Entrada "${title}" inserida na grade após o item no ar, publicada e levada ao PGM.`)
-      })),
-    [view, live, guard, absorb, enqueueTransportCommand, say],
+      }),
+    [view, live, absorb, enqueueTransportCommand, say, anotar],
   )
 
   const undo = useCallback(
