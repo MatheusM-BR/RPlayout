@@ -17,6 +17,17 @@ describe('inspeção live por viewer/fonte sem comandos de transporte',()=>{
     await qc.watch('session-b:2','omt:LIVE',false)
     expect(set.mock.calls.at(-1)).toEqual(['omt:LIVE',false])
   })
+  it('Master vê a inspeção ativa no PVW compartilhado; some ao trocar o CUE ou expirar',async()=>{
+    let now=0,current:string|null='ndi:TOM'
+    const qc=new QcLiveInspection(()=>current,vi.fn().mockResolvedValue(undefined),()=>now)
+    expect(qc.inspecting()).toBeNull()
+    await qc.watch('a','ndi:TOM',true);await qc.watch('b','ndi:TOM',true)
+    expect(qc.inspecting()).toEqual({source:'ndi:TOM',viewers:2})
+    current='file:VT'
+    expect(qc.inspecting()).toBeNull()
+    current='ndi:TOM';now=15_000
+    expect(qc.inspecting()).toBeNull()
+  })
   it('lease sem heartbeat expira sem desligar PGM/PVW',async()=>{
     let now=0
     const set=vi.fn().mockResolvedValue(undefined),qc=new QcLiveInspection(()=> 'sdi:0',set,()=>now)

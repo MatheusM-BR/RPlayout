@@ -21,6 +21,11 @@ mod omt_runtime;
 /// Quanto esperar o monitor listar. Descoberta de placa é instantânea; a de
 /// NDI varre a rede e merece mais tempo.
 const SETTLE_MS: u64 = 1200;
+/// NDI announcements arrive over mDNS: a sender started seconds earlier was
+/// missing from a 1.2 s scan on the QA machine (found on the next scan). NDI
+/// now runs in parallel with DeckLink, so a longer wait does not add up.
+const NDI_SETTLE_MS: u64 = 2500;
+fn settle_ms(prefix: &str) -> u64 { if prefix == "ndi" { NDI_SETTLE_MS } else { SETTLE_MS } }
 
 /// Optional fixed-stage diagnostics on stderr; stdout remains one JSON record.
 /// No source names, endpoints, credentials or driver-provided errors are logged.
@@ -188,7 +193,7 @@ fn enumerate(provider: &str, prefix: &str, missing: &str, direction: &str) -> Fa
             sources: Vec::new(),
         };
     }
-    std::thread::sleep(std::time::Duration::from_millis(SETTLE_MS));
+    std::thread::sleep(std::time::Duration::from_millis(settle_ms(prefix)));
 
     trace(&format!("{provider}/{direction}:devices"));
     let mut sources: Vec<Source> = device_provider
@@ -469,6 +474,12 @@ mod tests {
         let lista: &[(&[&str], &str, &str)] =
             &[(&["nao-existe-mesmo", "queue"], "algum", "alguma coisa")];
         assert!(survey_alternativas(lista).is_empty());
+    }
+
+    #[test]
+    fn ndi_waits_longer_for_mdns_announcements() {
+        assert_eq!(settle_ms("ndi"), 2500);
+        assert_eq!(settle_ms("sdi"), 1200);
     }
 
     #[test]

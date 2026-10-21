@@ -42,6 +42,12 @@ export class QcLiveInspection {
       this.activeSource=source
     })
   }
+  /** Read-only view for the Master: a QC viewer is using the shared PVW. */
+  inspecting():{source:string;viewers:number}|null {
+    const current=this.currentSource(),now=this.now()
+    const viewers=[...this.viewers.values()].filter(viewer=>viewer.expires>now&&viewer.source===current).length
+    return this.activeSource&&current===this.activeSource&&viewers?{source:this.activeSource,viewers}:null
+  }
   tick():Promise<void> {
     if(this.ticking)return this.ticking
     const task=this.serial(async()=>{

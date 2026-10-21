@@ -1535,6 +1535,8 @@ export class ChannelRuntime {
       transport: state,
       reconfiguration: this.reconfigurationStatus(),
       liveReplacement: this.liveReplacementStatus(),
+      // QC "em qualidade" and the Master share this PVW: say so before a CUE.
+      qcInspection: this.qcInspection.inspecting(),
       graphic: this.graphics.onAir(),
       alerts: this.alerts(),
       now: this.view ? rundownFrames(this.view.rundown.date, this.channel.rate) ?? framesSinceMidnight(new Date(), this.channel.rate) : framesSinceMidnight(new Date(), this.channel.rate),

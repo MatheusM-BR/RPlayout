@@ -50,6 +50,8 @@ export interface Live {
   /** Recovery promise may still be settling after PGM is already visible. */
   reconfiguration?: { ready: boolean; reason: string | null }
   /** Native live source replacement; null on the simulator or an engine without it. */
+  /** QC 'em qualidade' is using the shared PVW. A CUE in the Master ends it. */
+  qcInspection?: { source: string; viewers: number } | null
   liveReplacement?: { supported: boolean; selectionUncertain: boolean; pgmSourceId: string | null; openTransactionId: string | null } | null
   transport: {
     mode?: 'NATIVE' | 'SIMULATED'
