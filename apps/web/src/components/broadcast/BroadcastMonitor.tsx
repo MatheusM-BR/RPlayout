@@ -39,6 +39,14 @@ export function monitorRecovery(beat:()=>void,retry:()=>void):()=>void{
   return ()=>{clearInterval(heartbeat);clearTimeout(again)}
 }
 
+/** Text for the empty screen. A failed WHEP while PGM is on air must not tell
+ * the operator to press TAKE: the program is running, only this view is not. */
+export function emptyMonitorText(isPgm:boolean,onAir:boolean,monitorFailed:boolean):{title:string;detail:string}{
+  if(monitorFailed)return {title:'Monitor do engine reconectando',detail:isPgm&&onAir?'PGM no ar. O vídeo deste monitor não chegou ao navegador (WebRTC, porta 8889); nova tentativa a cada 6 s.':'O vídeo deste monitor não chegou ao navegador (WebRTC, porta 8889); nova tentativa a cada 6 s.'}
+  if(isPgm&&onAir)return {title:'Monitor aguardando imagem',detail:'PGM no ar; o monitor do engine ainda está abrindo.'}
+  return isPgm?{title:'Nenhum Sinal no Ar',detail:'Pressione TAKE para iniciar a transmissão'}:{title:'Nenhum Item Armado',detail:'Clique em um item da grade ou no acervo MAM'}
+}
+
 export function BroadcastMonitor({
   bus,
   title,
@@ -432,12 +440,10 @@ export function BroadcastMonitor({
               {isPgm ? 'videocam_off' : 'queue_play_next'}
             </span>
             <div className="font-label-caps text-[10px] uppercase font-semibold tracking-wider text-outline/80">
-              {isPgm ? 'Nenhum Sinal no Ar' : 'Nenhum Item Armado'}
+              {emptyMonitorText(isPgm,isPlaying,Boolean(webrtcPath&&webrtcFailed)).title}
             </div>
             <div className="font-label-mono text-[9px] text-outline/60 text-center">
-              {isPgm
-                ? 'Pressione TAKE para iniciar a transmissão'
-                : 'Clique em um item da grade ou no acervo MAM'}
+              {emptyMonitorText(isPgm,isPlaying,Boolean(webrtcPath&&webrtcFailed)).detail}
             </div>
           </div>
         )}

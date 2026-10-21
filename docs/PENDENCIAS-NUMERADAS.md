@@ -1,6 +1,15 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-4 gerada e instalada em QA (D:\RPlayout-builds)
+## Estado atual — r88-7 (validação r88-4/r88-6 em QA, D:\RPlayout-builds)
+
+20/10 noite (posterior) — com autorização para parar a r88-3: carga medida na
+r88-4 no ar (ociosa 67% contra 17%; banco 546 contra 990 idas/s). Defeito novo
+achado e corrigido: OMT parado deixava o PGM preto sem reabrir (31 min); agora
+5 s → perda → reabertura, ensaio nativo Windows 9/9 (5215 ms). r88-6 13/13 e
+cenário ponta a ponta com vMix OMT real: canal novo com grade, CUE 216 ms,
+PVW/PGM SIGNAL_OK 7 min, monitores WebRTC no Edge, QC 69–89 ms, MAM com duração.
+VALIDACAO-R88-6-2026-10-20.md. Matriz: nenhum item fechado (sem homologação
+física/externa/soak). Totais10/53:8concluídas/34andamento/4pendentes/7v3.
 
 20/10 noite — r88-4 (8a384d4), 13/13 PASS. Corrige o que o operador viu na r88-3
 instalada: thread do servidor ~83% ocupada (checagem de cópia restaurada
