@@ -105,6 +105,13 @@ export function libraryFrames(asset:{durationNs?:number|null;durationFrames:numb
   return durationIn({durationNs:asset.durationNs??null,durationFrames:asset.durationFrames},rate)
 }
 
+/** Why TAKE is unavailable, shown next to the button instead of a silent no-op. */
+export function takeBlockedReason(publicationRequired:boolean,preview:unknown):string|null{
+  if(publicationRequired)return 'TAKE bloqueado: publique a grade revisada em PLAYLIST.'
+  if(!preview)return 'TAKE indisponível: nada armado no PVW. Clique num item da grade (CUE) primeiro.'
+  return null
+}
+
 export function MasterControlView({
   channel,
   channels,
@@ -962,13 +969,14 @@ export function MasterControlView({
                   </button>
                 </div>
 
+                {takeBlockedReason(publicationRequired,live.transport.preview)&&<div role="status" className="text-[10px] text-armed-amber text-center">{takeBlockedReason(publicationRequired,live.transport.preview)}</div>}
                 <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
                   <button
                     onClick={handleTake}
-                    className="col-span-6 h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer"
+                    className="col-span-6 h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
                     id="btn-take"
                     disabled={publicationRequired || !live.transport.preview}
-                    title="Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE"
+                    title={takeBlockedReason(publicationRequired,live.transport.preview)??'Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE'}
                   >
                     <span className="material-symbols-outlined text-[18px]">play_arrow</span>
                     <span>TAKE</span>
