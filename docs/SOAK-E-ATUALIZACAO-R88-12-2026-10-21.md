@@ -65,3 +65,28 @@ viradas de item com 0 alertas. Resultado completo será anexado aqui.
 ## Limites
 
 Sem vMix aberto, sem DeckLink, sem outra máquina; 8 h não substituem 24–48 h.
+
+## 5. Soak r88-12 (parcial) e r88-13 (21/10 tarde)
+
+Soak r88-12 interrompido às 13:02 para instalar a r88-13: 3 h 55 de grade em
+LOOP, **0 alertas** em todas as amostras (correção do checkpoint confirmada),
+API 70–250 ms, memória do servidor estável em 750–830 MB e engine em 560–680 MB
+(sem crescimento), engine ~1,4 núcleo em média.
+
+r88-13 (2a544f9; 13/13, Rust 125/0/4; instalador renomeado de `r88-2` para
+`RPlayout-1.1-parcial-20261020-r88-13-instalador.zip`, SHA256
+`16299FD4B1A12292BD2732C9B40DDD6991EEF45A8EE8CFDC7627ACDC6947E18B`; o script
+reutilizou o nome `r88-2` porque os instaladores r88-2…r88-11 tinham sido
+removidos da pasta). Correções: Aprovar/Ignorar do QC direto pela linha;
+áudio (medidor e escuta) das entradas ao vivo no QC; QC ao vivo sem
+referência ao PVW do Master; Biblioteca MAM só com VTs aprovados e entradas
+ao vivo; categoria em lote (Ctrl/Shift+clique); duração de ao vivo editada no
+horário de entrada recalcula a grade.
+
+Atualização r88-12 → r88-13: o Achado A apareceu também aqui. O backup tirado
+com a r88-12 ativada carrega a reserva MAINTENANCE viva; a revisão da cópia
+recusou ("Revisão operacional recusada"). A ferramenta oficial na CÓPIA
+(`r88-13 dados`) liberou (`RESERVATION_RELEASED_NOT_ACTIVATED`) e a ativação
+passou (1 canal, 1 publicação, 4 mídias). Ou seja: hoje toda atualização a
+partir de uma instalação já atualizada exige essa recuperação manual.
+Achado B confirmado de novo (pedido `fc225b0b-…` reconciliado).
