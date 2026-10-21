@@ -42,3 +42,14 @@ it('telemetria atualiza a grade no máximo uma vez por segundo, juntando as marc
   await second
   expect(refresh).toHaveBeenCalledTimes(2)
 })
+
+it('no último quadro de um item cortado o checkpoint anterior fica, sem alerta permanente',async()=>{
+  const runtime=(await runtimeFor(app,'ch'))!
+  await runtime.load('rd')
+  const write=vi.spyOn(Checkpoints.prototype,'write')
+  const real=runtime.transport.state.bind(runtime.transport)
+  vi.spyOn(runtime.transport,'state').mockImplementation(()=>({...real(),onAir:{itemId:'x',startedAt:0,elapsed:2736},playing:true,programTrim:{in:0,out:2736}} as ReturnType<typeof real>))
+  runtime.checkpoint()
+  expect(write).not.toHaveBeenCalled()
+  expect(runtime.recoveryError).toBeNull()
+})

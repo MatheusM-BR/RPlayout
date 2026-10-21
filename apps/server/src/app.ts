@@ -801,8 +801,14 @@ export class ChannelRuntime {
     if(hold?.status==='HELD'&&hold.itemId!==state.onAir?.itemId){this.recoveryError='Pausa pertence a outro item; checkpoint anterior preservado.';return}
     const held=hold?.status==='HELD'&&hold.itemId===state.onAir?.itemId?hold:null
     if(held&&(!state.programTrim||!this.operationalRevision)){this.recoveryError='Pausa sem corte/revisão confirmados; checkpoint anterior preservado.';return}
-    const liveProgramBinding=this.transport instanceof EngineTransport?this.transport.liveProgramBindingSnapshot?.()??undefined:undefined
     const now=Date.now()
+    // Last frame of a trimmed item, before its EOS/next TAKE lands: the cursor
+    // equals the cut length, which the schema (correctly) refuses as a resume
+    // point. Keep the previous checkpoint instead of raising a sticky engine
+    // alert ("Corte salvo não corresponde…"), seen during the 8 h soak.
+    const trim=state.programTrim
+    if(!held&&trim&&state.onAir&&Math.floor(state.onAir.elapsed??0)>=trim.out-trim.in){this.lastCheckpointAt=now;return}
+    const liveProgramBinding=this.transport instanceof EngineTransport?this.transport.liveProgramBindingSnapshot?.()??undefined:undefined
     try{
       const value={ version: liveProgramBinding?2 as const:1 as const,liveProgramBinding,channelId: this.channel.id, rundownId: this.executionView?.rundown.id ?? null,
         revisionId: this.operationalRevision?.id ?? null, itemId: state.onAir?.itemId ?? null,
