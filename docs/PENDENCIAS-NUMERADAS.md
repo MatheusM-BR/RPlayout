@@ -1,6 +1,15 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-11 (QC com decodificador próprio, D:\RPlayout-builds)
+## Estado atual — r88-12 (soak em curso na instalação do operador)
+
+21/10 manhã — r88-12 (e2da3ea) 13/13: corrige o alerta de checkpoint na virada
+de item achado no soak. Dados do operador atualizados r88-11 → r88-12 pelo
+caminho oficial; soak de 8 h reiniciado na r88-12. Dois achados novos do fluxo
+de atualização (reserva de manutenção após encerramento forçado; pedido de
+backup herdado em CHECKING) — ver SOAK-E-ATUALIZACAO-R88-12-2026-10-21.md.
+Totais inalterados.
+
+## Anterior — r88-11 (QC com decodificador próprio, D:\RPlayout-builds)
 
 21/10 manhã — r88-11 (5e9fbad) 13/13: QC "em qualidade" deixou de usar o PVW do
 Master (decodificador próprio no engine); regressão completa na r88-11 com fonte

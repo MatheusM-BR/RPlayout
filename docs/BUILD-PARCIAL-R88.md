@@ -1,6 +1,16 @@
 # RPlayout r88 — marco utilizável (build parcial, NÃO homologada)
 
-## GERADA — r88-11, 21/10/2026 (Windows, commit 5e9fbad) — USAR ESTA
+## GERADA — r88-12, 21/10/2026 (Windows, commit e2da3ea) — USAR ESTA
+
+- Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-12-instalador.zip`
+  SHA256 `C55659E98084077D1B76678A946EFA4E6AF1762F526D5E77ECFB6F4841ED0545`.
+- 13/13 PASS, Rust 125/0/4.
+- Sobre a r88-11: o último quadro de um item cortado não gera mais o alerta
+  permanente "Corte salvo não corresponde a PGM nativo reproduzível" (achado
+  no soak). Instalação do operador atualizada r88-11 → r88-12 pelo caminho
+  oficial; ver SOAK-E-ATUALIZACAO-R88-12-2026-10-21.md.
+
+## GERADA — r88-11, 21/10/2026 (Windows, commit 5e9fbad)
 
 - Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-11-instalador.zip`
   SHA256 `1C8A5AD4FCA25C4A70CA34AEF1B2B306936896F608E7A816F4807093DE8714D1`.
