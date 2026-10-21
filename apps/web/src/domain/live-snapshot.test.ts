@@ -11,4 +11,10 @@ describe('contrato HTTP/WebSocket da operação',()=>{
     expect(snapshot).not.toHaveProperty('type');expect(snapshot).not.toHaveProperty('channelId')
     expect(liveSnapshot({...message,reconfiguration:undefined}).reconfiguration).toBeUndefined()
   })
+  it('troca de fonte e PVW compartilhado com o QC sobrevivem ao tick do WebSocket',()=>{
+    const message={transport:{channelId:'ch'},graphic:null,alerts:[],now:1,meters:{},liveReplacement:{supported:true,selectionUncertain:false,pgmSourceId:'a',openTransactionId:null},qcInspection:{source:'ndi:X',viewers:1},type:'live',channelId:'ch'} as unknown as Live
+    const snapshot=liveSnapshot(message)
+    expect(snapshot.liveReplacement).toEqual(message.liveReplacement)
+    expect(snapshot.qcInspection).toEqual({source:'ndi:X',viewers:1})
+  })
 })
