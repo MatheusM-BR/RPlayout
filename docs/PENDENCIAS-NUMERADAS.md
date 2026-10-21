@@ -8,7 +8,8 @@ achado e corrigido: OMT parado deixava o PGM preto sem reabrir (31 min); agora
 5 s → perda → reabertura, ensaio nativo Windows 9/9 (5215 ms). r88-6 13/13 e
 cenário ponta a ponta com vMix OMT real: canal novo com grade, CUE 216 ms,
 PVW/PGM SIGNAL_OK 7 min, monitores WebRTC no Edge, QC 69–89 ms, MAM com duração.
-VALIDACAO-R88-6-2026-10-20.md. Matriz: nenhum item fechado (sem homologação
+VALIDACAO-R88-6-2026-10-20.md. r88-7 (6825b64) 13/13 com a correção de texto
+do monitor; instalador em BUILD-PARCIAL-R88.md. Matriz: nenhum item fechado (sem homologação
 física/externa/soak). Totais10/53:8concluídas/34andamento/4pendentes/7v3.
 
 20/10 noite — r88-4 (8a384d4), 13/13 PASS. Corrige o que o operador viu na r88-3

@@ -1,6 +1,17 @@
 # RPlayout r88 — marco utilizável (build parcial, NÃO homologada)
 
-## GERADA — r88-4, 20/10/2026 (Windows, commit 8a384d4) — USAR ESTA
+## GERADA — r88-7, 20/10/2026 (Windows, commit 6825b64) — USAR ESTA
+
+- Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-7-instalador.zip`
+  SHA256 `5CA6D4F286CBAF6624EED3A41FFE6B534B28968F8069C37DF536082CD8CB63EC`.
+- Instalação QA: `D:\RPlayout-builds\qa\r88-installed-20261020-225344`;
+  resumo `r88-summary-20261020-225344.json`. 13/13 PASS, Rust 125/0/4.
+- Sobre a r88-4: monitores que perdiam a primeira ordem de ligar, duração no
+  MAM, menos gravações ociosas, OMT parado reabre em 5 s, texto do monitor
+  com PGM no ar. Validação ponta a ponta em VALIDACAO-R88-6-2026-10-20.md.
+- r88-5 (falhou por carga da máquina) e r88-6 ficam no lugar; use a r88-7.
+
+## GERADA — r88-4, 20/10/2026 (Windows, commit 8a384d4)
 
 - Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-4-instalador.zip`
   SHA256 `A5C823760F4DBF0D3418C1AD02DB16F574C5FF4CA402FEE09E384FCE89902D95`.
