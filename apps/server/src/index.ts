@@ -32,6 +32,7 @@ import {activateRestoredApp} from './domain/activate-restored-app.js'
 import {databaseStorageStatus} from './db/process-database.js'
 import {prepareUpgradeProfileAdoption} from './domain/upgrade-profile-adoption.js'
 import {startupTrace} from './domain/startup-trace.js'
+import {recoverInterruptedReservationAtStartup} from './domain/startup-reservation-recovery.js'
 import {BackgroundTaskGuard} from './domain/background-task-guard.js'
 import {privateHttpLogger,privateStartupDiagnostic,registerHttpPrivacy} from './domain/http-privacy.js'
 import {parseAllowedOrigins} from './domain/http-origin-policy.js'
@@ -52,6 +53,11 @@ async function main(): Promise<void> {
   const adoptionFile=process.env.RPLAYOUT_ADOPT_UPGRADE_PROFILE
   if(adoptionFile&&(!activated||!process.env.RPLAYOUT_INSTALL_ROOT))throw new Error('Adoção de perfil exige ativação restaurada explícita e instalação definida.')
   const adopt=adoptionFile?prepareUpgradeProfileAdoption(adoptionFile,process.env.RPLAYOUT_INSTALL_ROOT!,DB_FILE):null
+  if(!args.length){
+    const recovery=await recoverInterruptedReservationAtStartup(DB_FILE)
+    if(recovery.check==='RECOVER')console.log(recovery.recovered?'RPlayout · reserva do banco deixada por um encerramento anterior foi liberada pela recuperação oficial.':`RPlayout · reserva do banco preservada; recuperação recusada: ${recovery.detail??'sem detalhe'}`)
+    startupTrace('interrupted reservation checked')
+  }
   const app = activated?await activateRestoredApp(DB_FILE,args[1]!):args.length?await createStagedRestoredApp(DB_FILE,args[1]!):await createApp(DB_FILE)
   startupTrace('application ready')
   if(adopt)try{await adopt(app)}catch(error){await app.close();throw error}

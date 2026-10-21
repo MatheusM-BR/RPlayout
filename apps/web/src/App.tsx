@@ -44,7 +44,7 @@ import { UsersPanel } from './components/UsersPanel.js'
 import { DocumentationPanel } from './components/DocumentationPanel.js'
 import { WorkspaceShell, type WorkspaceId } from './components/WorkspaceShell.js'
 import { QualityControlPanel } from './components/QualityControlPanel.js'
-import { MasterControlView } from './views/MasterControlView.js'
+import { MasterControlView, liveOutsideGrade } from './views/MasterControlView.js'
 import {UnavailableChannelReturns} from './components/broadcast/UnavailableChannelReturns.js'
 import { PlaylistScheduleView } from './views/PlaylistScheduleView.js'
 import { QualityControlView } from './views/QualityControlView.js'
@@ -587,6 +587,28 @@ export function App() {
     [view, guard, absorb, enqueueTransportCommand],
   )
 
+  // A live opened in PVW from the library is not a grade line, and the server
+  // only puts grade lines on air (as-run, recovery). TAKE then inserts it right
+  // after the item on air and takes it, instead of refusing the operator.
+  const takeLiveFromPreview = useCallback(
+    (sourceRef: string, title: string) =>
+      enqueueTransportCommand(() => guard(async () => {
+        if (!view || view.channel.id !== channelRef.current) return
+        const onAirId = live?.transport.onAir?.itemId
+        const index = view.items.findIndex((entry) => entry.item.id === onAirId)
+        const fps = view.channel.rate.num / view.channel.rate.den
+        absorb(await api.addItem(view.rundown.id, {
+          sourceRef, type: 'LIVE', title,
+          durationOverride: Math.round(15 * 60 * fps),
+          anchor: { kind: 'FLOW' },
+          atIndex: index >= 0 ? index + 1 : undefined,
+        }, view.editorialRevision))
+        absorb(await api.transport(view.channel.id, 'take'))
+        say(`Entrada "${title}" inserida na grade após o item no ar e levada ao PGM.`)
+      })),
+    [view, live, guard, absorb, enqueueTransportCommand, say],
+  )
+
   const undo = useCallback(
     (direction: 'undo' | 'redo') =>
       guard(async () => {
@@ -626,6 +648,15 @@ export function App() {
 
       if (event.code === 'Space') {
         event.preventDefault()
+        // Space is the TAKE button: what is armed in PVW goes on air. Before,
+        // it took the selected/next grade line even with a live CUEd in PVW.
+        const preview = live?.transport.preview
+        if (preview) {
+          const outside = view ? liveOutsideGrade(preview, view.items.map((entry) => entry.item.sourceRef).filter((ref): ref is string => Boolean(ref))) : null
+          if (outside) void takeLiveFromPreview(outside.source, outside.title)
+          else void command('take')
+          return
+        }
         const targetItemId = selectedId ?? live?.transport.preparedItemId ?? undefined
         void command('take', targetItemId ? { itemId: targetItemId } : undefined)
         return
@@ -662,7 +693,7 @@ export function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [dialog, selected, selectedId, command, view, undo])
+  }, [dialog, selected, selectedId, command, view, undo, live, takeLiveFromPreview])
 
   const move = (id: string, toIndex: number,revision?:number): void => {
     void guard(async () => {
@@ -1087,6 +1118,7 @@ export function App() {
           followOnAir={followOnAir}
           onToggleFollowOnAir={() => setFollowOnAir((value) => !value)}
           onTake={(itemId?: string) => void command('take', itemId ? { itemId } : {})}
+          onTakeLive={(sourceRef: string, title: string) => void takeLiveFromPreview(sourceRef, title)}
           onStop={() => void command('stop')}
           onCue={(itemId?: string) => void command('cue', { itemId })}
           onClearCue={() => void command('cue', {})}

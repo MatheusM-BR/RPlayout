@@ -24,6 +24,14 @@ export class UpgradeBackups {
   constructor(private readonly sqlite:Database.Database,private readonly directory:string){
     validateUpgradeBackupRequests(sqlite)
     if(!sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=50').get())throw new Error('Pedidos de backup exigem migração da edição antes de registrar trabalho.')
+    // An online backup copies the database while its own request is still
+    // CHECKING. In the upgraded copy that row blocked every later upgrade
+    // backup until someone reconciled it by hand. On a fresh server process,
+    // settle such rows through the same reconciliation (dead local creator
+    // only; live, remote or unknown creators stay untouched).
+    for(const {request_id:requestId} of sqlite.prepare("SELECT request_id FROM backup_upgrade_requests WHERE phase='CHECKING'").all() as {request_id:string}[]){
+      try{this.reconcile({requestId,confirm:true},()=>{})}catch{/* preserved for explicit review */}
+    }
   }
   private key(id:string){return 'upgrade-backup:v1:'+id}
   private row(id:string){return this.sqlite.prepare('SELECT * FROM backup_upgrade_requests WHERE request_id=?').get(id) as Row|undefined}

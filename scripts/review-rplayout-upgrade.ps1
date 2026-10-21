@@ -55,6 +55,16 @@ try {
         $migration=$migrationOutput | ConvertFrom-Json
         if ($migration.requestId -ne $preparation.requestId -or $migration.stage -notin @('CURRENT_NOT_ACTIVATED','MIGRATED_NOT_ACTIVATED') -or $migration.promotionReady -ne $false -or $migration.schema.current -ne $true) { throw 'Migracao nao confirmou a edicao esperada; revisao recusada.' }
       }
+      # A backup taken from an installation that was itself activated by an upgrade
+      # carries that server's live storage reservation. With the predecessor stopped,
+      # the official offline recovery releases it on THIS copy only (dead owner, same
+      # host and provenance are checked by the tool); otherwise the review refuses.
+      if ($declared.Contains('apps/server/dist/recover-restored-reservation.cjs')) {
+        $recovered=$false
+        try { $previousPreference=$ErrorActionPreference; $ErrorActionPreference='Continue'; $null=& (Join-Path $installRoot 'runtime/node/node.exe') (Join-Path $installRoot 'apps/server/dist/recover-restored-reservation.cjs') --database $database --manifest $restoreManifest --vault-file $vault 2>$null; $recovered=($LASTEXITCODE -eq 0) } catch { $recovered=$false } finally { $ErrorActionPreference=$previousPreference }
+        if ($recovered) { Write-Host 'Reserva herdada da edicao anterior liberada na copia em quarentena (recuperacao oficial).' }
+        $global:LASTEXITCODE=0
+      }
       $output=& (Join-Path $installRoot 'runtime/node/node.exe') (Join-Path $installRoot 'apps/server/dist/review-restored.cjs') --database $database --manifest $restoreManifest --vault-file $vault
     }
     finally { Pop-Location }

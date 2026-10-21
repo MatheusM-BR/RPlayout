@@ -1823,7 +1823,8 @@ export class EngineTransport implements Transport {
         const state = onPgm ? busStates.pgm ?? signal.state : onPvw ? busStates.pvw ?? signal.state
           : (['FAILED','LOST','CUEING','TAKE_PENDING'].includes(signal.state) ? signal.state : 'IDLE')
         const message = state === 'IDLE' ? 'Fonte não está sintonizada neste barramento.'
-          : state === 'LOST' && signal.state !== 'LOST' ? 'Fonte sem quadro recente (mais de 2 segundos); a imagem anterior não prova sinal ativo.' : signal.message
+          : state === 'LOST' && signal.state !== 'LOST' ? 'Fonte sem quadro recente (mais de 2 segundos); a imagem anterior não prova sinal ativo.'
+          : state === 'CUEING' ? openingWithoutSignalMessage(signal.source,signal.changedAt,Date.now()) ?? signal.message : signal.message
         const busItemIds:Partial<Record<'pgm'|'pvw',string>>={}
         if(onPgm && this.onAirItemId)busItemIds.pgm=this.onAirItemId
         const previewSpec=this.preview ? this.specForPreview(this.preview) : null
@@ -2649,4 +2650,15 @@ function toMeter(event: {
     gainReductionDb: event.gainReduction,
     correlation: event.correlation,
   }
+}
+
+/** A source that has been "opening" for several seconds without a single
+ * frame is, for the operator, an input without signal (cable, format or the
+ * sender itself). State stays CUEING: this only names what the wait means. */
+export function openingWithoutSignalMessage(source:string,changedAt:string,now:number,afterMs=5000):string|null{
+  const since=Date.parse(changedAt)
+  if(!Number.isFinite(since)||now-since<afterMs)return null
+  const seconds=Math.floor((now-since)/1000)
+  const kind=source.startsWith('sdi:')?'na entrada SDI/HDMI (confira cabo, formato do sinal e o equipamento ligado)':'na fonte (confira se o emissor está ativo e na mesma rede)'
+  return `Sem sinal ${kind}: nenhum quadro recebido em ${seconds} s. O PVW abre sozinho quando o sinal chegar.`
 }

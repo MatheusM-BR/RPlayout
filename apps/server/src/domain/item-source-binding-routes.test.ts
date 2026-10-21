@@ -61,3 +61,16 @@ it('mudar a duração de um ao vivo no editor de horário recalcula o que vem de
   const liveRow=rows.find(row=>row.id===live!.id)!,nextRow=rows.find(row=>row.id===next!.id)!
   expect(liveRow.duration).toBe(750);expect(nextRow.start).toBe(liveRow.end)
 })
+it('ao vivo aberto no PVW fora da grade: inserir na grade e TAKE leva ao ar',async()=>{
+  const post=(body:object)=>server.inject({method:'POST',url:'/api/channels/ch/transport',payload:body})
+  expect((await post({action:'cue',sourceRef:'ndi:VMIX',sourceTitle:'vMix'})).statusCode).toBe(200)
+  const refused=await post({action:'take'})
+  expect(refused.statusCode).toBe(400);expect(refused.body).toContain('não foi adicionada à grade')
+  const added=await server.inject({method:'POST',url:'/api/rundowns/rd/items',headers:{'if-match':app.concurrency.generateETag('rd')},payload:{type:'LIVE',sourceRef:'ndi:VMIX',title:'vMix',durationOverride:22500,anchor:{kind:'FLOW'}}})
+  expect(added.statusCode,added.body).toBe(200)
+  const taken=await post({action:'take'})
+  expect(taken.statusCode,taken.body).toBe(200)
+  const items=app.db.select().from(rundownItems).all()
+  const item=items.find(row=>row.type==='LIVE')!
+  expect((await runtimeFor(app,'ch'))!.transport.state().onAir?.itemId).toBe(item.id)
+})

@@ -48,6 +48,8 @@ interface Props {
   followOnAir: boolean
   onToggleFollowOnAir: () => void
   onTake: (itemId?: string) => void
+  /** TAKE of a live open only in PVW: insert after the item on air, then TAKE. */
+  onTakeLive?: (sourceRef: string, title: string) => void
   onStop: () => void
   onCue: (itemId: string) => void
   onClearCue: () => void
@@ -115,6 +117,12 @@ export function takeBlockedReason(publicationRequired:boolean,preview:unknown,gr
   if(source&&gradeSourceRefs&&!gradeSourceRefs.includes(source))return 'TAKE indisponível: esta entrada ao vivo está só no PVW e não está na grade. Insira-a na grade (Inserir na Biblioteca) e faça CUE na linha dela.'
   return null
 }
+/** Live in PVW that is not a grade line: TAKE inserts it after the item on air. */
+export function liveOutsideGrade(preview:unknown,gradeSourceRefs:readonly string[]):{source:string;title:string}|null{
+  const value=preview as {kind?:string;source?:string;title?:string}|null
+  if(value?.kind!=='SOURCE'||!value.source||gradeSourceRefs.includes(value.source))return null
+  return {source:value.source,title:value.title||value.source}
+}
 
 export function MasterControlView({
   channel,
@@ -129,6 +137,7 @@ export function MasterControlView({
   followOnAir,
   onToggleFollowOnAir,
   onTake,
+  onTakeLive,
   onStop,
   onCue,
   onClearCue,
@@ -618,7 +627,10 @@ export function MasterControlView({
   }
 
   const handleTake = () => {
-    if (!publicationRequired && live.transport.preview) onTake()
+    if (publicationRequired || !live.transport.preview) return
+    const outside = onTakeLive ? liveOutsideGrade(live.transport.preview, view.items.map((entry) => entry.item.sourceRef).filter((ref): ref is string => Boolean(ref))) : null
+    if (outside) onTakeLive!(outside.source, outside.title)
+    else onTake()
   }
 
   // Mapa de horários resolvidos
@@ -686,7 +698,8 @@ export function MasterControlView({
   }, [allAssets, customSources])
 
   const gradeSourceRefs=useMemo(()=>view.items.map(entry=>entry.item.sourceRef).filter((ref):ref is string=>Boolean(ref)),[view.items])
-  const takeReason=takeBlockedReason(publicationRequired,live.transport.preview,gradeSourceRefs)
+  const takeLive=onTakeLive?liveOutsideGrade(live.transport.preview,gradeSourceRefs):null
+  const takeReason=takeLive?(publicationRequired?takeBlockedReason(publicationRequired,live.transport.preview):null):takeBlockedReason(publicationRequired,live.transport.preview,gradeSourceRefs)
   const filteredAssets = useMemo(() => {
     return allAssetsWithLive.filter((asset) => {
       const matchesSearch =
@@ -980,6 +993,7 @@ export function MasterControlView({
                 </div>
 
                 {takeReason&&<div role="status" className="text-[10px] text-armed-amber text-center">{takeReason}</div>}
+                {!takeReason&&takeLive&&<div role="status" className="text-[10px] text-accent-ice text-center">Ao vivo fora da grade: o TAKE insere “{takeLive.title}” logo após o item no ar e coloca no ar.</div>}
                 <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
                   <button
                     onClick={handleTake}

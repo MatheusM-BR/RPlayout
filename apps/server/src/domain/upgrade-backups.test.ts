@@ -28,3 +28,23 @@ it('closing prevents new work and an active/unknown creator cannot be reconciled
   await service.settled();service.close()
   expect(()=>service.create({requestId:randomUUID()},()=>{})).toThrow('encerrando')
 })
+it('pedido em CHECKING herdado de criador local morto é reconciliado na partida; remoto fica preservado',async()=>{
+  const {hostname}=await import('node:os')
+  // The copy is taken while the request still runs: the row keeps CHECKING
+  // with another process as creator (its result can never be stored here).
+  const copied=async(creator:object)=>{
+    const {db,service}=fixture(),request={requestId:randomUUID()}
+    service.create(request,()=>{})
+    db.prepare('UPDATE backup_upgrade_requests SET creator=? WHERE request_id=?').run(JSON.stringify(creator),request.requestId)
+    await service.settled()
+    const phase=()=>(db.prepare('SELECT phase FROM backup_upgrade_requests WHERE request_id=?').get(request.requestId) as {phase:string}).phase
+    expect(phase()).toBe('CHECKING')
+    const restarted=new UpgradeBackups(db,'unused-fixture-directory')
+    return {phase:phase(),restarted}
+  }
+  const dead=await copied({host:hostname(),pid:0x7ffffff0,boot:randomUUID()})
+  expect(dead.phase).toBe('REFUSED')
+  const remote=await copied({host:'outro-servidor',pid:4242,boot:randomUUID()})
+  expect(remote.phase).toBe('CHECKING')
+  expect(()=>remote.restarted.create({requestId:randomUUID()},()=>{})).toThrow('em andamento')
+})
