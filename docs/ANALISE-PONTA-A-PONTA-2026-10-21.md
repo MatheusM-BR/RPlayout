@@ -70,6 +70,25 @@ do QC ativa o Master mostrou "PVW em uso pelo QC (1 tela em inspeção de
 qualidade)…" e o aviso sumiu ao encerrar a inspeção. (r88-8 ficou sem a
 correção do estado ao vivo; use a r88-9.)
 
+## QC com decodificador próprio (r88-10/r88-11)
+
+A disputa do PVW foi eliminada, não só avisada: a inspeção "em qualidade" do QC
+abre a entrada num decodificador ao vivo só do QC (comando `qcSource` do
+engine); selecionar a entrada no QC não faz mais CUE no PVW do Master. O aviso
+de PVW compartilhado saiu da tela do Master.
+
+Conferido na r88-10 de QA (13/13, Rust 125/0/4) com a fonte NDI de teste:
+
+- QC aberto na entrada ao vivo **sem** CUE: PVW do Master continua vazio;
+  monitor do QC publicado em 1280×720 (resolução da fonte) com áudio Opus,
+  ~6,7 Mbit/s.
+- Com o QC inspecionando, o Master fez CUE do vídeo (PVW −21 dBFS), TAKE (PGM
+  −21 dBFS) e CUE da própria entrada ao vivo: todas as renovações do QC
+  continuaram 200, sem queda.
+- Única resposta diferente: a primeira renovação logo ao abrir ("aguardando o
+  primeiro quadro"), 1 a 2 s. A tela do QC agora mostra isso como "Abrindo a
+  entrada…" e não como erro (r88-11).
+
 ## Limites
 
 Ensaios com emissor NDI local, não o vMix nem outra máquina. A imagem dos

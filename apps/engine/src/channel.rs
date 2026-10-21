@@ -2132,7 +2132,7 @@ impl Channel {
         let valve = item.qc_valve.as_ref().ok_or_else(|| anyhow!("inspeção ao vivo indisponível nesta instalação"))?;
         if on && !item.source_statistics.lock().map_err(|_| anyhow!("estado de sinal indisponível"))?
             .report(item.video_ready.load(Ordering::Acquire)).video_present {
-            return Err(anyhow!("aguardando quadro válido da fonte no preview"));
+            return Err(anyhow!("aguardando o primeiro quadro da fonte no decodificador do QC"));
         }
         if on {
             let caps=valve.static_pad("sink").and_then(|pad|pad.current_caps())

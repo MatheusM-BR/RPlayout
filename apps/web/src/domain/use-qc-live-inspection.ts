@@ -3,6 +3,9 @@ import {api} from '../api.js'
 import {commandRequestId} from './request-id.js'
 
 /** A separate viewer identity per activation; cleanup cannot cancel a newer activation. */
+/** Engine reply while the QC decoder is still opening the source. */
+export function qcOpeningMessage(message:string):boolean{return /aguardando (o primeiro )?quadro/i.test(message)}
+
 export function useQcLiveInspection(channelId:string,sourceRef:string|null,requested:boolean,activationId?:string){
   const [state,setState]=useState<{key:string;ready:boolean;error:string|null}|null>(null)
   const key=JSON.stringify([channelId,sourceRef,activationId])
@@ -18,7 +21,10 @@ export function useQcLiveInspection(channelId:string,sourceRef:string|null,reque
         await api.qcLiveInspection(channelId,viewerId,source,true)
         if(active)setState(current=>current?.key===key && current.ready && !current.error?current:{key,ready:true,error:null})
       }catch(error){
-        if(active)setState({key,ready:false,error:error instanceof Error?error.message:'Inspeção em qualidade indisponível.'})
+        // The QC decoder answers "waiting for the first frame" while it opens:
+        // that is progress ("Abrindo…"), not a failure to show the operator.
+        const message=error instanceof Error?error.message:'Inspeção em qualidade indisponível.'
+        if(active)setState({key,ready:false,error:qcOpeningMessage(message)?null:message})
       }finally{busy=false}
     }
     void renew()
