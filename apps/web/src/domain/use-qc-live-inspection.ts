@@ -19,7 +19,7 @@ export function useQcLiveInspection(channelId:string,sourceRef:string|null,reque
       busy=true
       try {
         await api.qcLiveInspection(channelId,viewerId,source,true)
-        if(active)setState(current=>current?.key===key && current.ready && !current.error?current:{key,ready:true,error:null})
+        if(active){readyRef.ready=true;setState(current=>current?.key===key && current.ready && !current.error?current:{key,ready:true,error:null})}
       }catch(error){
         // The QC decoder answers "waiting for the first frame" while it opens:
         // that is progress ("Abrindo…"), not a failure to show the operator.
@@ -27,10 +27,20 @@ export function useQcLiveInspection(channelId:string,sourceRef:string|null,reque
         if(active)setState({key,ready:false,error:qcOpeningMessage(message)?null:message})
       }finally{busy=false}
     }
-    void renew()
-    const timer=window.setInterval(()=>void renew(),5000)
+    // While opening, ask again every 500 ms: the first answer is always
+    // "waiting for the first frame", and a 5 s renew made every live input
+    // look stuck on "Abrindo…" for 5–10 s. Once ready, renew the lease every 5 s.
+    let opened=false,timer=0
+    const tick=async()=>{
+      await renew()
+      if(!active)return
+      opened=opened||readyRef.ready
+      timer=window.setTimeout(()=>void tick(),opened?5000:500)
+    }
+    const readyRef={ready:false}
+    void tick()
     return ()=>{
-      active=false;window.clearInterval(timer)
+      active=false;window.clearTimeout(timer)
       // Queued after the opening request; the server serializes and owns the
       // lease per session/viewer, not by a global "off" toggle.
       void api.qcLiveInspection(channelId,viewerId,source,false).catch(()=>{})

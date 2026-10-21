@@ -106,9 +106,13 @@ export function libraryFrames(asset:{durationNs?:number|null;durationFrames:numb
 }
 
 /** Why TAKE is unavailable, shown next to the button instead of a silent no-op. */
-export function takeBlockedReason(publicationRequired:boolean,preview:unknown):string|null{
+export function takeBlockedReason(publicationRequired:boolean,preview:unknown,gradeSourceRefs?:readonly string[]):string|null{
   if(publicationRequired)return 'TAKE bloqueado: publique a grade revisada em PLAYLIST.'
   if(!preview)return 'TAKE indisponível: nada armado no PVW. Clique num item da grade (CUE) primeiro.'
+  // The server only puts on air what is in the grade (as-run, recovery).
+  // A live opened from the library is preview-only until inserted.
+  const source=(preview as {kind?:string;source?:string}).kind==='SOURCE'?(preview as {source?:string}).source:undefined
+  if(source&&gradeSourceRefs&&!gradeSourceRefs.includes(source))return 'TAKE indisponível: esta entrada ao vivo está só no PVW e não está na grade. Insira-a na grade (Inserir na Biblioteca) e faça CUE na linha dela.'
   return null
 }
 
@@ -681,6 +685,8 @@ export function MasterControlView({
     return [...airable, ...liveAsAssets]
   }, [allAssets, customSources])
 
+  const gradeSourceRefs=useMemo(()=>view.items.map(entry=>entry.item.sourceRef).filter((ref):ref is string=>Boolean(ref)),[view.items])
+  const takeReason=takeBlockedReason(publicationRequired,live.transport.preview,gradeSourceRefs)
   const filteredAssets = useMemo(() => {
     return allAssetsWithLive.filter((asset) => {
       const matchesSearch =
@@ -973,14 +979,14 @@ export function MasterControlView({
                   </button>
                 </div>
 
-                {takeBlockedReason(publicationRequired,live.transport.preview)&&<div role="status" className="text-[10px] text-armed-amber text-center">{takeBlockedReason(publicationRequired,live.transport.preview)}</div>}
+                {takeReason&&<div role="status" className="text-[10px] text-armed-amber text-center">{takeReason}</div>}
                 <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
                   <button
                     onClick={handleTake}
                     className="col-span-6 h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
                     id="btn-take"
-                    disabled={publicationRequired || !live.transport.preview}
-                    title={takeBlockedReason(publicationRequired,live.transport.preview)??'Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE'}
+                    disabled={takeReason!==null}
+                    title={takeReason??'Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE'}
                   >
                     <span className="material-symbols-outlined text-[18px]">play_arrow</span>
                     <span>TAKE</span>
