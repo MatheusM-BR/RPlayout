@@ -1527,8 +1527,21 @@ describe('transporte real confirmado pelo engine', () => {
     expect(commands).toHaveLength(0)
     await transport.take('grade', '1')
     expect(commands.filter((c) => c.cmd === 'load').map((c) => c.item?.itemId)).toEqual(['1'])
-    expect(commands.map((c) => c.cmd)).toEqual(['load', 'take', 'preview'])
+    // Nothing was armed in PVW: there is no preview to consume or clear.
+    expect(commands.map((c) => c.cmd)).toEqual(['load', 'take'])
     expect(transport.state().onAir?.itemId).toBe('1')
+  })
+  it('avanço automático da grade não apaga o ao vivo armado pelo operador no PVW; TAKE dele consome o PVW', async () => {
+    const a = join(directory, 'a.mkv'), b = join(directory, 'b.mkv'); writeFileSync(a, 'video'); writeFileSync(b, 'video')
+    start(view([a, b]))
+    await transport.take('grade', '0')
+    await transport.cue({ kind: 'SOURCE', source: 'ndi:VMIX', title: 'vMix' })
+    expect(transport.state().preview).toMatchObject({ kind: 'SOURCE', source: 'ndi:VMIX' })
+    const before = commands.length
+    event({ event: 'eos', itemId: '0' })
+    await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('1'))
+    expect(commands.slice(before).map((c) => c.cmd)).not.toContain('preview')
+    expect(transport.state().preview).toMatchObject({ kind: 'SOURCE', source: 'ndi:VMIX' })
   })
   it('não anuncia no ar nem dispara take enquanto load está pendente', async () => {
     const good = join(directory, 'bom.mkv'); writeFileSync(good, 'video'); holdLoad = true

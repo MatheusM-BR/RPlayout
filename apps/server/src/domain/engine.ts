@@ -1648,9 +1648,13 @@ export class EngineTransport implements Transport {
         if (!this.alive || this.closed) throw failure
         continue
       }
+      // Only the PVW that just went on air is consumed. An automatic advance
+      // (EOS -> next grade line) used to clear whatever the operator had
+      // armed in PVW, so a live CUEd during a short VT vanished before TAKE.
+      const consumedPreview=this.previewIs(spec)
       this.confirmTake(rundownId, spec)
       lifecycle?.confirmed(true)
-      await this.request({ cmd: 'preview', item: null })
+      if(consumedPreview)await this.request({ cmd: 'preview', item: null })
       return
     }
     // Uma tentativa manual fracassada preserva o que já estava no ar.
@@ -1678,6 +1682,11 @@ export class EngineTransport implements Transport {
       .catch((error: Error) => this.fail(error.message))
   }
 
+  /** Whether the PVW currently armed is exactly what this spec puts on air. */
+  private previewIs(spec:Pick<EngineItem,'itemId'|'source'>):boolean{
+    return (this.preview?.kind==='ITEM'&&this.preview.id===spec.itemId)||(this.preview?.kind==='SOURCE'&&Boolean(spec.source)&&this.preview.source===spec.source)
+  }
+
   /** Estado compartilhado por qualquer TAKE já efetivado no PGM. */
   private confirmTake(rundownId: string, spec: EngineItem,liveBinding?:LiveProgramBinding): void {
     const recovered = this.recoveryCursor?.itemId === spec.itemId
@@ -1690,6 +1699,9 @@ export class EngineTransport implements Transport {
       this.priorityTake = null
     }
     this.recoveryCursor = null
+    // A grade line armed in PVW belongs to the plan that was running; when
+    // another playlist takes over, that CUE no longer exists and is cleared.
+    const planChanged=this.rundownId!==null&&this.rundownId!==rundownId
     this.rundownId = rundownId
     this.preparationFailures.clear()
     this.elapsed = spec.startOffsetFrames ?? 0
@@ -1703,12 +1715,14 @@ export class EngineTransport implements Transport {
     this.liveStartedAtMs = spec.source === undefined ? null : Date.now() - framesToMs(this.elapsed, this.channel.rate)
     this.liveEndsAt = spec.source === undefined ? null : this.plannedEnd(spec.itemId)
     this.appliedGainDb = spec.gainDb
-    this.preview = null
-    this.previewSpecification = null
-    this.previewTiming = null
-    this.previewFileVersion = null
-    this.previewPosition = null
-    this.previewReading = SILENCE
+    if(this.previewIs(spec)||(planChanged&&this.preview?.kind==='ITEM')){
+      this.preview = null
+      this.previewSpecification = null
+      this.previewTiming = null
+      this.previewFileVersion = null
+      this.previewPosition = null
+      this.previewReading = SILENCE
+    }
     this.dirty = true
   }
 

@@ -61,7 +61,7 @@ try {
       # host and provenance are checked by the tool); otherwise the review refuses.
       if ($declared.Contains('apps/server/dist/recover-restored-reservation.cjs')) {
         $recovered=$false
-        try { $previousPreference=$ErrorActionPreference; $ErrorActionPreference='Continue'; $null=& (Join-Path $installRoot 'runtime/node/node.exe') (Join-Path $installRoot 'apps/server/dist/recover-restored-reservation.cjs') --database $database --manifest $restoreManifest --vault-file $vault 2>$null; $recovered=($LASTEXITCODE -eq 0) } catch { $recovered=$false } finally { $ErrorActionPreference=$previousPreference }
+        try { $previousPreference=$ErrorActionPreference; $ErrorActionPreference='Continue'; $null=& (Join-Path $installRoot 'runtime/node/node.exe') (Join-Path $installRoot 'apps/server/dist/recover-restored-reservation.cjs') --database $database --manifest $restoreManifest --vault-file $vault 2>&1 | Out-Null; $recovered=($LASTEXITCODE -eq 0) } catch { $recovered=$false } finally { $ErrorActionPreference=$previousPreference }
         if ($recovered) { Write-Host 'Reserva herdada da edicao anterior liberada na copia em quarentena (recuperacao oficial).' }
         $global:LASTEXITCODE=0
       }
