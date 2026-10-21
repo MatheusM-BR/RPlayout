@@ -1,6 +1,14 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-7 (validação r88-4/r88-6 em QA, D:\RPlayout-builds)
+## Estado atual — r88-9 (análise ponta a ponta, D:\RPlayout-builds)
+
+21/10 madrugada — relato do operador na r88-3 analisado (registro decifrado da
+sessão) e reproduzido nas r88-7/8/9 de QA com fonte NDI e tom de 1 kHz: áudio
+ao vivo correto em PVW/PGM (−12 dBFS), CUE pela grade e TAKE pela interface
+funcionando. Causas: TAKE desabilitado sem aparência/motivo; QC e Master
+disputam o mesmo PVW; estado ao vivo do WebSocket perdia campos; NDI 1,2 s na
+busca. r88-9 13/13. Áudio do vMix ainda sem teste (vMix fechado).
+ANALISE-PONTA-A-PONTA-2026-10-21.md. Totais inalterados.
 
 20/10 noite (posterior) — com autorização para parar a r88-3: carga medida na
 r88-4 no ar (ociosa 67% contra 17%; banco 546 contra 990 idas/s). Defeito novo

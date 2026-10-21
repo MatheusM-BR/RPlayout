@@ -1,6 +1,15 @@
 # RPlayout r88 — marco utilizável (build parcial, NÃO homologada)
 
-## GERADA — r88-7, 20/10/2026 (Windows, commit 6825b64) — USAR ESTA
+## GERADA — r88-9, 21/10/2026 (Windows, commit 9463076) — USAR ESTA
+
+- Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-9-instalador.zip`
+  SHA256 `2593707A8A66237B1D74E4E09B01ADB3AA38C53597FE5EF791460EC26598D41A`.
+- QA: `D:\RPlayout-builds\qa\r88-installed-20261021-003107`; 13/13 PASS, Rust 125/0/4.
+- Sobre a r88-7: TAKE indisponível mostra o motivo; aviso de PVW compartilhado
+  com o QC; estado ao vivo não perde a troca de fonte nem o aviso; NDI espera
+  2,5 s na busca. Ver ANALISE-PONTA-A-PONTA-2026-10-21.md.
+
+## GERADA — r88-7, 20/10/2026 (Windows, commit 6825b64)
 
 - Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-7-instalador.zip`
   SHA256 `5CA6D4F286CBAF6624EED3A41FFE6B534B28968F8069C37DF536082CD8CB63EC`.
