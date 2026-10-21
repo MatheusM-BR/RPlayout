@@ -19,6 +19,7 @@ import { SchedulePublicationPanel } from '../components/broadcast/SchedulePublic
 import {AssetMetadataEditor} from '../components/AssetMetadataEditor.js'
 import {isCatalogMediaAsset} from '../domain/asset-metadata-review.js'
 import {catalogIgnored,type IgnoredOverride} from '../domain/catalog-ignored.js'
+import {applyBulkCategory,nextSelection} from '../domain/bulk-category.js'
 
 interface Props {
   channel: Channel
@@ -177,6 +178,11 @@ export function PlaylistScheduleView({
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL')
   const [metadataOverrides,setMetadataOverrides]=useState<Map<string,AssetMetadataReview>>(new Map())
   const [metadataAssetId,setMetadataAssetId]=useState<string|null>(null)
+  // Multi-selection of catalog files (Ctrl/Shift) to set one category at once.
+  const [mamSelection,setMamSelection]=useState<Set<string>>(new Set())
+  const mamAnchor=useRef<string|null>(null)
+  const [bulkCategory,setBulkCategory]=useState('')
+  const [bulkProgress,setBulkProgress]=useState<{done:number;total:number}|null>(null)
   const [ignoredOverrides, setIgnoredOverrides] = useState<Map<string, IgnoredOverride>>(new Map())
   const [mamContextMenu, setMamContextMenu] = useState<{ asset: LibraryAsset & {isLiveSource?:boolean}; x: number; y: number } | null>(null)
   const [liveSources, setLiveSources] = useState<ManagedLiveSource[]>([])
@@ -1365,6 +1371,26 @@ export function PlaylistScheduleView({
                   </div>
                 </div>
 
+                {mamSelection.size>0&&(
+                  <div role="region" aria-label="Categoria em lote" className="m-1 p-1.5 rounded border border-primary/50 bg-primary/10 flex flex-wrap items-center gap-1.5 text-[10.5px]">
+                    <span className="font-bold text-primary">{mamSelection.size} selecionado{mamSelection.size>1?'s':''}</span>
+                    <input value={bulkCategory} onChange={event=>setBulkCategory(event.target.value)} list="bulk-category-options" maxLength={128} placeholder="Categoria (vazia remove)" disabled={bulkProgress!==null} className="flex-1 min-w-[120px] px-1.5 py-0.5 bg-surface-panel border border-border-subtle rounded"/>
+                    <datalist id="bulk-category-options">{availableCategoriesList.filter(cat=>cat.id!=='ALL'&&cat.id!=='Sem Categoria').map(cat=><option key={cat.id} value={cat.id}/>)}</datalist>
+                    <button type="button" disabled={bulkProgress!==null} className="px-2 py-0.5 rounded bg-primary text-surface-base font-bold disabled:opacity-50 cursor-pointer" onClick={()=>{
+                      const ids=[...mamSelection]
+                      setBulkProgress({done:0,total:ids.length})
+                      void applyBulkCategory({assetMetadataReview:id=>api.assetMetadataReview(id),patchAssetMetadata:(id,body,review)=>api.patchAssetMetadata(id,body,review)},ids,bulkCategory,done=>setBulkProgress({done,total:ids.length}))
+                        .then(result=>{
+                          setMetadataOverrides(previous=>{const next=new Map(previous);for(const saved of result.saved)next.set(saved.assetId,saved);return next})
+                          setFeedbackMessage(`Categoria gravada em ${result.saved.length} arquivo(s)`+(result.unchanged.length?`; ${result.unchanged.length} já estavam nela`:'')+(result.failed.length?`; ${result.failed.length} falharam (${result.failed[0]!.message})`:'')+'. Grade, PGM e PVW preservados.')
+                          setMamSelection(new Set(result.failed.map(f=>f.id)))
+                        })
+                        .finally(()=>setBulkProgress(null))
+                    }}>{bulkProgress?`Gravando ${bulkProgress.done}/${bulkProgress.total}…`:'Aplicar categoria'}</button>
+                    <button type="button" disabled={bulkProgress!==null} className="px-2 py-0.5 rounded border border-border-subtle cursor-pointer" onClick={()=>{setMamSelection(new Set());mamAnchor.current=null}}>Limpar</button>
+                    <span className="w-full text-outline text-[9.5px]">Clique seleciona · Ctrl+clique soma · Shift+clique seleciona intervalo</span>
+                  </div>
+                )}
                 {/* Lista de Ativos do MAM Filtrados */}
                 <div className="flex-1 divide-y divide-border-subtle/50 overflow-y-auto broadcast-scroll p-1 flex flex-col gap-1">
                   {filteredMamAssets.length === 0 ? (
@@ -1381,15 +1407,20 @@ export function PlaylistScheduleView({
                       return (
                         <div
                           key={`${asset.isLiveSource?'live':'asset'}:${asset.id}`}
-                          onClick={() => {
-                            if (asset.isLiveSource && asset.sourceRef) onPreviewLiveSource?.(asset.sourceRef, asset.title)
+                          onClick={(event) => {
+                            if (asset.isLiveSource) { if (asset.sourceRef) onPreviewLiveSource?.(asset.sourceRef, asset.title); return }
+                            const order=filteredMamAssets.filter(item=>!item.isLiveSource).map(item=>item.id)
+                            setMamSelection(current=>nextSelection(current,order,asset.id,mamAnchor.current,{ctrl:event.ctrlKey||event.metaKey,shift:event.shiftKey}))
+                            if(!event.shiftKey)mamAnchor.current=asset.id
                           }}
                           onDoubleClick={() => handleInsertFromMam(asset)}
                           onContextMenu={(event) => {
                             event.preventDefault()
                             setMamContextMenu({ asset, x: event.clientX, y: event.clientY })
                           }}
+                          aria-selected={!asset.isLiveSource && mamSelection.has(asset.id)}
                           className={`bg-surface-panel/60 hover:bg-surface-panel px-2 h-7 rounded border transition-all cursor-pointer group flex items-center justify-between gap-1.5 ${
+                            !asset.isLiveSource && mamSelection.has(asset.id) ? 'ring-1 ring-primary border-primary bg-primary/15 ' : ''}${
                             asset.ignored
                               ? 'border-error/40 opacity-60 bg-error/5'
                               : 'border-border-subtle/60 hover:border-primary/40'

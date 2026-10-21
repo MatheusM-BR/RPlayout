@@ -3378,6 +3378,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         if(body.data.liveEndpoint!==undefined || body.data.liveSourceType!==undefined) updatePayload.configuredSourceId=null
         if(body.data.liveConfig===undefined && body.data.liveEndpoint!==undefined)updatePayload.sourceRef=body.data.liveEndpoint
         const previousView=editorialView(state)
+        // The schedule editor sends a live's duration as durationOverride, but
+        // the planner reads the live estimate first: the new duration never
+        // reached the timing and nothing after the live was recalculated.
+        const editedItem=state.items.find(entry=>entry.id===id)
+        if(body.data.durationOverride!==undefined&&body.data.durationOverride!==null&&body.data.liveConfig===undefined&&body.data.liveEstimatedDuration===undefined
+          &&editedItem&&(editedItem.type==='LIVE'||editedItem.eventType==='LIVE'))updatePayload.liveEstimatedDuration=body.data.durationOverride
         const reorders=Boolean(body.data.anchor && body.data.anchor.kind!=='FLOW')
         const remember=app.history.prepareCapture(tx,state.rundown.id,'editar item',{itemIds:reorders?state.items.map(item=>item.id):[id]})
     tx.update(rundownItems).set(updatePayload).where(eq(rundownItems.id, id)).run()

@@ -258,8 +258,8 @@ function QualityControlSession({
   const audioCtxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const gainNodeRef = useRef<GainNode | null>(null)
-  const audioSourcesRef = useRef(new WeakMap<HTMLVideoElement, MediaElementAudioSourceNode>())
-  const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null)
+  const audioSourcesRef = useRef(new WeakMap<object, AudioNode>())
+  const audioSourceRef = useRef<AudioNode | null>(null)
   const leftAnalyserRef = useRef<AnalyserNode | null>(null)
   const rightAnalyserRef = useRef<AnalyserNode | null>(null)
   const monitorLevelRef = useRef({ isMuted, volume })
@@ -345,10 +345,22 @@ function QualityControlSession({
   // Análise do áudio do proxy/monitor, antes do volume de escuta.
   // Não equivale à medição de loudness do arquivo original feita pela sonda.
   const initAudio = useCallback(() => {
-    if (!videoRef.current) return
-    // Garante que o elemento de vídeo nunca esteja mutado no DOM, preservando o fluxo de bits para o Analyser pré-fader
-    videoRef.current.muted = false
-    videoRef.current.volume = 1.0
+    const element = videoRef.current
+    if (!element) return
+    // Live inspection arrives as a remote WebRTC MediaStream. Chromium delivers
+    // silence to a MediaElementAudioSourceNode for remote streams, so meters
+    // and listening were mute for every live input. Tap the stream itself and
+    // keep the element muted (its own output would bypass the monitor fader).
+    const stream = element.srcObject instanceof MediaStream ? element.srcObject : null
+    if (stream) {
+      element.muted = true
+      if (!stream.getAudioTracks().length) return
+    } else {
+      // Garante que o elemento de vídeo nunca esteja mutado no DOM, preservando o fluxo de bits para o Analyser pré-fader
+      element.muted = false
+      element.volume = 1.0
+    }
+    const sourceKey: object = stream ?? element
 
     try {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
@@ -357,16 +369,17 @@ function QualityControlSession({
       if (ctx.state === 'suspended') {
         void ctx.resume().catch(() => {})
       }
-      if (audioSourcesRef.current.get(videoRef.current) === audioSourceRef.current) return
+      audioCtxRef.current = ctx
+      if (audioSourceRef.current && audioSourcesRef.current.get(sourceKey) === audioSourceRef.current) return
       audioSourceRef.current?.disconnect()
       gainNodeRef.current?.disconnect()
       const analyser = ctx.createAnalyser()
       analyser.fftSize = 512
       analyser.smoothingTimeConstant = 0.8
 
-      if (videoRef.current) {
-        const source = audioSourcesRef.current.get(videoRef.current) ?? ctx.createMediaElementSource(videoRef.current)
-        audioSourcesRef.current.set(videoRef.current, source)
+      {
+        const source = audioSourcesRef.current.get(sourceKey) ?? (stream ? ctx.createMediaStreamSource(stream) : ctx.createMediaElementSource(element))
+        audioSourcesRef.current.set(sourceKey, source)
         audioSourceRef.current = source
         // Sample peaks do monitor, sem influência do volume de escuta.
         // Mudo ou ajuste de volume de monitor do operador não afeta a medição do arquivo.
@@ -402,6 +415,21 @@ function QualityControlSession({
     // Reuse an already unlocked context, otherwise wait for Play/audio controls.
     if (element && audioCtxRef.current?.state === 'running') initAudio()
   }, [initAudio])
+
+  useEffect(() => {
+    if (!sharedPreviewVideo) return
+    // WHEP adds audio after video; reconnect the meter tap once it exists.
+    const retap = () => { if (audioCtxRef.current) initAudio() }
+    const stream = sharedPreviewVideo.srcObject instanceof MediaStream ? sharedPreviewVideo.srcObject : null
+    sharedPreviewVideo.addEventListener('loadedmetadata', retap)
+    sharedPreviewVideo.addEventListener('playing', retap)
+    stream?.addEventListener('addtrack', retap)
+    return () => {
+      sharedPreviewVideo.removeEventListener('loadedmetadata', retap)
+      sharedPreviewVideo.removeEventListener('playing', retap)
+      stream?.removeEventListener('addtrack', retap)
+    }
+  }, [sharedPreviewVideo, initAudio])
 
   useEffect(() => {
     if (!sharedPreviewVideo) { if(selectedLiveSourceId)setIsPlaying(false); return }
@@ -975,45 +1003,36 @@ function QualityControlSession({
     }
   }
 
-  const handleApprove = async (id?: string) => {
+  // Decision from the row buttons: fetch this asset's own server review (same
+  // version/channel binding the inspection panel uses) instead of demanding a
+  // prior click on the clip. The row reflects the result immediately.
+  const [quickDecided,setQuickDecided]=useState<Record<string,'APPROVED'|'IGNORED'>>({})
+  const decide = async (kind:'APPROVED'|'IGNORED', id?: string) => {
     const targetId = id ?? selectedAsset?.id
     if (!targetId || qcActionPending.current) return
-    if(targetId!==selectedAsset?.id || !qcDecisionReady || !qcReview){
-      setSelectedLiveSourceId(null);setSelectedAssetId(targetId)
-      setQcStatusFeedback('Selecione e confira a versão neste canal antes de aprovar. Nenhuma decisão foi enviada.')
-      return
-    }
+    const asset = assets.find(a=>a.id===targetId)
+    if(!asset){setQcStatusFeedback('Arquivo não está mais no acervo; nenhuma decisão foi enviada.');return}
     const key=qcSelectionRef.current
     qcActionPending.current=true;setQcDecisionBusy(true)
     try {
-      await onAccept(targetId,qcReview)
-      if(qcSelectionRef.current!==key)return
-      setQcReview(null);setQcReviewRefresh(value=>value+1)
-      setQcStatusFeedback('Aprovação registrada para a versão conferida neste canal.')
+      let review:QcReview|null=targetId===selectedAsset?.id&&qcDecisionReady?qcReview:null
+      if(!review){
+        setQcStatusFeedback('Conferindo a versão do arquivo neste canal…')
+        const fresh=await api.qcAssessment(targetId,channel.id)
+        if(!qcReviewMatches(fresh.review,targetId,asset.contentHash,channel.id))throw new Error('O arquivo mudou desde a última leitura do acervo; nenhuma decisão foi enviada. Reescaneie e tente de novo.')
+        review=fresh.review
+      }
+      if(kind==='APPROVED')await onAccept(targetId,review);else await onIgnore(targetId,review)
+      setQuickDecided(current=>({...current,[targetId]:kind}))
+      if(targetId===selectedAsset?.id&&qcSelectionRef.current===key){setQcReview(null);setQcReviewRefresh(value=>value+1)}
+      setQcStatusFeedback(kind==='APPROVED'?'Aprovação registrada para a versão conferida neste canal.':'Rejeição global registrada; arquivo enviado aos ignorados / quarentena.')
     } catch (error) {
-      if(qcSelectionRef.current===key){setQcReview(null);setQcStatusFeedback(error instanceof Error ? error.message : 'Não foi possível aprovar o arquivo.')}
+      if(targetId===selectedAsset?.id&&qcSelectionRef.current===key)setQcReview(null)
+      setQcStatusFeedback(error instanceof Error ? error.message : kind==='APPROVED'?'Não foi possível aprovar o arquivo.':'Não foi possível rejeitar o arquivo.')
     }finally{qcActionPending.current=false;setQcDecisionBusy(false)}
   }
-
-  const handleReject = async (id?: string) => {
-    const targetId = id ?? selectedAsset?.id
-    if (!targetId || qcActionPending.current) return
-    if(targetId!==selectedAsset?.id || !qcDecisionReady || !qcReview){
-      setSelectedLiveSourceId(null);setSelectedAssetId(targetId)
-      setQcStatusFeedback('Selecione e confira a versão antes de rejeitar. A quarentena global afeta todos os canais.')
-      return
-    }
-    const key=qcSelectionRef.current
-    qcActionPending.current=true;setQcDecisionBusy(true)
-    try {
-      await onIgnore(targetId,qcReview)
-      if(qcSelectionRef.current!==key)return
-      setQcReview(null);setQcReviewRefresh(value=>value+1)
-      setQcStatusFeedback('Rejeição global registrada; arquivo enviado aos ignorados / quarentena.')
-    } catch (error) {
-      if(qcSelectionRef.current===key){setQcReview(null);setQcStatusFeedback(error instanceof Error ? error.message : 'Não foi possível rejeitar o arquivo.')}
-    }finally{qcActionPending.current=false;setQcDecisionBusy(false)}
-  }
+  const handleApprove = (id?: string) => decide('APPROVED', id)
+  const handleReject = (id?: string) => decide('IGNORED', id)
 
   const okCount = assets.filter((a) => qcApproved(a.qcStatus) && !a.probeError && !a.ignored).length
   const pendingCount = assets.filter((a) => ['PENDING', 'ANALYSIS'].includes(a.qcStatus) && !a.ignored).length
@@ -1021,7 +1040,10 @@ function QualityControlSession({
   const ignoredCount = assets.filter((a) => a.kind === 'VIDEO' && !!a.ignored).length
 
   const filteredAssets = useMemo(() => {
-    return assets.filter((a) => {
+    return assets.filter((original) => {
+      // Row decision applies immediately; the library refresh confirms it.
+      const quick=quickDecided[original.id]
+      const a=quick==='IGNORED'?{...original,ignored:true}:quick==='APPROVED'?{...original,qcStatus:'APPROVED' as typeof original.qcStatus,probeError:original.probeError}:original
       // Vídeos ignorados/rejeitados só aparecem quando o operador seleciona o filtro 'IGNORED'.
       // Em 'ALL', 'OK' ou 'ALERT', arquivos ignorados são totalmente ocultados tanto do QC quanto do Master.
       if (statusFilter === 'IGNORED') {
@@ -1045,7 +1067,7 @@ function QualityControlSession({
       }
       return true
     })
-  }, [assets, statusFilter, categoryFilter, searchQuery])
+  }, [assets, statusFilter, categoryFilter, searchQuery, quickDecided])
 
   return (
     <div className="w-full h-full bg-surface-base text-on-surface antialiased select-none flex flex-col overflow-hidden font-body-md text-body-md">
@@ -1274,8 +1296,9 @@ function QualityControlSession({
                 filteredAssets.map((asset) => {
                   const isSelected = asset.id === selectedAsset?.id
                   const hasAlert = !!asset.probeError || asset.qcStatus === 'FAILED'
-                  const isPending = ['PENDING', 'ANALYSIS'].includes(asset.qcStatus)
-                  const isIgnored = !!asset.ignored
+                  const quick = quickDecided[asset.id]
+                  const isPending = !quick && ['PENDING', 'ANALYSIS'].includes(asset.qcStatus)
+                  const isIgnored = quick === 'IGNORED' || !!asset.ignored
 
                   const itemDurationFrames =
                     asset.durationFrames > 0
@@ -1391,7 +1414,7 @@ function QualityControlSession({
             {/* Rodapé da Coluna com Resumo */}
             <div className="p-2 border-t border-border-subtle bg-surface-panel/30 font-label-mono text-[10px] text-outline flex items-center justify-between shrink-0">
               <span>{selectedLiveSourceId ? `${liveInputs.length} entradas ao vivo` : libraryLoaded ? `${filteredAssets.length} clipes na fila` : 'Fila de clipes ainda não conferida'}</span>
-              <span>{selectedLiveSourceId ? 'Clique na fonte para abrir o PVW compartilhado' : 'Clique no clipe para inspecionar'}</span>
+              <span>{selectedLiveSourceId ? 'Clique na fonte para abrir no decodificador do QC (não usa o PVW do Master)' : 'Clique no clipe para inspecionar'}</span>
             </div>
           </div>
 
@@ -1475,7 +1498,7 @@ function QualityControlSession({
                   {selectedLiveSource ? (
                     !liveQualityActive ? (
                       <div role="status" className="w-full h-full flex items-center justify-center text-center text-outline font-body-sm text-[11px] px-6">
-                        Inspeção pausada. Ative a qualidade para abrir esta entrada no decodificador do QC (o PVW do Master não é usado).
+                        Inspeção pausada. Clique em “Abrir inspeção” para abrir esta entrada no decodificador do QC (o PVW do Master não é usado).
                       </div>
                     ) : !livePreviewReady ? (
                       <div role="status" className="w-full h-full flex items-center justify-center text-center text-outline font-body-sm text-[11px] px-6">
@@ -1656,7 +1679,7 @@ function QualityControlSession({
                   </div>}
                   {selectedLiveSource && (
                     <span className="flex-1 font-label-mono text-[10px] text-accent-ice">
-                      PVW compartilhado · sem segunda decodificação no navegador
+                      Decodificador próprio do QC · não usa o PVW do Master
                     </span>
                   )}
 

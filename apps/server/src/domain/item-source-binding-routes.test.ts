@@ -48,3 +48,16 @@ it('editar a conexão desvincula cadastro e altera a referência executável sem
   expect(app.db.select().from(rundownItems).where(eq(rundownItems.id,item.id)).get()).toMatchObject({configuredSourceId:null,sourceRef:'ndi:OTHER',liveEndpoint:'ndi:OTHER'})
   expect(JSON.stringify(app.db.select().from(operationalPlaylistRevisions).where(eq(operationalPlaylistRevisions.id,revision.id)).get()!.payload)).toBe(oldPayload)
 })
+it('mudar a duração de um ao vivo no editor de horário recalcula o que vem depois',async()=>{
+  const selected=await source('Estúdio')
+  expect((await insert(selected.id)).statusCode).toBe(200)
+  const after=await server.inject({method:'POST',url:'/api/rundowns/rd/items',headers:{'if-match':app.concurrency.generateETag('rd')},payload:{type:'LIVE',sourceRef:'ndi:CAM',configuredSourceId:selected.id,durationOverride:100}})
+  expect(after.statusCode,after.body).toBe(200)
+  const [live,next]=app.db.select().from(rundownItems).all().sort((a,b)=>a.sortOrder-b.sortOrder)
+  const changed=await server.inject({method:'PATCH',url:`/api/items/${live!.id}`,headers:{'if-match':app.concurrency.generateETag('rd')},payload:{anchor:{kind:'FLOW'},durationOverride:750}})
+  expect(changed.statusCode,changed.body).toBe(200)
+  expect(app.db.select().from(rundownItems).where(eq(rundownItems.id,live!.id)).get()).toMatchObject({durationOverride:750,liveEstimatedDuration:750})
+  const rows=(changed.json() as {view:{schedule:{items:Array<{id:string;start:number;end:number;duration:number}>}}}).view.schedule.items
+  const liveRow=rows.find(row=>row.id===live!.id)!,nextRow=rows.find(row=>row.id===next!.id)!
+  expect(liveRow.duration).toBe(750);expect(nextRow.start).toBe(liveRow.end)
+})

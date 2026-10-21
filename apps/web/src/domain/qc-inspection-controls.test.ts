@@ -35,16 +35,16 @@ describe('barra de qualidade do QC',()=>{
   })
   it('live oferece qualidade codificada com retorno, custo e limites explícitos, nunca original sem perdas',()=>{
     const html=markup({hasAsset:false,isLive:true,qualityActive:true})
-    expect(html).toContain('Ao vivo · inspeção codificada da fonte, até 4K/60 fps')
-    expect(html).toContain('6–50 Mbps')
+    expect(html).toContain('Ao vivo · decodificador próprio do QC, até 4K/60 fps')
+    expect(html).toContain('6–50 Mbps');expect(html).toContain('Não usa o PVW do Master')
     expect(html).toContain('Inspecionar imagem em tela cheia')
     expect(html).not.toContain('Ver em qualidade')
-    expect(html).toContain('Voltar ao preview leve')
+    expect(html).toContain('Pausar inspeção')
     expect(html).not.toContain('Original selecionado')
   })
-  it('live nasce em preview leve e qualidade exige escolha explícita',()=>{
+  it('live pausado oferece abrir no decodificador do QC, sem PVW do Master',()=>{
     const html=markup({hasAsset:false,isLive:true})
-    expect(html).toContain('Ao vivo · preview leve');expect(html).toContain('Ver em qualidade')
+    expect(html).toContain('o PVW do Master não é usado');expect(html).toContain('Abrir inspeção')
     expect(html).toContain('aria-pressed="false"');expect(html).not.toContain('Voltar ao preview leve')
   })
   it('sem mídia não oferece inspeção nem tela cheia vazia',()=>{

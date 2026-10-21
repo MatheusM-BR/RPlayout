@@ -674,7 +674,11 @@ export function MasterControlView({
       sourceRef: cs.sourceRef,
       family: cs.family,
     }))
-    return [...allAssets, ...liveAsAssets]
+    // The playout library offers only what can go on air: VTs approved by
+    // the QC for this channel (no probe error) and registered live inputs.
+    // Pending/failed files stay in the QC queue, not in the Master's MAM.
+    const airable=allAssets.filter((asset)=>qcApproved(asset.qcStatus)&&!asset.probeError)
+    return [...airable, ...liveAsAssets]
   }, [allAssets, customSources])
 
   const filteredAssets = useMemo(() => {
