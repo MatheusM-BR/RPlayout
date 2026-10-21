@@ -45,6 +45,7 @@ import { DocumentationPanel } from './components/DocumentationPanel.js'
 import { WorkspaceShell, type WorkspaceId } from './components/WorkspaceShell.js'
 import { QualityControlPanel } from './components/QualityControlPanel.js'
 import { MasterControlView, liveOutsideGrade } from './views/MasterControlView.js'
+import { liveOnlyInsertion } from './domain/live-take-publication.js'
 import {UnavailableChannelReturns} from './components/broadcast/UnavailableChannelReturns.js'
 import { PlaylistScheduleView } from './views/PlaylistScheduleView.js'
 import { QualityControlView } from './views/QualityControlView.js'
@@ -597,14 +598,24 @@ export function App() {
         const onAirId = live?.transport.onAir?.itemId
         const index = view.items.findIndex((entry) => entry.item.id === onAirId)
         const fps = view.channel.rate.num / view.channel.rate.den
-        absorb(await api.addItem(view.rundown.id, {
+        const existing = new Set(view.items.map((entry) => entry.item.id))
+        const inserted = await api.addItem(view.rundown.id, {
           sourceRef, type: 'LIVE', title,
           durationOverride: Math.round(15 * 60 * fps),
           anchor: { kind: 'FLOW' },
           atIndex: index >= 0 ? index + 1 : undefined,
-        }, view.editorialRevision))
+        }, view.editorialRevision)
+        absorb(inserted)
+        const added = inserted.view?.items.find((entry) => !existing.has(entry.item.id) && entry.item.sourceRef === sourceRef)
+        if (!added) throw new Error('A entrada não foi confirmada na grade; nada foi publicado nem levado ao ar.')
+        // What goes on air is the PUBLISHED plan. Publish only this insertion.
+        const simulation = await api.simulateOperationalPlaylist(view.rundown.id)
+        if (simulation.activeRevision !== null) {
+          if (!liveOnlyInsertion(simulation.differences, added.item.id)) throw new Error(`"${title}" foi inserida na grade, mas há outras alterações pendentes de publicação. Revise e publique em PROGRAMAÇÃO e faça o TAKE de novo; o PGM não foi alterado.`)
+          await api.publishOperationalPlaylist(view.rundown.id, simulation.review.editorialRevision, simulation.review.token)
+        }
         absorb(await api.transport(view.channel.id, 'take'))
-        say(`Entrada "${title}" inserida na grade após o item no ar e levada ao PGM.`)
+        say(`Entrada "${title}" inserida na grade após o item no ar, publicada e levada ao PGM.`)
       })),
     [view, live, guard, absorb, enqueueTransportCommand, say],
   )
