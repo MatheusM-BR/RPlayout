@@ -8,6 +8,29 @@ function hasIncidentContextColumn(sqlite:Database.Database){
   return exists
 }
 
+/** Protected columns can hold tens of megabytes (one audit row per HTTP
+ * mutation). The storage process answers through a fixed shared buffer, so a
+ * single SELECT of a whole column failed startup once the audit grew past it.
+ * Read by rowid pages; the result is the same rows in the same order. */
+export function protectedColumnRows(sqlite:Database.Database,table:string,column:string,budgetBytes=4*2**20):Array<{row_id:number;value:string}>{
+  // Plan each page from value lengths (small reply), then fetch a rowid range
+  // whose values fit the budget. A too-large reply poisons the storage
+  // connection, so it must be avoided, not retried.
+  const sizes=sqlite.prepare(`SELECT rowid AS row_id, length("${column}") AS bytes FROM "${table}" WHERE "${column}" IS NOT NULL AND rowid > ? ORDER BY rowid LIMIT 5000`)
+  const values=sqlite.prepare(`SELECT rowid AS row_id, "${column}" AS value FROM "${table}" WHERE "${column}" IS NOT NULL AND rowid >= ? AND rowid <= ? ORDER BY rowid`)
+  const rows:Array<{row_id:number;value:string}>=[]
+  let last=Number.MIN_SAFE_INTEGER
+  for(;;){
+    const plan=sizes.all(last) as Array<{row_id:number;bytes:number}>
+    if(!plan.length)return rows
+    let total=0,end=0
+    while(end<plan.length&&(end===0||total+plan[end]!.bytes<=budgetBytes)){total+=plan[end]!.bytes;end++}
+    const first=plan[0]!.row_id,lastPlanned=plan[end-1]!.row_id
+    rows.push(...values.all(first,lastPlanned) as Array<{row_id:number;value:string}>)
+    last=lastPlanned
+  }
+}
+
 export function validateDatabaseSecrets(sqlite: Database.Database): { protectedSecrets: 'verified' | 'not-present'; vaultFingerprint?: string } {
   if (!sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='vault_metadata' AND type='table'").get()) return { protectedSecrets: 'not-present' }
   const metadata = sqlite.prepare('SELECT key_fingerprint, scrub_pending FROM vault_metadata WHERE id=1').get() as { key_fingerprint: string; scrub_pending: number } | undefined
@@ -24,7 +47,7 @@ export function validateDatabaseSecrets(sqlite: Database.Database): { protectedS
     }
     const legacyDiagnostic = table === 'health_events' && !sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=12').get()
     if(table==='health_events'&&column==='context'&&!hasIncidentContextColumn(sqlite))continue
-    for (const row of sqlite.prepare(`SELECT "${column}" AS value FROM "${table}" WHERE "${column}" IS NOT NULL`).all() as Array<{ value: string }>) {
+    for (const row of protectedColumnRows(sqlite, table, column)) {
       if (legacyDiagnostic && !row.value.startsWith(SECRET_PREFIX)) continue
       vault.decrypt(row.value, `${table}.${column}`)
     }
@@ -46,7 +69,7 @@ export function migrateSecretVault(sqlite: Database.Database,options:{deferClean
     const metadata = hasMetadata ? sqlite.prepare('SELECT key_fingerprint, scrub_pending FROM vault_metadata WHERE id=1').get() as { key_fingerprint: string; scrub_pending: number } | undefined : undefined
     const rows = protectedColumns.map(([table, column]) => ({
       table, column,
-      values: table==='health_events'&&column==='context'&&!hasIncidentContextColumn(sqlite)?[]:sqlite.prepare(`SELECT rowid AS row_id, "${column}" AS value FROM "${table}" WHERE "${column}" IS NOT NULL`).all() as Array<{ row_id: number; value: string }>,
+      values: table==='health_events'&&column==='context'&&!hasIncidentContextColumn(sqlite)?[]:protectedColumnRows(sqlite, table, column),
     }))
     const hasEncrypted = rows.some(field => field.values.some(row => row.value.startsWith(SECRET_PREFIX)))
     const vault = installationVault(!metadata && !hasEncrypted)
