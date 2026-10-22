@@ -14,6 +14,34 @@ import {safeMetricLabel,type MetricLabels} from './operational-metric-labels.js'
 
 export interface RuntimeObservation {identity:string;component:'LIVE_SOURCE'|'OUTPUT';bus:'pgm'|'pvw'|'output';state:string;result:'FAILED'|'HEALTHY'|'UNKNOWN'|'ENDED';delivered:number;name:string|null;legacyState?:string;endpointIdentity?:string;generation?:number}
 export interface RuntimeObservationSnapshot {channelId:string;context:IncidentContext;observations:RuntimeObservation[]}
+type LiveSourceState=ReturnType<MetricRuntime['transport']['state']>['liveSources'][number]
+type BusSignal=NonNullable<LiveSourceState['busSignals']>['pgm']
+type Publisher=ReturnType<MetricRuntime['transport']['publishers']>[number]
+function sourceResult(lifecycle:string|undefined,signal:BusSignal|undefined):RuntimeObservation['result']{
+  const failed=lifecycle==='FAILED'||lifecycle==='LOST'||['NO_VIDEO','NO_AUDIO','UNSTABLE','FAILED'].includes(signal?.status??'')
+  const recent=signal?.sampleAgeMs!==null&&signal?.sampleAgeMs!==undefined&&Number.isFinite(signal.sampleAgeMs)&&signal.sampleAgeMs>=0&&signal.sampleAgeMs<=1500
+  return failed?'FAILED':signal?.status==='SIGNAL_OK'&&recent&&signal.videoRecent&&signal.audioRecent?'HEALTHY':lifecycle==='IDLE'||signal?.status==='UNMONITORED'?'ENDED':'UNKNOWN'
+}
+function outputResult(output:Publisher):RuntimeObservation['result']{
+  return ['failed','retrying'].includes(output.health)?'FAILED':output.health==='onAir'&&!output.error?'HEALTHY':output.health==='idle'?'ENDED':'UNKNOWN'
+}
+/** Everything persistRuntimeSignalIncidents decides on, except publisher
+ * delivery counters: new failures, lifecycle/state transitions and the
+ * result that closes an incident. Native telemetry arrives several times per
+ * second with the same meaning; equal keys need no new storage transaction.
+ * Delivery-confirmed recovery stays with the periodic reconcile. */
+export function runtimeObservationKey(runtime:MetricRuntime):string{
+  const state=runtime.transport.state(),health=runtime.transport.health()
+  if(!(health.ready&&runtime.transport.processId()!==null&&state.mode==='NATIVE'))return 'not-observing'
+  const rows:unknown[]=[]
+  for(const source of state.liveSources)for(const bus of ['pgm','pvw'] as const){
+    const lifecycle=source.busStates?.[bus],signal=source.busSignals?.[bus]
+    if(!lifecycle&&!signal)continue
+    rows.push(['S',source.source,bus,signal?.status??lifecycle??'UNKNOWN',lifecycle??null,sourceResult(lifecycle,signal)])
+  }
+  for(const output of runtime.transport.publishers())rows.push(['O',output.outputId??null,output.url,output.generation??null,output.health,outputResult(output)])
+  return JSON.stringify(rows)
+}
 /** Read existing native telemetry only. Catalog selection/READY is not recovery.
  * Publishers require a delivery advance after the failure baseline. */
 export function runtimeObservationSnapshot(runtime:MetricRuntime,labelsInput?:MetricLabels|(()=>MetricLabels)):RuntimeObservationSnapshot{
@@ -27,13 +55,11 @@ export function runtimeObservationSnapshot(runtime:MetricRuntime,labelsInput?:Me
     for(const source of state.liveSources)for(const bus of ['pgm','pvw'] as const){
       const lifecycle=source.busStates?.[bus],signal=source.busSignals?.[bus]
       if(!lifecycle&&!signal)continue
-      const failed=lifecycle==='FAILED'||lifecycle==='LOST'||['NO_VIDEO','NO_AUDIO','UNSTABLE','FAILED'].includes(signal?.status??'')
-      const recent=signal?.sampleAgeMs!==null&&signal?.sampleAgeMs!==undefined&&Number.isFinite(signal.sampleAgeMs)&&signal.sampleAgeMs>=0&&signal.sampleAgeMs<=1500
-      observations.push({identity:identity(source.source,'metric-source:v1'),component:'LIVE_SOURCE',bus,state:signal?.status??lifecycle??'UNKNOWN',result:failed?'FAILED':signal?.status==='SIGNAL_OK'&&recent&&signal.videoRecent&&signal.audioRecent?'HEALTHY':lifecycle==='IDLE'||signal?.status==='UNMONITORED'?'ENDED':'UNKNOWN',delivered:0,name:safeMetricLabel(labels?.sources.get(source.source)),legacyState:lifecycle})
+      observations.push({identity:identity(source.source,'metric-source:v1'),component:'LIVE_SOURCE',bus,state:signal?.status??lifecycle??'UNKNOWN',result:sourceResult(lifecycle,signal),delivered:0,name:safeMetricLabel(labels?.sources.get(source.source)),legacyState:lifecycle})
     }
     for(const output of runtime.transport.publishers()){
       const profile=output.outputId?labels?.outputProfiles?.get(output.outputId):undefined
-      observations.push({identity:output.outputId?identity(JSON.stringify([runtime.channel.id,output.outputId]),'metric-output-profile:v1'):identity(output.url,'metric-output:v1'),endpointIdentity:identity(output.url,'metric-output:v1'),generation:Number.isSafeInteger(output.generation)&&output.generation!>=0?output.generation:undefined,component:'OUTPUT',bus:'output',state:output.health,result:['failed','retrying'].includes(output.health)?'FAILED':output.health==='onAir'&&!output.error?'HEALTHY':output.health==='idle'?'ENDED':'UNKNOWN',delivered:Number.isSafeInteger(output.delivered)&&output.delivered>=0?output.delivered:0,name:safeMetricLabel(output.outputId?(profile?.target===output.url?profile.name:null):labels?.outputs.get(output.url))})
+      observations.push({identity:output.outputId?identity(JSON.stringify([runtime.channel.id,output.outputId]),'metric-output-profile:v1'):identity(output.url,'metric-output:v1'),endpointIdentity:identity(output.url,'metric-output:v1'),generation:Number.isSafeInteger(output.generation)&&output.generation!>=0?output.generation:undefined,component:'OUTPUT',bus:'output',state:output.health,result:outputResult(output),delivered:Number.isSafeInteger(output.delivered)&&output.delivered>=0?output.delivered:0,name:safeMetricLabel(output.outputId?(profile?.target===output.url?profile.name:null):labels?.outputs.get(output.url))})
     }
   }
   return {channelId:runtime.channel.id,context,observations}
@@ -45,6 +71,7 @@ export class RuntimeIncidentRecorder {
   private readonly pending:Array<{snapshot:RuntimeObservationSnapshot;at:string}>=[]
   private lost=0
   constructor(private readonly db:Db,private readonly lease:ExecutionLease){}
+  hasPending():boolean{return this.pending.length>0}
   record(capture:()=>RuntimeObservationSnapshot):number{
     if(this.pending.length>=512){this.lost++;throw new Error('Fila de observação cheia; lacuna exige conferência operacional.')}
     const snapshot=structuredClone(capture());this.pending.push({snapshot,at:snapshot.context.capturedAt})

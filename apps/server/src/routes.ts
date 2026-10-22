@@ -588,8 +588,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (servicePaths.has(path) && EXTERNAL_CONTROL_TOKEN && typeof bearer === 'string' && secretEquals(bearer, EXTERNAL_CONTROL_TOKEN)) return
     return reply.code(401).send({ error: 'Entre com usuário e senha. A sessão expirou, foi revogada ou a conta está desativada.' })
   })
+  const unauditedHeartbeats=new Set(['/api/channels/:id/watching'])
   server.addHook('onResponse', async (request, reply) => {
     if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) || !request.url.startsWith('/api') || request.url.startsWith('/api/auth/')) return
+    // Monitor keep-alive is a heartbeat every few seconds per open window, not
+    // an operation. Auditing it wrote one encrypted row per beat and, with the
+    // monitors open, kept the server thread busy on storage.
+    if (request.routeOptions.url && unauditedHeartbeats.has(request.routeOptions.url)) return
     // Record route/actor/result, never request bodies or credential-bearing URLs.
     // The domain decision/as-run remains the detailed operational record.
     try { await logDecision(app, '@http', null, 'API_MUTATION', { requestId: request.id, method: request.method, route: request.routeOptions.url, status: reply.statusCode, station: request.ip,channelIds:auditChannels.get(request) ?? [] }, access.identity(request)?.username ?? null) }

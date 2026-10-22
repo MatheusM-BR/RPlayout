@@ -146,12 +146,19 @@ export function Whep({
    * só desliga depois de vinte segundos de silêncio, então avisar de cinco em
    * cinco dá margem para uma resposta perdida sem apagar a imagem.
    */
+  // The heartbeat depends on the path only. Callers pass inline callbacks, and
+  // re-running this effect on every render (several per second on a running
+  // channel) fired one POST per render instead of one every five seconds.
+  const onWatchingRef = useRef(onWatching)
+  onWatchingRef.current = onWatching
+  const watches = Boolean(onWatching)
   useEffect(() => {
-    if (!path || !onWatching) return undefined
-    onWatching()
-    const relogio = window.setInterval(onWatching, 5_000)
+    if (!path || !watches) return undefined
+    const beat = () => onWatchingRef.current?.()
+    beat()
+    const relogio = window.setInterval(beat, 5_000)
     return () => window.clearInterval(relogio)
-  }, [path, onWatching])
+  }, [path, watches])
 
   useEffect(() => {
     setTemSom(false)

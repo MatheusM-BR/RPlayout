@@ -79,7 +79,7 @@ import {assertProgramTrim} from './domain/program-trim.js'
 import {programDurationFrames} from '@rplayout/protocol'
 import {ExecutionOwnership,type ExecutionLease} from './domain/execution-ownership.js'
 import {endPreviousPgmObservation} from './domain/pgm-signal-incidents.js'
-import {persistRuntimeSignalIncidents,runtimeObservationSnapshot,RuntimeIncidentRecorder} from './domain/runtime-signal-incidents.js'
+import {persistRuntimeSignalIncidents,runtimeObservationKey,runtimeObservationSnapshot,RuntimeIncidentRecorder} from './domain/runtime-signal-incidents.js'
 import {DistributionOwnership} from './domain/distribution-ownership.js'
 import {HostDistributionFence} from './domain/host-distribution-fence.js'
 import {LocalRestoredEngineGenerations} from './domain/local-restored-engine-lease.js'
@@ -130,10 +130,17 @@ const CHECKPOINT_IDLE_REWRITE_MS = 30_000
 export class ChannelRuntime {
   private lastIncidentCapture=0
   private incidentRecorder:RuntimeIncidentRecorder|null=null
+  private lastObservationKey:string|null=null
   private recordNativeObservation():void{
     if(this.closed||!this.executionLease||!this.transport)return
     const recorder=this.incidentRecorder??=new RuntimeIncidentRecorder(this.db,this.executionLease)
+    // Telemetry repeats the same meaning several times per second. A storage
+    // transaction per event kept the server thread busy (profile r88-17: one
+    // quarter of the CPU). Persist on change; the 1 s reconcile still runs.
+    const key=runtimeObservationKey(this)
+    if(key===this.lastObservationKey&&!recorder.hasPending())return
     recorder.record(()=>runtimeObservationSnapshot(this,()=>operationalMetricLabels(this.db,this.channel.id,undefined,this.executionView)))
+    this.lastObservationKey=key
   }
   reconcileSignalIncidents(admissionOnly=false,path?:ChannelPaths):void{
     if(!this.executionLease)return
