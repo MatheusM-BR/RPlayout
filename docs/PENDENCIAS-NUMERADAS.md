@@ -1,6 +1,17 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-12 (soak em curso na instalação do operador)
+## Estado atual — r88-17 (instalação do operador atualizada e testada)
+
+21/10 noite — r88-17 13/13: ao vivo no PGM (PVW não é mais apagado na virada
+de item; TAKE de ao vivo fora da grade insere/publica/leva ao ar; Espaço =
+TAKE), banco não trava após queda/fechar janela, backup herdado resolvido na
+partida, QC (decisão pela linha, áudio ao vivo, abertura rápida), MAM só com o
+que vai ao ar, categoria em lote, duração de ao vivo recalcula, DeckLink "sem
+sinal". Testado na instalação real com vMix e UltraStudio HD Mini. Abertos:
+áudio do vMix Output 1 (silêncio na origem), DeckLink com sinal real, soak
+24–48 h. Ver CORRECOES-R88-13-A-R88-17-2026-10-21.md. Totais inalterados.
+
+## Anterior — r88-12 (soak em curso na instalação do operador)
 
 21/10 manhã — r88-12 (e2da3ea) 13/13: corrige o alerta de checkpoint na virada
 de item achado no soak. Dados do operador atualizados r88-11 → r88-12 pelo
