@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -1038,6 +1038,18 @@ describe('transporte real confirmado pelo engine', () => {
     await expect(transport.openQcSource('ndi:ESTÚDIO')).rejects.toThrow('indisponível')
     await expect(transport.qcMonitor('ndi:ESTÚDIO',true)).rejects.toThrow('indisponível')
     expect(commands).toHaveLength(count)
+  })
+  it('saída inesperada do engine deixa relatório com código e últimas linhas',async()=>{
+    const crashes=join(directory,'engine-crashes')
+    transport=new EngineTransport(channel,()=>view([]),()=>null,{binary:'fake-engine',outputs:['null'],preview:null,bitrateKbps:500,crashReportDirectory:crashes})
+    event({event:'ready',channelId:channel.id})
+    child.stderr.write("thread '<unnamed>' panicked at src/channel.rs:77:9:\nsinal sumiu\n")
+    await new Promise(resolve=>setImmediate(resolve))
+    child.emit('exit',3221226505,null)
+    const files=readdirSync(crashes);expect(files).toHaveLength(1)
+    const report=readFileSync(join(crashes,files[0]!),'utf8')
+    expect(report).toContain('0xC0000409');expect(report).toContain('panicked at src/channel.rs:77:9');expect(report).toContain('sinal sumiu')
+    expect(transport.health().error).toContain('0xC0000409')
   })
   it('comando antes de Ready não começa timeout de decoder nem mata partida fria aos 30s',async()=>{
     vi.useFakeTimers()

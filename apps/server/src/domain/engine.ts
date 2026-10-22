@@ -11,6 +11,8 @@ import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DiagnosticLines, sanitizeDiagnostic } from './sanitize-diagnostic.js'
 import { engineProcessEnvironment } from './media-process-environment.js'
+import {StderrTail,describeEngineExit,writeEngineCrashReport} from './engine-crash-report.js'
+import {freemem,totalmem} from 'node:os'
 import { FileVersionVerifier, MediaVersionError, isMediaSha, mediaFileIdentity } from './file-version.js'
 import {randomUUID} from 'node:crypto'
 import {
@@ -141,6 +143,8 @@ export type EnginePlaylistBoundary = { kind: 'HOLD'; reason: string } | {
 }
 export interface EngineOptions {
   readonly onSignalObservation?:()=>void
+  /** Where an unexpected native exit leaves its report (exit code + stderr tail). */
+  readonly crashReportDirectory?:string
   /** Per-native-owner witness grant. No Node timer can extend native expiry. */
   readonly fenceLease?:(ownerId:string,nonce:number)=>Promise<{term:number;ttlMs:number}>
   /** Promotion preparation only: native PGM consumers do not exist until
@@ -666,7 +670,8 @@ export class EngineTransport implements Transport {
       })
     }
     // O engine loga no stderr de propósito, para nunca sujar o canal de dados.
-    const diagnostics = new DiagnosticLines(line => process.stderr.write(`[engine ${sanitizeDiagnostic(this.channel.name)}] ${line}\n`))
+    const stderrTail = new StderrTail(), spawnedAt = Date.now()
+    const diagnostics = new DiagnosticLines(line => { stderrTail.push(line); process.stderr.write(`[engine ${sanitizeDiagnostic(this.channel.name)}] ${line}\n`) })
     child.stderr?.on('data', (chunk: Buffer) => diagnostics.write(chunk))
     child.stderr?.on('end', () => diagnostics.end())
     // Cano quebrado não pode derrubar o servidor.
@@ -692,6 +697,13 @@ export class EngineTransport implements Transport {
       retired()
       try{this.options.onProcessExited?.(child.pid??null,spawnToken)}catch{}
       if (this.closed || this.child !== child) return
+      // An exit we did not ask for leaves a report next to the data: code
+      // name and the last diagnostic lines (Rust panics land on stderr).
+      if (!this.matandoPorTravamento && (code !== 0 || signal) && this.options.crashReportDirectory) {
+        diagnostics.end()
+        const file = writeEngineCrashReport(this.options.crashReportDirectory, { channelId: this.channel.id, channelName: this.channel.name, code, signal: signal ?? null, pid: child.pid ?? null, startedAt: spawnedAt, at: Date.now(), stderr: stderrTail.snapshot(), memory: { freeBytes: freemem(), totalBytes: totalmem() } })
+        process.stderr.write(`[engine ${sanitizeDiagnostic(this.channel.name)}] encerrado: ${describeEngineExit(code, signal ?? null)}${file ? `; relatório em ${file}` : ''}\n`)
+      }
       this.alive = false
       if (this.onAirItemId) {
         const hold=this.nativeProgramHold
@@ -715,7 +727,7 @@ export class EngineTransport implements Transport {
       // legível para quem está lendo o log às três da manhã.
       this.lastError = code===75?'Posse HA expirou no engine nativo; publicação encerrada antes de nova concessão.':signal
         ? `O engine foi encerrado por ${signal}.`
-        : `O engine encerrou com código ${code ?? 'desconhecido'}.`
+        : `O engine encerrou com ${describeEngineExit(code, null)}.`
       for (const value of this.sourceSignals.values()) {
         if (value.state === 'IDLE') continue
         for (const bus of ['pgm','pvw'] as const) this.updateSource({ itemId: value.itemId, source: value.source }, 'LOST', 'Engine encerrado; aguardando nova confirmação de sinal.', bus)

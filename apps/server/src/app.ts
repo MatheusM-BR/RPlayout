@@ -276,6 +276,7 @@ export class ChannelRuntime {
     this.transport = ENGINE_BINARY
       ? new EngineTransport(channel, () => this.executionView, (id) => this.assets.get(id) ?? null, {
           binary: ENGINE_BINARY,
+          crashReportDirectory: resolvePath(BACKUP_DIR,'..','engine-crashes'),
           onSignalObservation:()=>this.recordNativeObservation(),
           assertExecutionOwned:()=>{this.executionLease?.assertOwned();this.distributionOwnership?.assertOwned()},
           beforeProcessStart:token=>this.executionLease?.beforeSpawn(token),

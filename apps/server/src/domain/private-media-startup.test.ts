@@ -23,11 +23,11 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.mocked(spawn).moc
 describe('endereços privados entre servidor e processos de mídia', () => {
   it.each([undefined, '', '0', 'true', ' 1 ', secret])('mantém software sem opt-in exato: %s', value => {
     const environment = { RPLAYOUT_HARDWARE_DECODE: value, RPLAYOUT_VAULT_KEY: secret, GST_PLUGIN_PATH: 'plugins' }
-    expect(engineProcessEnvironment(environment)).toEqual({GST_PLUGIN_PATH:'plugins'})
+    expect(engineProcessEnvironment(environment)).toEqual({GST_PLUGIN_PATH:'plugins',RUST_BACKTRACE:'1'})
   })
   it('encaminha opt-in canônico somente ao engine, sem herdar credenciais', () => {
     const environment = { rplayout_hardware_decode:'1', RPLAYOUT_CONTROL_TOKEN:secret, RPLAYOUT_ENGINE_OUTPUT:uri }
-    expect(engineProcessEnvironment(environment)).toEqual({RPLAYOUT_HARDWARE_DECODE:'1'})
+    expect(engineProcessEnvironment(environment)).toEqual({RPLAYOUT_HARDWARE_DECODE:'1',RUST_BACKTRACE:'1'})
     expect(mediaProcessEnvironment(environment)).toEqual({})
   })
   it('inicialização real do supervisor passa opt-in ao spawn do engine', () => {

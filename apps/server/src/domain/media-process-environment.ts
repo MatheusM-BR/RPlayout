@@ -23,5 +23,7 @@ export function engineProcessEnvironment(environment: NodeJS.ProcessEnv = proces
   const result = mediaProcessEnvironment(environment)
   const choice = Object.entries(environment).find(([key]) => key.toUpperCase() === 'RPLAYOUT_HARDWARE_DECODE')?.[1]
   if (choice === '1') result.RPLAYOUT_HARDWARE_DECODE = '1'
+  // A Rust panic then prints where it happened; the crash report keeps it.
+  result.RUST_BACKTRACE ??= '1'
   return result
 }
