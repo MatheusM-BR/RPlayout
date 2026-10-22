@@ -1,6 +1,48 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-17 (instalação do operador atualizada e testada)
+## Estado atual — r88-19 (22/10, D:\RPlayout Atual, no ar desde 17:12)
+
+Ver CORRECOES-R88-18-R88-19-2026-10-22.md. Totais da matriz inalterados.
+
+### Desenvolvimento validável sem equipamento (D1–D9)
+
+| # | Grupo | Status |
+|---|---|---|
+| D1 | TAKE de ao vivo rápido | Concluído (1–2 s; antes 10–20 s) |
+| D2 | Atualização sempre na mesma pasta | Implementado; falta 2ª atualização provar Firewall sem novo pedido |
+| D3 | Relatório de queda do engine | Implementado; falta estresse de memória |
+| D4 | Detecção de imagem congelada (NDI/OMT) | Pendente |
+| D5 | Suíte 100% verde (14 falhas antigas) | Pendente |
+| D6 | Banco separado: falha, concorrência, migração (7.2–7.4) | Pendente |
+| D7 | Autorização dos comandos restantes (6.1–6.5) | Pendente |
+| D8 | Mídia: jobs duráveis, proxy, faixas (5.1, 5.3, 5.5) | Pendente |
+| D9 | Recuperação: backup real, watchdog, soak 24/48 h (9.3–9.5) | Em andamento (soak 8 h r88-19) |
+
+### Achados de 22/10
+
+| # | Item | Status |
+|---|---|---|
+| N1 | Master mostra o ID do ao vivo em vez do título | Pendente |
+| N2 | Histórico de métricas aceita página de até 5 000 amostras (~14 MB) perto do limite de 16 MiB | Pendente (risco) |
+| N3 | /watching 0,76/s com uma tela (esperado ~0,4/s) | Pendente (baixo) |
+| N4 | Auditoria API_MUTATION sem retenção (55 mil linhas) | Pendente |
+
+### Dependem do usuário ou de equipamento
+
+| # | Item |
+|---|---|
+| U1 | DeckLink com sinal real |
+| U2 | vMix: áudio Master na Output 1 |
+| U3 | Aprovação visual do QC |
+| U4 | Windows limpo (outra máquina, só C:) |
+| U5 | Revisão de licenças (NDI etc.) |
+| U6 | Autorizar exclusão de instalações/dados antigos e QA |
+
+Fora desta versão: publicação externa (10.5) e grupo 8 (v3).
+Totais: 9 grupos D (1 concluído, 2 aguardando validação, 1 em andamento,
+5 pendentes); 4 achados novos; 6 dependências externas.
+
+## Anterior — r88-17 (instalação do operador atualizada e testada)
 
 21/10 noite — r88-17 13/13: ao vivo no PGM (PVW não é mais apagado na virada
 de item; TAKE de ao vivo fora da grade insere/publica/leva ao ar; Espaço =
