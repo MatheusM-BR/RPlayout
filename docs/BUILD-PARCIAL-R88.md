@@ -1,6 +1,14 @@
 # RPlayout r88 — marco utilizável (build parcial, NÃO homologada)
 
-## GERADA — r88-17, 21/10/2026 (Windows) — USAR ESTA
+## GERADA — r88-19, 22/10/2026 (Windows) — USAR ESTA
+
+- Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-19-instalador.zip`
+  SHA256 `D625C434261D0256142E3966C176F785E17101F6C9F6953AB48E01749A34536F`.
+- 13/13 PASS. Instalada em `D:\RPlayout Atual` (pasta fixa). Correções:
+  CORRECOES-R88-18-R88-19-2026-10-22.md. A r88-18 não é usável (não inicia
+  com auditoria grande).
+
+## GERADA — r88-17, 21/10/2026 (Windows)
 
 - Instalador: `D:\RPlayout-builds\RPlayout-1.1-parcial-20261020-r88-17-instalador.zip`
   SHA256 `DBE0AB822E382039E208D56511392416F38058B30B1A544D1056155511F605F8`.
