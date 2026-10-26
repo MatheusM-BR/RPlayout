@@ -1,18 +1,18 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-19 (22/10, D:\RPlayout Atual, no ar desde 17:12)
+## Estado atual — r88-21 (26/10, D:\RPlayout Atual)
 
-Ver CORRECOES-R88-18-R88-19-2026-10-22.md. Totais da matriz inalterados.
+Ver CORRECOES-R88-20-R88-21-2026-10-26.md e CORRECOES-R88-18-R88-19-2026-10-22.md. Totais da matriz inalterados.
 
 ### Desenvolvimento validável sem equipamento (D1–D9)
 
 | # | Grupo | Status |
 |---|---|---|
 | D1 | TAKE de ao vivo rápido | Concluído (1–2 s; antes 10–20 s) |
-| D2 | Atualização sempre na mesma pasta | Implementado; falta 2ª atualização provar Firewall sem novo pedido |
-| D3 | Relatório de queda do engine | Implementado; falta estresse de memória |
+| D2 | Atualização sempre na mesma pasta | Concluído (r88-19→r88-20 sem regra nova de Firewall) |
+| D3 | Relatório de queda do engine | Implementado; estresse ~90% RAM 2 min sem queda |
 | D4 | Detecção de imagem congelada (NDI/OMT) | Pendente |
-| D5 | Suíte 100% verde (14 falhas antigas) | Pendente |
+| D5 | Suíte 100% verde (14 falhas antigas) | Concluído (3 995/0) |
 | D6 | Banco separado: falha, concorrência, migração (7.2–7.4) | Pendente |
 | D7 | Autorização dos comandos restantes (6.1–6.5) | Pendente |
 | D8 | Mídia: jobs duráveis, proxy, faixas (5.1, 5.3, 5.5) | Pendente |
@@ -22,10 +22,13 @@ Ver CORRECOES-R88-18-R88-19-2026-10-22.md. Totais da matriz inalterados.
 
 | # | Item | Status |
 |---|---|---|
-| N1 | Master mostra o ID do ao vivo em vez do título | Pendente |
-| N2 | Histórico de métricas aceita página de até 5 000 amostras (~14 MB) perto do limite de 16 MiB | Pendente (risco) |
-| N3 | /watching 0,76/s com uma tela (esperado ~0,4/s) | Pendente (baixo) |
-| N4 | Auditoria API_MUTATION sem retenção (55 mil linhas) | Pendente |
+| N1 | Master mostra o ID do ao vivo em vez do título | Corrigido (r88-20) |
+| N2 | Histórico de métricas perto do limite de 16 MiB | Corrigido (r88-20, página por bytes) |
+| N3 | /watching 0,76/s com uma tela | Explicado: só com monitor WebRTC falhando (reconexão a cada 6 s); sem custo após r88-18 |
+| N4 | Auditoria API_MUTATION sem retenção | Corrigido (r88-20, 90 dias) |
+| N5 | Live sem sinal travava publicação / virada automática ficava em preto | Corrigido (r88-21) |
+| N6 | Arquivo "Finaliza Gado Canal" parece mudo | Conferir mídia |
+| N7 | Teste Rust temporal falha com RPlayout no ar durante a build | Pendente (baixo) |
 
 ### Dependem do usuário ou de equipamento
 
