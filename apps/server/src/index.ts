@@ -7,7 +7,7 @@ import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
 import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation } from './app.js'
 import {EngineTransport} from './domain/engine.js'
-import { BACKUP_EVERY_HOURS, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS } from './config.js'
+import { BACKUP_EVERY_HOURS, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS, HTTP_AUDIT_RETENTION_DAYS } from './config.js'
 import { listChannels, listRundowns } from './db/repo.js'
 import { backupDatabase } from './domain/backup.js'
 import { listRoots } from './domain/roots.js'
@@ -18,7 +18,7 @@ import { emitIntegrationEvent } from './domain/integrations.js'
 import {persistPgmSignalIncidents} from './domain/pgm-signal-incidents.js'
 import {captureIncidentContext} from './domain/incident-context.js'
 import {operationalMetricLabels} from './domain/operational-metric-labels.js'
-import {pruneHealthHistory} from './domain/health-retention.js'
+import {pruneHealthHistory,pruneHttpAudit} from './domain/health-retention.js'
 import { executionHorizon, horizonWarning } from './domain/continuous.js'
 import { recordHorizonWarning } from './domain/horizon-ledger.js'
 import { AccessControl } from './domain/access.js'
@@ -263,9 +263,10 @@ async function main(): Promise<void> {
   // Retenção evita crescimento infinito em operação 24/7. Eventos não
   // reconhecidos ficam preservados até serem reconhecidos, mesmo que antigos.
   const retentionTimer = setInterval(() => void background.run('health-retention',() => {
-    if (!Number.isFinite(HEALTH_RETENTION_DAYS) || HEALTH_RETENTION_DAYS <= 0) return
-    pruneHealthHistory(app.sqlite,HEALTH_RETENTION_DAYS)
-  },()=>!isRecoveryRehearsal(app.sqlite)), 6 * 60 * 60 * 1000)
+    if (Number.isFinite(HEALTH_RETENTION_DAYS) && HEALTH_RETENTION_DAYS > 0) pruneHealthHistory(app.sqlite,HEALTH_RETENTION_DAYS)
+    // Batches of 5 000 every 10 minutes clear a large backlog without a long lock.
+    pruneHttpAudit(app.sqlite,HTTP_AUDIT_RETENTION_DAYS)
+  },()=>!isRecoveryRehearsal(app.sqlite)), 10 * 60 * 1000)
   const expireSessionBatch=()=>{
     if(!storageConnected())return
     try{expireSessions(app.db)}catch(error){server.log.error({err:error},'Expiração de sessões não auditada; lote preservado para nova tentativa.')}

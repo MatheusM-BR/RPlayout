@@ -50,17 +50,30 @@ export class HostMetrics {
     return this.pending
   }
   history(since: string, limit = 2000): HostMetricSample[] {
-    return (this.sqlite.prepare('SELECT payload FROM host_metric_samples WHERE sampled_at>=? ORDER BY sampled_at DESC LIMIT ?').all(since, Math.max(1, Math.min(5000, limit))) as Array<{ payload: string }>).map(row => JSON.parse(row.payload))
+    const {keys}=this.pageKeys('sampled_at>=?',[since],Math.max(1,Math.min(5000,limit)))
+    if(!keys.length)return []
+    return (this.sqlite.prepare('SELECT payload FROM host_metric_samples WHERE sampled_at>=? AND sampled_at<=? ORDER BY sampled_at DESC').all(keys.at(-1),keys[0]) as Array<{ payload: string }>).map(row => JSON.parse(row.payload))
+  }
+  /** Newest-first sample keys whose payloads fit one storage reply. Samples
+   * grow with process/output count; 5 000 of them reached ~14 MB, close to
+   * the 16 MiB reply limit that stopped the server once. */
+  private pageKeys(where:string,args:unknown[],size:number,budgetBytes=4*2**20):{keys:string[];more:boolean}{
+    const rows=this.sqlite.prepare(`SELECT sampled_at, length(payload) AS bytes FROM host_metric_samples WHERE ${where} ORDER BY sampled_at DESC LIMIT ?`).all(...args,size+1) as Array<{sampled_at:string;bytes:number}>
+    const keys:string[]=[];let total=0
+    for(const row of rows.slice(0,size)){if(keys.length&&total+row.bytes>budgetBytes)break;total+=row.bytes;keys.push(row.sampled_at)}
+    return {keys,more:rows.length>keys.length}
   }
   historyCount(since: string): number {
     return (this.sqlite.prepare('SELECT COUNT(*) AS count FROM host_metric_samples WHERE sampled_at>=?').get(since) as { count: number }).count
   }
   historyPage(since:string,until:string,before:string|undefined,limit:number){
-    const size=Math.max(1,Math.min(5000,limit))
-    const rows=this.sqlite.prepare('SELECT sampled_at,payload FROM host_metric_samples WHERE sampled_at>=? AND sampled_at<=? AND sampled_at<? ORDER BY sampled_at DESC LIMIT ?').all(since,until,before??'9999',size+1) as Array<{sampled_at:string;payload:string}>
+    const requested=Math.max(1,Math.min(5000,limit))
+    const {keys,more}=this.pageKeys('sampled_at>=? AND sampled_at<=? AND sampled_at<?',[since,until,before??'9999'],requested)
+    const size=keys.length
+    const rows=size?this.sqlite.prepare('SELECT sampled_at,payload FROM host_metric_samples WHERE sampled_at>=? AND sampled_at<=? ORDER BY sampled_at DESC').all(keys[size-1],keys[0]) as Array<{sampled_at:string;payload:string}>:[]
     const selected=rows.slice(0,size)
     const totalSamples=(this.sqlite.prepare('SELECT COUNT(*) AS count FROM host_metric_samples WHERE sampled_at>=? AND sampled_at<=?').get(since,until) as {count:number}).count
-    return {totalSamples,nextBefore:rows.length>size?selected.at(-1)!.sampled_at:null,samples:selected.map(row=>({sampledAt:row.sampled_at,sample:JSON.parse(row.payload) as HostMetricSample}))}
+    return {totalSamples,nextBefore:more&&selected.length?selected.at(-1)!.sampled_at:null,samples:selected.map(row=>({sampledAt:row.sampled_at,sample:JSON.parse(row.payload) as HostMetricSample}))}
   }
   private async collect(): Promise<HostMetricSample> {
     const cores = cpus()

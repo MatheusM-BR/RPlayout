@@ -103,6 +103,8 @@ export const BACKUP_DIR = process.env.RPLAYOUT_BACKUPS ?? resolve(process.cwd(),
  */
 export const BACKUP_EVERY_HOURS = Number(process.env.RPLAYOUT_BACKUP_HOURS ?? '24')
 export const HEALTH_RETENTION_DAYS = Number(process.env.RPLAYOUT_HEALTH_RETENTION_DAYS ?? '30')
+/** HTTP mutation audit window (route/actor/status). Operational records are kept. */
+export const HTTP_AUDIT_RETENTION_DAYS = Number(process.env.RPLAYOUT_HTTP_AUDIT_RETENTION_DAYS ?? '90')
 /** Preenchimento contínuo opt-in; desativado por padrão para preservar controle manual. */
 
 /** Binário de descoberta de fontes ao vivo. Vazio deixa só os convidados. */

@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import {itemDisplayTitle} from '../domain/item-title.js'
 import type { Channel, ManagedLiveSource, Rundown, AssetMetadataReview } from '@rplayout/protocol'
 import { durationIn, qcApproved } from '@rplayout/protocol'
 import { clock, dur } from '../format.js'
@@ -1876,7 +1877,7 @@ export function PlaylistScheduleView({
                       left: `${block.leftPct}%`,
                       width: `${block.widthPct}%`,
                     }}
-                    title={`${block.item.asset?.title || block.item.item.id} (${dur(block.duration, rate)})`}
+                    title={`${itemDisplayTitle(block.item)} (${dur(block.duration, rate)})`}
                     className={`absolute top-1 bottom-1 rounded-sm border cursor-pointer transition-all flex items-center justify-center overflow-hidden ${
                       selectedItemId === block.item.item.id
                         ? 'ring-2 ring-primary-fixed border-primary-fixed z-20 brightness-125'

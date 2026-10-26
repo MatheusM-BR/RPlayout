@@ -1,7 +1,9 @@
 import {afterEach,beforeEach,expect,it} from 'vitest'
 import {openDatabase} from '../db/client.js'
 import {healthEvents} from '../db/schema.js'
-import {pruneHealthHistory} from './health-retention.js'
+import {pruneHealthHistory,pruneHttpAudit} from './health-retention.js'
+import {operatorDecisions} from '../db/schema.js'
+import {randomUUID} from 'node:crypto'
 import {mkdtemp} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
@@ -42,4 +44,17 @@ it('backup/restauração mantém reconhecimento separado de recuperação e reje
   }finally{copy.close()}
   await expect(validateBackupRestore(path)).rejects.toThrow('Horário de resolução')
   expect(value.db.select().from(healthEvents).all()[0]!.resolvedAt).toBe(time)
+})
+
+it('auditoria HTTP antiga sai em lotes; registro operacional e auditoria recente ficam',()=>{
+  const now=Date.parse('2026-10-26T12:00:00.000Z'),old='2026-07-01T00:00:00.000Z',recent='2026-10-20T00:00:00.000Z'
+  const add=(rundownId:string,kind:string,createdAt:string)=>value.db.insert(operatorDecisions).values({id:randomUUID(),rundownId,itemId:null,kind,payload:{x:1},actorUsername:null,createdAt}).run()
+  for(let i=0;i<7;i++)add('@http','API_MUTATION',old)
+  add('@http','API_MUTATION',recent);add('rd','ITEM_ADDED',old);add('@execution','RUNTIME_INCIDENT_RECOVERED',old)
+  expect(pruneHttpAudit(value.sqlite,90,now,5)).toBe(5)
+  expect(pruneHttpAudit(value.sqlite,90,now,5)).toBe(2)
+  expect(pruneHttpAudit(value.sqlite,90,now,5)).toBe(0)
+  const kinds=value.db.select().from(operatorDecisions).all().map(row=>row.kind).sort()
+  expect(kinds).toEqual(['API_MUTATION','ITEM_ADDED','RUNTIME_INCIDENT_RECOVERED'])
+  expect(pruneHttpAudit(value.sqlite,0,now)).toBe(0)
 })

@@ -37,6 +37,27 @@ describe('coleta histórica centralizada do host', () => {
     expect(next.totalSamples).toBe(4);expect(metrics.historyPage(since,until,since,2).samples).toEqual([])
     metrics.close()
   })
+  it('página respeita o limite de bytes da resposta do banco e continua pelo cursor',()=>{
+    const value=openDatabase(':memory:');values.push(value)
+    const metrics=new HostMetrics(value.sqlite,tmpdir()),filler='x'.repeat(600_000)
+    for(let index=0;index<20;index++){
+      const time=new Date(Date.UTC(2026,9,9,12,0,index)).toISOString()
+      value.sqlite.prepare('INSERT INTO host_metric_samples VALUES(?,?)').run(time,JSON.stringify({generatedAt:time,filler}))
+    }
+    const since='2026-10-09T12:00:00.000Z',until='2026-10-09T12:00:19.000Z',seen:string[]=[]
+    let before:string|undefined,pages=0
+    for(;;){
+      const page=metrics.historyPage(since,until,before,5000);pages++
+      const bytes=page.samples.reduce((sum,row)=>sum+JSON.stringify(row.sample).length,0)
+      expect(bytes).toBeLessThanOrEqual(4*2**20)
+      seen.push(...page.samples.map(row=>row.sampledAt))
+      if(!page.nextBefore)break
+      before=page.nextBefore
+    }
+    expect(pages).toBeGreaterThan(1);expect(seen).toHaveLength(20);expect(new Set(seen).size).toBe(20)
+    expect(metrics.history(since,5000).length).toBeLessThan(20)
+    metrics.close()
+  })
   it('CPU só tem percentual após dois contadores válidos; reseta contadores não estimáveis', () => {
     expect(cpuUtilization(null, { idle: 5, total: 10 })).toBeNull()
     expect(cpuUtilization({ idle: 5, total: 10 }, { idle: 10, total: 30 })).toBe(75)

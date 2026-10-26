@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
+import {itemDisplayTitle} from '../domain/item-title.js'
 import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags,LiveSourceReview,RootCatalogReview,RootAddReview } from '@rplayout/protocol'
 import { qcApproved,programDurationFrames,durationIn } from '@rplayout/protocol'
 import { clock, dur, formatStandardRate } from '../format.js'
@@ -845,8 +846,8 @@ export function MasterControlView({
                     </div>
                   </div>
                   <div className="flex items-start justify-between gap-2 pt-0.5">
-                    <h3 className="font-headline-md text-[17px] text-on-surface font-semibold tracking-wide leading-tight truncate" title={onAirItem?.asset?.title || onAirItem?.item.id || 'Nenhum item em reprodução'}>
-                      {onAirItem?.asset?.title || onAirItem?.item.id || 'Nenhum item em reprodução'}
+                    <h3 className="font-headline-md text-[17px] text-on-surface font-semibold tracking-wide leading-tight truncate" title={itemDisplayTitle(onAirItem,'Nenhum item em reprodução')}>
+                      {itemDisplayTitle(onAirItem,'Nenhum item em reprodução')}
                     </h3>
                   </div>
                 </div>
