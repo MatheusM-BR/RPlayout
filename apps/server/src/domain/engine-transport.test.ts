@@ -822,6 +822,30 @@ describe('transporte real confirmado pelo engine', () => {
     expect(transport.state().liveSources[0]?.measurements?.pgm).toBeUndefined()
     event({event:'sourceTelemetry',itemId:'0',bus:'pgm',signal});expect(states.at(-1)).toBe('SIGNAL_OK')
   })
+  it('live sem primeiro quadro substituída por TAKE de VT não fica pendente bloqueando publicação',async()=>{
+    const file=join(directory,'vt-after-dead-live.mkv');writeFileSync(file,'unit fixture, not decoded')
+    const value=view(['live',file])
+    Object.assign(value.items[0]!,{item:{...value.items[0]!.item,type:'LIVE',sourceRef:'ndi:SUMIU',durationOverride:250,autoNext:false},asset:null})
+    start(value);holdLiveTake=true
+    await transport.take('grade','0')
+    await expect(transport.mutatePlaylist(async()=>'ok')).rejects.toThrow('aguardando confirmação')
+    holdLiveTake=false
+    await transport.take('grade','1')
+    expect(transport.state().onAir?.itemId).toBe('1')
+    await expect(transport.mutatePlaylist(async()=>'ok')).resolves.toBe('ok')
+  })
+  it('virada automática para live sem quadro segue a grade em vez de ficar no fim do VT',async()=>{
+    const first=join(directory,'vt-antes-live.mkv'),after=join(directory,'vt-depois-live.mkv');writeFileSync(first,'video');writeFileSync(after,'video')
+    const value=view([first,'live',after])
+    Object.assign(value.items[1]!,{item:{...value.items[1]!.item,type:'LIVE',sourceRef:'ndi:SUMIU',durationOverride:250},asset:null})
+    start(value)
+    await transport.take('grade','0');holdLiveTake=true
+    event({event:'position',itemId:'0',frames:250,duration:250});event({event:'eos',itemId:'0'})
+    await vi.waitFor(()=>expect(commands.filter(command=>command.cmd==='take')).toHaveLength(2))
+    holdLiveTake=false
+    event({event:'itemError',itemId:'1',bus:'pgm',message:'entrada não confirmou quadro/áudio exigido em 10 segundos'})
+    await vi.waitFor(()=>expect(transport.state().onAir?.itemId).toBe('2'))
+  })
   it('preserva identidade de publishers distintos no mesmo destino',()=>{
     start(view([]))
     for(const outputId of ['primary','backup'])event({event:'publisher',outputId,url:'rtmp://host/shared',health:'onAir',attempts:0,delivered:1})

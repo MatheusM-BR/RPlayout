@@ -939,6 +939,10 @@ export class EngineTransport implements Transport {
             this.recoveryCursor=null
             this.options.onRecoveryRejected?.({rundownId:opening.rundownId,itemId:opening.itemId,frames:cursor.frames},new EngineCommandRejected(sanitizeDiagnostic(event.message)))
           }
+          // Automatic advance into a live that never delivered a frame: the
+          // previous item already ended, so "previous PGM preserved" is a
+          // frozen/black last frame. Continue the grade after the live.
+          else if(this.programEndReason==='EOS'&&this.onAirItemId&&this.onAirItemId!==opening.itemId)this.skipFailedLive(opening.rundownId,opening.itemId,this.onAirItemId)
         }
         if (this.pendingPlaylistTake?.spec.itemId === event.itemId && !this.pendingPlaylistTake.confirmed) {this.pendingPlaylistTake.failure = new Error(sanitizeDiagnostic(event.message));this.pendingPlaylistTake.settled?.()}
         if (this.priorityTake?.itemId === event.itemId) {
@@ -1398,6 +1402,19 @@ export class EngineTransport implements Transport {
     assertSelection()
     this.options.assertExecutionOwned?.()
     if (!this.alive || this.closed) return Promise.reject(new Error('O engine está indisponível.'))
+    // Native LOAD discards the armed decoder and its pending live TAKE without
+    // an event. A live waiting for its first frame that is replaced by another
+    // item (e.g. operator TAKEs a VT because the source vanished) must not
+    // stay pending here: it blocked every publication indefinitely.
+    if (command.cmd === 'load') {
+      const next=(command.item as EngineItem|undefined)?.itemId,superseded=this.pendingLiveTake
+      if (superseded && superseded.itemId !== next) {
+        this.pendingLiveTake = null
+        this.updateSource(superseded.spec, 'IDLE', 'TAKE substituído por outro item antes do primeiro quadro.', 'pgm')
+        if (this.priorityTake?.itemId === superseded.itemId) this.failPriorityTake('TAKE substituído por outro item antes do primeiro quadro.')
+        this.dirty = true
+      }
+    }
     if (command.cmd === 'preview') {
       const item = command.item as EngineItem | null
       this.previewFrameBinding=item?{itemId:item.itemId}:null
@@ -1794,6 +1811,25 @@ export class EngineTransport implements Transport {
         throw failure
       }
     }).catch((error: Error) => this.fail(error.message)).finally(() => { this.advancing = false })
+  }
+
+  /** After a refused live on automatic advance, play the next playable line
+   * after it. Only while the ended item is still the PGM and the grade is the
+   * same; a manual TAKE or another advance in between wins. */
+  private skipFailedLive(rundownId:string,failedId:string,endedId:string):void{
+    if(this.advancing)return
+    this.advancing=true
+    void this.enqueue(async()=>{
+      const view=this.view()
+      if(!view||view.rundown.id!==rundownId||this.onAirItemId!==endedId||this.pendingLiveTake)return
+      const index=view.items.findIndex(entry=>entry.item.id===failedId)
+      if(index<0)return
+      const candidates=[...view.items.slice(index+1),...(view.rundown.loop?view.items.slice(0,index):[])]
+      const next=candidates.find(entry=>entry.item.id!==failedId&&view.schedule.items.find(timing=>timing.id===entry.item.id)?.state!=='DROPPED')
+      if(!next)return
+      this.fail('Entrada ao vivo sem sinal na virada automática; a grade seguiu para o próximo item.')
+      await this.playFrom(view.rundown.id,next.item.id)
+    }).catch((error:Error)=>this.fail(error.message)).finally(()=>{this.advancing=false})
   }
 
   private programTrimFor(itemId:string):ProgramTrim|null{

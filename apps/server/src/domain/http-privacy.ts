@@ -28,6 +28,11 @@ export function privateHttpLogger(level:string){
 export function privateStartupDiagnostic(error:unknown){
   return {...privateErrorLog(error),diagnostic:error instanceof Error?sanitizeDiagnostic(error.message):'Falha de partida não identificada.'}
 }
+export function internalFailureDiagnostic(error:unknown):{where:string[]}{
+  if(!(error instanceof Error))return {where:[]}
+  const where=(error.stack??'').split('\n').slice(1).map(line=>/^\s*at\s+(?:async\s+)?([A-Za-z_$][\w$.<>]*)\s+\(/.exec(line)?.[1]).filter((name):name is string=>Boolean(name)).slice(0,6)
+  return {where}
+}
 export function privateApiCacheControl(previous:unknown,ephemeral:boolean):string{
   if(ephemeral)return 'private, no-store'
   const directives=typeof previous==='string'?previous.split(',').map(value=>value.trim()).filter(value=>value&&!/^public$|^private(?:\s*=.*)?$|^s-maxage\s*=/i.test(value)):[]
@@ -39,7 +44,11 @@ export function registerHttpPrivacy(server:FastifyInstance,options:{notFound?:bo
   server.setErrorHandler((error,request,reply)=>{
     const value=error&&typeof error==='object'?error as {statusCode?:unknown;message?:unknown}:{}
     const status=Number.isInteger(value.statusCode)&&Number(value.statusCode)>=400&&Number(value.statusCode)<=599?Number(value.statusCode):500
-    request.log[status>=500?'error':'warn']({err:error},'Falha HTTP; detalhes privados omitidos')
+    // A 5xx is a defect to be found later: keep only the function names of
+    // the first frames. Messages stay out (they may carry operator data the
+    // sanitizer does not know); no paths, causes, bodies or raw values.
+    if(status>=500)request.log.error({err:error,...internalFailureDiagnostic(error)},'Falha HTTP; detalhes privados omitidos')
+    else request.log.warn({err:error},'Falha HTTP; detalhes privados omitidos')
     return reply.code(status).type('application/json').send({statusCode:status,error:STATUS_CODES[status]??'Error',requestId:request.id,
       message:status>=500?`Falha interna (solicitação ${request.id}). Confira o diagnóstico do domínio antes de repetir o comando.`:typeof value.message==='string'?sanitizeDiagnostic(value.message):'Solicitação recusada.'})
   })

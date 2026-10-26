@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import {describe,it,expect} from 'vitest'
-import {privateRequestLog,privateErrorLog,privateHttpLogger,privateStartupDiagnostic,privateApiCacheControl,registerHttpPrivacy} from './http-privacy.js'
+import {privateRequestLog,privateErrorLog,privateHttpLogger,privateStartupDiagnostic,privateApiCacheControl,registerHttpPrivacy,internalFailureDiagnostic} from './http-privacy.js'
 
 describe('fronteira privada HTTP',()=>{
   it('tarefas de fundo registram contexto fixo/código conhecido sem repetir Error, string ou objeto privado',async()=>{
@@ -73,5 +73,13 @@ describe('fronteira privada HTTP',()=>{
       const media=await server.inject('/api/media');expect(media.statusCode).toBe(206);expect(media.rawPayload).toEqual(Buffer.from([1,2,3]));expect(media.headers['content-range']).toBe('bytes 0-2/3');expect(media.headers['cache-control']).toBe('private, max-age=60, immutable')
       expect((await server.inject('/assets/index.js')).headers['cache-control']).toBe('public, max-age=3600')
     }finally{await server.close()}
+  })
+  it('5xx guarda só os nomes das funções, sem mensagem, segredo, caminho ou causa',()=>{
+    function takeFromPreview(){throw Object.assign(new Error('TAKE falhou em srt://user:PRIVATE_PASSWORD@host?passphrase=PRIVATE_SRT'),{cause:{password:'PRIVATE_CAUSE'}})}
+    let caught:unknown;try{takeFromPreview()}catch(error){caught=error}
+    const value=internalFailureDiagnostic(caught)
+    expect(value.where[0]).toBe('takeFromPreview')
+    for(const secret of ['TAKE falhou','PRIVATE_PASSWORD','PRIVATE_SRT','PRIVATE_CAUSE','/home/','.ts'])expect(JSON.stringify(value)).not.toContain(secret)
+    expect(internalFailureDiagnostic('PRIVATE_STRING')).toEqual({where:[]})
   })
 })
