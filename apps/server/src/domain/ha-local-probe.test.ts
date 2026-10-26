@@ -52,7 +52,7 @@ describe('sonda local HA: subprocesso limitado e evidência independente',()=>{
   it('requer buffers da trilha de áudio anunciada e medição completa para QC R128',()=>{
     const audio={rate:48000,channels:2,integratedLufs:-23,lra:1,truePeakDbtp:-2}
     expect(assessLocalProbe(asset,{...proof,audio},undefined,'now').decoded).toBe(false)
-    const result=assessLocalProbe(asset,{...proof,audio,decodedAudioBuffers:10},{...DEFAULT_QC_PROFILE,requireAudio:true,requireLoudness:true},'now')
-    expect(result).toMatchObject({decoded:true,checks:{playable:true},loudnessFile:{integratedLufs:-23,scope:'FILE',measuredAt:'now'}})
+    const at='2026-10-01T00:00:00.000Z',result=assessLocalProbe(asset,{...proof,audio,decodedAudioBuffers:10},{...DEFAULT_QC_PROFILE,requireAudio:true,requireLoudness:true},at)
+    expect(result).toMatchObject({decoded:true,checks:{playable:true},loudnessFile:{integratedLufs:-23,scope:'FILE',measuredAt:at}})
   })
 })

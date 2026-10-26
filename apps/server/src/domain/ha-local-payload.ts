@@ -7,7 +7,10 @@ export interface LocalMountCheck {itemId:string;revisionId?:string;title?:string
 export function inspectHaLocalMount(item:Pick<RundownItem,'trim'|'audio'|'audioTrack'>&Partial<Pick<RundownItem,'durationOverride'>>,asset:MediaAsset,rate:Rate,audioChannels:number,check:LocalMountCheck){
   try{
     if(asset.probeError||(asset.kind==='AUDIO'?asset.audioMetadata?.hasAudio!==true:!asset.probe))check.errors.push('LOCAL_DECODE_NOT_PROVEN')
-    const cut=asset.kind==='STILL'?resolveTrim(item.trim,asset,rate).value:declaredFileTrim(item,asset,rate)
+    let cut
+    // A declared cut beyond the local file is the specific finding, not a
+    // generic mount failure.
+    try{cut=asset.kind==='STILL'?resolveTrim(item.trim,asset,rate).value:declaredFileTrim(item,asset,rate)}catch{check.errors.push('TRIM_OUTSIDE_LOCAL_MEDIA');return}
     if(asset.kind!=='STILL'&&(!Number.isSafeInteger(cut.in)||!Number.isSafeInteger(cut.out)||cut.in<0||cut.out<=cut.in||cut.out>durationIn(asset,rate)))check.errors.push('TRIM_OUTSIDE_LOCAL_MEDIA')
     const track=item.audioTrack??0
     if(!Number.isSafeInteger(track)||track<0)check.errors.push('INVALID_AUDIO_TRACK')

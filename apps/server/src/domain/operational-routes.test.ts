@@ -406,7 +406,7 @@ describe('publicação não é troca implícita de grade', () => {
     expect(added.statusCode).toBe(200)
     expect((await reviewedPublish(server,'today')).statusCode).toBe(201)
     await runtime.transport.take('today','live-today')
-    const work=vi.spyOn(runtime.graphics,'triggerLayer').mockImplementation(()=>{throw new Error('passphrase=secret-fixture')})
+    const work=vi.spyOn(runtime.graphics,'triggerLayerConfirmed').mockImplementation(()=>{throw new Error('passphrase=secret-fixture')})
     const request={method:'POST' as const,url:`/api/channels/ch/secondary-events/${added.json().event.id}/fire`,payload:{}}
     for(let i=0;i<2;i++) {
       const result=await server.inject(request)
@@ -423,7 +423,7 @@ describe('publicação não é troca implícita de grade', () => {
     const added=await server.inject({method:'POST',headers:{'if-match':app.concurrency.generateETag('today')},url:'/api/items/live-today/secondary-events',payload:{name:'Manual',type:'GRAPHICS_OVERLAY',targetLayer:'LOWER_THIRD',triggerMode:'MANUAL',offsetFrames:0,templateId:'',payload:{title:'Teste'}}})
     expect((await reviewedPublish(server,'today')).statusCode).toBe(201)
     await runtime.transport.take('today','live-today')
-    const work=vi.spyOn(runtime.graphics,'triggerLayer'),request={method:'POST' as const,url:`/api/channels/ch/secondary-events/${added.json().event.id}/fire`,payload:{}}
+    const work=vi.spyOn(runtime.graphics,'triggerLayerConfirmed'),request={method:'POST' as const,url:`/api/channels/ch/secondary-events/${added.json().event.id}/fire`,payload:{}}
     const first=await server.inject(request),second=await server.inject(request)
     expect(first.statusCode).toBe(200);expect(second.statusCode).toBe(200)
     expect(first.json()).toMatchObject({status:'EXECUTED',physicalExecutionConfirmed:false})

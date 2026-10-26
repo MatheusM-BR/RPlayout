@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto'
 import {createReadStream} from 'node:fs'
 import {lstat,readFile} from 'node:fs/promises'
-import {dirname,isAbsolute,resolve,join} from 'node:path'
+import {dirname,isAbsolute,resolve,join,sep} from 'node:path'
 import {z} from 'zod'
 
 const manifestSchema=z.object({version:z.literal(1),files:z.array(z.object({file:z.string().min(1),bytes:z.number().int().nonnegative().max(100*1024**3),sha256:z.string().regex(/^[a-fA-F0-9]{64}$/)}).strict()).min(1).max(100000)}).passthrough()
@@ -12,7 +12,7 @@ export async function physicalDirectory(path:string){let current=resolve(path);w
  * account is not a sandbox for hostile executable code. No process is started. */
 export async function verifyLocalPackage(directory:string,required:readonly string[]){
   if(!isAbsolute(directory))throw new Error('Instalação exige caminho absoluto.')
-  const root=resolve(directory),prefix=root.toLowerCase()+'\\'
+  const root=resolve(directory),prefix=root.toLowerCase()+sep
   await physicalDirectory(root)
   const manifestFile=join(root,'package-manifest.json'),before=await regularFileStamp(manifestFile),manifestSha256=await fileSha256(manifestFile)
   const manifest=manifestSchema.parse(JSON.parse(await readFile(manifestFile,'utf8'))),files=new Map<string,string>(),parents=new Set<string>()

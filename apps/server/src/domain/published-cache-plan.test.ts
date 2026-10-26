@@ -18,7 +18,7 @@ afterEach(()=>database.sqlite.close())
 
 async function edition(id:string,date:string,startHours:number,options:{channelId?:string;published?:boolean;assetId?:string;hash?:string;qc?:'APPROVED'|'PENDING';live?:boolean;durationHours?:number}={}) {
   const channelId=options.channelId??'ch', assetId=options.assetId??`asset-${id}`,hash=options.hash??id.padEnd(64,'a').slice(0,64)
-  await database.db.insert(mediaAssets).values({id:assetId,title:assetId,path:`C:/Acervo/AÇÃO-${id}.mp4`,contentHash:hash,kind:'VIDEO',durationFrames:25*3600, qcStatus:options.qc??'APPROVED',createdAt}).onConflictDoNothing()
+  await database.db.insert(mediaAssets).values({id:assetId,title:assetId,path:`C:/Acervo/AÇÃO-${id}.mp4`,contentHash:hash,kind:'VIDEO',durationFrames:(options.durationHours??1)*25*3600, qcStatus:options.qc??'APPROVED',createdAt}).onConflictDoNothing()
   await database.db.insert(rundowns).values({id,channelId,name:id,date,plannedStart:startHours*3600*25,loop:false,createdAt,updatedAt:createdAt})
   await database.db.insert(rundownItems).values({id:`item-${id}`,rundownId:id,sortOrder:0,title:id,type:options.live?'LIVE':'VT',mediaId:options.live?null:assetId,sourceRef:options.live?'ndi:ESTÚDIO':null,durationOverride:(options.durationHours??1)*3600*25,minDuration:0,anchor:{kind:'FLOW'},onOverrun:'PUSH',locked:false,autoNext:true,loop:false})
   if (options.published!==false) await publishOperationalPlaylist(database.db,(await getChannel(database.db,channelId))!,id,'test')

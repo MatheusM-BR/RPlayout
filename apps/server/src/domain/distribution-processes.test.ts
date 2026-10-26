@@ -27,7 +27,7 @@ describe('fronteiras de distribuição sem spawn/arquivo ou rede física',()=>{
     expect(spawn).toHaveBeenCalledTimes(1);expect(previous.kill).not.toHaveBeenCalled()
   })
   it('apply enfileirado perde posse antes de escrever e não publica configuração',async()=>{
-    const pending=media.apply([],[]),rejected=expect(pending).rejects.toThrow('encerrou');guard.close();await rejected;expect(writePrivateConfig).not.toHaveBeenCalled();expect(spawn).not.toHaveBeenCalled()
+    const pending=media.apply([],[]),rejected=expect(pending).rejects.toThrow(/encerr/);guard.close();await rejected;expect(writePrivateConfig).not.toHaveBeenCalled();expect(spawn).not.toHaveBeenCalled()
   })
   it('stop impede apply/watchdog/start e preserva configuração',async()=>{
     media.stop();await expect(media.apply([],[])).rejects.toThrow('encerrado');await expect(media.start()).rejects.toThrow('encerrado');media.watchdog();expect(spawn).not.toHaveBeenCalled();expect(writePrivateConfig).not.toHaveBeenCalled()

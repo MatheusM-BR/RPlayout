@@ -25,7 +25,7 @@ describe('seleção de áudio é preservada ao abrir edição',()=>{
     const asset:NonNullable<ItemView['asset']>={id:'asset',contentHash:'a'.repeat(64),title:'VT',path:'C:/ação.mkv',kind:'VIDEO',durationFrames:250,durationNs:null,probe:null,probeError:null,categoryId:null,defaultTrim:null,defaultAudio:null,loudnessFile:null,suggestedTrim:null,qcStatus:'PENDING',qcNotes:null,qcCheckedAt:null,createdAt:'now'}
     const routing={mode:'STEREO_3_4' as const},audio:AudioLevel={mode:'AUTO',gainDb:0,measured:null,routing}
     const missing=markup(audio,asset);expect(missing).toContain('Medir mix escolhido');expect(missing).toContain('Meça a trilha/mix escolhido');expect(missing).toMatch(/disabled=""[^>]*>EBU R128 AUTO/)
-    const valid=markup({...audio,analysisId:'trusted',measured:{integratedLufs:-18,lra:3,truePeakDbtp:-7,scope:'FILE',measuredAt:'now',input:{contentHash:asset.contentHash,audioTrack:0,routing}}},asset)
+    const valid=markup({...audio,analysisId:'trusted',measured:{integratedLufs:-18,lra:3,truePeakDbtp:-7,scope:'FILE',measuredAt:'2026-10-01T00:00:00.000Z',input:{contentHash:asset.contentHash,audioTrack:0,routing}}},asset)
     expect(valid).toContain('MIX ESCOLHIDO');expect(valid).not.toMatch(/disabled=""[^>]*>EBU R128 AUTO/)
     expect(markup(audio)).not.toContain('Medir mix escolhido')
   })

@@ -2268,7 +2268,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
     catch (error) { if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
     let refreshError:string|null=null
-    if(isLoaded)try{await runtime.refresh()}catch{refreshError='Revisão gravada, mas a atualização da execução não foi confirmada. Confira o canal; não repita a publicação.'}
+    // A channel whose execution was cleared (cadence conversion) still owns
+    // this grade in its editorial view; publishing must load it again.
+    const reload=isLoaded||(!runtime.executionView&&runtime.view?.rundown.id===id)
+    if(reload)try{await runtime.refresh()}catch{refreshError='Revisão gravada, mas a atualização da execução não foi confirmada. Confira o canal; não repita a publicação.'}
     const payload = readOperationalPayload(revision.payload)
     try{onChange()}catch{refreshError??='Revisão gravada; atualização da tela não confirmada. Confira o canal.'}
     try{await emitIntegrationEvent(app.db, 'operational-playlist.published', {
@@ -2282,7 +2285,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       publishedAt: revision.publishedAt,
       conflicts: payload.schedule.conflicts,
       applied:true,
-      executionUpdated:isLoaded?refreshError===null:null,
+      executionUpdated:reload?refreshError===null:null,
       refreshError,
     })
     }, () => runtime.executionView?.rundown.id === id)

@@ -120,6 +120,9 @@ export class HaReplication {
     allowed.add('ha_return_history_jobs')
     for(const name of ['ha_return_binding_plans','ha_return_binding_channel','ha_return_binding_no_update','ha_return_binding_no_delete','ha_return_binding_no_replace'])allowed.add(name)
     for(const name of ['ha_return_selection_plans','ha_return_selection_no_update','ha_return_selection_no_delete','ha_return_selection_no_replace'])allowed.add(name)
+    // Append-only guards created by this same service for later return tables;
+    // without them a reopened HA database was refused as foreign.
+    for(const name of ['ha_return_auto_no_update','ha_return_auto_no_delete','ha_return_auto_no_replace','ha_return_job_recovery_no_update','ha_return_job_recovery_no_delete','ha_return_job_recovery_no_replace','ha_return_postgain_no_delete','ha_return_postgain_no_replace','ha_return_bus_no_delete','ha_return_bus_no_replace'])allowed.add(name)
     const objects=this.database.prepare("SELECT name FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'").all() as {name:string}[]
     if(objects.some(object=>!allowed.has(object.name))){this.database.close();throw fail('Banco pertence a outro serviço. Use um banco HA exclusivo; ele não será modificado.')}
     this.database.pragma('journal_mode = WAL');this.database.pragma('synchronous = FULL');this.database.pragma('busy_timeout = 3000')
