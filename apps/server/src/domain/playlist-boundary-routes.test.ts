@@ -46,7 +46,7 @@ describe('HTTP da próxima playlist não é TAKE e mantém o escopo do canal',()
     target=(await publishOperationalPlaylist(app.db,(await getChannel(app.db,'ch'))!,'target',null)).id
     if(native){
       const runtime=app.runtimes.get('ch')!,original=runtime.transport
-      Object.assign(runtime,{transport:Object.assign(Object.create(EngineTransport.prototype),{state:()=>original.state(),health:()=>({ready:true}),processId:()=>process.pid,close:()=>original.close(),stop:()=>original.stop(),mutatePlaylist:async(action:()=>Promise<unknown>)=>action()})})
+      Object.assign(runtime,{transport:Object.assign(Object.create(EngineTransport.prototype),{state:()=>original.state(),health:()=>({ready:true}),processId:()=>process.pid,close:()=>original.close(),stop:()=>original.stop(),mutatePlaylist:async(action:()=>Promise<unknown>)=>action(),closeGracefully:async()=>({ownedNativeProcessesStopped:true,graceful:true,forceRequested:false})})})
     }
     return '/api/channels/ch/published-continuity'
   }

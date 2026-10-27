@@ -20,7 +20,7 @@ beforeEach(async()=>{
   for(const key of Object.getOwnPropertyNames(Object.getPrototypeOf(simulated)))if(key!=='constructor' && typeof (simulated as any)[key]==='function')native[key]=(simulated as any)[key].bind(simulated)
   apply=vi.fn(async(_profile:HotOutputProfile)=>{});commit=vi.fn()
   native.mutateConfiguration=async(action:(sendOutput:(profile:HotOutputProfile)=>Promise<void>)=>Promise<unknown>)=>action(apply)
-  native.processId=()=>null;native.commitOutputProfile=commit
+  native.processId=()=>null;native.commitOutputProfile=commit;native.closeGracefully=async()=>({ownedNativeProcessesStopped:true,graceful:true,forceRequested:false})
   Object.defineProperty(runtime,'transport',{value:native})
   server=Fastify();registerRoutes(app,server,()=>{});await server.ready()
 })

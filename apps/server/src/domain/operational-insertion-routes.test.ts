@@ -34,7 +34,7 @@ function native(){
   let program:ReturnType<typeof simulated.state>['onAir']|undefined
   double.state=()=>({...simulated.state(),...(program!==undefined?{onAir:program}:{}),mode:'NATIVE'})
   const prepare=vi.fn(async()=>{}),take=vi.fn(async(_view:any,id:string,current:()=>boolean,beforeTake:()=>void,commit:(previous:{itemId:string;frames:number})=>void)=>{current();beforeTake();const previous=double.state().onAir;program={...previous,itemId:id,elapsed:0};commit({itemId:previous.itemId,frames:143})})
-  double.insertOperational=vi.fn(async(work:any)=>work({prepare,take}));double.processId=()=>null
+  double.insertOperational=vi.fn(async(work:any)=>work({prepare,take}));double.processId=()=>null;double.closeGracefully=async()=>({ownedNativeProcessesStopped:true,graceful:true,forceRequested:false})
   double.mutateConfiguration=async(work:()=>Promise<unknown>)=>work()
   Object.defineProperty(runtime,'transport',{value:double})
   return {runtime,prepare,take,double}
