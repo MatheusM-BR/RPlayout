@@ -43,3 +43,20 @@ it.skipIf(!available)('SQL invalidado por DDL de outra conexão falha na execuç
     expect(()=>a.prepare('SELECT id FROM t').get()).toThrow(/no such table/)
   }finally{a.close();b.close()}
 })
+it.skipIf(!available)('processo de banco morto: falha rápida, sem reabrir nem repetir, status desconectado',async()=>{
+  const db=new ProcessDatabase(join(directory,'c.db'))
+  try{
+    db.exec('CREATE TABLE t(id INTEGER PRIMARY KEY,v TEXT)');db.prepare('INSERT INTO t(v) VALUES(?)').run('antes')
+    expect(db.storageStatus().connected).toBe(true)
+    process.kill(db.storagePid,'SIGKILL')
+    const deadline=Date.now()+5000
+    while(db.storageStatus().connected&&Date.now()<deadline)await new Promise(done=>setTimeout(done,20))
+    expect(db.storageStatus()).toMatchObject({connected:false,automaticReconnect:false,automaticReplay:false})
+    const started=Date.now()
+    expect(()=>db.prepare('INSERT INTO t(v) VALUES(?)').run('depois')).toThrow(/indisponível|desconectado/i)
+    expect(Date.now()-started).toBeLessThan(1000)
+  }finally{try{db.close()}catch{}}
+  // Nada foi regravado: o arquivo só tem o que entrou antes da queda.
+  const again=new ProcessDatabase(join(directory,'c.db'))
+  try{expect(again.prepare('SELECT v FROM t ORDER BY id').all()).toEqual([{v:'antes'}])}finally{again.close()}
+})

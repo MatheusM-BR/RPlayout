@@ -38,6 +38,7 @@ import {privateHttpLogger,privateStartupDiagnostic,registerHttpPrivacy} from './
 import {parseAllowedOrigins} from './domain/http-origin-policy.js'
 import {parseAllowedHosts,createHttpHostPolicy,registerHttpHostPolicy} from './domain/http-host-policy.js'
 import {registerLauncherDiscovery} from './domain/launcher-discovery.js'
+import {internalFailureDiagnostic} from './domain/http-privacy.js'
 
 /** Cadência do estado ao vivo. Vinte por segundo já engana o olho no medidor. */
 const LIVE_HZ = 20
@@ -45,6 +46,12 @@ const SOCKET_AUTH_TTL_MS = 1_000
 
 async function main(): Promise<void> {
   startupTrace('main entered')
+  // A rejected background promise must not end the process: the engine is a
+  // child of this server, so exiting takes the PGM off air (22/10). Record it
+  // (function names only, no message/paths) and keep the channel running.
+  process.on('unhandledRejection',reason=>{
+    try{console.error('RPlayout · falha assíncrona não tratada; servidor mantido no ar.',JSON.stringify(internalFailureDiagnostic(reason)))}catch{}
+  })
   const allowedOrigins=parseAllowedOrigins(process.env.RPLAYOUT_ALLOWED_ORIGINS)
   const hostPolicy=createHttpHostPolicy({bindHost:HOST,listenPort:PORT,aliases:parseAllowedHosts(process.env.RPLAYOUT_ALLOWED_HOSTS)})
   const args=process.argv.slice(2)

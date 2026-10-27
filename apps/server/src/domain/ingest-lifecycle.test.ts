@@ -54,3 +54,16 @@ it('close aguarda processo próprio encerrar antes de liberar lote; sucessor ret
   const close=successor.close();child.emit('close',1);await close
   expect(db.sqlite.prepare('SELECT id,created_at FROM ingest_batches').get()).toEqual({id:row.id,...start as object})
 })
+it('banco indisponível ao fechar o lote não derruba o processo (22/10: servidor e PGM caíram)',async()=>{
+  const rejections:unknown[]=[],onRejection=(reason:unknown)=>{rejections.push(reason)}
+  process.on('unhandledRejection',onRejection)
+  try{
+    const ownership=(ingest as unknown as {ownership:{finish:(...args:unknown[])=>void}}).ownership
+    vi.spyOn(ownership,'finish').mockImplementation(()=>{throw new Error('Banco indisponível; conexão não será reaberta.')})
+    expect(ingest.start(join(directory,'media'),false)).toBe(true)
+    await vi.waitFor(()=>expect(ingest.status().running).toBe(false))
+    await new Promise(resolve=>setTimeout(resolve,20))
+    expect(rejections).toEqual([])
+    expect(ingest.status().error).toContain('banco indisponível')
+  }finally{process.off('unhandledRejection',onRejection)}
+})

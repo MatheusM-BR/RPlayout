@@ -295,7 +295,12 @@ export class Ingest {
       if(!this.closed)this.onFinished?.()
     } finally {
       await Promise.all(this.children.values())
-      if(this.batchId)this.ownership.finish(this.batchId,this.closed,this.state.error)
+      // Storage can be gone here (process ended, console closed). Closing the
+      // batch record must not throw out of a background scan: on 22/10 that
+      // unhandled rejection ended the whole server, and the PGM with it. The
+      // batch stays open and is resumed/reviewed on the next start.
+      try{if(this.batchId)this.ownership.finish(this.batchId,this.closed,this.state.error)}
+      catch{this.state={...this.state,error:this.state.error??'Lote não fechado: banco indisponível; será revisto na próxima partida.'}}
       this.patch({running:false,current:null,finishedAt:new Date().toISOString()})
       this.batchId = null
     }
