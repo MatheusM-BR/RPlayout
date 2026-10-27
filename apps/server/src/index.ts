@@ -9,7 +9,7 @@ import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreati
 import {EngineTransport} from './domain/engine.js'
 import { BACKUP_EVERY_HOURS, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS, HTTP_AUDIT_RETENTION_DAYS } from './config.js'
 import { listChannels, listRundowns } from './db/repo.js'
-import { backupDatabase } from './domain/backup.js'
+import { backupDatabase, backupDue } from './domain/backup.js'
 import { listRoots } from './domain/roots.js'
 import { registerRoutes } from './routes.js'
 import { healthEvents } from './db/schema.js'
@@ -257,15 +257,16 @@ async function main(): Promise<void> {
 
   // Cópia de segurança periódica. Um playout que roda meses sem ninguém olhar
   // precisa de cópia sem depender de alguém lembrar de pedir.
-  const backupTimer =
-    BACKUP_EVERY_HOURS > 0
-      ? setInterval(
-          () => {
-            void background.run('backup',async()=>{await backupDatabase(app.sqlite,app.backupDir);server.log.info('Cópia de segurança do banco concluída.')},()=>!isRecoveryRehearsal(app.sqlite))
-          },
-          BACKUP_EVERY_HOURS * 3_600_000,
-        )
-      : null
+  let backingUp=false
+  const periodicBackup=()=>void background.run('backup',async()=>{
+    if(backingUp||!(await backupDue(app.backupDir,BACKUP_EVERY_HOURS)))return
+    backingUp=true
+    try{await backupDatabase(app.sqlite,app.backupDir);server.log.info('Cópia de segurança do banco concluída.')}finally{backingUp=false}
+  },()=>!isRecoveryRehearsal(app.sqlite))
+  // Checked every 10 min against the newest copy on disk, and once 5 min after
+  // start (outside the startup load), so restarts don't postpone it forever.
+  const backupTimer = BACKUP_EVERY_HOURS > 0 ? setInterval(periodicBackup, 10 * 60 * 1000) : null
+  const backupStartTimer = BACKUP_EVERY_HOURS > 0 ? setTimeout(periodicBackup, 5 * 60 * 1000) : null
 
   // Retenção evita crescimento infinito em operação 24/7. Eventos não
   // reconhecidos ficam preservados até serem reconhecidos, mesmo que antigos.
@@ -440,6 +441,7 @@ async function main(): Promise<void> {
     clearInterval(timer)
     clearInterval(distributionTimer)
     if (backupTimer) clearInterval(backupTimer)
+    if (backupStartTimer) clearTimeout(backupStartTimer)
     clearInterval(retentionTimer)
     clearInterval(sessionExpiryTimer)
     blockRuntimeCreation(app)

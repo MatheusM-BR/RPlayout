@@ -169,3 +169,14 @@ export async function listBackups(directory: string): Promise<string[]> {
     return []
   }
 }
+
+/** Periodic copy is due when there is none in this data folder or the newest
+ * is older than the interval. Measured from the files, not from process start:
+ * a server restarted daily (each update) otherwise never reached its first
+ * 24 h copy — seen on 27/10, every data folder had only upgrade copies. */
+export async function backupDue(directory:string,everyHours:number,now=Date.now()):Promise<boolean>{
+  if(!(everyHours>0))return false
+  const newest=(await listBackups(directory))[0]
+  if(!newest)return true
+  try{return now-(await stat(join(directory,newest))).mtimeMs>=everyHours*3_600_000}catch{return true}
+}
