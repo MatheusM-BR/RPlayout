@@ -10,13 +10,14 @@ param(
   [string]$StableShortcuts='D:\RPlayout Atual atalhos',
   [string]$MediaRoot='D:\Videos',
   [string]$Log='D:\IA\Claude\RPlayout',
-  [int]$MaxBackupAgeMinutes=60
+  [int]$MaxBackupAgeMinutes=60,
+  [string]$DataRoot=''           # pasta de dados nova; padrao "D:\RPlayout dados <Tag>"
 )
 $ErrorActionPreference='Stop'
-$data="D:\RPlayout dados $Tag"
-$work="D:\RPlayout-builds\migracao-$Tag"; $bundle=Join-Path $work 'bundle'
+$data=if($DataRoot){$DataRoot}else{"D:\RPlayout dados $Tag"}
+$work="D:\RPlayout-builds\migracao-$Tag"+$(if($DataRoot){"-"+(Split-Path $DataRoot -Leaf).Replace(' ','-')}else{''}); $bundle=Join-Path $work 'bundle'
 $state=[ordered]@{tag=$Tag;stable=$Stable;data=$data;steps=@()}
-$jsonFile=Join-Path $Log "atualizar-$Tag.json"
+$jsonFile=Join-Path $Log ("atualizar-$Tag"+$(if($DataRoot){"-"+(Split-Path $DataRoot -Leaf).Replace(" ","-")}else{""})+".json")
 function Note($m){$script:state.steps+=("{0:HH:mm:ss} {1}" -f (Get-Date),$m);$script:state|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 $jsonFile}
 function Owned($root){Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase) }}
 function StopRoot($root){
@@ -70,6 +71,21 @@ try{
   if(!(Test-Path (Join-Path $data 'installation-profile.candidate.json'))){ throw 'preparacao nao concluida; ver preparar.log' }
   Note 'dados preparados em quarentena'
 
+  # Revisao previa com a saida capturada. A ativacao oficial repete a revisao,
+  # mas o motivo de uma recusa vai so para o console; aqui ele fica no log e a
+  # versao anterior volta logo, sem esperar o prazo da ativacao.
+  $node=Join-Path $Stable 'runtime\node\node.exe'
+  $previousRoot=$env:RPLAYOUT_INSTALL_ROOT; $previousPreference=$ErrorActionPreference
+  try{
+    $env:RPLAYOUT_INSTALL_ROOT=$Stable; $ErrorActionPreference='Continue'; Push-Location -LiteralPath $Stable
+    & $node (Join-Path $Stable 'apps\server\dist\recover-restored-reservation.cjs') --database (Join-Path $data 'service.db') --manifest (Join-Path $data 'restore-quarantine.json') --vault-file (Join-Path $data 'vault.json') *> (Join-Path $work 'reserva.log')
+    Note "reserva herdada: saida $LASTEXITCODE"
+    & $node (Join-Path $Stable 'apps\server\dist\review-restored.cjs') --database (Join-Path $data 'service.db') --manifest (Join-Path $data 'restore-quarantine.json') --vault-file (Join-Path $data 'vault.json') *> (Join-Path $work 'revisao.log')
+    $reviewExit=$LASTEXITCODE
+  }finally{ Pop-Location; $env:RPLAYOUT_INSTALL_ROOT=$previousRoot; $ErrorActionPreference=$previousPreference }
+  if($reviewExit -ne 0){ throw ('revisao previa recusada: '+((Get-Content (Join-Path $work 'revisao.log') -Raw) -replace '\s+',' ').Trim()) }
+  Note 'revisao previa OK'
+
   $activate=Join-Path $work 'ativar.ps1'
 @"
 function global:Read-Host { param([string]`$Prompt)
@@ -80,10 +96,21 @@ Start-Transcript -Path '$work\ativar.log' -Force | Out-Null
 "exit `$LASTEXITCODE" | Out-File -Encoding utf8 -Append '$work\ativar.log'
 Stop-Transcript | Out-Null
 "@ | Set-Content -Encoding UTF8 $activate
-  Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$activate) -WindowStyle Minimized
+  # Ferramentas nativas da revisao (guarda do computador) da etapa anterior
+  # precisam ter saido antes da revisao da ativacao.
+  Start-Sleep -Seconds 10
+  # Saida e erro da ativacao em arquivo: o motivo de uma recusa da revisao
+  # sai no erro padrao do node, que a transcricao do PowerShell nao guarda.
+  $activation=Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$activate) -WindowStyle Minimized -PassThru `
+    -RedirectStandardOutput (Join-Path $work 'ativar.out.log') -RedirectStandardError (Join-Path $work 'ativar.err.log')
   Note 'ativacao iniciada'
   $ok=$false; $deadline=(Get-Date).AddSeconds(240)
-  while((Get-Date) -lt $deadline){ try{ $r=Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 'http://127.0.0.1:4000/api/state'; if($r.StatusCode -lt 500){$ok=$true;break} }catch{}; Start-Sleep 3 }
+  while((Get-Date) -lt $deadline){
+    try{ $r=Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 'http://127.0.0.1:4000/api/state'; if($r.StatusCode -lt 500){$ok=$true;break} }catch{}
+    # Ativacao que ja terminou sem API no ar foi recusada: volta logo, sem esperar o prazo.
+    if($activation.HasExited){ throw ('ativacao encerrada sem subir a API: '+((Get-Content (Join-Path $work 'ativar.err.log') -Raw -ErrorAction SilentlyContinue) -replace '\s+',' ').Trim()) }
+    Start-Sleep 3
+  }
   if(!$ok){ throw 'API da nova versao nao respondeu em 240 s' }
   Note "API da $Tag respondendo (ativacao)"
 
