@@ -30,6 +30,10 @@ function StartRoot($root,$tag){
   Start-Process -FilePath (Join-Path $root 'RPlayout-Server.exe') -WorkingDirectory $root -RedirectStandardOutput (Join-Path $Log "$tag.out.log") -RedirectStandardError (Join-Path $Log "$tag.err.log") -WindowStyle Minimized | Out-Null
 }
 $retired=$null;$retiredShortcuts=$null;$installedNew=$false
+# Marca de manutencao: o vigia (vigiar-rplayout.ps1) nao religa nada durante a troca.
+$maintenance=$Stable.TrimEnd('\')+'.manutencao'
+$operatorStop=(Test-Path -LiteralPath $maintenance) -and ((Get-Content -LiteralPath $maintenance -Raw).Trim() -eq 'OPERADOR')
+if(!$operatorStop){ Set-Content -LiteralPath $maintenance -Value "ATUALIZACAO $Tag" -Encoding ASCII }
 try{
   $soak=@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine -match 'soak2?\.ps1' })
   foreach($p in $soak){ Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
@@ -102,4 +106,5 @@ Stop-Transcript | Out-Null
     StartRoot $OldRoot ($Tag+'-rollback'); Note "versao anterior religada: $OldRoot"
   }catch{ Note ('ROLLBACK FALHOU: '+$_.Exception.Message) }
 }
+if(!$operatorStop -and (Test-Path -LiteralPath $maintenance)){ Remove-Item -LiteralPath $maintenance -Force -ErrorAction SilentlyContinue }
 $state|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 $jsonFile
