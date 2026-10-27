@@ -27,7 +27,7 @@ Ver CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
 | N3 | /watching 0,76/s | Explicado; sem custo após r88-18 |
 | N4 | Auditoria API_MUTATION sem retenção | Corrigido (r88-20, 90 dias) |
 | N5 | Live sem sinal travava publicação / preto 4 min | Corrigido (r88-21); r88-22 mantém o último quadro na espera |
-| N6 | "Finaliza Gado Canal" mudo | Conferir o arquivo (pasta de mídia não conectada) |
+| N6 | "Finaliza Gado Canal" mudo | Fechado: o próprio arquivo é silêncio digital; reexportar com áudio |
 | N7 | Teste Rust temporal falhava sob carga | Corrigido (r88-22) |
 
 ### Dependem do usuário ou de equipamento
@@ -43,8 +43,7 @@ Ver CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
 | U7 | Partida automática do servidor no Windows (tarefa agendada/serviço — configuração do sistema) |
 
 Fora desta versão: publicação externa (10.5) e grupo 8 (v3).
-Totais: 9 grupos D (8 concluídos, 1 em andamento — soak); 7 achados (6
-fechados, 1 conferir mídia); 7 dependências externas.
+Totais: 9 grupos D (8 concluídos, 1 em andamento — soak); 7 achados (todos fechados); 7 dependências externas.
 
 ## Anterior — r88-17 (instalação do operador atualizada e testada)
 
