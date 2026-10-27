@@ -53,6 +53,12 @@ export class SecondaryEventLedger {
     },{behavior:'immediate'})
   }
   hasUnconfirmed():boolean {
+    // Runs on every live tick (20 Hz). One indexed round trip answers the
+    // common case — no HA secondary journal and nothing FIRING here — without
+    // reading and decrypting the HA journal. Any row present falls through to
+    // the full, unchanged decision below.
+    const gate=this.db.$client.prepare("SELECT EXISTS(SELECT 1 FROM operator_decisions WHERE rundown_id='@ha' AND kind LIKE 'HA_SECONDARY_%') AS ha,EXISTS(SELECT 1 FROM secondary_event_runs WHERE channel_id=? AND state='FIRING') AS firing").get(this.channelId) as {ha:number;firing:number}
+    if(!gate.ha&&!gate.firing)return false
     if(readHaSecondaryRuns(this.db,this.channelId).some(row=>row.state==='FIRING'))return true
     const active=localWork.get(this.db.$client)
     const rows=this.db.$client.prepare("SELECT id FROM secondary_event_runs WHERE channel_id=? AND state='FIRING'").iterate(this.channelId) as Iterable<{id:string}>

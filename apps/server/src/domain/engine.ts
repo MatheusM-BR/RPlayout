@@ -2332,9 +2332,14 @@ export class EngineTransport implements Transport {
     if (now < since) { this.priorityObservedAt = now; return }
     // Keep the observation window while another TAKE awaits its first frame.
     // Otherwise an anchor crossed during that wait would be lost forever.
-    if (this.priorityTake || this.pendingLiveTake || this.pendingPlaylistTake || this.options.canStartProgram?.()===false) return
+    if (this.priorityTake || this.pendingLiveTake || this.pendingPlaylistTake) return
+    // No anchor at all in (since, now]: advancing the window loses nothing,
+    // blocked or not, so the storage-backed gate is not needed this tick.
+    const crossed = priorityLives(view, now).filter(target => target.atMs > since && target.atMs <= now)
+    if (!crossed.length) { this.priorityObservedAt = now; return }
+    if (this.options.canStartProgram?.()===false) return
     this.priorityObservedAt = now
-    const target = priorityLives(view, now).find(target => !this.handledPriorityLives.has(target.key) && target.itemId !== this.onAirItemId && target.atMs > since && target.atMs <= now)
+    const target = crossed.find(target => !this.handledPriorityLives.has(target.key) && target.itemId !== this.onAirItemId && target.atMs > since && target.atMs <= now)
     if (!target) return
     this.handledPriorityLives.add(target.key)
     const previousItemId = this.onAirItemId
@@ -2356,8 +2361,10 @@ export class EngineTransport implements Transport {
    * pararia atrás de um estúdio que ficou no ar para sempre.
    */
   private endLiveWhenDue(): void {
-    if(this.pendingPlaylistTake || this.options.canStartProgram?.()===false)return
+    if(this.pendingPlaylistTake)return
     if (this.liveStartedAtMs === null || !this.onAirItemId) return
+    // Storage-backed gate only when a live is actually on air (20 Hz tick).
+    if(this.options.canStartProgram?.()===false)return
     this.liveEndsAt = this.plannedEnd(this.onAirItemId)
     if (this.liveEndsAt === null) return
     if (Date.now() < this.liveEndsAt) return
@@ -2439,7 +2446,9 @@ export class EngineTransport implements Transport {
    * e o take deixa de pagar abertura de arquivo, descoberta de trilhas e seek.
    */
   private prepareAhead(): void {
-    if(this.queuedOperations>0 || this.priorityTake || this.pendingPlaylistTake || this.options.canStartProgram?.()===false)return
+    // canStartProgram reads storage; it is checked right before any preroll
+    // starts below, not on every tick where the next item is already armed.
+    if(this.queuedOperations>0 || this.priorityTake || this.pendingPlaylistTake)return
     if (!this.ready || !this.alive || this.closed || !this.onAirItemId || this.preparingItemId || this.pendingLiveTake) return
 
     const view = this.view()
@@ -2465,6 +2474,7 @@ export class EngineTransport implements Transport {
     if (!next) {
       const current=view.items[index]!,duration=view.schedule.items.find(row=>row.id===current.item.id)?.duration ?? 0
       if(!current.item.autoNext || current.item.loop || view.rundown.loop || !this.options.onPreparePlaylistEnd || this.preparingBoundary || duration-this.elapsed>5*this.channel.rate.num/this.channel.rate.den || Date.now()<this.nextBoundaryPreparationAt)return
+      if(this.options.canStartProgram?.()===false)return
       this.nextBoundaryPreparationAt=Date.now()+1000
       this.preparingBoundary=true
       const origin=this.onAirItemId,revision=this.options.executionIdentity?.()
@@ -2493,6 +2503,7 @@ export class EngineTransport implements Transport {
     const spec = this.specFor(next.item.id)
     if (!spec) return
     if (this.armedItemId === spec.itemId && this.armedSpecification === specificationKey(spec)) return
+    if(this.options.canStartProgram?.()===false)return
     this.preparingItemId = next.item.id
     this.dirty = true
     const origin=this.onAirItemId,revision=this.options.executionIdentity?.(),sequence=this.commandSequence+1

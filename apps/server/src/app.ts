@@ -930,6 +930,10 @@ export class ChannelRuntime {
   followSlate(): void {
     if(this.closed||this.automaticGraphicsPending||this.graphics.commandPending||this.emergencyCommandPending)return
     if (this.emergencyOverlay) return
+    // Nothing up and nothing to put up (program on air, or no slate chosen):
+    // the decision below would return without acting. Skip its storage reads,
+    // which otherwise run on every live tick.
+    if(!this.slateUp&&(this.transport.state().onAir!==null||!this.channel.slateTemplateId))return
     const ledger=new GraphicCommandLedger(this.db,this.channel.id)
     if(ledger.hasUnresolved())return
     const onAir = this.transport.state().onAir !== null

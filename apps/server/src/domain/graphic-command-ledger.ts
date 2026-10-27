@@ -24,7 +24,15 @@ export class GraphicCommandLedger {
   private unresolved(){
     return this.db.$client.prepare('SELECT id FROM graphic_command_pending WHERE scope=? LIMIT 1').get('@graphics:'+this.channelId) as {id:string}|undefined
   }
-  hasUnresolved():boolean{return !!this.unresolved()||new SecondaryEventLedger(this.db,this.channelId).hasUnconfirmed()}
+  /** Live-tick gate (several calls per tick at 20 Hz). One round trip covers
+   * the pending command and the quiet secondary case; any HA journal or
+   * FIRING row falls through to SecondaryEventLedger's full decision. */
+  hasUnresolved():boolean{
+    const gate=this.db.$client.prepare("SELECT EXISTS(SELECT 1 FROM graphic_command_pending WHERE scope=?) AS pending,EXISTS(SELECT 1 FROM operator_decisions WHERE rundown_id='@ha' AND kind LIKE 'HA_SECONDARY_%') AS ha,EXISTS(SELECT 1 FROM secondary_event_runs WHERE channel_id=? AND state='FIRING') AS firing").get('@graphics:'+this.channelId,this.channelId) as {pending:number;ha:number;firing:number}
+    if(gate.pending)return true
+    if(!gate.ha&&!gate.firing)return false
+    return new SecondaryEventLedger(this.db,this.channelId).hasUnconfirmed()
+  }
   latestNativeCompositionId():string|null {
     const row=this.db.$client.prepare("SELECT id FROM operator_decisions INDEXED BY graphic_command_composition_order WHERE rundown_id=? AND kind='GRAPHIC_COMMAND_CONFIRMED' ORDER BY rowid DESC LIMIT 1").get('@graphics:'+this.channelId) as {id:string}|undefined
     return row?row.id.slice(0,-10):null
