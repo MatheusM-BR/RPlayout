@@ -37,3 +37,14 @@ it('backup conserva as assinaturas e recusa tabela/registro de migração ausent
   const backup=await backupDatabase(db.sqlite,path);expect(backup.validation.tables.server_instances).toBe(1)
   db.sqlite.exec('DELETE FROM schema_migrations WHERE version=41');expect(()=>validateServerInstances(db.sqlite)).toThrow('migração')
 })
+it.each([
+  ['chrome.exe',0,1],['RPlayout-Server.exe',1,0],['node.exe',1,0],[undefined,0,1],
+] as const)('PID reaproveitado no Windows: imagem %s',(image,protectedCount,absentCount)=>{
+  const db=setup(),row={version:1 as const,id:randomUUID(),host:executionHostIdentity(),pid:2147483646,boot:randomUUID(),phase:'OPEN' as const,openedAt:new Date().toISOString(),closedAt:null}
+  db.sqlite.prepare('INSERT INTO server_instances VALUES(?,?,?)').run(row.id,JSON.stringify(row),serverInstanceSignature(row))
+  vi.spyOn(process,'kill').mockImplementation(()=>true)
+  const lookup=()=>new Map(image?[[row.pid,image]]:[])
+  expect(serverInstanceStorageStatus(db.sqlite,lookup)).toMatchObject({protected:protectedCount,localAbsent:absentCount,storageReleaseBlocked:protectedCount>0})
+  // Listagem indisponível: conservador, continua protegido.
+  expect(serverInstanceStorageStatus(db.sqlite,()=>null)).toMatchObject({protected:1,storageReleaseBlocked:true})
+})

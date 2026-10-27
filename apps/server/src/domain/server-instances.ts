@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import {randomUUID} from 'node:crypto'
+import {execFileSync} from 'node:child_process'
 import {executionHostIdentity} from './execution-host.js'
 import {readServerInstances,serverInstanceSignature,type ServerInstance} from '../db/server-instances.js'
 import {assertStorageAdmissionOpen} from '../db/storage-admission.js'
@@ -28,15 +29,43 @@ export class ServerInstanceRegistration {
     this.closed=true
   }
 }
-export function serverInstanceStorageStatus(sqlite:Database.Database):{open:number;storageClosed:number;localAbsent:number;protected:number;storageReleaseBlocked:boolean;nativeResourcesStopped:false}{
+/** Windows reuses PIDs quickly; a stale OPEN row whose PID now belongs to an
+ * unrelated program (browser, vMix, svchost) is not a living RPlayout. Only a
+ * PID whose image is a RPlayout/Node executable stays protected. Listing
+ * failure keeps every row protected (conservative). */
+export type LocalImageLookup=(pids:number[])=>Map<number,string>|null
+const SERVER_IMAGE=/^(rplayout[^\\/]*|node)\.exe$/i
+export function windowsImageLookup(pids:number[]):Map<number,string>|null{
+  if(process.platform!=='win32'||!pids.length)return null
+  try{
+    const out=execFileSync('tasklist',['/FO','CSV','/NH'],{encoding:'utf8',windowsHide:true,timeout:8000,maxBuffer:8*1024*1024})
+    const wanted=new Set(pids),images=new Map<number,string>()
+    for(const line of out.split(/\r?\n/)){
+      const cols=line.match(/"([^"]*)"/g)?.map(col=>col.slice(1,-1))
+      if(!cols||cols.length<2)continue
+      const pid=Number(cols[1])
+      if(wanted.has(pid))images.set(pid,cols[0]??'')
+    }
+    return images
+  }catch{return null}
+}
+export function serverInstanceStorageStatus(sqlite:Database.Database,lookup:LocalImageLookup=windowsImageLookup):{open:number;storageClosed:number;localAbsent:number;protected:number;storageReleaseBlocked:boolean;nativeResourcesStopped:false}{
   const result={open:0,storageClosed:0,localAbsent:0,protected:0,storageReleaseBlocked:false,nativeResourcesStopped:false as const},host=executionHostIdentity()
-  for(const row of readServerInstances(sqlite)){
+  const occupied:number[]=[]
+  const rows=readServerInstances(sqlite).map(row=>{
     if(row.phase==='STORAGE_CLOSED')result.storageClosed++;else result.open++
     // A declared storage close is not process death. Even closed/living or
     // reused PIDs stay protected until an authoritative local absence check.
     let absent=false
     if(row.host===host)try{process.kill(row.pid,0)}catch(error){absent=(error as NodeJS.ErrnoException).code==='ESRCH'}
-    if(absent)result.localAbsent++;else result.protected++
+    if(row.host===host&&!absent&&row.pid!==process.pid)occupied.push(row.pid)
+    return {row,absent}
+  })
+  const images=occupied.length?lookup(occupied):null
+  for(const {row,absent} of rows){
+    // PID present but held by another program: the RPlayout that wrote the row is gone.
+    const reused=!absent&&row.host===host&&row.pid!==process.pid&&images!==null&&(()=>{const image=images.get(row.pid);return image===undefined||!SERVER_IMAGE.test(image)})()
+    if(absent||reused)result.localAbsent++;else result.protected++
   }
   result.storageReleaseBlocked=result.protected>0
   return result
