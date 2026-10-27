@@ -112,6 +112,13 @@ export function isPlaylist(path: string): boolean {
 /** Motivo de um arquivo que estava no acervo e não está mais na pasta. */
 export const VANISHED = 'o arquivo não está mais na pasta'
 
+export const SILENT_AUDIO_NOTE='Áudio em silêncio digital na medição: confira o arquivo antes de pôr no ar.'
+/** Measured, present audio track that never rises above the BS.1770 absolute
+ * gate with true peak under −60 dBTP. Unmeasured (null) says nothing. */
+export function silentAudioNote(loudness:{integratedLufs:number;truePeakDbtp:number}|null):string|null{
+  return loudness&&loudness.integratedLufs<=-69.95&&loudness.truePeakDbtp<=-60?SILENT_AUDIO_NOTE:null
+}
+
 export class Ingest {
   private state: IngestStatus = {
     running: false,
@@ -534,7 +541,10 @@ export class Ingest {
       // Conteúdo efetivamente novo precisa passar pelo QC. Uma atualização de
       // metadados do mesmo hash não apaga uma homologação já registrada.
       qcStatus: sameContent && existing?.qcStatus !== 'FAILED' ? (existing?.qcStatus ?? 'APPROVED') : 'PENDING' as const,
-      qcNotes: sameContent && existing?.qcStatus !== 'FAILED' ? (existing?.qcNotes ?? null) : null,
+      // Faixa de áudio presente mas medida em silêncio (porta absoluta BS.1770,
+      // pico abaixo de −60 dBTP): quase sempre arquivo exportado sem som. Vai
+      // na nota do QC, sem trocar a decisão já registrada pelo operador.
+      qcNotes: sameContent && existing?.qcStatus !== 'FAILED' ? (existing?.qcNotes ?? silentAudioNote(probe.audio ? measuredLoudness : null)) : silentAudioNote(probe.audio ? measuredLoudness : null),
       qcCheckedAt: sameContent && existing?.qcStatus !== 'FAILED' ? (existing?.qcCheckedAt ?? null) : null,
       // Material sem imagem, sem áudio ou vertical 9:16 entra no acervo
       // ignorado. O operador pode aceitar manualmente; a decisão é preservada

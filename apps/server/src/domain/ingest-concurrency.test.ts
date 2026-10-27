@@ -7,7 +7,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest'
 import {openDatabase} from '../db/client.js'
 import {mediaAssets} from '../db/schema.js'
 import {qcRevision} from '../db/qc-revisions.js'
-import {Ingest} from './ingest.js'
+import {Ingest,SILENT_AUDIO_NOTE,silentAudioNote} from './ingest.js'
 import type {MediaWorkflow} from './media-workflow.js'
 
 const contents='PROBE_TEST_BYTES',hash=createHash('sha256').update(contents).digest('hex')
@@ -92,5 +92,22 @@ describe('sonda lenta não sobrescreve decisões mais recentes do acervo',()=>{
     seed();const original=row(),revision=qcRevision(opened.db,'asset')
     await expect(duringProbe(()=>opened.sqlite.exec("CREATE TRIGGER probe_failure BEFORE UPDATE ON media_assets BEGIN SELECT RAISE(ABORT,'PROBE_COMMIT_FIXTURE'); END"))).rejects.toThrow('PROBE_COMMIT_FIXTURE')
     expect(row()).toEqual(original);expect(qcRevision(opened.db,'asset')).toBe(revision);expect(record).not.toHaveBeenCalled();expect(ingest.status()).toMatchObject({added:0,updated:0,failed:0})
+  })
+})
+
+describe('áudio medido em silêncio digital',()=>{
+  const silent={...valid,audio:{rate:48000,channels:2,integratedLufs:-70,lra:0,truePeakDbtp:-90}}
+  it('conteúdo novo vai para o QC com nota de silêncio; conteúdo com som não',async()=>{
+    seed('asset','old-hash')
+    await duringProbe(()=>{},silent as unknown as Result)
+    expect(row()).toMatchObject({qcStatus:'PENDING',qcNotes:SILENT_AUDIO_NOTE,loudnessFile:{integratedLufs:-70,truePeakDbtp:-90}})
+    expect(silentAudioNote({integratedLufs:-23,truePeakDbtp:-2})).toBeNull()
+    expect(silentAudioNote({integratedLufs:-70,truePeakDbtp:-20})).toBeNull()
+    expect(silentAudioNote(null)).toBeNull()
+  })
+  it('mesmo conteúdo já aprovado mantém decisão e nota do operador',async()=>{
+    seed()
+    await duringProbe(()=>{},silent as unknown as Result)
+    expect(row()).toMatchObject({qcStatus:'APPROVED',qcNotes:'Antes'})
   })
 })
