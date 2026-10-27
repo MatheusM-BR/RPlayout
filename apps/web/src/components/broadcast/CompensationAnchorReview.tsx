@@ -1,8 +1,9 @@
 import type {Anchor,OperationalCompensationReview,Rate} from '@rplayout/protocol'
+import { wallClock } from '../../domain/wall-clock.js'
 import {clock,dur} from '../../format.js'
 function label(anchor:Anchor,rate:Rate):string{
-  if(anchor.kind==='SOFT')return clock(anchor.at,rate)
-  if(anchor.kind==='WINDOW')return `${clock(anchor.from,rate)}–${clock(anchor.to,rate)}`
+  if(anchor.kind==='SOFT')return wallClock(anchor.at,rate)
+  if(anchor.kind==='WINDOW')return `${wallClock(anchor.from,rate)}–${wallClock(anchor.to,rate)}`
   return 'Horário flexível não informado'
 }
 export function CompensationAnchorReview({review,rate}:{review:OperationalCompensationReview;rate:Rate}){

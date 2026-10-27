@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
+import { wallClock, localDateKey } from '../domain/wall-clock.js'
 import {itemDisplayTitle} from '../domain/item-title.js'
 import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags,LiveSourceReview,RootCatalogReview,RootAddReview } from '@rplayout/protocol'
 import { qcApproved,programDurationFrames,durationIn } from '@rplayout/protocol'
@@ -1081,9 +1082,9 @@ export function MasterControlView({
                       <span className="font-label-mono text-label-mono text-outline block">PREVISÃO</span>
                       <span className="font-timecode-table text-timecode-table text-on-surface font-semibold tabular-nums">
                         {(cueItem ?? armedItem) && scheduleMap.get((cueItem ?? armedItem)!.item.id)?.start != null
-                          ? clock(scheduleMap.get((cueItem ?? armedItem)!.item.id)!.start, rate)
+                          ? wallClock(scheduleMap.get((cueItem ?? armedItem)!.item.id)!.start, rate, view.rundown.date)
                           : onAirItem && scheduleMap.get(onAirItem.item.id)?.end != null
-                          ? clock(scheduleMap.get(onAirItem.item.id)!.end, rate)
+                          ? wallClock(scheduleMap.get(onAirItem.item.id)!.end, rate, view.rundown.date)
                           : '--:--:--:--'}
                       </span>
                     </div>
@@ -1267,6 +1268,14 @@ export function MasterControlView({
                       <span className="font-headline-md text-headline-md uppercase text-on-surface font-semibold tracking-wide">
                         Grade de Exibição
                       </span>
+                      <span className="font-label-mono text-[12px] text-outline" title="Grade carregada no canal">
+                        {view.rundown.name} · {view.rundown.date ? view.rundown.date.split('-').reverse().slice(0, 2).join('/') : 'sem data'}{view.rundown.loop ? ' · loop' : ''}
+                      </span>
+                      {view.rundown.loop && view.rundown.date && view.rundown.date !== localDateKey(new Date()) && (
+                        <span className="text-[11px] text-armed-amber" title="Os horários continuam certos; a data mostra quando a grade foi criada.">
+                          em loop desde {view.rundown.date.split('-').reverse().slice(0, 2).join('/')}
+                        </span>
+                      )}
                     </div>
 
                     {/* SELETOR DE VISUALIZAÇÃO: GRADE LINEAR vs TIMELINE MULTICAMADA 24H (FASE E) */}
@@ -1508,7 +1517,7 @@ export function MasterControlView({
                                 isItemOnAir ? 'text-on-surface font-bold' : isItemCued ? 'text-armed-amber font-bold' : 'text-on-surface-variant'
                               }`}>
                                 {scheduleMap.get(item.item.id)?.start != null
-                                  ? clock(scheduleMap.get(item.item.id)!.start, rate)
+                                  ? wallClock(scheduleMap.get(item.item.id)!.start, rate, view.rundown.date)
                                   : '--:--:--:--'}
                               </td>
 
@@ -2154,11 +2163,11 @@ export function MasterControlView({
                     onChange={(e) => setLineEventType(e.target.value as ScheduleEventType)}
                     className="w-full bg-surface-card border border-border-subtle rounded-lg px-3 py-2 text-on-surface font-body-sm focus:border-primary focus:outline-none cursor-pointer"
                   >
-                    <option value="SEQUENTIAL">SEQUENTIAL — Padrão Auto-Follow contínuo</option>
-                    <option value="FIXED">FIXED — Início ancorado em horário fixo</option>
-                    <option value="HARD_TIME">HARD_TIME — Sincronismo rígido de rede (Hard Sync)</option>
-                    <option value="LIVE">LIVE — Entrada de sinal ao vivo com drift</option>
-                    <option value="FILLER">FILLER — Item elástico / preenchimento de gaps</option>
+                    <option value="SEQUENTIAL">Sequencial — entra após o item anterior</option>
+                    <option value="FIXED">Horário fixo — a grade se ajusta para entrar no horário</option>
+                    <option value="HARD_TIME">Horário rígido — corta o anterior no horário exato</option>
+                    <option value="LIVE">Ao vivo — fonte de sinal</option>
+                    <option value="FILLER">Preenchimento — elástico, cobre buracos</option>
                   </select>
                   <p className="text-[11px] text-outline mt-1 font-body-sm leading-tight">
                     {lineEventType === 'SEQUENTIAL' && 'Disparo sequencial imediato. Absorve fila normal sem ancoragem fixa.'}

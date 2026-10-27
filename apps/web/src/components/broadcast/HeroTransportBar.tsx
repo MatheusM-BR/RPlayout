@@ -1,4 +1,5 @@
 import React from 'react'
+import { wallClock } from '../../domain/wall-clock.js'
 import type { Rate } from '@rplayout/protocol'
 import { clock, dur } from '../../format.js'
 import type { ItemView, Live } from '../../types.js'
@@ -225,7 +226,7 @@ export const HeroTransportBar = React.memo(function HeroTransportBar({
               <div className="text-right">
                 <span className="font-label-caps text-label-caps text-outline block">ENTRADA PREVISTA</span>
                 <span className="font-label-mono text-label-mono text-on-surface font-semibold tabular-nums">
-                  {clock(live?.transport?.onAir?.startedAt ?? 0, rate)}
+                  {wallClock(live?.transport?.onAir?.startedAt ?? 0, rate)}
                 </span>
               </div>
             </div>

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { wallClock } from '../domain/wall-clock.js'
 import { isStill } from '@rplayout/protocol'
 import type { Channel, Fit, ItemType, Rate, ResolvedItem } from '@rplayout/protocol'
 import type { ItemView } from '../types.js'
@@ -341,7 +342,7 @@ export function Rundown(props: Props) {
                 <td>
                   <Notes value={view.item.notes ?? ''} revision={view.editorialRevision} onSave={(text,revision) => props.onNotes(id, text,revision)} />
                 </td>
-                <td>{clock(scheduled.start, rate)}</td>
+                <td>{wallClock(scheduled.start, rate)}</td>
                 <td
                   className={shortened ? 'shortened' : ''}
                   title={
@@ -354,7 +355,7 @@ export function Rundown(props: Props) {
                 >
                   {dur(scheduled.duration, rate)}
                 </td>
-                <td>{clock(scheduled.end, rate)}</td>
+                <td>{wallClock(scheduled.end, rate)}</td>
                 <td className="right">
                   {live ? (
                     <>
@@ -367,16 +368,16 @@ export function Rundown(props: Props) {
                 </td>
                 <td>
                   {anchor.kind === 'FIXED' && (
-                    <span className="chip fixed">FIXO {clock(anchor.at, rate)}</span>
+                    <span className="chip fixed">FIXO {wallClock(anchor.at, rate)}</span>
                   )}
                   {anchor.kind === 'SOFT' && (
                     <span className="chip soft">
-                      {clock(anchor.at, rate)} ±{dur(anchor.tolerance, rate)}
+                      {wallClock(anchor.at, rate)} ±{dur(anchor.tolerance, rate)}
                     </span>
                   )}
                   {anchor.kind === 'WINDOW' && (
                     <span className="chip window">
-                      {clock(anchor.from, rate)}–{clock(anchor.to, rate)}
+                      {wallClock(anchor.from, rate)}–{wallClock(anchor.to, rate)}
                     </span>
                   )}
                   {anchor.kind !== 'FLOW' && (

@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
+import { wallClock, wallTime } from '../../domain/wall-clock.js'
 import type { Channel, Rate } from '@rplayout/protocol'
 import {
   framesToMs,
@@ -254,7 +255,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
 
   // 3. Playhead NTP Timecode Textual formatado
   const playheadTimecode = useMemo(() => {
-    return clock(playheadFrames, rate)
+    return wallTime(playheadFrames, rate)
   }, [playheadFrames, rate])
 
   // Ação de 1-Clique: Autofill de Gap
@@ -276,7 +277,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
 
       // Formatar label SMPTE ou HH:MM
       const frames = msToFrames(t, rate)
-      const tc = clock(frames, rate)
+      const tc = wallTime(frames, rate)
       let label = tc.substring(0, 5) // HH:MM
 
       if (activeZoomKey === 'ZOOM_1H' || activeZoomKey === 'ZOOM_5M') {
@@ -530,7 +531,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                     </div>
                     {width > 4 && (
                       <div className="flex items-center gap-1 font-timecode-table text-[9px] text-white/80 tabular-nums">
-                        <span>{clock(block.startFrames, rate)}</span>
+                        <span>{wallClock(block.startFrames, rate)}</span>
                         <span>•</span>
                         <span>{dur(block.durationFrames, rate)}</span>
                       </div>
@@ -762,7 +763,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
           <div className="grid grid-cols-2 gap-2 py-1 font-timecode-table text-xs text-outline bg-surface-base/60 p-1.5 rounded border border-border-subtle/40">
             <div>
               <span className="block text-[9px] uppercase font-bold text-outline">INÍCIO:</span>
-              <span className="text-on-surface font-semibold">{clock(hoveredBlock.startFrames, rate)}</span>
+              <span className="text-on-surface font-semibold">{wallClock(hoveredBlock.startFrames, rate)}</span>
             </div>
             <div>
               <span className="block text-[9px] uppercase font-bold text-outline">DURAÇÃO:</span>

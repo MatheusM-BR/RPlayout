@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { wallClock, setCurrentGradeDate, anchorFramesFor } from './domain/wall-clock.js'
 import type { ReactNode } from 'react'
 import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
 import type { AudioLevel, Channel, EditScope, Fit, Trim, ScheduleEventType, TimingFlags } from '@rplayout/protocol'
@@ -512,6 +513,8 @@ export function App() {
   const openAssetId = target?.kind === 'ASSET' ? target.id : null
   const onAirId = live?.transport.onAir?.itemId ?? null
 
+  // Base dos horários de parede para telas sem data própria (régua, transporte).
+  setCurrentGradeDate((executionView ?? view)?.rundown.date)
   const onAirItem = (executionView ?? view)?.items.find((item) => item.item.id === onAirId) ?? null
   const selected = view?.items.find((item) => item.item.id === selectedId) ?? null
 
@@ -858,7 +861,7 @@ export function App() {
       say(
         at === null
           ? 'Item inserido no fim da grade.'
-          : `Item inserido em ${clock(at, view.channel.rate)}; a grade foi remanejada.`,
+          : `Item inserido em ${wallClock(at, view.channel.rate, view.rundown.date)}; a grade foi remanejada.`,
       )
     }).finally(()=>{addingItem.current=false;setIsAddingItem(false)})
   }
@@ -1018,10 +1021,13 @@ export function App() {
     void guard(async () => {
       const isHardTime = options?.eventType === 'HARD_TIME'
       const isFixed = options?.eventType === 'FIXED'
+      // Horário fixo começa na hora atual (próximo minuto), na base da grade.
+      // Antes era 0 = meia-noite do dia da grade: numa grade em loop, dias atrás.
+      const startAt = Math.max(0, anchorFramesFor(new Date(Math.ceil(Date.now() / 60000) * 60000), view.channel.rate, view.rundown.date))
       const itemAnchor = isHardTime
-        ? { kind: 'HARD_TIME' as const, at: 0 }
+        ? { kind: 'HARD_TIME' as const, at: startAt }
         : isFixed
-          ? { kind: 'FIXED' as const, at: 0 }
+          ? { kind: 'FIXED' as const, at: startAt }
           : { kind: 'FLOW' as const }
 
       if (liveConfig) {
@@ -1523,6 +1529,7 @@ export function App() {
           initialAssetId={dialog.assetId}
           rate={rate}
           suggestedAt={view.schedule.endsAt}
+          gradeDate={view.rundown.date}
           error={error}
           pending={isAddingItem}
           onCancel={() => setDialog(null)}

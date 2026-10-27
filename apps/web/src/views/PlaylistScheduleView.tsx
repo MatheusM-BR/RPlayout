@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { wallClock, nowHms, parseHms, formatHms, anchorWall, anchorFramesFor, resolveWallInstant, type DayChoice } from '../domain/wall-clock.js'
 import {itemDisplayTitle} from '../domain/item-title.js'
 import type { Channel, ManagedLiveSource, Rundown, AssetMetadataReview } from '@rplayout/protocol'
 import { durationIn, qcApproved } from '@rplayout/protocol'
@@ -220,7 +221,8 @@ export function PlaylistScheduleView({
   // Estado para Edição do Horário de Entrada (Anchor) e Duração Ao Vivo
   const [editingTimeItem, setEditingTimeItem] = useState<ItemView | null>(null)
   const [timeAnchorKind, setTimeAnchorKind] = useState<'FLOW' | 'FIXED'>('FLOW')
-  const [timeInputHms, setTimeInputHms] = useState('12:00:00')
+  const [timeInputHms, setTimeInputHms] = useState(() => nowHms(new Date(), 1))
+  const [timeInputDay, setTimeInputDay] = useState<DayChoice>('today')
   const [durationInputMinutes, setDurationInputMinutes] = useState(30)
   const [isSavingTime, setIsSavingTime] = useState(false)
 
@@ -229,7 +231,10 @@ export function PlaylistScheduleView({
   const [liveProgramTitle, setLiveProgramTitle] = useState('')
   const [liveProgramNameEdited, setLiveProgramNameEdited] = useState(false)
   const [liveProgramInputValid, setLiveProgramInputValid] = useState(false)
-  const [liveProgramTimeHms, setLiveProgramTimeHms] = useState('20:00:00')
+  const [liveProgramTimeHms, setLiveProgramTimeHms] = useState(() => nowHms(new Date(), 1))
+  const [liveProgramDay, setLiveProgramDay] = useState<DayChoice>('today')
+  const [liveProgramStart, setLiveProgramStart] = useState<'NOW' | 'FIXED' | 'FLOW'>('FIXED')
+  const [liveProgramPreset, setLiveProgramPreset] = useState(false)
   const [liveProgramDurationMin, setLiveProgramDurationMin] = useState(60)
   const [liveProgramSourceRef, setLiveProgramSourceRef] = useState('')
   const [liveSourceOption, setLiveSourceOption] = useState('decklink://0')
@@ -240,15 +245,36 @@ export function PlaylistScheduleView({
     setLiveProgramInputValid(result.isHardwareValid)
     setLiveProgramTitle((current) => inputName(current, result.nameRecommendation, liveProgramNameEdited))
   }, [liveProgramNameEdited])
-  const openLiveProgram = async () => {
+  // Ao vivo sempre entra com horário: o diálogo abre com a hora atual (próximo
+  // minuto) e, vindo da biblioteca, já com a fonte escolhida.
+  const openLiveProgram = async (preset?: { sourceRef: string; title: string; durationFrames?: number | null }) => {
     let target:RundownView
     try{target=await ensureEditorialView()}catch(error){setFeedbackMessage(error instanceof Error?error.message:'Não consegui abrir a grade.');return}
     liveProgramTarget.current={view:target,key:editorialRequestKey}
-    setLiveProgramTitle('')
-    setLiveProgramNameEdited(false)
-    setLiveProgramSourceRef('')
-    setLiveProgramInputValid(false)
+    setLiveProgramTitle(preset?.title ?? '')
+    setLiveProgramNameEdited(Boolean(preset))
+    setLiveProgramSourceRef(preset?.sourceRef ?? '')
+    setLiveProgramInputValid(Boolean(preset))
+    setLiveProgramPreset(Boolean(preset))
+    setLiveProgramStart('FIXED')
+    setLiveProgramDay('today')
+    setLiveProgramTimeHms(nowHms(new Date(), 1))
+    const fps = rate.num / rate.den || 50
+    if (preset?.durationFrames && preset.durationFrames > 0) setLiveProgramDurationMin(Math.max(1, Math.round(preset.durationFrames / fps / 60)))
     setShowLiveProgramModal(true)
+  }
+
+  /** Horário escolhido -> âncora na base da grade. Horário que já passou
+   * pergunta antes de ir para amanhã; nada é gravado sem resposta. */
+  const anchorForChoice = (hms: string, day: DayChoice, gradeDate: string | null | undefined): { kind: 'FIXED'; at: number } | null => {
+    const seconds = parseHms(hms)
+    if (seconds === null) throw new Error('Horário inválido. Use HH:MM:SS, de 00:00:00 a 23:59:59.')
+    let instant = resolveWallInstant(seconds, day, gradeDate)
+    if (instant.getTime() < Date.now() - 1000) {
+      if (!window.confirm(`${formatHms(seconds)} de hoje já passou. Agendar para amanhã no mesmo horário?`)) return null
+      instant = resolveWallInstant(seconds, 'tomorrow', gradeDate)
+    }
+    return { kind: 'FIXED', at: anchorFramesFor(instant, rate, gradeDate) }
   }
 
   const allMamAssets = useMemo<LibraryAsset[]>(() => {
@@ -840,20 +866,8 @@ export function PlaylistScheduleView({
       const target=await ensureEditorialView(),rId=target.rundown.id
       if (asset.isLiveSource) {
         if (!asset.sourceRef) throw new Error('A fonte ao vivo não possui endereço configurado.')
-        const accepted=await api.addItem(rId, {
-            sourceRef: asset.sourceRef,
-            type: 'LIVE',
-            title: asset.title,
-            durationOverride: asset.durationFrames,
-            anchor: { kind: 'FLOW' },
-          },target.editorialRevision)
-        if(isLoadedEditorial)onPublishToMaster(accepted)
-        else {
-          await loadDateRundown(selectedDate)
-          void refreshAvailableRundowns()
-        }
-        setFeedbackMessage(`✓ Fonte ao vivo "${asset.title}" inserida na programação!`)
-        setTimeout(() => setFeedbackMessage(null), 3000)
+        void rId
+        await openLiveProgram({ sourceRef: asset.sourceRef, title: asset.title, durationFrames: asset.durationFrames })
         return
       }
       const accepted=await api.addItem(rId, {
@@ -881,20 +895,19 @@ export function PlaylistScheduleView({
       const target=liveProgramTarget.current
       if(!target || target.key!==editorialRequestKeyRef.current)throw new Error('A data ou o canal mudou. Feche e reabra o formulário na grade selecionada; seus campos não foram gravados.')
       const rId=target.view.rundown.id
-      const parts = liveProgramTimeHms.split(':').map((p) => Number(p) || 0)
-      const h = parts[0] ?? 0
-      const m = parts[1] ?? 0
-      const s = parts[2] ?? 0
-      const totalSeconds = h * 3600 + m * 60 + s
       const fps = rate.num / rate.den || 50
-      const atFrames = Math.round(totalSeconds * fps)
       const durationFrames = Math.round(liveProgramDurationMin * 60 * fps)
+      const gradeDate = target.view.rundown.date
+      const anchor = liveProgramStart === 'FLOW' ? { kind: 'FLOW' as const }
+        : liveProgramStart === 'NOW' ? { kind: 'FIXED' as const, at: anchorFramesFor(new Date(), rate, gradeDate) }
+        : anchorForChoice(liveProgramTimeHms, liveProgramDay, gradeDate)
+      if (!anchor) return
 
       const snapshot = await api.addItem(rId, {
         sourceRef: liveProgramSourceRef,
         type: 'LIVE',
         title: liveProgramTitle,
-        anchor: { kind: 'FIXED', at: atFrames },
+        anchor,
         durationOverride: durationFrames,
       },target.view.editorialRevision)
 
@@ -908,7 +921,7 @@ export function PlaylistScheduleView({
         void refreshAvailableRundowns()
       }
 
-      setFeedbackMessage(`✓ Programa Ao Vivo "${liveProgramTitle}" agendado para ${liveProgramTimeHms}!`)
+      setFeedbackMessage(`✓ Programa Ao Vivo "${liveProgramTitle}" ${anchor.kind === 'FIXED' ? `agendado para ${wallClock(anchor.at, rate, gradeDate)}` : 'inserido após o item anterior'}!`)
       setTimeout(() => setFeedbackMessage(null), 3500)
       setShowLiveProgramModal(false)
     } catch (err: any) {
@@ -924,26 +937,23 @@ export function PlaylistScheduleView({
     const currentAnchor = item.item.anchor
     const fps = rate.num / rate.den || 50
 
+    // Horário de parede: âncora salva (convertida da base da grade) ou, para
+    // quem ainda não tem horário fixo, a hora atual arredondada ao próximo minuto.
+    const gradeDate = activeView?.rundown.date
     if (currentAnchor && currentAnchor.kind === 'FIXED') {
       setTimeAnchorKind('FIXED')
-      const sec = Math.round(currentAnchor.at / fps)
-      const h = Math.floor(sec / 3600) % 24
-      const m = Math.floor((sec % 3600) / 60)
-      const s = sec % 60
-      setTimeInputHms(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`)
+      const wall = anchorWall(currentAnchor.at, rate, gradeDate)
+      if (wall.day === 'today' || wall.day === 'tomorrow') {
+        setTimeInputHms(formatHms(wall.seconds)); setTimeInputDay(wall.day)
+      } else {
+        // Âncora antiga (dia que já passou): propõe o mesmo horário no próximo dia possível.
+        setTimeInputHms(formatHms(wall.seconds)); setTimeInputDay(resolveWallInstant(wall.seconds, 'today', gradeDate).getTime() < Date.now() ? 'tomorrow' : 'today')
+      }
     } else {
       setTimeAnchorKind('FLOW')
-      const sched = scheduleMap.get(item.item.id)
-      if (sched?.start != null) {
-        const sec = Math.round(sched.start / fps)
-        const h = Math.floor(sec / 3600) % 24
-        const m = Math.floor((sec % 3600) / 60)
-        const s = sec % 60
-        setTimeInputHms(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`)
-      } else {
-        setTimeInputHms('12:00:00')
-      }
+      setTimeInputHms(nowHms(new Date(), 1)); setTimeInputDay('today')
     }
+    void fps
 
     const durFrames = item.trim
       ? Math.max(0, item.trim.out - item.trim.in)
@@ -961,13 +971,9 @@ export function PlaylistScheduleView({
       let anchorPayload: any = { kind: 'FLOW' }
 
       if (timeAnchorKind === 'FIXED') {
-        const parts = timeInputHms.split(':').map((p) => Number(p) || 0)
-        const h = parts[0] ?? 0
-        const m = parts[1] ?? 0
-        const s = parts[2] ?? 0
-        const totalSeconds = h * 3600 + m * 60 + s
-        const atFrames = Math.round(totalSeconds * fps)
-        anchorPayload = { kind: 'FIXED', at: atFrames }
+        const anchor = anchorForChoice(timeInputHms, timeInputDay, activeView?.rundown.date)
+        if (!anchor) return
+        anchorPayload = anchor
       }
 
       const patchBody: Record<string, any> = {
@@ -1156,7 +1162,7 @@ export function PlaylistScheduleView({
             duration: gapDur,
             leftPct,
             widthPct,
-            label: `${clock(gapStart, rate)} - ${clock(gapEnd, rate)}`,
+            label: `${wallClock(gapStart, rate, activeView?.rundown.date)} - ${wallClock(gapEnd, rate, activeView?.rundown.date)}`,
           })
         }
       }
@@ -1301,7 +1307,7 @@ export function PlaylistScheduleView({
                       ACERVO &amp; PROGRAMAÇÃO
                     </span>
                     <button
-                      onClick={openLiveProgram}
+                      onClick={() => void openLiveProgram()}
                       className="px-2 py-0.5 rounded bg-on-air-crimson/20 hover:bg-on-air-crimson text-on-air-crimson hover:text-white font-label-caps text-[9px] font-bold border border-on-air-crimson/40 transition-colors flex items-center gap-1 cursor-pointer shadow-sm"
                       title="Agendar programa ao vivo com horário cravado"
                     >
@@ -2063,7 +2069,7 @@ export function PlaylistScheduleView({
                 </button>
 
                 <button
-                  onClick={openLiveProgram}
+                  onClick={() => void openLiveProgram()}
                   className="flex items-center gap-1 bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle hover:border-error/50 px-2 py-1 rounded font-body-sm text-[11px] transition-colors cursor-pointer"
                   title="Agendar transmissão ao vivo com horário marcado"
                 >
@@ -2250,7 +2256,7 @@ export function PlaylistScheduleView({
                         </div>
                         <div className="col-span-2 font-label-mono text-[10.5px] tabular-nums text-on-surface">
                           {scheduleMap.get(item.item.id)?.start != null
-                            ? clock(scheduleMap.get(item.item.id)!.start, rate)
+                            ? wallClock(scheduleMap.get(item.item.id)!.start, rate, activeView?.rundown.date)
                             : '--:--:--:--'}
                         </div>
                         <div className="col-span-2 font-label-mono text-[10.5px] tabular-nums text-outline">
@@ -2472,7 +2478,7 @@ export function PlaylistScheduleView({
                         : 'border-border-subtle bg-surface-panel text-outline hover:text-on-surface'
                     }`}
                   >
-                    <span className="font-bold text-xs">Horário Fixo (NTP)</span>
+                    <span className="font-bold text-xs">Horário fixo</span>
                     <span className="text-[9.5px] opacity-80">Entra pontualmente no horário</span>
                   </button>
                 </div>
@@ -2484,14 +2490,27 @@ export function PlaylistScheduleView({
                     <span className="material-symbols-outlined text-[13px]">alarm</span>
                     Horário de Início (HH:MM:SS)
                   </label>
-                  <input
-                    type="text"
-                    value={timeInputHms}
-                    onChange={(e) => setTimeInputHms(e.target.value)}
-                    placeholder="12:00:00"
-                    pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
-                    className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-sm text-on-surface focus:outline-none focus:border-armed-amber"
-                  />
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text"
+                      value={timeInputHms}
+                      onChange={(e) => setTimeInputHms(e.target.value)}
+                      placeholder="HH:MM:SS"
+                      aria-invalid={parseHms(timeInputHms) === null}
+                      className={`flex-1 bg-surface-base border rounded px-2.5 py-1.5 font-label-mono text-sm text-on-surface focus:outline-none focus:border-armed-amber ${parseHms(timeInputHms) === null ? 'border-error' : 'border-border-subtle'}`}
+                    />
+                    <button type="button" onClick={() => { setTimeInputHms(nowHms(new Date(), 1)); setTimeInputDay('today') }}
+                      className="px-2 py-1 rounded border border-border-subtle bg-surface-panel text-[11px] text-outline hover:text-on-surface cursor-pointer">Agora</button>
+                  </div>
+                  <div className="flex gap-1.5" role="group" aria-label="Dia">
+                    {(['today','tomorrow'] as const).map((d) => (
+                      <button key={d} type="button" onClick={() => setTimeInputDay(d)}
+                        className={`flex-1 px-2 py-1 rounded border text-[11px] cursor-pointer ${timeInputDay === d ? 'border-armed-amber bg-armed-amber/15 text-armed-amber' : 'border-border-subtle bg-surface-panel text-outline hover:text-on-surface'}`}>
+                        {d === 'today' ? 'Hoje' : 'Amanhã'}
+                      </button>
+                    ))}
+                  </div>
+                  {parseHms(timeInputHms) === null && <span className="text-[10px] text-error">Use HH:MM:SS, de 00:00:00 a 23:59:59.</span>}
                   <span className="text-[9.5px] text-outline">
                     A exibição aguardará pontualmente este horário para disparar o VT/Evento.
                   </span>
@@ -2571,7 +2590,20 @@ export function PlaylistScheduleView({
             </div>
 
             <div className="p-4 flex flex-col gap-3.5 text-body-sm max-h-[80vh] overflow-y-auto broadcast-scroll">
-              <CanonicalProtocolSelector mode="INPUT" defaultKind="NDI" onChange={selectLiveProgramInput} />
+              {liveProgramPreset
+                ? <div className="text-[11px] text-outline">Fonte: <span className="font-label-mono text-on-surface">{liveProgramSourceRef}</span></div>
+                : <CanonicalProtocolSelector mode="INPUT" defaultKind="NDI" onChange={selectLiveProgramInput} />}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">Início</label>
+                <div className="grid grid-cols-3 gap-1.5" role="group" aria-label="Início do ao vivo">
+                  {([['NOW','Agora','Entra já no ar'],['FIXED','Horário fixo','Entra no horário marcado'],['FLOW','Após o anterior','Segue a fila']] as const).map(([mode,label,hint]) => (
+                    <button key={mode} type="button" onClick={() => setLiveProgramStart(mode)}
+                      className={`p-2 rounded border text-left flex flex-col gap-0.5 cursor-pointer ${liveProgramStart === mode ? 'border-error bg-error/10 text-on-surface' : 'border-border-subtle bg-surface-panel text-outline hover:text-on-surface'}`}>
+                      <span className="font-bold text-xs">{label}</span><span className="text-[9.5px] opacity-80">{hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
                   Título do Programa / Evento
@@ -2592,12 +2624,22 @@ export function PlaylistScheduleView({
                   </label>
                   <input
                     type="text"
-                    value={liveProgramTimeHms}
+                    value={liveProgramStart === 'NOW' ? nowHms() : liveProgramTimeHms}
+                    disabled={liveProgramStart !== 'FIXED'}
                     onChange={(e) => setLiveProgramTimeHms(e.target.value)}
-                    placeholder="20:00:00"
-                    pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
-                    className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
+                    placeholder="HH:MM:SS"
+                    aria-invalid={liveProgramStart === 'FIXED' && parseHms(liveProgramTimeHms) === null}
+                    className={`w-full bg-surface-base border rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary disabled:opacity-50 ${liveProgramStart === 'FIXED' && parseHms(liveProgramTimeHms) === null ? 'border-error' : 'border-border-subtle'}`}
                   />
+                  {liveProgramStart === 'FIXED' && <>
+                  <div className="flex gap-1.5" role="group" aria-label="Dia">
+                    {(['today','tomorrow'] as const).map((d) => (
+                      <button key={d} type="button" onClick={() => setLiveProgramDay(d)}
+                        className={`flex-1 px-2 py-1 rounded border text-[11px] cursor-pointer ${liveProgramDay === d ? 'border-armed-amber bg-armed-amber/15 text-armed-amber' : 'border-border-subtle bg-surface-panel text-outline hover:text-on-surface'}`}>
+                        {d === 'today' ? 'Hoje' : 'Amanhã'}
+                      </button>
+                    ))}
+                  </div></>}
                 </div>
 
                 <div className="flex flex-col gap-1">
@@ -2627,7 +2669,7 @@ export function PlaylistScheduleView({
               </button>
               <button
                 type="button"
-                disabled={isCreatingLive || !liveProgramInputValid || !liveProgramTitle.trim() || !liveProgramSourceRef.trim()}
+                disabled={isCreatingLive || !liveProgramInputValid || !liveProgramTitle.trim() || !liveProgramSourceRef.trim() || (liveProgramStart === 'FIXED' && parseHms(liveProgramTimeHms) === null)}
                 onClick={handleCreateLiveProgram}
                 className="px-3 py-1.5 rounded bg-error hover:bg-error/90 text-white font-label-caps text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50"
               >

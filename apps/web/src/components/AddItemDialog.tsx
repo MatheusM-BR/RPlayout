@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   durationIn,
-  formatTimecode,
-  parseTimecode,
   secondsToFrames,
   type Anchor,
   type MediaAsset,
   type Rate,
 } from '@rplayout/protocol'
 import { api } from '../api.js'
+import { nowHms, parseHms, resolveWallInstant, anchorFramesFor, wallClock } from '../domain/wall-clock.js'
 import { dur } from '../format.js'
 import type { LiveSource, SourceFamily, SourceList } from '../types.js'
 import { inputName, sourceName } from './broadcast/protocol-config.js'
@@ -36,8 +35,10 @@ interface Props {
   /** Arquivo já escolhido, quando a inserção começou por um clique no acervo. */
   initialAssetId?: string
   rate: Rate
-  /** Hora sugerida para o campo, normalmente o fim da grade. */
+  /** Mantido por compatibilidade; o campo abre com a hora atual. */
   suggestedAt: number
+  /** Data da grade: base das âncoras em quadros. */
+  gradeDate?: string | null
   onCancel: () => void
   onAdd: (item: NewItem) => void
   error?:string|null
@@ -61,6 +62,7 @@ export function AddItemDialog({
   initialAssetId,
   rate,
   suggestedAt,
+  gradeDate,
   onCancel,
   onAdd,
   error,
@@ -69,7 +71,10 @@ export function AddItemDialog({
   const [kind, setKind] = useState<Kind>('FILE')
   const [assetId, setAssetId] = useState(initialAssetId ?? assets[0]?.id ?? '')
   const [mode, setMode] = useState<AnchorMode>('FLOW')
-  const [atText, setAtText] = useState(formatTimecode(suggestedAt, rate))
+  // Relógio de parede, começando na hora atual (próximo minuto). O fim da
+  // grade em quadros podia passar de 24 h numa grade em loop.
+  const [atText, setAtText] = useState(() => nowHms(new Date(), 1))
+  void suggestedAt
   const [toleranceSeconds, setToleranceSeconds] = useState(90)
 
   const [sources, setSources] = useState<SourceList | null>(null)
@@ -121,7 +126,13 @@ export function AddItemDialog({
   const sourceValue = manualSource.trim() || chosen?.reference || ''
   const liveNameValue = inputName(liveName, chosen?.label || sourceName(sourceValue, []), liveNameEdited)
 
-  const at = parseTimecode(atText, rate)
+  const atSeconds = parseHms(atText)
+  // Horário que já passou hoje vai para amanhã; o rótulo mostra a data.
+  const atInstant = atSeconds === null ? null : (() => {
+    const today = resolveWallInstant(atSeconds, 'today', gradeDate)
+    return today.getTime() < Date.now() ? resolveWallInstant(atSeconds, 'tomorrow', gradeDate) : today
+  })()
+  const at = atInstant === null ? null : anchorFramesFor(atInstant, rate, gradeDate)
   const asset = assets.find((candidate) => candidate.id === assetId)
   const needsTime = mode !== 'FLOW'
   const valid =
@@ -295,9 +306,11 @@ export function AddItemDialog({
                 <input
                   type="text"
                   className={at === null ? 'bad' : ''}
+                  placeholder="HH:MM:SS"
                   value={atText}
                   onChange={(event) => setAtText(event.target.value)}
                 />
+                <small>{at === null ? 'Use HH:MM:SS (00:00:00 a 23:59:59)' : `→ ${wallClock(at, rate, gradeDate)}`}</small>
               </div>
               {mode === 'SOFT' && (
                 <div className="field">
