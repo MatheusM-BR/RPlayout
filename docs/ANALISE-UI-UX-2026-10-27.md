@@ -66,3 +66,20 @@ Cinegy Air, PlayBox AirBox, Imagine/ADC, iTX).
 
 Pendente do operador: a live do vMix Output 1 está chegando **sem áudio**
 (silêncio −90 dBFS há mais de 30 min) — conferir o áudio da saída do vMix.
+
+## 5. GC com títulos GT do vMix (decisão 27/10: rodar no RPlayout, 4 a 8 overlays)
+
+- G1 (r88-28): importar `.gtzip`/`.gtxml` em Configurações › grafismo ›
+  Gerenciar artes. Conferido com os 743 títulos GT desta máquina: 743
+  convertidos. Campos com o nome do vMix (`Headline.Text`).
+- G2 (r88-28): Overlays 1–8 no Master (ENTRA, SAI, CORTE, ✕). O engine anda a
+  animação do título (Fly, Bounce, Fade, Expand, Reveal, Zoom, ZoomFade,
+  Rotate, None) a ~30 quadros/s e para de redesenhar quando o título assenta.
+  Sem storyboard de saída, a entrada volta ao contrário (como no vMix). Arte SVG
+  comum entra/sai com fade de 300 ms. Slot 1 atrás, 8 na frente, por cima das
+  camadas fixas.
+- Limites atuais: animações contínuas (FillOffset, Scroll, RotateContinuous,
+  Ticker) ficam paradas; estado dos overlays só em memória (reinício do
+  servidor esvazia; reinício só do engine repõe em corte); sem registro no
+  As-run nem replicação HA.
+- G3 (salvar `.gtzip`) e G4 (comandar o próprio vMix) continuam propostos.

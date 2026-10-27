@@ -28,6 +28,8 @@ import {acknowledgeHealthIncident,readHealthIncidents,readHealthIncidentPage,typ
 import { resolveTakeTarget, TakeTargetError } from './domain/take-target.js'
 import { and, asc, desc, eq, inArray, isNotNull,or,sql } from 'drizzle-orm'
 import { z } from 'zod'
+import { overlayCommandSchema, overlayDeckOf, OverlayError } from './domain/overlays.js'
+import type { GraphicTemplate } from '@rplayout/protocol'
 import { scheduledDeviceSchema, freezeDeviceAutomation } from './domain/device-automation.js'
 import type { FastifyInstance,FastifyRequest } from 'fastify'
 import {recordManualFailover,type ManualFailoverInput} from './domain/manual-failover.js'
@@ -4524,6 +4526,43 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     try{receipt=(await graphicCommand(request,id,{action:'SHOW',templateSnapshot:template,values:body.data.values??{}},authorize,beforeSend=>runtime.graphics.showConfirmed(template,body.data.values??{},authorize,beforeSend))).receipt}catch(error){return automationError(reply,error)}
     onChange()
     return {...await snapshot(app, runtime),graphicCommand:receipt}
+  })
+
+  // ---- overlays 1–8 (títulos GT, como no vMix) -------------------------------
+  server.get('/api/channels/:id/overlays', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!access.channelAllowed(request, id)) return reply.code(403).send({ error: 'Sem acesso a este canal.' })
+    const runtime = await runtimeFor(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    return reply.header('cache-control', 'private, no-store').send({ slots: overlayDeckOf(runtime).list() })
+  })
+  server.post('/api/channels/:id/overlays/:slot', async (request, reply) => {
+    const { id, slot } = request.params as { id: string; slot: string }
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Seu papel não pode operar overlays.' })
+    if (!access.channelAllowed(request, id)) return reply.code(403).send({ error: 'Sem acesso a este canal.' })
+    const body = overlayCommandSchema.safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Comando de overlay inválido.' })
+    const runtime = await runtimeFor(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    if (runtime.emergencyOverlay || runtime.emergencyCommandPending) return reply.code(409).send({ error: 'Slate de emergência ativo; encerre a intervenção antes de operar overlays.' })
+    let template: GraphicTemplate | null = null
+    if (body.data.action === 'IN' || body.data.action === 'CUT') {
+      const templateId = body.data.templateId ?? overlayDeckOf(runtime).list().find(entry => entry.slot === Number(slot))?.templateId
+      if (!templateId) return reply.code(400).send({ error: 'Escolha a arte do overlay.' })
+      const [row] = await app.db.select().from(graphicTemplates).where(eq(graphicTemplates.id, templateId))
+      if (!row) return reply.code(404).send({ error: 'Arte não existe.' })
+      if (row.channelId && row.channelId !== id) return reply.code(400).send({ error: 'Arte não pertence a este canal.' })
+      template = row as unknown as GraphicTemplate
+    }
+    try {
+      const actor = access.identity(request)?.username ?? null
+      const result = await overlayDeckOf(runtime).command(runtime.transport, Number(slot), body.data, template, actor)
+      onChange()
+      return { slot: result, slots: overlayDeckOf(runtime).list() }
+    } catch (error) {
+      if (error instanceof OverlayError) return reply.code(error.status).send({ error: error.message })
+      return reply.code(502).send({ error: sanitizeDiagnostic(error instanceof Error ? error.message : 'Engine não confirmou o overlay.') })
+    }
   })
 
   server.delete('/api/channels/:id/graphic', async (request, reply) => {

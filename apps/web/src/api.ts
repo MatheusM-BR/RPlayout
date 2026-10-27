@@ -49,6 +49,7 @@ import {liveSourceHeaders} from './domain/live-source-review.js'
 import {multiviewHeaders} from './domain/multiview-review.js'
 import {scheduleRuleHeaders} from './domain/schedule-rule-review.js'
 import {graphicsHeaders} from './domain/graphics-review.js'
+export interface OverlaySlotState { slot: number; templateId: string; name: string; values: Record<string, string>; animated: boolean; onAir: boolean; changedAt: string; changedBy: string | null }
 import {accountCatalogHeaders,accountHeaders,accountSessionHeaders} from './domain/account-review.js'
 import {assetMetadataHeaders} from './domain/asset-metadata-review.js'
 import {assetRemovalHeaders,removalSelection} from './domain/asset-removal-review.js'
@@ -748,6 +749,9 @@ export const api = {
       {method:'POST',headers:body.preview&&revision===undefined?{}:editorialHeaders(revision),body:JSON.stringify(body)},
     ),
 
+  overlays: (channelId: string) => send<{ slots: OverlaySlotState[] }>(`/api/channels/${encodeURIComponent(channelId)}/overlays`),
+  overlayCommand: (channelId: string, slot: number, body: { action: 'IN' | 'OUT' | 'CUT' | 'OFF'; templateId?: string; values?: Record<string, string> }) =>
+    send<{ slot: OverlaySlotState | null; slots: OverlaySlotState[] }>(`/api/channels/${encodeURIComponent(channelId)}/overlays/${slot}`, { method: 'POST', body: JSON.stringify(body) }),
   graphics: (channelId: string) =>
     send<{ templates: GraphicTemplate[] }>(`/api/graphics?channelId=${encodeURIComponent(channelId)}`),
   graphicsReview:(channelId:string|null,signal?:AbortSignal)=>send<GraphicsReview>(`/api/graphics/review${channelId===null?'':`?channelId=${encodeURIComponent(channelId)}`}`,{signal}),

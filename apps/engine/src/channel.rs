@@ -612,16 +612,18 @@ impl Graphic {
             self.svg = None;
             return Some(None);
         }
-        Some(Some(wrap_opacity(svg, self.opacity)))
+        Some(Some(format!("<g opacity=\"{:.3}\">{svg}</g>", self.opacity)))
     }
 }
 
-/// Embrulha o SVG num grupo com opacidade. SVG dentro de `<g>` é SVG válido,
-/// então o modelo do operador não precisa saber que existe transição.
-fn wrap_opacity(svg: &str, opacity: f64) -> String {
+/// Quadro de grafismo: camada legada (com opacidade) atrás e overlays 1–8 na
+/// frente. SVG dentro de `<g>`/`<svg>` aninhado é SVG válido, então os modelos
+/// não precisam saber que existe transição.
+fn compose_frame(legacy: Option<&str>, overlays: &str) -> String {
     format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1920\" height=\"1080\" viewBox=\"0 0 1920 1080\" \
-         preserveAspectRatio=\"none\"><g opacity=\"{opacity:.3}\">{svg}</g></svg>"
+         preserveAspectRatio=\"none\">{}{overlays}</svg>",
+        legacy.unwrap_or("")
     )
 }
 
@@ -713,6 +715,9 @@ pub struct Channel {
     /// Camada de grafismo e o estado da entrada/saída dela.
     graphics: gst::Element,
     gfx: Graphic,
+    gfx_layer: Option<String>,
+    overlays: crate::overlay::Overlays,
+    overlay_wait_ms: f64,
     /// Buffer reaproveitado da conversão de bytes para amostras. Alocar a cada
     /// volta do laço num processo que fica meses no ar não é opção.
     meter_scratch: Vec<f32>,
@@ -1522,6 +1527,9 @@ impl Channel {
             limiter,
             graphics,
             gfx: Graphic::default(),
+            gfx_layer: None,
+            overlays: crate::overlay::Overlays::default(),
+            overlay_wait_ms: 0.0,
             meter_scratch: Vec::with_capacity(16_384),
         };
 
@@ -3181,14 +3189,30 @@ impl Channel {
 
     /// Anda a transição do grafismo. Chamado a cada volta do laço principal.
     pub fn tick_graphics(&mut self, elapsed_ms: f64) {
-        let Some(draw) = self.gfx.advance(elapsed_ms) else {
-            return;
-        };
-        match draw {
-            Some(svg) => self.graphics.set_property("data", svg),
-            None => self.graphics.set_property("data", None::<String>),
+        let legacy = self.gfx.advance(elapsed_ms);
+        let legacy_changed = legacy.is_some();
+        if let Some(layer) = legacy { self.gfx_layer = layer; }
+        let overlays_changed = self.overlays.advance(elapsed_ms);
+        // Animação de overlay a ~30 quadros/s: re-renderizar o SVG a cada
+        // volta do laço só gastaria CPU sem mudar a imagem.
+        self.overlay_wait_ms += elapsed_ms;
+        let in_motion = self.overlays.animating();
+        if !legacy_changed && (!overlays_changed || (in_motion && self.overlay_wait_ms < 33.0)) { return; }
+        self.overlay_wait_ms = 0.0;
+        let overlays = self.overlays.render();
+        if self.gfx_layer.is_none() && overlays.is_empty() {
+            self.graphics.set_property("data", None::<String>);
+        } else {
+            self.graphics.set_property("data", compose_frame(self.gfx_layer.as_deref(), &overlays));
         }
     }
+
+    /// Overlay 1–8 (entrada, saída, corte, desliga), como no vMix.
+    pub fn set_overlay(&mut self, slot: usize, action: crate::overlay::Action, svg: Option<String>, animation: Option<crate::overlay::Animation>) -> Result<()> {
+        self.overlays.command(slot, action, svg, animation)
+    }
+
+    pub fn overlays_on_air(&self) -> Vec<u8> { self.overlays.active() }
 
     /// O que está no ar em grafismo, para a interface conferir.
     pub fn graphic_on_air(&self) -> bool {

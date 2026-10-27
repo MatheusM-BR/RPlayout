@@ -31,6 +31,7 @@ import { InterruptedItemsBanner } from '../components/broadcast/InterruptedItems
 import {OperationalInsertionPanel} from '../components/broadcast/OperationalInsertionPanel.js'
 import { NextPlaylistPanel } from '../components/broadcast/NextPlaylistPanel.js'
 import { DynamicCgSecondaryBar } from '../components/broadcast/DynamicCgSecondaryBar.js'
+import { OverlaysPanel } from '../components/broadcast/OverlaysPanel.js'
 import { MultiTrackTimeline } from '../components/broadcast/MultiTrackTimeline.js'
 import { ConflictDrawer } from '../components/broadcast/ConflictDrawer.js'
 import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
@@ -1111,6 +1112,9 @@ export function MasterControlView({
           <DynamicCgSecondaryBar
             channelId={channel.id}
           />
+        </div>
+        <div className="w-full px-margin pb-1 shrink-0">
+          <OverlaysPanel channelId={channel.id} />
         </div>
  
         {/* 3. MAIN LOWER SECTION: BIBLIOTECA MAM (ESQUERDA) & MONUMENTAL RUNDOWN (DIREITA) */}

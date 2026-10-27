@@ -73,9 +73,9 @@ describe('importação de título GT do vMix', () => {
       { key: 'Description', label: 'Description.Text', defaultValue: 'Descrição' },
     ])
     expect(result.svg).toContain('viewBox="0 0 1920 1080"')
-    expect(result.svg).toContain('<linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">')
+    expect(result.svg).toMatch(/<linearGradient id="gt\w+_g1" x1="0" y1="0" x2="1" y2="0">/)
     expect(result.svg).toContain('stop-opacity="0.5"')
-    expect(result.svg).toContain('transform="translate(180 832)"')
+    expect(result.svg).toContain('<g data-a="1" transform="translate(180 832)" data-gt="Base Layer">')
     expect(result.svg).toContain('skewX(-10)')
     expect(result.svg).toContain('feDropShadow')
     expect(result.svg).toContain('href="data:image/png;base64,')
@@ -83,7 +83,14 @@ describe('importação de título GT do vMix', () => {
     expect(result.svg).toMatch(/font-size="58\.22"[^>]*font-weight="bold"/)
     expect(result.svg).toContain('text-anchor="middle"')
     expect(result.fadeMs).toBe(1600)
-    expect(result.report.join(' ')).toContain('Fly')
+    expect(result.animation.objects.find(object => object.n === 2)).toMatchObject({ x: 0, y: 0, w: 1500, h: 190, ax: 180, ay: 832 })
+    expect(result.animation.enter).toEqual([
+      { n: 2, kind: 'Fly', delayMs: 200, durationMs: 500, direction: '', easing: '' },
+      { n: 5, kind: 'Fade', delayMs: 1200, durationMs: 400, direction: '', easing: '' },
+      { n: 3, kind: 'None', delayMs: 3000, durationMs: 500, direction: '', easing: '' },
+    ])
+    expect(result.animation.exit).toEqual([{ n: 1, kind: 'Fly', delayMs: 0, durationMs: 500, direction: 'Right', easing: '' }])
+    expect(result.svg).toContain('<metadata id="rplayout-gt">{&quot;width&quot;:1920')
     const rendered = renderTemplate({ svg: result.svg, fields: result.fields }, { Headline: 'JOÃO <SILVA>' })
     expect(rendered).toContain('JOÃO &lt;SILVA&gt;')
     expect(rendered).toContain('>Descrição<')

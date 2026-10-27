@@ -154,3 +154,25 @@ export interface GraphicLayerState {
   readonly expiresAtFrames?: number | null
 }
 
+
+
+/** Animação de título GT importado (overlays 1–8). O importador grava no SVG
+ * um `<metadata id="rplayout-gt">` com caixas e storyboards; o engine anda a
+ * animação. SVG sem esse bloco entra/sai com fade. */
+export interface OverlayAnimation {
+  width: number
+  height: number
+  objects: { n: number; x: number; y: number; w: number; h: number; ax: number; ay: number }[]
+  enter: { n: number; kind: string; delayMs: number; durationMs: number; direction: string; easing: string }[]
+  exit: { n: number; kind: string; delayMs: number; durationMs: number; direction: string; easing: string }[]
+}
+export const OVERLAY_SLOTS = 8
+export function overlayAnimationOf(svg: string): OverlayAnimation | null {
+  const match = /<metadata id="rplayout-gt">([\s\S]*?)<\/metadata>/.exec(svg)
+  if (!match) return null
+  try {
+    const value = JSON.parse(match[1]!.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&apos;/g, "'").replace(/&amp;/g, '&')) as OverlayAnimation
+    if (!Array.isArray(value.objects) || !Array.isArray(value.enter) || !Array.isArray(value.exit)) return null
+    return value
+  } catch { return null }
+}

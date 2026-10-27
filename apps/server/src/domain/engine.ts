@@ -422,6 +422,8 @@ export class EngineTransport implements Transport {
   private preparingBoundary = false
   private nextBoundaryPreparationAt = 0
   private desiredGraphic: { svg: string | null; fadeMs: number } | null = null
+  /** Overlays no ar, para repor (em corte) se o engine reiniciar. */
+  private desiredOverlays = new Map<number, { svg: string; animation: import('@rplayout/protocol').OverlayAnimation | null }>()
   private committedOutputs:readonly string[]
   private fenceOwner:string|null=null
   private fencePendingOwner:string|null=null
@@ -1068,6 +1070,13 @@ export class EngineTransport implements Transport {
     this.desiredGraphic = { svg, fadeMs }
     this.send({ cmd: 'graphic', svg, fadeMs })
   }
+  overlay(command: import('./transport.js').OverlayCommand): Promise<void> {
+    return this.enqueue(async () => {
+      await this.request({ cmd: 'overlay', slot: command.slot, action: command.action, svg: command.svg ?? null, animation: command.animation ?? null })
+      if (command.action === 'in' || command.action === 'cut') this.desiredOverlays.set(command.slot, { svg: command.svg!, animation: command.animation ?? null })
+      else this.desiredOverlays.delete(command.slot)
+    })
+  }
   graphicConfirmed(svg: string | null, fadeMs: number, authorize?:()=>void): Promise<void> {
     return this.enqueue(async () => {
       authorize?.()
@@ -1191,6 +1200,7 @@ export class EngineTransport implements Transport {
     if(this.nativeReportedSelectionUncertain||this.stopAwaitingDurable||this.nativeSelectionUncertain&&!canRecoverBound||this.replacementWire?.health().selectionUncertain&&!canRecoverBound){this.fail('PGM nativo inconclusivo preservado; não retomar silenciosamente a fonte anterior. Confirme STOP antes de outro corte.');return}
     for (const [bus, on] of this.desiredMonitors) this.send({ cmd: 'monitor', bus, on })
     if (this.desiredGraphic) this.send({ cmd: 'graphic', ...this.desiredGraphic })
+    for (const [slot, overlay] of this.desiredOverlays) this.send({ cmd: 'overlay', slot, action: 'cut', svg: overlay.svg, animation: overlay.animation })
     const cursor = this.recoveryCursor
     if(cursor?.programHold){
       if(cursor.programHold==='HELD'&&cursor.programTrim&&this.rundownId&&this.options.onHeldRecoveryConfirmed){

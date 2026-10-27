@@ -14,6 +14,7 @@ mod output;
 mod omt;
 mod omt_runtime;
 mod protocol;
+mod overlay;
 mod live_replacement;
 mod bootstrap;
 mod fencing;
@@ -152,6 +153,7 @@ fn announce(channel: &Channel) {
         program_hold:channel.program_hold_state(),
         program_selection_uncertain: channel.program_selection_uncertain(),
         graphic: channel.graphic_on_air(),
+        overlays: channel.overlays_on_air(),
     }
     .emit();
 }
@@ -367,6 +369,18 @@ fn run_command(channel: &mut Channel, command: Command, request_id:u64) -> Resul
         }
         Command::Graphic { svg, fade_ms } => {
             channel.set_graphic(svg, fade_ms);
+            announce(channel);
+            Ok(true)
+        }
+        Command::Overlay { slot, action, svg, animation } => {
+            let action = match action.as_str() {
+                "in" => overlay::Action::In,
+                "out" => overlay::Action::Out,
+                "cut" => overlay::Action::Cut,
+                "off" => overlay::Action::Off,
+                other => anyhow::bail!("Ação de overlay desconhecida: {other}"),
+            };
+            channel.set_overlay(slot as usize, action, svg, animation)?;
             announce(channel);
             Ok(true)
         }
@@ -776,7 +790,7 @@ mod tests {
         let ready=serde_json::to_value(Event::SourceReady{item_id:"same-item".into(),bus:"pvw",decoder_id:Some(42),configured_source_id:Some("selected".into())}).unwrap();
         assert_eq!(ready["itemId"],"same-item");assert_eq!(ready["decoderId"],42);
         assert_eq!(ready["configuredSourceId"],"selected");
-        let state=serde_json::to_value(Event::State{on_air:Some("same-item".into()),armed:None,preview:None,on_air_decoder_id:Some(43),armed_decoder_id:None,program_hold:None,program_selection_uncertain:false,graphic:false}).unwrap();
+        let state=serde_json::to_value(Event::State{on_air:Some("same-item".into()),armed:None,preview:None,on_air_decoder_id:Some(43),armed_decoder_id:None,program_hold:None,program_selection_uncertain:false,graphic:false,overlays:vec![]}).unwrap();
         assert_eq!(state["onAirDecoderId"],43);assert!(state["armedDecoderId"].is_null());
     }
 

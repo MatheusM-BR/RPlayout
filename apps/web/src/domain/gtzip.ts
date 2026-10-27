@@ -19,7 +19,11 @@ export interface GtImport {
   height: number
   thumbnail: Uint8Array | null
   report: string[]
+  animation: GtAnimation
 }
+export interface GtObject { n: number; x: number; y: number; w: number; h: number; ax: number; ay: number }
+export interface GtStep { n: number; kind: string; delayMs: number; durationMs: number; direction: string; easing: string }
+export interface GtAnimation { width: number; height: number; objects: GtObject[]; enter: GtStep[]; exit: GtStep[] }
 export type InflateRaw = (data: Uint8Array) => Promise<Uint8Array>
 
 // ---------------------------------------------------------------- zip
@@ -162,6 +166,9 @@ interface Context {
   masks: Set<string>
   byName: Map<string, XmlNode>
   ids: number
+  prefix: string
+  objects: GtObject[]
+  numbers: Map<string, number>
 }
 
 const SHAPES = new Set(['Rectangle', 'Ellipse', 'Triangle', 'RightTriangle', 'Image', 'TextBlock', 'Ticker', 'Layer', 'QRCode'])
@@ -174,7 +181,7 @@ function paint(node: XmlNode, kind: 'Fill' | 'Stroke', ctx: Context, box: { w: n
   if (type === 'Transparent') return { value: 'none', opacity: 0 }
   const stops = child(brush, 'Brush.Stops')
   if (stops && stops.children.length && type !== 'Bitmap') {
-    const id = `g${ctx.ids++}`
+    const id = `${ctx.prefix}g${ctx.ids++}`
     const [x1, y1] = brush.attrs.StartPoint ? pair(brush.attrs.StartPoint) : [0, 0]
     const [x2, y2] = brush.attrs.EndPoint ? pair(brush.attrs.EndPoint) : [0, 1]
     const stopTags = stops.children.filter(stop => stop.tag === 'GradientStop').map(stop => {
@@ -199,7 +206,7 @@ function effects(node: XmlNode, ctx: Context, w: number, h: number): { transform
       if (ax) transform += ` translate(${round(w / 2)} ${round(h / 2)}) skewX(${round(-ax)}) translate(${round(-w / 2)} ${round(-h / 2)})`
       if (ay) transform += ` translate(${round(w / 2)} ${round(h / 2)}) skewY(${round(-ay)}) translate(${round(-w / 2)} ${round(-h / 2)})`
     } else if (effect.attrs.Type === 'Shadow') {
-      const id = `f${ctx.ids++}`
+      const id = `${ctx.prefix}f${ctx.ids++}`
       const [dx, dy] = effect.attrs.Offset ? pair(effect.attrs.Offset) : [3, 3]
       const c = effect.attrs.Color ? gtColor(effect.attrs.Color) : { color: '#000000', opacity: 0.6 }
       ctx.defs.push(`<filter id="${id}" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="${round(dx)}" dy="${round(dy)}" stdDeviation="${round(num(effect.attrs.BlurAmount, 3))}" flood-color="${c.color}" flood-opacity="${c.opacity}"/></filter>`)
@@ -219,14 +226,14 @@ function clipFor(node: XmlNode, ctx: Context, w: number, h: number): string {
   let attrs = ''
   if (crop?.attrs.Range) {
     const [l, t, r, b] = crop.attrs.Range.split(',').map(value => num(value))
-    const id = `c${ctx.ids++}`
+    const id = `${ctx.prefix}c${ctx.ids++}`
     ctx.defs.push(`<clipPath id="${id}"><rect x="${round((l ?? 0) * w)}" y="${round((t ?? 0) * h)}" width="${round(((r ?? 1) - (l ?? 0)) * w)}" height="${round(((b ?? 1) - (t ?? 0)) * h)}"/></clipPath>`)
     attrs += ` clip-path="url(#${id})"`
   }
   if (mask?.attrs.Object) {
     const target = ctx.byName.get(mask.attrs.Object)
     if (target) {
-      const id = `m${ctx.ids++}`
+      const id = `${ctx.prefix}m${ctx.ids++}`
       const [tw, th] = pair(target.attrs.Dimensions), [tx, ty] = pair(target.attrs.Location)
       const [ox, oy] = pair(node.attrs.Location)
       ctx.defs.push(`<mask id="${id}" maskUnits="userSpaceOnUse" x="-10000" y="-10000" width="20000" height="20000"><rect x="${round(tx - ox)}" y="${round(ty - oy)}" width="${round(tw)}" height="${round(th)}" fill="#fff"/></mask>`)
@@ -260,11 +267,21 @@ function text(node: XmlNode, ctx: Context, w: number, h: number): string {
   return `<text x="${round(x)}" y="${round(y)}" text-anchor="${anchor}" font-family="${family}" font-size="${size}"${weight}${italic} fill="${fill.value}" fill-opacity="${fill.opacity}"${strokeAttr}>{{${key}}}</text>`
 }
 
-function shape(node: XmlNode, ctx: Context): string {
+function shape(node: XmlNode, ctx: Context, parent: [number, number] = [0, 0]): string {
   if (node.attrs.Visible === 'False') return ''
   if (node.attrs.Name && ctx.masks.has(node.attrs.Name)) return ''
   const [w, h] = pair(node.attrs.Dimensions)
   const [x, y] = pair(node.attrs.Location)
+  // Objeto animável: `data-a` seguido de `transform` é o ponto em que o engine
+  // prefixa o movimento (espaço do pai) e põe opacidade/recorte do quadro.
+  const name = node.attrs.Name
+  let marker = ''
+  if (name && !ctx.numbers.has(name)) {
+    const n = ctx.objects.length + 1
+    ctx.numbers.set(name, n)
+    ctx.objects.push({ n, x: round(x), y: round(y), w: round(w), h: round(h), ax: round(parent[0] + x), ay: round(parent[1] + y) })
+    marker = ` data-a="${n}"`
+  }
   const { transform, filter } = effects(node, ctx, w, h)
   const clip = clipFor(node, ctx, w, h)
   const opacity = node.attrs.Opacity !== undefined ? ` opacity="${round(num(node.attrs.Opacity, 1))}"` : ''
@@ -309,14 +326,20 @@ function shape(node: XmlNode, ctx: Context): string {
       return ''
     case 'Layer': {
       const composition = child(child(node, 'Layer.Composition') ?? { tag: '', attrs: {}, children: [] }, 'Composition')
-      body = composition ? composition.children.filter(entry => SHAPES.has(entry.tag)).map(entry => shape(entry, ctx)).join('') : ''
+      body = composition ? composition.children.filter(entry => SHAPES.has(entry.tag)).map(entry => shape(entry, ctx, [parent[0] + x, parent[1] + y])).join('') : ''
       break
     }
   }
   if (!body) return ''
-  const move = x || y ? `translate(${round(x)} ${round(y)})` : ''
-  const all = `${move}${transform}`.trim()
-  return `<g${node.attrs.Name ? ` data-gt="${esc(node.attrs.Name)}"` : ''}${all ? ` transform="${all}"` : ''}${opacity}${clip}${filter}>${body}</g>`
+  const all = `translate(${round(x)} ${round(y)})${transform}`
+  const inner = opacity || clip || filter ? `<g${opacity}${clip}${filter}>${body}</g>` : body
+  return `<g${marker} transform="${all}"${name ? ` data-gt="${esc(name)}"` : ''}>${inner}</g>`
+}
+
+function hash(text: string): string {
+  let h = 2166136261
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619) }
+  return (h >>> 0).toString(36)
 }
 
 function walk(node: XmlNode, visit: (node: XmlNode) => void) { visit(node); for (const entry of node.children) walk(entry, visit) }
@@ -337,7 +360,8 @@ export function convertGtDocument(documentXml: string, name: string, images: (so
   const composition = root.children.find(entry => entry.tag === 'Composition')
   if (!composition) throw new Error('Título GT sem <Composition>.')
   const width = num(composition.attrs.Width, 1920), height = num(composition.attrs.Height, 1080)
-  const ctx: Context = { defs: [], fields: [], usedKeys: new Set(), report: new Set(), images, masks: new Set(), byName: new Map(), ids: 1 }
+  const prefix = `gt${hash(documentXml)}_`
+  const ctx: Context = { defs: [], fields: [], usedKeys: new Set(), report: new Set(), images, masks: new Set(), byName: new Map(), ids: 1, prefix, objects: [], numbers: new Map() }
   walk(composition, node => {
     if (node.attrs.Name && SHAPES.has(node.tag)) ctx.byName.set(node.attrs.Name, node)
     if (node.tag === 'Mask' && node.attrs.Object) ctx.masks.add(node.attrs.Object)
@@ -346,13 +370,23 @@ export function convertGtDocument(documentXml: string, name: string, images: (so
   const kinds = new Set<string>()
   for (const board of composition.children.filter(entry => entry.tag === 'Storyboard')) for (const animation of child(board, 'Storyboard.Animations')?.children ?? []) kinds.add(animation.tag)
   const approximated = [...kinds].filter(kind => !['Fade', 'None', 'Hidden'].includes(kind))
-  if (approximated.length) ctx.report.add(`Animações ${approximated.sort().join(', ')} viraram fade; animação igual ao vMix fica para o engine (G2).`)
+  const continuous = approximated.filter(kind => ['FillOffset', 'StrokeOffset', 'RotateContinuous', 'Scroll', 'ImageSequenceLoop'].includes(kind))
+  if (continuous.length) ctx.report.add(`Animações contínuas ${continuous.sort().join(', ')} ficam paradas por enquanto.`)
   const inMs = transitionInMs(composition)
   const fadeMs = Math.min(5000, Math.max(0, inMs || 300))
   if (inMs > 5000) ctx.report.add('Entrada do vMix passa de 5 s; fade limitado a 5 s.')
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${round(width)} ${round(height)}">${ctx.defs.length ? `<defs>${ctx.defs.join('')}</defs>` : ''}${body}</svg>`
+  const steps = (type: 'in' | 'out') => composition.children
+    .filter(entry => entry.tag === 'Storyboard' && (type === 'out' ? entry.attrs.Type === 'TransitionOut' : !entry.attrs.Type || entry.attrs.Type === 'TransitionIn'))
+    .flatMap(board => child(board, 'Storyboard.Animations')?.children ?? [])
+    .flatMap(step => {
+      const n = ctx.numbers.get(step.attrs.Object ?? '')
+      return n ? [{ n, kind: step.tag, delayMs: Math.round(num(step.attrs.Delay, 0) * 1000), durationMs: Math.round(num(step.attrs.Duration, 0.5) * 1000), direction: step.attrs.Direction ?? '', easing: step.attrs.Interpolation ?? '' }] : []
+    })
+  const animation: GtAnimation = { width, height, objects: ctx.objects, enter: steps('in'), exit: steps('out') }
+  const metadata = `<metadata id="rplayout-gt">${esc(JSON.stringify(animation))}</metadata>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${round(width)} ${round(height)}">${metadata}${ctx.defs.length ? `<defs>${ctx.defs.join('')}</defs>` : ''}${body}</svg>`
   if (svg.length > 1_000_000) throw new Error('Título grande demais para arte (imagens somam mais de 1 MB). Reduza as imagens no GT Designer.')
-  return { name, svg, fields: ctx.fields, fadeMs, width, height, report: [...ctx.report] }
+  return { name, svg, fields: ctx.fields, fadeMs, width, height, report: [...ctx.report], animation }
 }
 
 export async function importGtzip(bytes: Uint8Array, fileName: string, inflateRaw: InflateRaw = browserInflateRaw): Promise<GtImport> {

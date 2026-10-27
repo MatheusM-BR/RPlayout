@@ -81,6 +81,13 @@ export interface TransportState {
  * verdade. Manter os dois atrás do mesmo contrato é o que permite trocar um
  * pelo outro sem tocar em rota nem em interface.
  */
+export interface OverlayCommand {
+  slot: number
+  action: 'in' | 'out' | 'cut' | 'off'
+  svg?: string | null
+  animation?: import('@rplayout/protocol').OverlayAnimation | null
+}
+
 export interface Transport {
   commandRevision?(): number
   state(): TransportState
@@ -114,6 +121,8 @@ export interface Transport {
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   graphicConfirmed?(svg: string | null, fadeMs: number, authorize?:()=>void): Promise<void>
+  /** Overlay 1–8 (entrada/saída/corte/desliga). Sem engine, só confirma. */
+  overlay?(command: OverlayCommand): Promise<void>
   /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */
   watchdog(): void
   /**
@@ -354,6 +363,9 @@ export class SimulatedTransport implements Transport {
 
   /** Sem engine não há o que desenhar; o estado do grafismo mora no servidor. */
   graphic(): void {}
+
+  /** Sem engine o overlay só é registrado no servidor. */
+  async overlay(): Promise<void> {}
 
   /** O simulado é o próprio processo do servidor: não há o que vigiar. */
   watchdog(): void {}

@@ -187,6 +187,15 @@ pub enum Command {
         #[serde(default = "default_fade")]
         fade_ms: u64,
     },
+    /// Overlay 1–8: título SVG preenchido + animação do GT (entrada/saída).
+    Overlay {
+        slot: u8,
+        action: String,
+        #[serde(default)]
+        svg: Option<String>,
+        #[serde(default)]
+        animation: Option<crate::overlay::Animation>,
+    },
     /// Coloca no ar o que estiver armado.
     Take,
     /// Cancela um TAKE ao vivo que ainda aguarda o primeiro quadro. O PGM
@@ -279,6 +288,8 @@ pub enum Event {
         program_selection_uncertain: bool,
         /// Se há grafismo no ar. O operador precisa saber sem olhar o monitor.
         graphic: bool,
+        /// Overlays no ar (1–8), entrando, parados ou saindo.
+        overlays: Vec<u8>,
     },
     /// Posição do item no ar, em frames desde o ponto de entrada.
     Position {
