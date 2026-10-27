@@ -4092,6 +4092,25 @@ mod source_statistics_tests {
         assert!(stats.last_video.unwrap() > old);
     }
     #[test]
+    fn identical_live_frames_report_unchanged_content_and_new_content_resets_it() {
+        gst::init().unwrap();
+        let pad = gst::Pad::builder(gst::PadDirection::Src).build();
+        pad.set_active(true).unwrap();
+        let caps = gst::Caps::builder("video/x-raw").field("format","RGBA").field("width",8i32).field("height",8i32).field("framerate",gst::Fraction::new(25,1)).build();
+        pad.store_sticky_event(&gst::event::StreamStart::new("congelado")).unwrap();
+        pad.store_sticky_event(&gst::event::Caps::new(&caps)).unwrap();
+        let mut stats = SourceStatistics::default();
+        let frame = |value:u8| gst::Buffer::from_mut_slice(vec![value; 256]);
+        for _ in 0..4 { stats.video(&pad, &frame(90)); std::thread::sleep(Duration::from_millis(260)); }
+        let frozen = stats.report(true);
+        assert!(frozen.content_sample_frames >= 4, "amostras: {}", frozen.content_sample_frames);
+        assert!(frozen.sampled_content_unchanged_ms.unwrap() >= 700, "parado há {:?}", frozen.sampled_content_unchanged_ms);
+        stats.video(&pad, &frame(91));
+        let moved = stats.report(true);
+        assert_eq!(moved.content_sample_frames, 1);
+        assert!(moved.sampled_content_unchanged_ms.unwrap() < 100);
+    }
+    #[test]
     fn reports_input_caps_not_scaled_preview_and_no_invented_audio() {
         gst::init().unwrap();
         let stats = SourceStatistics {
