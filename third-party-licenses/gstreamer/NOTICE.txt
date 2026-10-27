@@ -1,0 +1,30 @@
+GStreamer 1.28.7 (binários MSVC oficiais) — runtime/gstreamer
+
+O núcleo e a maior parte dos plugins são LGPL-2.1-or-later (textos/LGPL-2.1.txt).
+Bibliotecas incluídas com licenças diferentes (lista completa em bin.txt e
+plugins.txt):
+
+- x264 (x264-164.dll, gstx264) ........ GPL-2.0-or-later (textos/GPL-2.txt)
+- x265 (x265.dll, gstx265) ............ GPL-2.0-or-later (textos/GPL-2.txt)
+- FFmpeg (avcodec/avformat/avfilter/avutil/swresample/swscale, gstlibav)
+                                         LGPL-2.1-or-later; componentes GPL
+                                         conforme a compilação oficial
+- LAME (mp3lame-0.dll, gstlame) ........ LGPL-2.0-or-later
+- OpenH264 (openh264-7.dll) ............ BSD-2-Clause (textos/BSD.txt)
+- VisualOn AAC (vo-aacenc-0.dll) ....... Apache-2.0 (textos/Apache-2.0.txt)
+- dav1d, FLAC, Opus, Ogg/Vorbis/Theora, Speex, libpng, libjpeg-turbo, zlib,
+  libxml2, expat, pcre2, libffi, harfbuzz, freetype, fribidi .. BSD/MIT/zlib
+  e afins (textos/BSD.txt e licenças dos projetos)
+- cairo, pixman, GLib, Pango, GTK4, libsoup, libnice, libsrtp, srt, librtmp,
+  OpenSSL 3 (Apache-2.0), libcurl (curl), nghttp2 (MIT), SQLite (domínio
+  público), mpg123 (LGPL-2.1), libass (ISC), SVT-AV1 (BSD-3-Clause-Clear),
+  vvdec (BSD-3-Clause-Clear), LCEVC decoder (BSD-3-Clause-Clear)
+- gstndi .............................. LGPL; usa o runtime NDI (../ndi)
+- gstnvcodec .......................... LGPL; usa o driver NVIDIA instalado
+
+O engine do RPlayout codifica com nvh264enc quando há GPU NVIDIA e com
+x264enc (GPL) quando não há.
+
+Código-fonte: https://gstreamer.freedesktop.org/src/ (versão 1.28.7) e os
+projetos citados. Mediante pedido, o licenciado fornece cópia do código-fonte
+correspondente das partes LGPL/GPL por no mínimo três anos.

@@ -13,7 +13,8 @@ param(
   [string]$LauncherBinary='',
   [string]$GStreamerDistributionDirectory='',
   [string]$NodeNoticesDirectory='',
-  [string]$RustNoticesDirectory=''
+  [string]$RustNoticesDirectory='',
+  [string]$ExtraLicensesDirectory=''
 )
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'lib/build-source-roots.ps1')
@@ -112,6 +113,15 @@ if($NodeNoticesDirectory){
   $files['licenses/node/provenance.json']=Join-Path $nodeNoticeRoot 'provenance.json'
   $expected.Remove('licenses/node/LICENSE.txt')
   $expected.Remove('licenses/node/provenance.json')
+}
+# Textos de licença de terceiros mantidos no repositório (NDI, Node, Rust,
+# SQLite, GStreamer, MSVC e o EULA do RPlayout) vão para licenses/.
+if($ExtraLicensesDirectory){
+  $extraRoot=(Resolve-Path -LiteralPath $ExtraLicensesDirectory).Path.TrimEnd('\')
+  foreach($extra in Get-ChildItem -LiteralPath $extraRoot -Recurse -File){
+    $extraKey='licenses/'+$extra.FullName.Substring($extraRoot.Length+1).Replace('\','/')
+    $files[$extraKey]=$extra.FullName;$expected.Remove($extraKey)
+  }
 }
 if($GStreamerDistributionDirectory){
   $matchingNotices=@(& (Join-Path $PSScriptRoot 'get-matching-gstreamer-notices.ps1') -BasePackage $baseRoot -DistributionDirectory $GStreamerDistributionDirectory)

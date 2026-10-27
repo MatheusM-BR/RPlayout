@@ -22,7 +22,7 @@ $log = Join-Path $Output "r88-build-$stamp.log"
 Start-Transcript -LiteralPath $log | Out-Null
 $summary = [ordered]@{ edition = $Edition; startedAt = (Get-Date).ToString('o'); workspace = $workspace; steps = [ordered]@{}; notValidated = @(
   'DeckLink fisica (adiada pelo usuario)','Emissor NDI/OMT externo','Windows limpo','Soak 24/48h','Estacoes remotas em rede real',
-  'Revisao de licenca NDI (REVIEW_REQUIRED)','Grupo 8 HA entre maquinas (v3)','Saida de broadcast real (ensaio usa saida null)') }
+  'Grupo 8 HA entre maquinas (v3)','Saida de broadcast real (ensaio usa saida null)') }
 function Save-Summary { $summary.finishedAt = (Get-Date).ToString('o'); [IO.File]::WriteAllText((Join-Path $Output "r88-summary-$stamp.json"), ($summary | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false)) }
 function Step([string]$Name, [scriptblock]$Body, [switch]$ContinueOnFailure) {
   Write-Host ""; Write-Host "=== $Name" -ForegroundColor Cyan
@@ -101,7 +101,7 @@ Step '08 ensaio nativo da troca de fonte (engine real, SRT local)' -ContinueOnFa
   "$line"
 }
 Step '09 instalador r88' {
-  & (Join-Path $PSScriptRoot 'build-streamed-partial-installer.ps1') -BasePackage $BasePackage -OutputDirectory $Output -Destination "$Edition-instalador.zip" -Readme 'docs/BUILD-PARCIAL-R88.md' -UseCurrentBuilds
+  & (Join-Path $PSScriptRoot 'build-streamed-partial-installer.ps1') -BasePackage $BasePackage -OutputDirectory $Output -Destination "$Edition-instalador.zip" -Readme 'docs/BUILD-PARCIAL-R88.md' -UseCurrentBuilds -ExtraLicensesDirectory (Join-Path $workspace 'third-party-licenses')
   $zip = Join-Path $Output "$Edition-instalador.zip"
   if (!(Test-Path -LiteralPath $zip)) { throw 'ZIP nao gerado' }
   $summary.zip = $zip; $summary.zipSha256 = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash

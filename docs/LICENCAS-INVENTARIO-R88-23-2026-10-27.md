@@ -61,3 +61,20 @@ O runtime traz plugins de licenças diferentes:
    resolver x264/x265 (GPL); confirmar a compilação do libav; revisar NDI para
    distribuição. Os itens técnicos de aviso eu consigo fazer na build quando
    pedido.
+
+## 5. Atualização 27/10 (r88-25)
+
+- Por instrução do usuário, os termos do NDI SDK foram aceitos (Remate Web) e
+  os dois contratos oficiais (PDF, baixados de downloads.ndi.tv em 27/10,
+  SHA256 conferido) vão no pacote em `licenses/ndi/`, com o aviso de marca e
+  copyright. O runtime NDI 6.3.2 já vai dentro da instalação: o usuário não
+  baixa nada à parte. O instalador do SDK em si (formulário com dados
+  pessoais) não foi baixado: não é necessário para rodar nem para distribuir
+  o runtime.
+- `licenses/RPLAYOUT-EULA.txt` traz os termos exigidos pelo item 3d do
+  contrato NDI.
+- Textos incluídos mesmo sem distribuição: Node.js v24.16.0, 82 bibliotecas
+  Rust (inventário + textos de cada pacote), SQLite/better-sqlite3,
+  GStreamer 1.28.7 (lista de DLLs/plugins e textos LGPL/GPL/Apache/BSD/MPL),
+  runtime MSVC. Fonte no repositório: `third-party-licenses/`; o empacotador
+  copia para `licenses/` (`-ExtraLicensesDirectory`).
