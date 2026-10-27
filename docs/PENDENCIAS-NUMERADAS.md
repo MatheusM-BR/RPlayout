@@ -1,34 +1,34 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-21 (26/10, D:\RPlayout Atual)
+## Estado atual — r88-22 (26/10 21:59, D:\RPlayout Atual)
 
-Ver CORRECOES-R88-20-R88-21-2026-10-26.md e CORRECOES-R88-18-R88-19-2026-10-22.md. Totais da matriz inalterados.
+Ver CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
 
 ### Desenvolvimento validável sem equipamento (D1–D9)
 
 | # | Grupo | Status |
 |---|---|---|
 | D1 | TAKE de ao vivo rápido | Concluído (1–2 s; antes 10–20 s) |
-| D2 | Atualização sempre na mesma pasta | Concluído (r88-19→r88-20 sem regra nova de Firewall) |
-| D3 | Relatório de queda do engine | Implementado; estresse ~90% RAM 2 min sem queda |
-| D4 | Detecção de imagem congelada (NDI/OMT) | Pendente |
-| D5 | Suíte 100% verde (14 falhas antigas) | Concluído (3 995/0) |
-| D6 | Banco separado: falha, concorrência, migração (7.2–7.4) | Pendente |
-| D7 | Autorização dos comandos restantes (6.1–6.5) | Pendente |
-| D8 | Mídia: jobs duráveis, proxy, faixas (5.1, 5.3, 5.5) | Pendente |
-| D9 | Recuperação: backup real, watchdog, soak 24/48 h (9.3–9.5) | Em andamento (soak 8 h r88-19) |
+| D2 | Atualização sempre na mesma pasta | Concluído (3×: r88-20, r88-21, r88-22 sem regra nova de Firewall) |
+| D3 | Relatório de queda do engine | Concluído (estresse ~90% RAM sem queda) |
+| D4 | Detecção de imagem congelada | Concluído no PGM (qualquer fonte); PVW/QC não sondados |
+| D5 | Suíte 100% verde | Concluído (JS 3 998/0; Rust Windows 13/13 na build) |
+| D6 | Banco separado: falha, concorrência, migração | Concluído em teste (processo morto, 503, ingestão, duas conexões) |
+| D7 | Autorização das rotas | Concluído (matriz > 100 rotas) |
+| D8 | Mídia: jobs duráveis, proxy, faixas | Concluído em teste; não ensaiado no ar (derrubaria o canal) |
+| D9 | Recuperação: backup, watchdog, soak | Backup de atualização abre íntegro (47 itens). Soak 24 h r88-22 em curso. Watchdog do servidor depende de U7 |
 
-### Achados de 22/10
+### Achados
 
 | # | Item | Status |
 |---|---|---|
-| N1 | Master mostra o ID do ao vivo em vez do título | Corrigido (r88-20) |
-| N2 | Histórico de métricas perto do limite de 16 MiB | Corrigido (r88-20, página por bytes) |
-| N3 | /watching 0,76/s com uma tela | Explicado: só com monitor WebRTC falhando (reconexão a cada 6 s); sem custo após r88-18 |
+| N1 | Master mostra o ID do ao vivo | Corrigido (r88-20) |
+| N2 | Histórico de métricas perto de 16 MiB | Corrigido (r88-20) |
+| N3 | /watching 0,76/s | Explicado; sem custo após r88-18 |
 | N4 | Auditoria API_MUTATION sem retenção | Corrigido (r88-20, 90 dias) |
-| N5 | Live sem sinal travava publicação / virada automática ficava em preto | Corrigido (r88-21) |
-| N6 | Arquivo "Finaliza Gado Canal" parece mudo | Conferir mídia |
-| N7 | Teste Rust temporal falha com RPlayout no ar durante a build | Pendente (baixo) |
+| N5 | Live sem sinal travava publicação / preto 4 min | Corrigido (r88-21); r88-22 mantém o último quadro na espera |
+| N6 | "Finaliza Gado Canal" mudo | Conferir o arquivo (pasta de mídia não conectada) |
+| N7 | Teste Rust temporal falhava sob carga | Corrigido (r88-22) |
 
 ### Dependem do usuário ou de equipamento
 
@@ -40,10 +40,11 @@ Ver CORRECOES-R88-20-R88-21-2026-10-26.md e CORRECOES-R88-18-R88-19-2026-10-22.m
 | U4 | Windows limpo (outra máquina, só C:) |
 | U5 | Revisão de licenças (NDI etc.) |
 | U6 | Autorizar exclusão de instalações/dados antigos e QA |
+| U7 | Partida automática do servidor no Windows (tarefa agendada/serviço — configuração do sistema) |
 
 Fora desta versão: publicação externa (10.5) e grupo 8 (v3).
-Totais: 9 grupos D (1 concluído, 2 aguardando validação, 1 em andamento,
-5 pendentes); 4 achados novos; 6 dependências externas.
+Totais: 9 grupos D (8 concluídos, 1 em andamento — soak); 7 achados (6
+fechados, 1 conferir mídia); 7 dependências externas.
 
 ## Anterior — r88-17 (instalação do operador atualizada e testada)
 
