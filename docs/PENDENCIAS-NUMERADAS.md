@@ -1,8 +1,8 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-22 (26/10 21:59, D:\RPlayout Atual)
+## Estado atual — r88-23 (27/10 04:28, D:\RPlayout Atual)
 
-Ver CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
+Ver CORRECOES-R88-23-2026-10-27.md e CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
 
 ### Desenvolvimento validável sem equipamento (D1–D9)
 
@@ -16,7 +16,7 @@ Ver CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
 | D6 | Banco separado: falha, concorrência, migração | Concluído em teste (processo morto, 503, ingestão, duas conexões) |
 | D7 | Autorização das rotas | Concluído (matriz > 100 rotas) |
 | D8 | Mídia: jobs duráveis, proxy, faixas | Concluído em teste; não ensaiado no ar (derrubaria o canal) |
-| D9 | Recuperação: backup, watchdog, soak | Backup de atualização abre íntegro (47 itens). Soak 24 h r88-22 em curso. Watchdog do servidor depende de U7 |
+| D9 | Recuperação: backup, watchdog, soak | Backup íntegro; vigia pronto e testado (instalar = U7); soak 24 h r88-23 em curso (r88-22: 6,4 h limpas) |
 
 ### Achados
 
@@ -30,6 +30,14 @@ Ver CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
 | N6 | "Finaliza Gado Canal" mudo | Fechado: o próprio arquivo é silêncio digital; reexportar com áudio |
 | N7 | Teste Rust temporal falhava sob carga | Corrigido (r88-22) |
 
+### Melhorias de 27/10 (r88-23)
+
+| # | Item | Status |
+|---|---|---|
+| E1 | Carga do servidor: chamadas ao banco 486→183/s, CPU −35% | Concluído e medido no ar |
+| E2 | Nota de QC para áudio medido em silêncio digital | Concluído |
+| E3 | Vigia que religa o servidor (com marca de manutenção) | Pronto e testado; falta instalar (U7) |
+
 ### Dependem do usuário ou de equipamento
 
 | # | Item |
@@ -40,7 +48,7 @@ Ver CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
 | U4 | Windows limpo (outra máquina, só C:) |
 | U5 | Revisão de licenças (NDI etc.) |
 | U6 | Autorizar exclusão de instalações/dados antigos e QA |
-| U7 | Partida automática do servidor no Windows (tarefa agendada/serviço — configuração do sistema) |
+| U7 | Instalar o vigia: `powershell -ExecutionPolicy Bypass -File D:\RPlayout\scripts\instalar-vigia-rplayout.ps1` (cria tarefa no logon) |
 
 Fora desta versão: publicação externa (10.5) e grupo 8 (v3).
 Totais: 9 grupos D (8 concluídos, 1 em andamento — soak); 7 achados (todos fechados); 7 dependências externas.
