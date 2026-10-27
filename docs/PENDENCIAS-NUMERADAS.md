@@ -1,6 +1,6 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-23 (27/10 04:28, D:\RPlayout Atual); r88-24 em preparo
+## Estado atual — r88-24 (27/10 08:26, D:\RPlayout Atual, dados r88-24c)
 
 Ver CORRECOES-R88-24-2026-10-27.md, CORRECOES-R88-23-2026-10-27.md e CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
 
@@ -40,6 +40,7 @@ Ver CORRECOES-R88-24-2026-10-27.md, CORRECOES-R88-23-2026-10-27.md e CORRECOES-R
 | E4 | Cópia periódica do banco nunca rodava (só 24 h após ligar) | Corrigido (r88-24) |
 | E5 | Inventário de licenças | Feito: LICENCAS-INVENTARIO-R88-23 |
 | E6 | Atraso de 50 ms/s do checkpoint | Analisado: é a gravação física (durabilidade); mantido |
+| E7 | Atualização recusada 2× (disputa da guarda nativa) | Script corrigido; r88-24 entrou na 3ª; ~11,5 min fora do ar nas recusas |
 
 ### Dependem do usuário ou de equipamento
 
