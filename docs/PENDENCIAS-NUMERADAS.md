@@ -1,8 +1,8 @@
 # Pendências numeradas — RPlayout
 
-## Estado atual — r88-23 (27/10 04:28, D:\RPlayout Atual)
+## Estado atual — r88-23 (27/10 04:28, D:\RPlayout Atual); r88-24 em preparo
 
-Ver CORRECOES-R88-23-2026-10-27.md e CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
+Ver CORRECOES-R88-24-2026-10-27.md, CORRECOES-R88-23-2026-10-27.md e CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.
 
 ### Desenvolvimento validável sem equipamento (D1–D9)
 
@@ -11,12 +11,12 @@ Ver CORRECOES-R88-23-2026-10-27.md e CORRECOES-R88-22-2026-10-26.md. Totais da m
 | D1 | TAKE de ao vivo rápido | Concluído (1–2 s; antes 10–20 s) |
 | D2 | Atualização sempre na mesma pasta | Concluído (3×: r88-20, r88-21, r88-22 sem regra nova de Firewall) |
 | D3 | Relatório de queda do engine | Concluído (estresse ~90% RAM sem queda) |
-| D4 | Detecção de imagem congelada | Concluído no PGM (qualquer fonte); PVW/QC não sondados |
+| D4 | Detecção de imagem congelada | Concluído: PGM (qualquer fonte) e fontes ao vivo em PVW/PGM; arquivo no PVW não |
 | D5 | Suíte 100% verde | Concluído (JS 3 998/0; Rust Windows 13/13 na build) |
 | D6 | Banco separado: falha, concorrência, migração | Concluído em teste (processo morto, 503, ingestão, duas conexões) |
 | D7 | Autorização das rotas | Concluído (matriz > 100 rotas) |
 | D8 | Mídia: jobs duráveis, proxy, faixas | Concluído em teste; não ensaiado no ar (derrubaria o canal) |
-| D9 | Recuperação: backup, watchdog, soak | Backup íntegro; vigia pronto e testado (instalar = U7); soak 24 h r88-23 em curso (r88-22: 6,4 h limpas) |
+| D9 | Recuperação: backup, watchdog, soak | Restauração real em quarentena OK; cópia periódica corrigida (r88-24); vigia pronto (U7); soak 24 h em curso |
 
 ### Achados
 
@@ -37,6 +37,9 @@ Ver CORRECOES-R88-23-2026-10-27.md e CORRECOES-R88-22-2026-10-26.md. Totais da m
 | E1 | Carga do servidor: chamadas ao banco 486→183/s, CPU −35% | Concluído e medido no ar |
 | E2 | Nota de QC para áudio medido em silêncio digital | Concluído |
 | E3 | Vigia que religa o servidor (com marca de manutenção) | Pronto e testado; falta instalar (U7) |
+| E4 | Cópia periódica do banco nunca rodava (só 24 h após ligar) | Corrigido (r88-24) |
+| E5 | Inventário de licenças | Feito: LICENCAS-INVENTARIO-R88-23 |
+| E6 | Atraso de 50 ms/s do checkpoint | Analisado: é a gravação física (durabilidade); mantido |
 
 ### Dependem do usuário ou de equipamento
 
@@ -46,8 +49,8 @@ Ver CORRECOES-R88-23-2026-10-27.md e CORRECOES-R88-22-2026-10-26.md. Totais da m
 | U2 | vMix: áudio Master na Output 1 |
 | U3 | Aprovação visual do QC |
 | U4 | Windows limpo (outra máquina, só C:) |
-| U5 | Revisão de licenças (NDI etc.) |
-| U6 | Autorizar exclusão de instalações/dados antigos e QA |
+| U5 | Licenças: decidir o contrato NDI (inventário pronto) |
+| U6 | Apagar à mão as 7 pastas antigas restantes (atalhos, r88-17 atalhos/dados, dados r88-21) |
 | U7 | Instalar o vigia: `powershell -ExecutionPolicy Bypass -File D:\RPlayout\scripts\instalar-vigia-rplayout.ps1` (cria tarefa no logon) |
 
 Fora desta versão: publicação externa (10.5) e grupo 8 (v3).
