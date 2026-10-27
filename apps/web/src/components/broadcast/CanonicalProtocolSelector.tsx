@@ -92,8 +92,11 @@ export function CanonicalProtocolSelector({
     setIsLoadingSources(true)
     setSourcesError(null)
     try {
-      const data = await api.sources(refresh)
+      const discovered = await api.sources(refresh)
       if(!isCurrent())return
+      // Entrada nunca oferece a saída do próprio RPlayout: escolher o PGM como
+      // fonte ao vivo fecha um laço (o programa entra nele mesmo).
+      const data = mode === 'INPUT' ? withoutOwnOutputs(discovered) : discovered
       setSources(data)
 
       // Atualiza seleção inicial se houver dispositivos detectados
@@ -734,4 +737,11 @@ export function CanonicalProtocolSelector({
       </div>
     </div>
   )
+}
+
+const OWN_OUTPUT = /(^|[\s(:])RPLAYOUT_PGM[\w-]*\)?\s*$/i
+/** Remove das listas de entrada as fontes NDI/OMT publicadas pelo próprio RPlayout. */
+export function withoutOwnOutputs(list: SourceList): SourceList {
+  const keep = (family: SourceList['ndi']) => ({ ...family, sources: family.sources.filter(source => !OWN_OUTPUT.test(source.reference) && !OWN_OUTPUT.test(String((source as { name?: string }).name ?? ''))) })
+  return { ...list, ndi: keep(list.ndi), omt: keep(list.omt) }
 }

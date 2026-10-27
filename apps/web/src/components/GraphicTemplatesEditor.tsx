@@ -4,6 +4,7 @@ import {api} from '../api.js'
 import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 import {graphicsHeaders} from '../domain/graphics-review.js'
 import {ReviewedOperationConfirm} from './broadcast/ReviewedOperationConfirm.js'
+import {importGtzip} from '../domain/gtzip.js'
 type Draft=Pick<GraphicTemplate,'name'|'svg'|'fields'|'fadeMs'|'holdSeconds'>
 const blank=():Draft=>({name:'',svg:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080"></svg>',fields:[],fadeMs:300,holdSeconds:null})
 interface Props{channelId:string;onMutation:()=>void;onMessage:(value:string)=>void;onDirtyChange?:(value:boolean)=>void;onBusyChange?:(value:boolean)=>void;disabled?:boolean}
@@ -54,6 +55,15 @@ function TemplatesEditor({channelId,onMutation,onMessage,onDirtyChange,onBusyCha
     }catch(failure){if(alive.current&&attempt===generation.current){setBlocked(true);setError(failure instanceof Error?failure.message:'Falha; confira o estado antes de repetir.')}}
     finally{if(alive.current&&attempt===generation.current){lock.current=false;busyChange(false)}}
   }
+  const [gtReport,setGtReport]=useState<string[]|null>(null)
+  const importGt=async(file:File|undefined)=>{
+    if(!file)return
+    try{
+      const result=await importGtzip(new Uint8Array(await file.arrayBuffer()),file.name)
+      edit({name:draft.name.trim()?draft.name:result.name,svg:result.svg,fields:result.fields,fadeMs:result.fadeMs})
+      setGtReport([`Título "${result.name}" importado: ${result.fields.length} campo(s) (${result.fields.map(field=>field.label).join(', ')||'nenhum'}), entrada ${result.fadeMs} ms.`,...result.report])
+    }catch(failure){setGtReport([failure instanceof Error?failure.message:'Não foi possível ler o título GT.'])}
+  }
   const stale=Boolean(review&&proof&&(review.revision!==proof.revision||review.sharedRevision!==proof.sharedRevision))
   const edit=(patch:Partial<Draft>)=>{setDraft(value=>({...value,...patch}));setDirty(true)}
   return <section aria-label="Edição conferida de artes">
@@ -66,6 +76,8 @@ function TemplatesEditor({channelId,onMutation,onMessage,onDirtyChange,onBusyCha
     {review?.templates.filter(row=>row.channelId===scope).map(row=><div key={row.id}>{row.name} <button className="btn" disabled={busy||disabled||blocked} onClick={()=>choose(row)}>Editar</button> <button className="btn" disabled={busy||disabled||blocked} onClick={()=>setIntent({kind:'REMOVE',row,review})}>Excluir</button></div>)}
     <button className="btn" disabled={occupied||blocked} onClick={()=>choose(null)}>Nova arte</button>
     <fieldset disabled={occupied||blocked}>
+      <label>Importar título do vMix (.gtzip / .gtxml) <input type="file" accept=".gtzip,.gtxml" onChange={event=>{void importGt(event.target.files?.[0]);event.target.value=''}}/></label>
+      {gtReport&&<ul aria-label="Relatório da importação do título GT">{gtReport.map(line=><li key={line}>{line}</li>)}</ul>}
       <label>Nome <input value={draft.name} onChange={event=>edit({name:event.target.value})}/></label>
       <label>SVG <textarea rows={10} value={draft.svg} onChange={event=>{const svg=event.target.value;edit({svg,fields:fieldsUsedIn(svg).map(key=>draft.fields.find(field=>field.key===key)??{key,label:key,defaultValue:''})})}}/></label>
       {draft.fields.map((field,index)=><div key={field.key}><span>{`{{${field.key}}}`}</span><label>Rótulo <input value={field.label} onChange={event=>edit({fields:draft.fields.map((entry,n)=>n===index?{...entry,label:event.target.value}:entry)})}/></label><label>Valor padrão <input value={field.defaultValue} onChange={event=>edit({fields:draft.fields.map((entry,n)=>n===index?{...entry,defaultValue:event.target.value}:entry)})}/></label></div>)}
