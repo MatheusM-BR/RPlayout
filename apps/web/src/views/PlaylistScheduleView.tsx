@@ -1,6 +1,7 @@
 import { confirmAction, notify } from '../domain/confirm.js'
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
 import { MirrorStatus } from '../components/MirrorStatus.js'
+import { useEscape } from '../domain/use-escape.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { wallClock, nowHms, parseHms, formatHms, anchorWall, anchorFramesFor, resolveWallInstant, type DayChoice } from '../domain/wall-clock.js'
@@ -227,6 +228,7 @@ export function PlaylistScheduleView({
 
   // Estado para Edição do Horário de Entrada (Anchor) e Duração Ao Vivo
   const [editingTimeItem, setEditingTimeItem] = useState<ItemView | null>(null)
+  useEscape(Boolean(editingTimeItem), () => setEditingTimeItem(null))
   const [timeAnchorKind, setTimeAnchorKind] = useState<'FLOW' | 'FIXED'>('FLOW')
   const [timeInputHms, setTimeInputHms] = useState(() => nowHms(new Date(), 1))
   const [timeInputDay, setTimeInputDay] = useState<DayChoice>('today')
@@ -235,6 +237,7 @@ export function PlaylistScheduleView({
 
   // Diálogo para Novo Programa Ao Vivo
   const [showLiveProgramModal, setShowLiveProgramModal] = useState(false)
+  useEscape(showLiveProgramModal, () => setShowLiveProgramModal(false))
   const [liveProgramTitle, setLiveProgramTitle] = useState('')
   const [liveProgramNameEdited, setLiveProgramNameEdited] = useState(false)
   const [liveProgramInputValid, setLiveProgramInputValid] = useState(false)
@@ -2467,7 +2470,7 @@ export function PlaylistScheduleView({
 
       {/* MODAL: AJUSTAR HORÁRIO DE ENTRADA & DURAÇÃO */}
       {editingTimeItem && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+        <div role="dialog" aria-modal="true" aria-label="Horário de entrada e duração" className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-surface-card border border-border-subtle rounded-lg shadow-2xl max-w-md w-full overflow-hidden flex flex-col">
             <div className="px-4 py-3 bg-surface-container-high border-b border-border-subtle flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -2612,7 +2615,7 @@ export function PlaylistScheduleView({
       {rollbackReview&&<OperationalRollbackDialog inspection={rollbackReview.inspection} onClose={()=>{if(!operationalBusy.current)setRollbackReview(null)}} onApply={applyOperationalRollback}/>}
       {showProtectedZones && activeView && <ProtectedTimingZonesDialog key={activeView.rundown.id} rundown={activeView.rundown} rate={rate} editorialRevision={activeView.editorialRevision} onClose={()=>setShowProtectedZones(false)} onSaved={snapshot=>{if (isLoadedEditorial) onPublishToMaster(snapshot); else setDateRundownView(snapshot.view); setOperationalRefresh(value=>value+1);setShowProtectedZones(false)}} />}
       {showLiveProgramModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+        <div role="dialog" aria-modal="true" aria-label="Programa ao vivo" className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-surface-card border border-border-subtle rounded-lg shadow-2xl max-w-lg w-full overflow-hidden flex flex-col">
             <div className="px-4 py-3 bg-surface-container-high border-b border-border-subtle flex items-center justify-between">
               <div className="flex items-center gap-2">

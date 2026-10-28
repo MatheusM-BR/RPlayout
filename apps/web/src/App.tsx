@@ -1,3 +1,4 @@
+import { useEscape } from './domain/use-escape.js'
 import { ConfirmHost } from './components/ConfirmHost.js'
 import { confirmOpen } from './domain/confirm.js'
 import { ShortcutsDialog } from './components/ShortcutsDialog.js'
@@ -152,6 +153,7 @@ export function App() {
   /** Situação da varredura do acervo. */
   const [scan, setScan] = useState<ScanStatus | null>(null)
   const [scanRequest,setScanRequest]=useState<boolean|null>(null)
+  useEscape(scanRequest!==null,()=>setScanRequest(null))
   /** Canais existentes e a grade de cada um, para a troca de canal. */
   const [channels, setChannels] = useState<Channel[]>([])
   const [rundownOf, setRundownOf] = useState<Record<string, string>>({})
@@ -535,7 +537,11 @@ export function App() {
   setCurrentGradeDate((executionView ?? view)?.rundown.date)
   useEffect(() => { setAirState(live ? Boolean(live.transport.playing && live.transport.onAir) : null) }, [live])
   const onAirItem = (executionView ?? view)?.items.find((item) => item.item.id === onAirId) ?? null
-  const selected = view?.items.find((item) => item.item.id === selectedId) ?? null
+  // A grade que o operador vê e comanda no Master é a que está no ar
+  // (executionView); a do dia (view) só quando nada foi carregado. Teclado e
+  // TAKE de ao vivo usam a mesma, senão as setas armavam itens de outra grade.
+  const operatingView = executionView ?? view
+  const selected = operatingView?.items.find((item) => item.item.id === selectedId) ?? view?.items.find((item) => item.item.id === selectedId) ?? null
 
   const remainingOnAir = useMemo(() => {
     if (!live?.transport.onAir || !onAirId) return 0
@@ -645,16 +651,21 @@ export function App() {
         // failures when a live WebSocket update changes the screen context,
         // which happens every few hundred ms on a running channel.
         try {
-          const rundownId = view.rundown.id, channelId = view.channel.id
+          // Insere na grade que está no ar; a do dia pode ser outra.
+          const onAirGrade = executionView && executionView.rundown.id !== view.rundown.id
+            ? (await api.rundown(executionView.rundown.id)).view ?? null
+            : view
+          if (!onAirGrade) throw new Error('A grade no ar não pôde ser lida; nada foi inserido nem levado ao ar.')
+          const rundownId = onAirGrade.rundown.id, channelId = view.channel.id
           const onAirId = live?.transport.onAir?.itemId
-          const index = view.items.findIndex((entry) => entry.item.id === onAirId)
-          const existing = new Set(view.items.map((entry) => entry.item.id))
+          const index = onAirGrade.items.findIndex((entry) => entry.item.id === onAirId)
+          const existing = new Set(onAirGrade.items.map((entry) => entry.item.id))
           const inserted = await api.addItem(rundownId, {
             sourceRef, type: 'LIVE', title,
             durationOverride: liveDefaultFrames(view.channel.rate),
             anchor: { kind: 'FLOW' },
             atIndex: index >= 0 ? index + 1 : undefined,
-          }, view.editorialRevision)
+          }, onAirGrade.editorialRevision)
           const pick = (items: readonly { item: { id: string; sourceRef?: string | null; type: string } }[] | undefined) =>
             items?.find((entry) => !existing.has(entry.item.id) && entry.item.sourceRef === sourceRef)
             ?? items?.find((entry) => !existing.has(entry.item.id) && entry.item.type === 'LIVE')
@@ -675,7 +686,7 @@ export function App() {
           setError(texto); anotar('SERVIDOR', texto)
         }
       }).finally(takeDone),
-    [view, live, absorb, enqueueTransportCommand, say, anotar, takeAllowed, takeDone],
+    [view, executionView, live, absorb, enqueueTransportCommand, say, anotar, takeAllowed, takeDone],
   )
 
   const undo = useCallback(
@@ -721,7 +732,7 @@ export function App() {
         // it took the selected/next grade line even with a live CUEd in PVW.
         const preview = live?.transport.preview
         if (preview) {
-          const outside = view ? liveOutsideGrade(preview, view.items.map((entry) => entry.item.sourceRef).filter((ref): ref is string => Boolean(ref))) : null
+          const outside = operatingView ? liveOutsideGrade(preview, operatingView.items.map((entry) => entry.item.sourceRef).filter((ref): ref is string => Boolean(ref))) : null
           if (outside) void takeLiveFromPreview(outside.source, outside.title)
           else void command('take')
           return
@@ -759,7 +770,7 @@ export function App() {
       // Setas andam pela grade armando linha a linha, sem tirar a mão do teclado.
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()
-        const items = view?.items ?? []
+        const items = operatingView?.items ?? []
         if (items.length === 0) return
         const current = items.findIndex((item) => item.item.id === selectedId)
         const step = event.key === 'ArrowDown' ? 1 : -1
@@ -770,7 +781,7 @@ export function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [dialog, selected, selectedId, command, view, undo, live, takeLiveFromPreview, shortcutsOpen, panelLock])
+  }, [dialog, selected, selectedId, command, view, operatingView, undo, live, takeLiveFromPreview, shortcutsOpen, panelLock])
 
   const move = (id: string, toIndex: number,revision?:number): void => {
     void guard(async () => {
@@ -1183,7 +1194,7 @@ export function App() {
         <p>{libraryError??'Acervo ainda não conferido; isso não é confirmação de acervo vazio.'}</p>
         <button className="mt-2 rounded border px-2 py-1" onClick={()=>void refreshLibrary().catch(cause=>{if(!(cause instanceof SupersededContextError))anotar('SERVIDOR',cause instanceof Error?cause.message:'Acervo não consultado.')})}>Reconsultar acervo</button>
       </aside>}
-      {scanRequest!==null&&<div className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center"><ScanCommandDialog measure={scanRequest} onClose={()=>setScanRequest(null)} onRegistered={()=>{}}/></div>}
+      {scanRequest!==null&&<div role="dialog" aria-modal="true" aria-label="Varredura do acervo" className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center"><ScanCommandDialog measure={scanRequest} onClose={()=>setScanRequest(null)} onRegistered={()=>{}}/></div>}
       <ConfirmHost />
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
       {panelLock === 'on' && <>

@@ -48,7 +48,7 @@ export function AsRunPanel({ channelId, rate, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
+      role="dialog" aria-modal="true" aria-label="As-run do canal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
       onClick={onClose}
     >
       <div

@@ -35,6 +35,7 @@ import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
 import { InterruptedItemsBanner } from '../components/broadcast/InterruptedItemsBanner.js'
 import { MasterToolsPanel } from '../components/broadcast/MasterToolsPanel.js'
 import { useStoredChoice } from '../domain/stored-choice.js'
+import { useEscape } from '../domain/use-escape.js'
 import { MultiTrackTimeline } from '../components/broadcast/MultiTrackTimeline.js'
 import { ConflictDrawer } from '../components/broadcast/ConflictDrawer.js'
 import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
@@ -734,6 +735,10 @@ export function MasterControlView({
     nowMs,
   ), [view.items, scheduleMap, rate, view.rundown.date, nowMs])
   const nextFixedLate = nextFixed && (!nextFixed.hit || nextFixed.deviationMs >= 1000)
+  // Esc fecha os modais do Master com a mesma regra do clique fora.
+  useEscape(liveInputModalOpen, () => { if (!sourcePending.current) setLiveInputModalOpen(false) })
+  useEscape(addLineModalOpen, () => { setAddLineModalOpen(false); setEditingItemView(null) })
+  useEscape(folderModalOpen, () => setFolderModalOpen(false))
   const [soundChoice, setSoundChoice] = useStoredChoice('rplayout:master-sound', ['on', 'off'] as const, 'off')
   const [soundReady, setSoundReady] = useState(false)
   const soundOn = soundChoice === 'on' && soundReady
@@ -971,7 +976,7 @@ export function MasterControlView({
                       <div className="truncate text-on-surface-variant">{nextFixed.title}</div>
                       {nextFixedLate && <div className="font-bold text-on-air-crimson">{nextFixed.hit ? `ENTRA ${countdownText(nextFixed.deviationMs)} ATRASADO` : 'NÃO VAI BATER O HORÁRIO'} · ajuste a grade antes</div>}
                     </div>}
-                    {gradeEnd && <div role="status" title="A grade não está em loop. Depois do último item o canal só segue se houver próxima grade publicada com passagem automática." className={`mt-1 inline-block rounded border px-1.5 py-0.5 font-label-caps text-[11px] font-bold ${gradeEnd.level === 'urgent' ? 'border-on-air-crimson bg-on-air-crimson/15 text-on-air-crimson animate-pulse motion-reduce:animate-none' : 'border-armed-amber/60 bg-armed-amber/10 text-armed-amber'}`}>FIM DA GRADE ÀS {wallClock(view.schedule!.endsAt, rate, view.rundown.date)} · EM {mmss(gradeEnd.leftMs)}</div>}
+                    {gradeEnd && <div role="status" title="A grade não está em loop. Depois do último item o canal só segue se houver próxima grade publicada com passagem automática." className={`mx-auto mt-1 block w-fit rounded border px-1.5 py-0.5 font-label-caps text-[11px] font-bold ${gradeEnd.level === 'urgent' ? 'border-on-air-crimson bg-on-air-crimson/15 text-on-air-crimson animate-pulse motion-reduce:animate-none' : 'border-armed-amber/60 bg-armed-amber/10 text-armed-amber'}`}>FIM DA GRADE ÀS {wallClock(view.schedule!.endsAt, rate, view.rundown.date)} · EM {mmss(gradeEnd.leftMs)}</div>}
                     <div className="font-label-mono text-label-mono text-outline mt-1">
                       TC {onAirItem ? dur(elapsedFrames, rate) : '00:00:00:00'}
                     </div>
@@ -1909,6 +1914,7 @@ export function MasterControlView({
       {/* MODAL 1: Ingestão de Entrada Externa / DeckLink na Biblioteca MAM */}
       {liveInputModalOpen && (
         <div
+          role="dialog" aria-modal="true" aria-label="Entrada ao vivo"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
           onClick={() => {if(!sourcePending.current)setLiveInputModalOpen(false)}}
         >
@@ -2006,6 +2012,7 @@ export function MasterControlView({
       {/* MODAL 2: Adicionar ou Editar Linha na Grade (Fase A) */}
       {addLineModalOpen && (
         <div
+          role="dialog" aria-modal="true" aria-label="Linha da grade"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
           onClick={() => {
             setAddLineModalOpen(false)
@@ -2433,6 +2440,7 @@ export function MasterControlView({
       {/* MODAL 3: Gerenciamento de Pastas do Acervo MAM */}
       {folderModalOpen && (
         <div
+          role="dialog" aria-modal="true" aria-label="Pastas do acervo"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
           onClick={() => setFolderModalOpen(false)}
         >

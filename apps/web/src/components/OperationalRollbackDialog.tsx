@@ -1,3 +1,4 @@
+import { useEscape } from '../domain/use-escape.js'
 import {useRef,useState} from 'react'
 import type {OperationalSimulation} from '../api.js'
 
@@ -6,7 +7,8 @@ export function OperationalRollbackDialog({inspection,onClose,onApply}:{inspecti
   const applying=useRef(false)
   const changes=inspection.differences
   const apply=async()=>{if(applying.current)return;applying.current=true;setBusy(true);setError(null);try{await onApply()}catch(reason){setError(reason instanceof Error?reason.message:'Restauração não confirmada. Confira o histórico antes de repetir.')}finally{applying.current=false;setBusy(false)}}
-  return <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4">
+  useEscape(true, onClose)
+  return <div role="dialog" aria-modal="true" aria-label="Rollback da playlist operacional" className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4">
     <section role="dialog" aria-modal="true" aria-labelledby="rollback-title" className="bg-surface-card border border-border-subtle rounded-lg max-w-3xl w-full max-h-[85vh] overflow-auto p-5 text-on-surface">
       <h2 id="rollback-title" className="text-lg font-bold">Conferir restauração da revisão {inspection.sourceRevision}</h2>
       <p className="my-3">{inspection.simulated.rundown.name} — {inspection.simulated.rundown.date}. Será criada uma nova revisão operacional. A grade editorial não será reescrita e o item no ar continuará protegido.</p>

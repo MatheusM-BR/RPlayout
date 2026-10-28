@@ -189,7 +189,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
+      role="dialog" aria-modal="true" aria-label="Ajustar entrada e saída" className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4"
       onClick={onCancel}
     >
       <div

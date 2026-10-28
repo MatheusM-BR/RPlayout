@@ -71,7 +71,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
   if(conversion)return <CadenceConversionDialog request={conversion} onCancel={()=>setConversion(null)} onApplied={onSaved}/>
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+      role="dialog" aria-modal="true" aria-label="Canal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
       onClick={onCancel}
     >
       <div

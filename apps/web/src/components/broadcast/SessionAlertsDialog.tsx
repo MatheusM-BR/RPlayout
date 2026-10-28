@@ -22,7 +22,7 @@ export function SessionAlertsDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 select-none animate-in fade-in duration-150"
+      role="dialog" aria-modal="true" aria-label="Alertas da sessão" className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 select-none animate-in fade-in duration-150"
       onClick={onClose}
     >
       <div
