@@ -366,7 +366,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                       {ls.name}
                     </td>
                     <td className="py-2.5 px-3">
-                      <span className={`px-2 py-0.5 rounded text-[9.5px] font-bold border ${
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold border ${
                         ls.kind === 'SRT'
                           ? 'bg-primary/20 text-primary border-primary/30'
                           : ls.kind === 'RTMP'

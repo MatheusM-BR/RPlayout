@@ -1096,7 +1096,7 @@ function QualityControlSession({
                 <span className="font-headline-md text-[13.5px] tracking-wider text-on-surface uppercase font-bold">
                   QUALITY CONTROL // INGEST &amp; ACERVO
                 </span>
-                <span className="font-label-caps text-[9px] px-1.5 py-0.5 rounded bg-primary/20 text-primary border border-primary/40 font-bold uppercase">
+                <span className="font-label-caps text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary border border-primary/40 font-bold uppercase">
                   INSPEÇÃO VISUAL & QC
                 </span>
               </div>
@@ -1184,7 +1184,7 @@ function QualityControlSession({
 
               {/* Botões de Filtro de Status */}
               <div className="flex items-center justify-between gap-1">
-                <div className="flex items-center gap-1 font-label-caps text-[9px]">
+                <div className="flex items-center gap-1 font-label-caps text-[10px]">
                   {(['ALL', 'OK', 'PENDING', 'ALERT', 'IGNORED'] as const).map((filter) => (
                     <button
                       key={filter}
@@ -1224,7 +1224,7 @@ function QualityControlSession({
                   </button>
                 </div>
 
-                <div className="flex items-center gap-1 font-label-caps text-[9px]">
+                <div className="flex items-center gap-1 font-label-caps text-[10px]">
                   {(['ALL', 'VIDEO', 'AUDIO'] as const).map((cat) => (
                     <button
                       key={cat}
@@ -1299,6 +1299,7 @@ function QualityControlSession({
                   const quick = quickDecided[asset.id]
                   const isPending = !quick && ['PENDING', 'ANALYSIS'].includes(asset.qcStatus)
                   const isIgnored = quick === 'IGNORED' || !!asset.ignored
+                  const isApproved = !hasAlert && !isPending && !isIgnored
 
                   const itemDurationFrames =
                     asset.durationFrames > 0
@@ -1347,25 +1348,25 @@ function QualityControlSession({
                             {asset.title}
                           </span>
                           {isIgnored ? (
-                            <span className="font-label-caps text-[8px] px-1 py-0.2 rounded bg-surface-container text-outline border border-border-subtle">
+                            <span className="font-label-caps text-[10px] px-1 py-0.2 rounded bg-surface-container text-outline border border-border-subtle">
                               IGNORADO
                             </span>
                           ) : hasAlert ? (
-                            <span className="font-label-caps text-[8px] px-1 py-0.2 rounded bg-armed-amber/20 text-armed-amber border border-armed-amber/40">
+                            <span className="font-label-caps text-[10px] px-1 py-0.2 rounded bg-armed-amber/20 text-armed-amber border border-armed-amber/40">
                               ALERTA
                             </span>
                           ) : isPending ? (
-                            <span className="font-label-caps text-[8px] px-1 py-0.2 rounded bg-primary/15 text-primary border border-primary/40">
+                            <span className="font-label-caps text-[10px] px-1 py-0.2 rounded bg-primary/15 text-primary border border-primary/40">
                               PENDENTE QC
                             </span>
                           ) : (
-                            <span className="font-label-caps text-[8px] px-1 py-0.2 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40">
+                            <span className="font-label-caps text-[10px] px-1 py-0.2 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40">
                               APROVADO
                             </span>
                           )}
                         </div>
 
-                        <div className="flex items-center gap-2 font-label-mono text-[9.5px] text-outline">
+                        <div className="flex items-center gap-2 font-label-mono text-[11px] text-outline">
                           <span className="text-on-surface">
                             {dur(itemDurationFrames, channelRate)}
                           </span>
@@ -1382,28 +1383,28 @@ function QualityControlSession({
 
                       {/* Ações Rápidas por linha */}
                       <div className="flex items-center gap-1 flex-shrink-0">
-                        <button
+                        {!isApproved && <button
                           onClick={(e) => {
                             e.stopPropagation()
                             void handleApprove(asset.id)
                           }}
-                          className="px-2 py-1 rounded bg-status-ok/15 hover:bg-status-ok text-status-ok-bright hover:text-surface-base font-label-caps text-[9px] font-bold transition-colors cursor-pointer border border-status-ok/30"
+                          className="px-2 py-1 rounded bg-status-ok/15 hover:bg-status-ok text-status-ok-bright hover:text-surface-base font-label-caps text-[10px] font-bold transition-colors cursor-pointer border border-status-ok/30"
                           title="Aprovar no QC e liberar para a grade"
                           disabled={qcDecisionBusy}
                         >
                           Aprovar
-                        </button>
-                        <button
+                        </button>}
+                        {!isIgnored && <button
                           onClick={(e) => {
                             e.stopPropagation()
                             void handleReject(asset.id)
                           }}
-                          className="px-2 py-1 rounded bg-surface-container hover:bg-on-air-crimson/20 text-outline hover:text-on-air-crimson font-label-caps text-[9px] transition-colors cursor-pointer border border-border-subtle"
+                          className="px-2 py-1 rounded bg-surface-container hover:bg-on-air-crimson/20 text-outline hover:text-on-air-crimson font-label-caps text-[10px] transition-colors cursor-pointer border border-border-subtle"
                           title="Mover para quarentena / ignorar"
                           disabled={qcDecisionBusy}
                         >
                           Ignorar
-                        </button>
+                        </button>}
                       </div>
                     </div>
                   )
@@ -1429,7 +1430,7 @@ function QualityControlSession({
                   <span className="font-headline-md text-[13px] text-on-surface font-bold truncate">
                     {selectedLiveSource?.name ?? selectedAsset?.title ?? 'Nenhum ativo selecionado'}
                   </span>
-                  <span className="font-label-caps text-[8.5px] px-1.5 py-0.5 rounded bg-surface-panel text-outline border border-border-subtle uppercase">
+                  <span className="font-label-caps text-[10px] px-1.5 py-0.5 rounded bg-surface-panel text-outline border border-border-subtle uppercase">
                     {selectedLiveSource?.kind ?? (selectedAsset?.path ? selectedAsset.path.split('.').pop() : 'VIDEO')}
                   </span>
                 </div>
@@ -1437,7 +1438,7 @@ function QualityControlSession({
                 {/* Timecode Header Display */}
                 <div className="flex items-center gap-2 font-label-mono text-[10.5px]">
                   {selectedLiveSource ? (
-                    <span className="px-1.5 py-0.5 rounded bg-on-air-crimson/15 text-on-air-crimson border border-on-air-crimson/35 font-label-caps text-[9px]">AO VIVO · PVW</span>
+                    <span className="px-1.5 py-0.5 rounded bg-on-air-crimson/15 text-on-air-crimson border border-on-air-crimson/35 font-label-caps text-[10px]">AO VIVO · PVW</span>
                   ) : <>
                     <span className="text-outline">TC:</span>
                     <span className="text-primary font-bold">
@@ -1447,7 +1448,7 @@ function QualityControlSession({
                     <span className="text-on-surface-variant font-medium">
                       {dur(totalDurationFrames, channelRate)}
                     </span>
-                    <span className="px-1.5 py-0.5 rounded bg-surface-panel text-[9px] text-outline border border-border-subtle">
+                    <span className="px-1.5 py-0.5 rounded bg-surface-panel text-[10px] text-outline border border-border-subtle">
                       Q: {Math.floor(currentTimeSec * fps)}/{totalDurationFrames}
                     </span>
                   </>}
@@ -1687,7 +1688,7 @@ function QualityControlSession({
                   <button
                     onClick={() => void handleApprove()}
                     disabled={!qcDecisionReady||qcDecisionBusy}
-                    className="flex items-center gap-1 px-3 py-1 rounded bg-status-ok text-surface-base font-label-caps text-[9.5px] font-bold hover:bg-status-ok-bright transition-colors shadow-sm cursor-pointer disabled:opacity-40 ml-1"
+                    className="flex items-center gap-1 px-3 py-1 rounded bg-status-ok text-surface-base font-label-caps text-[11px] font-bold hover:bg-status-ok-bright transition-colors shadow-sm cursor-pointer disabled:opacity-40 ml-1"
                     title="Aprovar clipe e liberar para o Master Playout"
                   >
                     <span className="material-symbols-outlined text-[14px]">check_circle</span>
@@ -1696,7 +1697,7 @@ function QualityControlSession({
                   <button
                     onClick={() => void handleReject()}
                     disabled={!qcDecisionReady||qcDecisionBusy}
-                    className="flex items-center gap-1 px-3 py-1 rounded bg-on-air-crimson text-white font-label-caps text-[9.5px] font-bold hover:bg-red-600 transition-colors shadow-sm cursor-pointer disabled:opacity-40"
+                    className="flex items-center gap-1 px-3 py-1 rounded bg-on-air-crimson text-white font-label-caps text-[11px] font-bold hover:bg-red-600 transition-colors shadow-sm cursor-pointer disabled:opacity-40"
                     title="Mover clipe para os rejeitados / quarentena"
                   >
                     <span className="material-symbols-outlined text-[14px]">cancel</span>
@@ -1747,14 +1748,14 @@ function QualityControlSession({
                     <span className="material-symbols-outlined text-accent-ice text-[16px]">query_stats</span>
                     Scopes · {monitorLabels.image} · inspeção visual aproximada
                   </span>
-                  <span className="font-label-mono text-[9px] px-1.5 py-0.2 rounded bg-surface-panel border border-border-subtle text-status-ok-bright">
+                  <span className="font-label-mono text-[10px] px-1.5 py-0.2 rounded bg-surface-panel border border-border-subtle text-status-ok-bright">
                     MONITORAMENTO {isPlaying||selectedLiveSource?10:4} Hz
                     {scopeCost && <span title="Custo local do desenho dos scopes; não mede decoder, CPU do servidor ou rede. Últimas até 120 amostras."> · DESENHO p95 {scopeCost.p95Ms.toFixed(1)} ms</span>}
                   </span>
                 </div>
 
                 {/* Seletor de Modo de Visualização dos Escopos */}
-                <div className="flex items-center gap-1 bg-surface-base p-0.5 rounded border border-border-subtle font-label-caps text-[8.5px]">
+                <div className="flex items-center gap-1 bg-surface-base p-0.5 rounded border border-border-subtle font-label-caps text-[10px]">
                   {(['QUAD', 'VECTORSCOPE', 'WAVEFORM', 'PARADE'] as const).map((mode) => (
                     <button
                       key={mode}
@@ -1778,16 +1779,16 @@ function QualityControlSession({
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 h-full">
                     {/* Scope 1: Vectorscope BT.709 */}
                     <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
-                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[8.5px]">
+                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[10px]">
                         <span className="text-accent-ice font-bold">1. VECTORSCOPE</span>
-                        <span className={`font-mono text-[8px] font-bold ${!vectorscopeStats ? 'text-outline' : vectorscopeStats.legalGamut ? 'text-status-ok' : 'text-on-air-crimson'}`}>
+                        <span className={`font-mono text-[10px] font-bold ${!vectorscopeStats ? 'text-outline' : vectorscopeStats.legalGamut ? 'text-status-ok' : 'text-on-air-crimson'}`}>
                             {!vectorscopeStats ? 'AGUARDANDO FRAME' : 'AMOSTRA DO PLAYER'}
                         </span>
                       </div>
                       <div className="relative w-full flex-1 bg-[#05070E] rounded border border-border-subtle/60 flex items-center justify-center overflow-hidden my-1">
                         <canvas ref={vectorscopeCanvasRef} width={180} height={180} className="w-full h-full object-contain" />
                       </div>
-                      <div className="flex items-center justify-between font-label-mono text-[8px] text-outline">
+                      <div className="flex items-center justify-between font-label-mono text-[10px] text-outline">
                         <span>I-LINE PELE</span>
                         <span className="text-accent-ice font-bold">SAT: {vectorscopeStats ? `${vectorscopeStats.maxSat}%` : '—'}</span>
                       </div>
@@ -1795,16 +1796,16 @@ function QualityControlSession({
 
                     {/* Scope 2: Luma Waveform (0-100 IRE) */}
                     <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
-                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[8.5px]">
+                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[10px]">
                         <span className="text-status-ok-bright font-bold">2. LUMA WAVEFORM</span>
-                        <span className={`font-mono text-[8px] font-bold ${!waveformStats ? 'text-outline' : waveformStats.clipping ? 'text-on-air-crimson' : 'text-status-ok'}`}>
+                        <span className={`font-mono text-[10px] font-bold ${!waveformStats ? 'text-outline' : waveformStats.clipping ? 'text-on-air-crimson' : 'text-status-ok'}`}>
                             {!waveformStats ? 'AGUARDANDO FRAME' : 'LUMA DO PLAYER'}
                         </span>
                       </div>
                       <div className="relative w-full flex-1 bg-[#05070E] rounded border border-border-subtle/60 overflow-hidden my-1">
                         <canvas ref={waveformCanvasRef} width={260} height={140} className="w-full h-full" />
                       </div>
-                      <div className="flex items-center justify-between font-label-mono text-[8px] text-outline">
+                      <div className="flex items-center justify-between font-label-mono text-[10px] text-outline">
                         <span>MIN: {waveformStats?.minIre ?? '—'}</span>
                         <span className="text-status-ok-bright font-bold">MAX: {waveformStats ? `${waveformStats.maxIre} IRE` : '—'}</span>
                       </div>
@@ -1812,14 +1813,14 @@ function QualityControlSession({
 
                     {/* Scope 3: RGB Parade */}
                     <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
-                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[8.5px]">
+                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[10px]">
                         <span className="text-primary font-bold">3. RGB PARADE</span>
-                        <span className={`font-mono text-[8px] ${scopeSampleReady ? 'text-status-ok' : 'text-outline'}`}>{scopeSampleReady ? 'RGB DO PLAYER' : 'AGUARDANDO FRAME'}</span>
+                        <span className={`font-mono text-[10px] ${scopeSampleReady ? 'text-status-ok' : 'text-outline'}`}>{scopeSampleReady ? 'RGB DO PLAYER' : 'AGUARDANDO FRAME'}</span>
                       </div>
                       <div className="relative w-full flex-1 bg-[#05070E] rounded border border-border-subtle/60 overflow-hidden my-1">
                         <canvas ref={paradeCanvasRef} width={260} height={140} className="w-full h-full" />
                       </div>
-                      <div className="flex items-center justify-between font-label-mono text-[8px] text-outline">
+                      <div className="flex items-center justify-between font-label-mono text-[10px] text-outline">
                         <span>BALANÇO RGB</span>
                         <span className="text-outline font-bold">{scopeSampleReady ? 'AMOSTRADO' : 'SEM AMOSTRA'}</span>
                       </div>
@@ -1827,12 +1828,12 @@ function QualityControlSession({
 
                     {/* Scope 4: Áudio EBU R128 & Spectrum (Pré-Fader) */}
                     <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
-                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[8.5px]">
+                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[10px]">
                         <div className="flex items-center gap-1">
                           <span className="text-armed-amber font-bold">4. ÁUDIO ORIGINAL / MONITOR</span>
-                          <span className="text-[7.5px] px-1 py-0.2 rounded bg-status-ok/20 text-status-ok-bright font-bold">{monitorLabels.audio}</span>
+                          <span className="text-[10px] px-1 py-0.2 rounded bg-status-ok/20 text-status-ok-bright font-bold">{monitorLabels.audio}</span>
                         </div>
-                        <span className="text-status-ok font-mono text-[8px]">ALVO: {channel.targetLufs} LUFS</span>
+                        <span className="text-status-ok font-mono text-[10px]">ALVO: {channel.targetLufs} LUFS</span>
                       </div>
 
                       {/* Espectrograma Real em Canvas */}
@@ -1841,7 +1842,7 @@ function QualityControlSession({
                       </div>
 
                       {/* Métricas e VU Meters */}
-                      <div className="flex flex-col gap-0.5 font-label-mono text-[8px]">
+                      <div className="flex flex-col gap-0.5 font-label-mono text-[10px]">
                         <div className="flex justify-between">
                           <span className="text-outline">Integrated:</span>
                           <span className="text-status-ok font-bold">

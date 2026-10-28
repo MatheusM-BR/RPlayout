@@ -283,7 +283,7 @@ export function EngineeringDistributionView({
                     <span className="material-symbols-outlined text-status-ok-bright text-[15px]">speed</span>
                     ENGINE &amp; PROCESSO
                   </span>
-                  <span className={`font-label-caps text-[9px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
+                  <span className={`font-label-caps text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok animate-pulse'}`}></span>{engineAlert ? 'ALERTA' : engineSimulated ? 'SIMULADO' : engineProcess?.state === 'running' ? 'ATIVO' : 'SEM ALERTA'}
                   </span>
                 </div>
@@ -461,7 +461,7 @@ export function EngineeringDistributionView({
                   {outputs.map((output) => {
                     const process = processes.find((row) => row.kind === 'OUTPUT' && row.channelId === channel.id && String(row.details?.url ?? '') === output.target)
                     return <article key={output.id} className="bg-surface-card rounded-lg border border-border-subtle p-3.5 shadow-sm">
-                      <div className="flex items-start justify-between gap-2"><div><strong className="font-headline-md text-[14px] text-on-surface">{output.name}</strong><p className="font-label-mono text-[10px] text-outline mt-1 break-all">{output.target || 'Destino gerenciado localmente'}</p></div><span className={`font-label-caps text-[9px] px-1.5 py-0.5 rounded border font-bold ${output.enabled ? 'text-status-ok border-status-ok/40 bg-status-ok/10' : 'text-outline border-border-subtle bg-surface-panel'}`}>{output.enabled ? 'HABILITADA' : 'DESLIGADA'}</span></div>
+                      <div className="flex items-start justify-between gap-2"><div><strong className="font-headline-md text-[14px] text-on-surface">{output.name}</strong><p className="font-label-mono text-[10px] text-outline mt-1 break-all">{output.target || 'Destino gerenciado localmente'}</p></div><span className={`font-label-caps text-[10px] px-1.5 py-0.5 rounded border font-bold ${output.enabled ? 'text-status-ok border-status-ok/40 bg-status-ok/10' : 'text-outline border-border-subtle bg-surface-panel'}`}>{output.enabled ? 'HABILITADA' : 'DESLIGADA'}</span></div>
                       <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[10px] mt-3"><span className="bg-surface-panel rounded px-2 py-1">{output.kind} · {output.role}</span><span className="bg-surface-panel rounded px-2 py-1">{process ? process.state.toUpperCase() : 'SEM TELEMETRIA'}</span></div>
                     </article>
                   })}
@@ -478,7 +478,7 @@ export function EngineeringDistributionView({
                         <span className="font-headline-md text-[15px] text-on-surface font-bold">
                           Blackmagic DeckLink 8K Pro
                         </span>
-                        <span className="font-label-caps text-[9px] bg-status-ok/20 text-status-ok font-bold px-1.5 py-0.5 rounded border border-status-ok/40">
+                        <span className="font-label-caps text-[10px] bg-status-ok/20 text-status-ok font-bold px-1.5 py-0.5 rounded border border-status-ok/40">
                           SDI PORT 1
                         </span>
                       </div>
@@ -498,11 +498,11 @@ export function EngineeringDistributionView({
                   </div>
                   <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[11px] pl-1">
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[9px] uppercase font-label-caps">Formato Vídeo</span>
+                      <span className="text-outline text-[10px] uppercase font-label-caps">Formato Vídeo</span>
                       <span className="text-on-surface font-bold">1080i59.94 Rec.709</span>
                     </div>
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[9px] uppercase font-label-caps">Genlock Sync</span>
+                      <span className="text-outline text-[10px] uppercase font-label-caps">Genlock Sync</span>
                       <span className="text-status-ok-bright font-bold flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span> BB LOCKED
                       </span>
@@ -519,7 +519,7 @@ export function EngineeringDistributionView({
                         <span className="font-headline-md text-[15px] text-on-surface font-bold">
                           NDI Network Broadcast
                         </span>
-                        <span className="font-label-caps text-[9px] bg-accent-ice/20 text-accent-ice-bright font-bold px-1.5 py-0.5 rounded border border-accent-ice/40">
+                        <span className="font-label-caps text-[10px] bg-accent-ice/20 text-accent-ice-bright font-bold px-1.5 py-0.5 rounded border border-accent-ice/40">
                           IP GIGABIT
                         </span>
                       </div>
@@ -539,11 +539,11 @@ export function EngineeringDistributionView({
                   </div>
                   <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[11px] pl-1">
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[9px] uppercase font-label-caps">Stream Name</span>
+                      <span className="text-outline text-[10px] uppercase font-label-caps">Stream Name</span>
                       <span className="text-on-surface font-bold">RPLAYOUT_PGM</span>
                     </div>
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[9px] uppercase font-label-caps">Bitrate Médio</span>
+                      <span className="text-outline text-[10px] uppercase font-label-caps">Bitrate Médio</span>
                       <span className="text-accent-ice-bright font-bold">125 Mbps</span>
                     </div>
                   </div>
@@ -558,7 +558,7 @@ export function EngineeringDistributionView({
                         <span className="font-headline-md text-[15px] text-on-surface font-bold">
                           SRT Caller Primário
                         </span>
-                        <span className="font-label-caps text-[9px] bg-primary/20 text-primary font-bold px-1.5 py-0.5 rounded border border-primary/40">
+                        <span className="font-label-caps text-[10px] bg-primary/20 text-primary font-bold px-1.5 py-0.5 rounded border border-primary/40">
                           INTERNET WAN
                         </span>
                       </div>
@@ -578,11 +578,11 @@ export function EngineeringDistributionView({
                   </div>
                   <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[11px] pl-1">
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[9px] uppercase font-label-caps">RTT / Latência</span>
+                      <span className="text-outline text-[10px] uppercase font-label-caps">RTT / Latência</span>
                       <span className="text-status-ok-bright font-bold">1.8 ms</span>
                     </div>
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[9px] uppercase font-label-caps">Packet Loss</span>
+                      <span className="text-outline text-[10px] uppercase font-label-caps">Packet Loss</span>
                       <span className="text-status-ok-bright font-bold">0.00%</span>
                     </div>
                   </div>
@@ -613,7 +613,7 @@ export function EngineeringDistributionView({
                     <button
                       key={f}
                       onClick={() => setLogFilter(f)}
-                      className={`px-2.5 py-1 rounded font-label-caps text-[9.5px] cursor-pointer transition-colors ${
+                      className={`px-2.5 py-1 rounded font-label-caps text-[11px] cursor-pointer transition-colors ${
                         logFilter === f
                           ? 'bg-primary-container text-on-primary-container font-bold'
                           : 'bg-surface-panel hover:bg-surface-container text-outline'
@@ -624,13 +624,13 @@ export function EngineeringDistributionView({
                   ))}
                   <button
                     onClick={() => setIsLogPaused(!isLogPaused)}
-                    className="px-2.5 py-1 rounded font-label-caps text-[9.5px] bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline cursor-pointer"
+                    className="px-2.5 py-1 rounded font-label-caps text-[11px] bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline cursor-pointer"
                   >
                     {isLogPaused ? 'RETOMAR' : 'PAUSAR'}
                   </button>
                   <button
                     onClick={() => setLogs([])}
-                    className="px-2.5 py-1 rounded font-label-caps text-[9.5px] bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline cursor-pointer"
+                    className="px-2.5 py-1 rounded font-label-caps text-[11px] bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline cursor-pointer"
                   >
                     LIMPAR
                   </button>
@@ -643,7 +643,7 @@ export function EngineeringDistributionView({
                   <div key={log.id} className="flex items-start gap-2">
                     <span className="text-outline text-[10px] tabular-nums">{log.time}</span>
                     <span
-                      className={`font-bold text-[9px] px-1.5 rounded ${
+                      className={`font-bold text-[10px] px-1.5 rounded ${
                         log.level === 'OK'
                           ? 'bg-status-ok/15 text-status-ok'
                           : log.level === 'WARN'

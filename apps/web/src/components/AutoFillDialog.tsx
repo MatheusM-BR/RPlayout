@@ -191,7 +191,7 @@ export function AutoFillDialog(props:Props) {
             <div className="flex flex-col">
               <h2 className="font-headline-sm text-sm font-bold text-on-surface tracking-wide uppercase flex items-center gap-2">
                 Assistente de AutoFill
-                <span className="px-1.5 py-0.2 rounded bg-primary/20 text-primary text-[9px] font-label-mono">
+                <span className="px-1.5 py-0.2 rounded bg-primary/20 text-primary text-[10px] font-label-mono">
                   MAM AI 24H
                 </span>
               </h2>
@@ -297,7 +297,7 @@ export function AutoFillDialog(props:Props) {
 
               {/* Atalhos Rápidos de Duração */}
               <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                <span className="text-[9px] font-label-caps text-outline mr-1">ATALHOS:</span>
+                <span className="text-[10px] font-label-caps text-outline mr-1">ATALHOS:</span>
                 {[
                   { label: '15m', h: 0, m: 15 },
                   { label: '30m', h: 0, m: 30 },
@@ -348,7 +348,7 @@ export function AutoFillDialog(props:Props) {
                         <span className="w-1.5 h-1.5 rounded-full bg-armed-amber"></span>
                         No GAP Selecionado
                       </span>
-                      <span className="text-[9px] font-label-mono opacity-80">
+                      <span className="text-[10px] font-label-mono opacity-80">
                         A partir das {initialStart}
                       </span>
                     </button>
@@ -367,7 +367,7 @@ export function AutoFillDialog(props:Props) {
                       <span className="material-symbols-outlined text-[13px]">schedule</span>
                       No Horário Específico
                     </span>
-                    <span className="text-[9px] font-label-mono opacity-80">
+                    <span className="text-[10px] font-label-mono opacity-80">
                       Definir hora de início (hh:mm)
                     </span>
                   </button>
@@ -385,7 +385,7 @@ export function AutoFillDialog(props:Props) {
                       <span className="material-symbols-outlined text-[13px]">vertical_align_bottom</span>
                       No Final da Grade
                     </span>
-                    <span className="text-[9px] font-label-mono opacity-80">
+                    <span className="text-[10px] font-label-mono opacity-80">
                       Após o último item programado
                     </span>
                   </button>
@@ -570,7 +570,7 @@ export function AutoFillDialog(props:Props) {
                           <span className="font-bold text-on-surface text-xs truncate">
                             {item.title}
                           </span>
-                          <span className="text-[9px] font-label-mono text-outline truncate">
+                          <span className="text-[10px] font-label-mono text-outline truncate">
                             {item.explanation?.category ?? 'Geral'} ·{' '}
                             {item.explanation?.lastAiredAt
                               ? `Último ar: ${new Date(item.explanation.lastAiredAt).toLocaleDateString('pt-BR')}`
@@ -580,7 +580,7 @@ export function AutoFillDialog(props:Props) {
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
-                        <span className="px-1.5 py-0.5 rounded bg-surface-container text-outline text-[9px] font-label-mono">
+                        <span className="px-1.5 py-0.5 rounded bg-surface-container text-outline text-[10px] font-label-mono">
                           Score {item.explanation?.preference ?? 0}
                         </span>
                       </div>

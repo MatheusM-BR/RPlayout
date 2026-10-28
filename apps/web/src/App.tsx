@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { setAirState } from './domain/air-state.js'
 import { wallClock, setCurrentGradeDate, anchorFramesFor } from './domain/wall-clock.js'
 import type { ReactNode } from 'react'
 import { anchorTarget, durationIn, isStill } from '@rplayout/protocol'
@@ -515,6 +516,7 @@ export function App() {
 
   // Base dos horários de parede para telas sem data própria (régua, transporte).
   setCurrentGradeDate((executionView ?? view)?.rundown.date)
+  useEffect(() => { setAirState(live ? Boolean(live.transport.playing && live.transport.onAir) : null) }, [live])
   const onAirItem = (executionView ?? view)?.items.find((item) => item.item.id === onAirId) ?? null
   const selected = view?.items.find((item) => item.item.id === selectedId) ?? null
 
@@ -686,6 +688,14 @@ export function App() {
         }
         const targetItemId = selectedId ?? live?.transport.preparedItemId ?? undefined
         void command('take', targetItemId ? { itemId: targetItemId } : undefined)
+        return
+      }
+
+      // F2 = CUE: abre no PVW o item selecionado ou, sem seleção, o próximo.
+      if (event.key === 'F2') {
+        event.preventDefault()
+        const targetItemId = selectedId ?? live?.transport.preparedItemId ?? undefined
+        if (targetItemId) void command('cue', { itemId: targetItemId })
         return
       }
 

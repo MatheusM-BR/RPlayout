@@ -21,3 +21,12 @@ export function canonicalLiveSourceRef(source: Pick<ManagedLiveSource, 'kind' | 
   const prefix = source.kind.toLowerCase()
   return target.toLowerCase().startsWith(`${prefix}:`) ? target : `${prefix}:${target}`
 }
+
+/** Selo curto do protocolo de uma fonte ao vivo (NDI, OMT, SRT, RTMP, SDI…),
+ * para distinguir entradas com o mesmo nome na biblioteca. */
+export function liveProtocolLabel(ref: string | null | undefined): string {
+  const match = /^([a-z0-9+.-]+):/i.exec(ref ?? '')
+  const scheme = match?.[1]?.toLowerCase() ?? ''
+  const known: Record<string, string> = { ndi: 'NDI', omt: 'OMT', srt: 'SRT', rtmp: 'RTMP', rtmps: 'RTMPS', rtsp: 'RTSP', sdi: 'SDI', decklink: 'SDI', http: 'HLS', https: 'HLS', whip: 'WHIP', udp: 'UDP' }
+  return known[scheme] ?? 'AO VIVO'
+}

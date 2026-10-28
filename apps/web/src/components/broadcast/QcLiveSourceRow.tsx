@@ -14,10 +14,10 @@ export function QcLiveSourceRow({source,telemetry,selected,signal,onSelect,disab
     title="Abrir esta fonte no PVW compartilhado e assistir no player QC">
     <span className="material-symbols-outlined text-accent-ice text-[20px]">sensors</span>
     <span className="min-w-0 flex-1">
-      <span className="flex items-center gap-1.5"><strong className="truncate font-headline-md text-[12px] text-on-surface">{source.name}</strong><span className="rounded bg-surface-base px-1 font-label-mono text-[8px] text-accent-ice">{source.kind}</span></span>
-      <span className="mt-0.5 block truncate font-label-mono text-[9px] text-outline" title={source.targetUrl}>{telemetry?`Rede SRT · ${telemetry.bitrateKbps} kbps · RTT ${telemetry.rttMs.toFixed(0)} ms · perda ${telemetry.packetLossPercent.toFixed(2)}% · não confirma vídeo`:source.targetUrl}</span>
-      {status.details&&<span className="mt-0.5 block font-label-mono text-[9px] text-outline" title={status.detailsTitle}>{status.details}</span>}
+      <span className="flex items-center gap-1.5"><strong className="truncate font-headline-md text-[12px] text-on-surface">{source.name}</strong><span className="rounded bg-surface-base px-1 font-label-mono text-[10px] text-accent-ice">{source.kind}</span></span>
+      <span className="mt-0.5 block truncate font-label-mono text-[10px] text-outline" title={source.targetUrl}>{telemetry?`Rede SRT · ${telemetry.bitrateKbps} kbps · RTT ${telemetry.rttMs.toFixed(0)} ms · perda ${telemetry.packetLossPercent.toFixed(2)}% · não confirma vídeo`:source.targetUrl}</span>
+      {status.details&&<span className="mt-0.5 block font-label-mono text-[10px] text-outline" title={status.detailsTitle}>{status.details}</span>}
     </span>
-    <span className={`rounded border px-1.5 py-0.5 font-label-mono text-[8px] font-bold ${statusClass}`}>{status.label}</span>
+    <span className={`rounded border px-1.5 py-0.5 font-label-mono text-[10px] font-bold ${statusClass}`}>{status.label}</span>
   </button>
 }

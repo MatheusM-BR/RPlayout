@@ -76,6 +76,24 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
     finally { if (currentChannel.current === channelId) setPending(false) }
   }
   const alert = active[0]
+  // "Ciente" reconhece no servidor os alertas de sinal pendentes do canal (para
+  // os lembretes externos) e recolhe a faixa vermelha; ela volta se surgir
+  // outro tipo de alerta ou se este sumir e voltar.
+  const alertKey = alert ? `${alert.type}` : null
+  const [acknowledgedKey, setAcknowledgedKey] = useState<string | null>(null)
+  useEffect(() => { if (!alertKey) setAcknowledgedKey(null) }, [alertKey])
+  const acknowledge = async () => {
+    if (!alertKey) return
+    setPending(true)
+    try {
+      const pendingEvents = await api.healthEvents(channelId, { acknowledgement: 'PENDING' })
+      await Promise.all(pendingEvents.events.filter(event => event.component === 'SIGNAL' && !event.resolvedAt).map(event => api.acknowledgeHealth(event.id)))
+      if (currentChannel.current === channelId) setAcknowledgedKey(alertKey)
+    } catch (error) {
+      if (currentChannel.current === channelId) setFailure(error instanceof Error ? error.message : 'Não foi possível registrar o ciente.')
+    } finally { if (currentChannel.current === channelId) setPending(false) }
+  }
+  const showAlertBanner = Boolean(failure || status?.emergencySlateActive || (alert && acknowledgedKey !== alertKey))
   const telemetryAvailable = Boolean(status?.lastSampleAt)
   const healthy = telemetryAvailable && !alert && !status?.emergencySlateActive && !status?.contingency?.active
   const stateLabel = failure
@@ -94,8 +112,8 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
     return (
       <div className={`flex items-center gap-1.5 ${className}`} title={failure ?? 'Telemetria da sonda PGM'}>
         <div className={`flex flex-col items-center justify-center px-2 py-1 rounded border text-center ${healthy ? 'bg-surface-panel border-border-subtle text-status-ok' : 'bg-armed-amber/20 border-armed-amber text-armed-amber'}`}>
-          <span className="font-label-caps text-[8.5px] uppercase font-bold leading-none">SONDA</span>
-          <span className="font-label-mono text-[9px] font-bold leading-none mt-0.5">{stateLabel}</span>
+          <span className="font-label-caps text-[10px] uppercase font-bold leading-none">SONDA</span>
+          <span className="font-label-mono text-[10px] font-bold leading-none mt-0.5">{stateLabel}</span>
         </div>
       </div>
     )
@@ -105,17 +123,22 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
   const thresholds = status?.thresholds
   return (
     <section className={`w-full flex flex-col gap-1.5 ${className}`} aria-label="Sonda de qualidade do PGM">
-      {(alert || status?.emergencySlateActive || failure) && (
+      {showAlertBanner && (
         <div role="alert" className={`px-3 py-2 rounded-lg border flex flex-wrap items-center justify-between gap-3 ${failure ? 'bg-armed-amber/15 border-armed-amber text-armed-amber' : 'bg-on-air-crimson/15 border-on-air-crimson text-on-air-crimson'}`}>
-          <div className="font-label-mono text-[10px]">
+          <div className="font-label-mono text-[12px]">
             {failure
               ? `Sonda PGM indisponível: ${failure}`
               : status?.emergencySlateActive
                 ? 'Slate de emergência confirmado pelo engine.'
                 : `${alertName[alert!.type]} acima do limiar: ${seconds(alert!.durationMs)} / ${seconds(alert!.thresholdMs)}. ${alert!.actionMessage ?? ''}`}
           </div>
+          {status && alert && !status.emergencySlateActive && !failure && (
+            <button disabled={pending} onClick={() => void acknowledge()} className="ml-auto px-2.5 py-1 rounded border border-on-air-crimson bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[11px] font-bold">
+              CIENTE
+            </button>
+          )}
           {status && (
-            <button disabled={pending} onClick={() => void toggleSlate()} className="px-2.5 py-1 rounded border border-border-subtle bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[9.5px] font-bold">
+            <button disabled={pending} onClick={() => void toggleSlate()} className="px-2.5 py-1 rounded border border-border-subtle bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[11px] font-bold">
               {pending ? 'PROCESSANDO…' : status.emergencySlateActive ? 'DESARMAR SLATE' : 'ACIONAR SLATE'}
             </button>
           )}
@@ -127,17 +150,18 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
           <div className="flex items-center gap-1.5">
             <span className={`material-symbols-outlined text-[16px] ${healthy ? 'text-status-ok' : 'text-armed-amber'}`}>troubleshoot</span>
             <span className="font-label-caps text-[10px] text-on-surface font-bold uppercase tracking-wider">Sonda de Qualidade PGM</span>
+            {alert && acknowledgedKey === alertKey && <span className="font-label-caps text-[11px] text-armed-amber font-bold">{alertName[alert.type]} · CIENTE</span>}
           </div>
           <div className="h-3.5 w-px bg-border-subtle" />
-          <div className="flex items-center gap-3 font-label-mono text-[9.5px]">
+          <div className="flex items-center gap-3 font-label-mono text-[11px]">
             <span>Black: <strong className="text-on-surface">{metrics && thresholds ? `${seconds(metrics.blackDurationMs)} / ${seconds(thresholds.blackThresholdMs)}` : 'N/D'}</strong></span>
             <span>Silêncio: <strong className="text-on-surface">{metrics && thresholds ? `${metrics.audioDbfs?.toFixed(1) ?? 'N/D'} dBFS / ${thresholds.silenceDbfs} dBFS` : 'N/D'}</strong></span>
             <span>Freeze: <strong className="text-on-surface">{metrics && thresholds ? `${seconds(metrics.freezeDurationMs)} / ${seconds(thresholds.freezeThresholdMs)}` : 'N/D'}</strong></span>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="font-label-mono text-[9px] text-outline">{telemetryAvailable ? `Amostra: ${new Date(status!.lastSampleAt!).toLocaleTimeString('pt-BR')}` : 'Aguardando medição real do engine'}</span>
-          {!compact && status && <button type="button" disabled={pending} onClick={() => void toggleAutomation()} className="text-[9px] px-2 py-1 rounded border border-border-subtle">
+          <span className="font-label-mono text-[10px] text-outline">{telemetryAvailable ? `Amostra: ${new Date(status!.lastSampleAt!).toLocaleTimeString('pt-BR')}` : 'Aguardando medição real do engine'}</span>
+          {!compact && status && <button type="button" disabled={pending} onClick={() => void toggleAutomation()} className="text-[10px] px-2 py-1 rounded border border-border-subtle">
             {status.automaticActionsEnabled ? 'AUTO: LIGADA' : 'AUTO: DESLIGADA'}
           </button>}
         </div>

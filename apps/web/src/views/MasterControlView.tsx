@@ -20,7 +20,7 @@ import type {
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { api } from '../api.js'
 import {commandRequestId} from '../domain/request-id.js'
-import { canonicalLiveSourceRef, sameLiveSource } from '../liveSource.js'
+import { canonicalLiveSourceRef, liveProtocolLabel, sameLiveSource } from '../liveSource.js'
 import { LiveReplacementControl } from '../components/LiveReplacementControl.js'
 import { Whep } from '../components/Whep.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
@@ -647,6 +647,9 @@ export function MasterControlView({
   const onAirDurationFrames = programDurationFrames(live.transport.onAir,getItemDuration(onAirItem))
   const elapsedFrames = live?.transport?.onAir?.elapsed ?? 0
   const remainingFrames = Math.max(0, onAirDurationFrames - elapsedFrames)
+  // Passou da duração prevista (live com saída manual, duração estimada curta):
+  // contar para cima em âmbar em vez de ficar parado em 00:00.
+  const overrunFrames = onAirItem && onAirDurationFrames > 0 ? Math.max(0, elapsedFrames - onAirDurationFrames) : 0
   const progressPercent =
     onAirDurationFrames > 0 ? Math.min(100, Math.round((elapsedFrames / onAirDurationFrames) * 100)) : 0
 
@@ -839,7 +842,7 @@ export function MasterControlView({
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between flex-wrap gap-1.5 pb-1 border-b border-border-subtle/50">
                     <div className="flex items-center gap-1.5">
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[9px] font-bold tracking-wider">
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[10px] font-bold tracking-wider">
                         <span className={`w-1.5 h-1.5 rounded-full ${live?.transport.onAir && live.transport.playing ? 'bg-on-air-crimson animate-pulse' : 'bg-outline'}`}></span> {live?.transport.onAir ? live.transport.playing ? 'NO AR' : 'PGM PAUSADO' : 'SEM ITEM NO PGM'}
                       </span>
                       <span className="font-label-mono text-[10px] text-outline">
@@ -854,15 +857,16 @@ export function MasterControlView({
                   </div>
                 </div>
                 <div className="my-1 text-center">
-                  <div className="font-label-caps text-label-caps text-outline uppercase tracking-wider mb-0.5">TEMPO RESTANTE</div>
-                  <div className="font-timecode-display text-[26px] text-on-air-crimson font-bold tabular-nums leading-none tracking-wider drop-shadow-[0_0_8px_rgba(255,59,48,0.45)]" id="onair-countdown">
-                    {onAirItem ? dur(remainingFrames, rate) : '00:00:00:00'}
+                  <div className={`font-label-caps text-label-caps uppercase tracking-wider mb-0.5 ${overrunFrames > 0 ? 'text-armed-amber' : 'text-outline'}`}>{overrunFrames > 0 ? 'EXCEDIDO' : 'TEMPO RESTANTE'}</div>
+                  <div className={`font-timecode-display text-[26px] font-bold tabular-nums leading-none tracking-wider ${overrunFrames > 0 ? 'text-armed-amber' : 'text-on-air-crimson drop-shadow-[0_0_8px_rgba(255,59,48,0.45)]'}`} id="onair-countdown">
+                    {onAirItem ? (overrunFrames > 0 ? `+${dur(overrunFrames, rate)}` : dur(remainingFrames, rate)) : '00:00:00:00'}
                   </div>
+                  {overrunFrames > 0 && <div className="text-[11px] text-armed-amber mt-0.5">previsto {dur(onAirDurationFrames, rate)}</div>}
                   <div className="font-label-mono text-label-mono text-outline mt-1">
                     TC {onAirItem ? dur(elapsedFrames, rate) : '00:00:00:00'}
                   </div>
                   {onAirItem?.item.type === 'LIVE' && <div className="mt-2 border-t border-border-subtle pt-2">
-                    <div className="text-[9px] text-outline mb-1">AJUSTAR ESTIMATIVA DO AO VIVO</div>
+                    <div className="text-[10px] text-outline mb-1">AJUSTAR ESTIMATIVA DO AO VIVO</div>
                     <div className="flex flex-wrap justify-center gap-1">
                       {[-60, -30, -5, 5, 30, 60].map(seconds => <button key={seconds} disabled={adjustingLive||Boolean(pendingLiveAdjustment)} className="px-2 py-1 rounded border border-border-subtle text-[10px] hover:border-primary disabled:opacity-40" onClick={() => {
                         if(liveAdjustmentLock.current)return
@@ -879,7 +883,7 @@ export function MasterControlView({
                       <button disabled={adjustingLive} onClick={()=>{if(liveAdjustmentLock.current)return;liveAdjustmentLock.current=true;setAdjustingLive(true);void submitLiveAdjustment(pendingLiveAdjustment)}}>Conferir solicitação</button>
                       <button disabled={adjustingLive} onClick={()=>{setPendingLiveAdjustment(null);setLiveTimingMessage('Solicitação dispensada na tela; isso não desfaz um ajuste já gravado. Confira a duração antes de outro ajuste.')}}>Dispensar aviso</button>
                     </div>}
-                    <div className="text-[9px] text-outline mt-1">{onAirItem.item.liveConfig?.autoFollowOnEnd ?? onAirItem.item.liveAutoFollowOnEnd ? 'Saída automática ao fim da duração configurada.' : 'Saída manual: a estimativa não dispara TAKE.'}</div>
+                    <div className="text-[10px] text-outline mt-1">{onAirItem.item.liveConfig?.autoFollowOnEnd ?? onAirItem.item.liveAutoFollowOnEnd ? 'Saída automática ao fim da duração configurada.' : 'Saída manual: a estimativa não dispara TAKE.'}</div>
                     {liveTimingMessage && <div role="status" className="text-[10px] text-primary mt-1">{liveTimingMessage}</div>}
                     <LiveReplacementControl channelId={channel.id} info={live.liveReplacement??null} sources={sourceListReview?.sources??[]} />
                   </div>}
@@ -887,7 +891,7 @@ export function MasterControlView({
                 <div>
                   <div className="w-full bg-surface-container-lowest h-2 rounded-full overflow-hidden flex">
                     <div
-                      className="bg-on-air-crimson h-full rounded-full transition-all duration-300"
+                      className={`${overrunFrames > 0 ? 'bg-armed-amber' : 'bg-on-air-crimson'} h-full rounded-full transition-all duration-300`}
                       style={{ width: `${progressPercent}%` }}
                     ></div>
                   </div>
@@ -964,13 +968,13 @@ export function MasterControlView({
               <div className="bg-surface-panel/90 border border-border-strong p-space-md rounded-xl flex flex-col justify-between shadow-lg relative overflow-hidden backdrop-blur-md">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
-                    <span className="font-label-caps text-[9px] text-outline uppercase">Transição</span>
+                    <span className="font-label-caps text-[10px] text-outline uppercase">Transição</span>
                     <div className="inline-flex rounded-lg bg-surface-container-lowest p-0.5 border border-border-subtle">
                       {(['CUT', 'MIX', 'WIPE'] as const).map((mode) => (
                         <button
                           key={mode}
                           onClick={() => setTransitionMode(mode)}
-                          className={`px-1.5 py-0.5 rounded font-label-mono text-[9px] transition-colors cursor-pointer ${
+                          className={`px-1.5 py-0.5 rounded font-label-mono text-[10px] transition-colors cursor-pointer ${
                             transitionMode === mode
                               ? 'bg-primary-container text-on-primary-container font-semibold'
                               : 'text-on-surface-variant hover:text-on-surface'
@@ -989,7 +993,7 @@ export function MasterControlView({
                     <span className={`material-symbols-outlined text-[13px] ${isLocked ? 'text-status-ok' : 'text-armed-amber'}`}>
                       {isLocked ? 'lock' : 'lock_open'}
                     </span>
-                    <span className={`font-label-caps text-[9px] font-semibold ${isLocked ? 'text-status-ok' : 'text-armed-amber'}`}>
+                    <span className={`font-label-caps text-[10px] font-semibold ${isLocked ? 'text-status-ok' : 'text-armed-amber'}`}>
                       {isLocked ? 'TRAVADO' : 'PGM LIVRE'}
                     </span>
                   </button>
@@ -1007,7 +1011,7 @@ export function MasterControlView({
                   >
                     <span className="material-symbols-outlined text-[18px]">play_arrow</span>
                     <span>TAKE</span>
-                    <span className="bg-surface-base/20 px-1 py-0.2 rounded font-label-mono text-[8px] text-surface-base font-semibold">ESPAÇO</span>
+                    <span className="bg-surface-base/20 px-1 py-0.2 rounded font-label-mono text-[10px] text-surface-base font-semibold">ESPAÇO</span>
                   </button>
 
                   <button
@@ -1019,13 +1023,13 @@ export function MasterControlView({
                       if (target && !publicationRequired) onCue(target.item.id)
                     }}
                     className="col-span-4 h-12 bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer"
-                    title="Abre em CUE no PVW o item selecionado; sem seleção, abre o Próximo (F11)"
+                    title="Abre em CUE no PVW o item selecionado; sem seleção, abre o Próximo (F2)"
                   >
                     <div className="flex items-center gap-0.5">
                       <span className="material-symbols-outlined text-[14px]">skip_next</span>
                       <span>CUE</span>
                     </div>
-                    <span className="font-label-mono text-[8px] text-surface-base/80 font-medium">F11</span>
+                    <span className="font-label-mono text-[10px] text-surface-base/80 font-medium">F2</span>
                   </button>
 
                   <button
@@ -1038,13 +1042,13 @@ export function MasterControlView({
                     title={abortArmed ? 'CLIQUE PARA CONFIRMAR PARADA IMEDIATA' : 'Parada de emergência com trava de segurança (ABORT)'}
                   >
                     <span className="material-symbols-outlined text-[15px]">stop</span>
-                    <span className="font-label-mono text-[7px] uppercase font-bold">
+                    <span className="font-label-mono text-[10px] uppercase font-bold">
                       {abortArmed ? `${abortCountdown}s` : 'ABORT'}
                     </span>
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between font-label-mono text-[9px] text-outline pt-0.5 border-t border-border-subtle/40">
+                <div className="flex items-center justify-between font-label-mono text-[10px] text-outline pt-0.5 border-t border-border-subtle/40">
                   <span className="inline-flex items-center gap-1 text-on-surface-variant">
                     SINCRONISMO EXTERNO: N/D
                   </span>
@@ -1099,7 +1103,7 @@ export function MasterControlView({
                       : 'FORMATO DA FONTE: N/D'}
                   </span>
                   <span className="text-armed-amber font-semibold">
-                    DISPARO EM {dur(remainingFrames, rate)}
+                    {overrunFrames > 0 ? `ATRASADO +${dur(overrunFrames, rate)}` : `DISPARO EM ${dur(remainingFrames, rate)}`}
                   </span>
                 </div>
               </div>
@@ -1132,7 +1136,7 @@ export function MasterControlView({
                 <div className="flex items-center gap-1.5">
                   <button
                     onClick={() => setFolderModalOpen(true)}
-                    className="px-2 py-0.5 rounded bg-primary/15 hover:bg-primary/30 text-primary border border-primary/40 font-label-caps text-[9px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                    className="px-2 py-0.5 rounded bg-primary/15 hover:bg-primary/30 text-primary border border-primary/40 font-label-caps text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
                     title="Adicionar pastas locais ou em rede ao acervo MAM"
                   >
                     <span className="material-symbols-outlined text-[13px]">create_new_folder</span>
@@ -1140,7 +1144,7 @@ export function MasterControlView({
                   </button>
                   <button
                     onClick={() => { resetLiveInput(); setLiveInputModalOpen(true) }}
-                    className="px-2 py-0.5 rounded bg-accent-ice/15 hover:bg-accent-ice/30 text-accent-ice-bright border border-accent-ice/40 font-label-caps text-[9px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                    className="px-2 py-0.5 rounded bg-accent-ice/15 hover:bg-accent-ice/30 text-accent-ice-bright border border-accent-ice/40 font-label-caps text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
                     title="Adicionar fonte externa (DeckLink SDI, NDI, WebRTC, SRT) à biblioteca"
                   >
                     <span className="material-symbols-outlined text-[13px]">settings_input_antenna</span>
@@ -1226,13 +1230,13 @@ export function MasterControlView({
                             {asset.title}
                           </span>
                           {isLive && (
-                            <span className="text-accent-ice font-bold bg-accent-ice/15 px-1 py-0.2 rounded border border-accent-ice/30 text-[8px] shrink-0 whitespace-nowrap">
-                              AO VIVO
+                            <span className="text-accent-ice font-bold bg-accent-ice/15 px-1 py-0.2 rounded border border-accent-ice/30 text-[10px] shrink-0 whitespace-nowrap" title="Fonte ao vivo">
+                              {liveProtocolLabel((asset as any).sourceRef ?? asset.path)}
                             </span>
                           )}
                         </div>
 
-                        <div className="flex items-center gap-2 shrink-0 font-label-mono text-[9px] text-outline">
+                        <div className="flex items-center gap-2 shrink-0 font-label-mono text-[10px] text-outline">
                           <span className="text-on-surface font-semibold tabular-nums">
                             {dur(libraryFrames(asset, rate), rate)}
                           </span>
@@ -1537,7 +1541,7 @@ export function MasterControlView({
                                   {eventType === 'HARD_TIME' && (
                                     <span
                                       title="Ponto de Sincronismo Obrigatório de Rede (Hard Sync frame-accurate no frame zero)"
-                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-rose-950/80 border border-rose-600/70 text-rose-300 text-[9px] font-label-caps tracking-wider font-bold shrink-0 shadow-xs"
+                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-rose-950/80 border border-rose-600/70 text-rose-300 text-[10px] font-label-caps tracking-wider font-bold shrink-0 shadow-xs"
                                     >
                                       <span className="material-symbols-outlined text-[11px] text-rose-400">schedule</span>
                                       HARD SYNC
@@ -1546,7 +1550,7 @@ export function MasterControlView({
                                   {eventType === 'FIXED' && (
                                     <span
                                       title="Horário Fixo Ancorado no Relógio da Emissora"
-                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-amber-950/60 border border-amber-600/50 text-amber-300 text-[9px] font-label-caps tracking-wider font-bold shrink-0"
+                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-amber-950/60 border border-amber-600/50 text-amber-300 text-[10px] font-label-caps tracking-wider font-bold shrink-0"
                                     >
                                       <span className="material-symbols-outlined text-[11px] text-amber-400">lock_clock</span>
                                       FIXO
@@ -1555,7 +1559,7 @@ export function MasterControlView({
                                   {eventType === 'LIVE' && (
                                     <span
                                       title="Entrada de Sinal Ao Vivo Externa / Estúdio"
-                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-accent-ice/20 border border-accent-ice/50 text-accent-ice-bright text-[9px] font-label-caps tracking-wider font-bold shrink-0"
+                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-accent-ice/20 border border-accent-ice/50 text-accent-ice-bright text-[10px] font-label-caps tracking-wider font-bold shrink-0"
                                     >
                                       <span className="material-symbols-outlined text-[11px] text-accent-ice-bright animate-pulse">sensors</span>
                                       AO VIVO
@@ -1564,7 +1568,7 @@ export function MasterControlView({
                                   {eventType === 'FILLER' && (
                                     <span
                                       title="Item Elástico de Preenchimento (Gap Fill / Elastic)"
-                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-purple-950/60 border border-purple-500/50 text-purple-300 text-[9px] font-label-caps tracking-wider font-bold shrink-0"
+                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-purple-950/60 border border-purple-500/50 text-purple-300 text-[10px] font-label-caps tracking-wider font-bold shrink-0"
                                     >
                                       <span className="material-symbols-outlined text-[11px] text-purple-400">auto_awesome</span>
                                       FILLER
@@ -1591,7 +1595,7 @@ export function MasterControlView({
                                       {isProtected && (
                                         <span
                                           title="Material Comercial ou Editorial Protegido: Bloqueado contra corte e descarte automático"
-                                          className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 font-label-mono text-[8.5px] font-bold"
+                                          className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 font-label-mono text-[10px] font-bold"
                                         >
                                           <span className="material-symbols-outlined text-[10px] text-emerald-400">shield</span>
                                           PROT
@@ -1600,7 +1604,7 @@ export function MasterControlView({
                                       {trimmable && (
                                         <span
                                           title="Trimmable: Pode ter cauda reduzida para absorver atrasos e salvar a grade"
-                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[8.5px] font-medium tracking-tight"
+                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[10px] font-medium tracking-tight"
                                         >
                                           [TRIM]
                                         </span>
@@ -1608,7 +1612,7 @@ export function MasterControlView({
                                       {optional && (
                                         <span
                                           title="Opcional: Pode ser descartado da grade em caso de emergência temporal"
-                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[8.5px] font-medium tracking-tight"
+                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[10px] font-medium tracking-tight"
                                         >
                                           [OPT]
                                         </span>
@@ -1767,26 +1771,26 @@ export function MasterControlView({
                 <div className="flex-1 max-w-xl flex items-center gap-space-md">
                   <div className="flex-1 flex flex-col gap-1">
                     <div className="flex items-center gap-2">
-                      <span className="font-label-mono text-[9px] text-outline w-3">L</span>
+                      <span className="font-label-mono text-[10px] text-outline w-3">L</span>
                       <div className="h-2 flex-1 bg-surface-container-lowest rounded-full overflow-hidden flex border border-border-subtle/40">
                         <div
                           className="bg-status-ok h-full rounded-full transition-all duration-150"
                           style={{ width: `${leftPeakPercent}%` }}
                         ></div>
                       </div>
-                      <span className="font-label-mono text-[9px] text-on-surface tabular-nums w-8">
+                      <span className="font-label-mono text-[10px] text-on-surface tabular-nums w-8">
                         {nativeMeter ? meter.peakDbfs[0]?.toFixed(1) ?? 'N/D' : 'N/D'}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="font-label-mono text-[9px] text-outline w-3">R</span>
+                      <span className="font-label-mono text-[10px] text-outline w-3">R</span>
                       <div className="h-2 flex-1 bg-surface-container-lowest rounded-full overflow-hidden flex border border-border-subtle/40">
                         <div
                           className="bg-status-ok h-full rounded-full transition-all duration-150"
                           style={{ width: `${rightPeakPercent}%` }}
                         ></div>
                       </div>
-                      <span className="font-label-mono text-[9px] text-on-surface tabular-nums w-8">
+                      <span className="font-label-mono text-[10px] text-on-surface tabular-nums w-8">
                         {nativeMeter ? meter.peakDbfs[1]?.toFixed(1) ?? 'N/D' : 'N/D'}
                       </span>
                     </div>
@@ -2050,7 +2054,7 @@ export function MasterControlView({
                               </div>
                               <div className="flex items-center gap-2 font-label-mono text-label-mono text-outline">
                                 {isLive && (
-                                  <span className="text-accent-ice font-bold text-[9px] bg-accent-ice/15 px-1 py-0.2 rounded">
+                                  <span className="text-accent-ice font-bold text-[10px] bg-accent-ice/15 px-1 py-0.2 rounded">
                                     AO VIVO
                                   </span>
                                 )}
@@ -2489,11 +2493,11 @@ export function MasterControlView({
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         {root.present ? (
-                          <span className="px-1.5 py-0.5 rounded font-label-caps text-[9px] bg-status-ok/15 text-status-ok-bright font-bold border border-status-ok/30">
+                          <span className="px-1.5 py-0.5 rounded font-label-caps text-[10px] bg-status-ok/15 text-status-ok-bright font-bold border border-status-ok/30">
                             ONLINE
                           </span>
                         ) : (
-                          <span className="px-1.5 py-0.5 rounded font-label-caps text-[9px] bg-on-air-crimson/15 text-on-air-crimson font-bold border border-on-air-crimson/30">
+                          <span className="px-1.5 py-0.5 rounded font-label-caps text-[10px] bg-on-air-crimson/15 text-on-air-crimson font-bold border border-on-air-crimson/30">
                             FORA DO AR
                           </span>
                         )}

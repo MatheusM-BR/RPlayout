@@ -3,6 +3,7 @@ import type { Channel } from '@rplayout/protocol'
 import type { WorkspaceId } from '../WorkspaceShell.js'
 import { formatStandardRate } from '../../format.js'
 import { ContinuityCacheBadge } from './ContinuityCacheBadge.js'
+import { useAirState } from '../../domain/air-state.js'
 
 interface Props {
   activeWorkspace: WorkspaceId
@@ -33,6 +34,9 @@ export function BroadcastHeader({
   onOpenSettings,
   onOpenLiveInput,
 }: Props) {
+  // Telas que não recebem o transporte usam o estado do ar compartilhado.
+  const sharedAir = useAirState()
+  isLiveOnAir = isLiveOnAir ?? sharedAir ?? undefined
   const [channelDropdownOpen, setChannelDropdownOpen] = useState(false)
   const rate = channel.rate
   const fps = rate.num / rate.den
@@ -71,13 +75,13 @@ export function BroadcastHeader({
               RPlayout
             </span>
             {isLiveOnAir === undefined ? (
-              <span className="px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline text-[9px] whitespace-nowrap">PGM: N/D</span>
+              <span className="px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline text-[10px] whitespace-nowrap">PGM: N/D</span>
             ) : isLiveOnAir ? (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[9px] font-bold tracking-wider whitespace-nowrap shrink-0">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[10px] font-bold tracking-wider whitespace-nowrap shrink-0">
                 <span className="w-1.5 h-1.5 rounded-full bg-on-air-crimson animate-pulse"></span> NO AR
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline font-label-caps text-[9px] font-bold tracking-wider whitespace-nowrap shrink-0">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline font-label-caps text-[10px] font-bold tracking-wider whitespace-nowrap shrink-0">
                 <span className="material-symbols-outlined text-[12px] text-armed-amber">pause</span> PARADO
               </span>
             )}
@@ -97,7 +101,7 @@ export function BroadcastHeader({
                 <span className="font-body-md text-body-md font-semibold text-on-surface leading-tight">
                   {channel.name || 'Canal 1 - TV Principal HD'}
                 </span>
-                <span className="font-label-mono text-[9px] text-outline leading-tight">
+                <span className="font-label-mono text-[10px] text-outline leading-tight">
                   {formatStandardRate(channel.rate, channel.scan, channel.height)} • Master Principal
                 </span>
               </div>
@@ -120,7 +124,7 @@ export function BroadcastHeader({
                     }`}
                   >
                     <span>{ch.name}</span>
-                    <span className="font-label-mono text-[9px] opacity-75">
+                    <span className="font-label-mono text-[10px] opacity-75">
                       {formatStandardRate(ch.rate, ch.scan, ch.height)}
                     </span>
                   </button>
@@ -142,23 +146,23 @@ export function BroadcastHeader({
           >
             <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
               <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
-              <span className="font-label-caps text-[9px] text-on-surface-variant">SDI:</span>
-              <span className="font-label-caps text-[9px] text-outline font-bold">CONFIG.</span>
+              <span className="font-label-caps text-[10px] text-on-surface-variant">SDI:</span>
+              <span className="font-label-caps text-[10px] text-outline font-bold">CONFIG.</span>
             </div>
             <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
               <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
-              <span className="font-label-caps text-[9px] text-on-surface-variant">NDI:</span>
-              <span className="font-label-caps text-[9px] text-outline font-bold">CONFIG.</span>
+              <span className="font-label-caps text-[10px] text-on-surface-variant">NDI:</span>
+              <span className="font-label-caps text-[10px] text-outline font-bold">CONFIG.</span>
             </div>
             <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
               <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
-              <span className="font-label-caps text-[9px] text-on-surface-variant">NVENC:</span>
-              <span className="font-label-caps text-[9px] text-outline font-bold">MONITOR</span>
+              <span className="font-label-caps text-[10px] text-on-surface-variant">NVENC:</span>
+              <span className="font-label-caps text-[10px] text-outline font-bold">MONITOR</span>
             </div>
             <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
               <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
-              <span className="font-label-caps text-[9px] text-on-surface-variant">SRT:</span>
-              <span className="font-label-caps text-[9px] text-outline font-bold">CONFIG.</span>
+              <span className="font-label-caps text-[10px] text-on-surface-variant">SRT:</span>
+              <span className="font-label-caps text-[10px] text-outline font-bold">CONFIG.</span>
             </div>
           </div>
 
@@ -251,7 +255,7 @@ export function BroadcastHeader({
             >
               <span className="material-symbols-outlined text-[18px]">notifications</span>
               {problemasCount > 0 && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-on-air-crimson text-[9px] text-surface-base font-bold flex items-center justify-center animate-pulse">
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-on-air-crimson text-[10px] text-surface-base font-bold flex items-center justify-center animate-pulse">
                   {problemasCount}
                 </span>
               )}
@@ -279,7 +283,7 @@ export function BroadcastHeader({
               </div>
               <div className="flex items-center justify-end gap-space-xs mt-0.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span>
-                <span className="font-label-caps text-[9px] text-outline uppercase">
+                <span className="font-label-caps text-[10px] text-outline uppercase">
                   {authRequired ? 'AUTENTICADO' : 'ONLINE'}
                 </span>
               </div>

@@ -35,9 +35,9 @@ export function QcSafeAreaOverlay({container,getMedia}:Props){
   if(!rect)return null
   return <div data-qc-safe-area="picture" aria-hidden="true" className="absolute pointer-events-none flex items-center justify-center" style={rect}>
     <div className="w-[90%] h-[90%] border border-status-ok/30 relative">
-      <span className="absolute top-0.5 left-1 text-[7.5px] font-label-mono text-status-ok/70">ACTION SAFE (90%)</span>
+      <span className="absolute top-0.5 left-1 text-[10px] font-label-mono text-status-ok/70">ACTION SAFE (90%)</span>
       <div className="absolute inset-[5.5556%] border border-status-ok/40">
-        <span className="absolute top-0.5 left-1 text-[7.5px] font-label-mono text-status-ok/80">TITLE SAFE (80%)</span>
+        <span className="absolute top-0.5 left-1 text-[10px] font-label-mono text-status-ok/80">TITLE SAFE (80%)</span>
       </div>
     </div>
     <div className="absolute w-4 h-px bg-status-ok/40"/>

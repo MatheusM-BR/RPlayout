@@ -289,7 +289,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                 title="Clique para copiar o endereço"
               >
                 <div className="flex flex-col min-w-0">
-                  <span className="font-label-caps text-[9px] text-primary font-bold uppercase">{proto}</span>
+                  <span className="font-label-caps text-[10px] text-primary font-bold uppercase">{proto}</span>
                   <span className="font-label-mono text-[11px] text-on-surface truncate">{url}</span>
                 </div>
                 <span className="material-symbols-outlined text-outline group-hover:text-primary text-[16px] shrink-0">
@@ -346,32 +346,32 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         {isDecklink && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[9px] bg-blue-500/20 text-blue-400 border border-blue-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-blue-500/20 text-blue-400 border border-blue-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">cable</span> DECKLINK SDI
                           </span>
                         )}
                         {isSrt && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[9px] bg-purple-500/20 text-purple-400 border border-purple-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-purple-500/20 text-purple-400 border border-purple-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">stream</span> SRT STREAM
                           </span>
                         )}
                         {isRtmp && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[9px] bg-amber-500/20 text-amber-400 border border-amber-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">podcasts</span> RTMP / CDN
                           </span>
                         )}
                         {isFile && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[9px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">video_file</span> ARQUIVO
                           </span>
                         )}
                         {isNdi && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[9px] bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">hub</span> NDI STREAM
                           </span>
                         )}
                         {isOmt && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[9px] bg-teal-500/20 text-teal-400 border border-teal-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-teal-500/20 text-teal-400 border border-teal-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">lan</span> OMT IP
                           </span>
                         )}
@@ -381,7 +381,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                       </div>
 
                       <span
-                        className={`px-2 py-0.5 rounded font-label-caps text-[9px] font-bold border ${
+                        className={`px-2 py-0.5 rounded font-label-caps text-[10px] font-bold border ${
                           out.enabled
                             ? 'bg-status-ok/20 text-status-ok-bright border-status-ok/40'
                             : 'bg-surface-container text-outline border-border-subtle'
@@ -421,7 +421,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                             <button
                               key={proto}
                               onClick={() => handleCopy(url)}
-                              className="px-1.5 py-0.5 rounded bg-surface-card hover:bg-surface-container border border-border-subtle font-label-mono text-[9px] text-primary uppercase flex items-center gap-1 cursor-pointer transition-colors"
+                              className="px-1.5 py-0.5 rounded bg-surface-card hover:bg-surface-container border border-border-subtle font-label-mono text-[10px] text-primary uppercase flex items-center gap-1 cursor-pointer transition-colors"
                               title={`Copiar ${proto.toUpperCase()}: ${url}`}
                             >
                               <span>{proto}</span>
@@ -475,7 +475,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                     <button
                       onClick={() => handleToggle(out)}
                       disabled={controlsBlocked}
-                      className={`px-3 py-1 rounded font-label-caps text-[9.5px] font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
+                      className={`px-3 py-1 rounded font-label-caps text-[11px] font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
                         out.enabled
                           ? 'bg-on-air-crimson/15 hover:bg-on-air-crimson/25 text-on-air-crimson border-on-air-crimson/30'
                           : 'bg-status-ok/20 hover:bg-status-ok/30 text-status-ok-bright border-status-ok/40'
@@ -487,7 +487,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                     <button
                       onClick={() => handleDelete(out)}
                       disabled={controlsBlocked}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded bg-surface-panel hover:bg-error-container text-outline hover:text-on-error-container font-label-caps text-[9.5px] transition-colors cursor-pointer disabled:opacity-50"
+                      className="flex items-center gap-1 px-2.5 py-1 rounded bg-surface-panel hover:bg-error-container text-outline hover:text-on-error-container font-label-caps text-[11px] transition-colors cursor-pointer disabled:opacity-50"
                       title="Excluir esta saída"
                     >
                       <span className="material-symbols-outlined text-[14px]">delete</span>
@@ -523,13 +523,13 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
         <div className="rounded-lg border border-border-subtle bg-surface-base p-3 flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
             <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Presets SRT / RTMP ({presets.length})</span>
-            <span className="font-label-mono text-[9px] text-outline">credenciais mascaradas</span>
+            <span className="font-label-mono text-[10px] text-outline">credenciais mascaradas</span>
           </div>
           {presets.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {presets.map((preset) => (
                 <div key={preset.id} className="flex items-center gap-1 rounded border border-border-subtle bg-surface-panel px-2 py-1">
-                  <button type="button" onClick={() => void handleApplyPreset(preset)} disabled={isSaving} className="font-label-caps text-[9px] text-primary hover:text-accent-ice cursor-pointer disabled:opacity-50" title={preset.target}>
+                  <button type="button" onClick={() => void handleApplyPreset(preset)} disabled={isSaving} className="font-label-caps text-[10px] text-primary hover:text-accent-ice cursor-pointer disabled:opacity-50" title={preset.target}>
                     {preset.kind} · {preset.name}
                   </button>
                   <button type="button" onClick={() => void handleDeletePreset(preset)} disabled={isSaving} className="material-symbols-outlined text-[13px] text-outline hover:text-on-air-crimson cursor-pointer disabled:opacity-50" title="Remover preset">close</button>
@@ -541,14 +541,14 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
           )}
           <div className="flex gap-2">
             <input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder="Nome do novo preset" className="min-w-0 flex-1 bg-surface-panel text-on-surface px-2 py-1 rounded border border-border-subtle font-body-sm text-[11px] outline-none focus:border-primary" />
-            <button type="button" onClick={() => void handleSavePreset()} disabled={isSaving || (newKind !== 'SRT' && newKind !== 'RTMP') || !newTarget.trim()} className="px-2.5 py-1 rounded border border-primary/50 text-primary hover:bg-primary/10 font-label-caps text-[9px] cursor-pointer disabled:opacity-40">SALVAR PRESET</button>
+            <button type="button" onClick={() => void handleSavePreset()} disabled={isSaving || (newKind !== 'SRT' && newKind !== 'RTMP') || !newTarget.trim()} className="px-2.5 py-1 rounded border border-primary/50 text-primary hover:bg-primary/10 font-label-caps text-[10px] cursor-pointer disabled:opacity-40">SALVAR PRESET</button>
           </div>
         </div>
 
         <div className="flex flex-col gap-3">
           {/* Nome Amigável */}
           <div className="flex flex-col gap-1">
-            <label className="font-label-caps text-[9.5px] text-outline uppercase font-bold">Nome da Saída</label>
+            <label className="font-label-caps text-[11px] text-outline uppercase font-bold">Nome da Saída</label>
             <input
               type="text"
               placeholder="Ex: YouTube Live, SRT Main Link ou DeckLink Porta 1"

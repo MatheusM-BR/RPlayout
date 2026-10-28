@@ -273,7 +273,7 @@ export function SettingsView({
                 <h1 className="font-headline-md text-headline-md tracking-wider text-on-surface uppercase leading-none font-bold">
                   CONFIGURAÇÕES // SISTEMA & CANAIS
                 </h1>
-                <span className={`font-label-caps text-[9px] px-2 py-0.5 rounded border font-bold uppercase ${engine.ok ? 'bg-status-ok/20 text-status-ok-bright border-status-ok/40' : 'text-armed-amber border-armed-amber/40'}`}>
+                <span className={`font-label-caps text-[10px] px-2 py-0.5 rounded border font-bold uppercase ${engine.ok ? 'bg-status-ok/20 text-status-ok-bright border-status-ok/40' : 'text-armed-amber border-armed-amber/40'}`}>
                   {engine.label}
                 </span>
               </div>
@@ -324,7 +324,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">tv</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Canais & Formatos</span>
-                  <span className="font-label-mono text-[9px] opacity-75">Resolução, fps, varredura</span>
+                  <span className="font-label-mono text-[10px] opacity-75">Resolução, fps, varredura</span>
                 </div>
               </button>
 
@@ -339,7 +339,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">output</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Saídas de Transmissão</span>
-                  <span className="font-label-mono text-[9px] opacity-75">DeckLink, NDI, SRT, RTMP</span>
+                  <span className="font-label-mono text-[10px] opacity-75">DeckLink, NDI, SRT, RTMP</span>
                 </div>
               </button>
 
@@ -354,7 +354,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">input</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Entradas & Ao Vivo</span>
-                  <span className="font-label-mono text-[9px] opacity-75">SDI Ingest, NDI Discovery, SRT</span>
+                  <span className="font-label-mono text-[10px] opacity-75">SDI Ingest, NDI Discovery, SRT</span>
                 </div>
               </button>
 
@@ -369,7 +369,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">inventory_2</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Projetos & Restauração</span>
-                  <span className="font-label-mono text-[9px] opacity-75">Pontos seguros por canal</span>
+                  <span className="font-label-mono text-[10px] opacity-75">Pontos seguros por canal</span>
                 </div>
               </button>
 
@@ -384,7 +384,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">folder_special</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Acervo & Pastas MAM</span>
-                  <span className="font-label-mono text-[9px] opacity-75">Diretórios de mídia locais</span>
+                  <span className="font-label-mono text-[10px] opacity-75">Diretórios de mídia locais</span>
                 </div>
               </button>
 
@@ -399,7 +399,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">palette</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Categorias & Cores</span>
-                  <span className="font-label-mono text-[9px] opacity-75">Badges operacionais</span>
+                  <span className="font-label-mono text-[10px] opacity-75">Badges operacionais</span>
                 </div>
               </button>
 
@@ -414,7 +414,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">group</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Usuários & Acesso</span>
-                  <span className="font-label-mono text-[9px] opacity-75">Contas e papéis RBAC</span>
+                  <span className="font-label-mono text-[10px] opacity-75">Contas e papéis RBAC</span>
                 </div>
               </button>
 
@@ -429,7 +429,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">hub</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Integrações & API</span>
-                  <span className="font-label-mono text-[9px] opacity-75">Webhooks, SCTE-35</span>
+                  <span className="font-label-mono text-[10px] opacity-75">Webhooks, SCTE-35</span>
                 </div>
               </button>
             </div>
@@ -499,12 +499,12 @@ export function SettingsView({
                             </div>
                             <div className="flex items-center gap-1">
                               {isFocused && (
-                                <span className="font-label-caps text-[8.5px] px-1.5 py-0.5 rounded bg-primary text-surface-base font-bold">
+                                <span className="font-label-caps text-[10px] px-1.5 py-0.5 rounded bg-primary text-surface-base font-bold">
                                   CANAL EM FOCO
                                 </span>
                               )}
                               {isSelected && (
-                                <span className="font-label-caps text-[8.5px] px-1.5 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold">
+                                <span className="font-label-caps text-[10px] px-1.5 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold">
                                   SELECIONADO
                                 </span>
                               )}
@@ -527,7 +527,7 @@ export function SettingsView({
                                   e.stopPropagation()
                                   onSelectChannel(ch.id)
                                 }}
-                                className="px-2 py-1 rounded bg-surface-base hover:bg-surface-container text-on-surface font-label-caps text-[9.5px] border border-border-subtle cursor-pointer"
+                                className="px-2 py-1 rounded bg-surface-base hover:bg-surface-container text-on-surface font-label-caps text-[11px] border border-border-subtle cursor-pointer"
                               >
                                 Focar Canal
                               </button>
@@ -538,7 +538,7 @@ export function SettingsView({
                                 e.stopPropagation()
                                 handleDeleteChannel(ch.id, ch.name)
                               }}
-                              className="px-2 py-1 rounded bg-on-air-crimson/20 hover:bg-on-air-crimson/30 text-on-air-crimson font-label-caps text-[9.5px] border border-on-air-crimson/40 cursor-pointer disabled:opacity-30"
+                              className="px-2 py-1 rounded bg-on-air-crimson/20 hover:bg-on-air-crimson/30 text-on-air-crimson font-label-caps text-[11px] border border-on-air-crimson/40 cursor-pointer disabled:opacity-30"
                               title="Arquivar canal sem apagar histórico; exige PGM parado e CUE limpo."
                             >
                               Arquivar
@@ -593,27 +593,27 @@ export function SettingsView({
                       <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Presets:</span>
                       <button
                         onClick={() => applyVideoPreset('1080i59')}
-                        className="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary/30 text-primary font-label-caps text-[9.5px] font-bold border border-primary/40 cursor-pointer"
+                        className="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary/30 text-primary font-label-caps text-[11px] font-bold border border-primary/40 cursor-pointer"
                         title="Padrão Broadcast Nacional (1080i 59.94Hz, 29.97 fps, Top Field First)"
                       >
                         1080i59.94 (Padrão)
                       </button>
                       <button
                         onClick={() => applyVideoPreset('1080p59')}
-                        className="px-2 py-0.5 rounded bg-surface-panel hover:bg-surface-container font-label-caps text-[9.5px] border border-border-subtle cursor-pointer"
+                        className="px-2 py-0.5 rounded bg-surface-panel hover:bg-surface-container font-label-caps text-[11px] border border-border-subtle cursor-pointer"
                         title="Padrão Progressivo 59.94 fps"
                       >
                         1080p59.94
                       </button>
                       <button
                         onClick={() => applyVideoPreset('720p59')}
-                        className="px-2 py-0.5 rounded bg-surface-panel hover:bg-surface-container font-label-caps text-[9.5px] border border-border-subtle cursor-pointer"
+                        className="px-2 py-0.5 rounded bg-surface-panel hover:bg-surface-container font-label-caps text-[11px] border border-border-subtle cursor-pointer"
                       >
                         720p59.94
                       </button>
                       <button
                         onClick={() => applyVideoPreset('4k59')}
-                        className="px-2 py-0.5 rounded bg-surface-panel hover:bg-surface-container font-label-caps text-[9.5px] border border-border-subtle cursor-pointer"
+                        className="px-2 py-0.5 rounded bg-surface-panel hover:bg-surface-container font-label-caps text-[11px] border border-border-subtle cursor-pointer"
                       >
                         4K 59.94
                       </button>
@@ -831,7 +831,7 @@ export function SettingsView({
                         Crie credenciais para Operadores Master, Programadores de Playlist, Engenharia e Administradores de Sistema.
                       </p>
                     </div>
-                    <span className={`font-label-caps text-[9px] px-2.5 py-0.5 rounded font-bold ${
+                    <span className={`font-label-caps text-[10px] px-2.5 py-0.5 rounded font-bold ${
                       authRequired
                         ? 'bg-status-ok/20 text-status-ok-bright border border-status-ok/40'
                         : 'bg-primary/20 text-primary border border-primary/40'

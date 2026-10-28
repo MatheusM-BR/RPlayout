@@ -231,7 +231,7 @@ export function BroadcastMonitor({
             <span className="font-headline-md text-[10px] uppercase text-on-surface font-bold tracking-wider">
               {title}
             </span>
-            <span className="font-label-caps text-[8.5px] uppercase text-outline font-semibold tracking-wider">
+            <span className="font-label-caps text-[10px] uppercase text-outline font-semibold tracking-wider">
               {isPgm ? 'PRINCIPAL' : 'CUE MANUAL'}
             </span>
           </div>
@@ -258,8 +258,8 @@ export function BroadcastMonitor({
               {!effectiveMuted ? 'volume_up' : 'volume_off'}
             </span>
             <div className="flex flex-col text-left font-label-mono leading-none">
-              <span className="text-[8px] font-bold uppercase">{!effectiveMuted ? 'ÁUDIO' : 'OUVIR'}</span>
-              <span className="text-[8px] font-bold uppercase mt-0.5">{bus.toUpperCase()}</span>
+              <span className="text-[10px] font-bold uppercase">{!effectiveMuted ? 'ÁUDIO' : 'OUVIR'}</span>
+              <span className="text-[10px] font-bold uppercase mt-0.5">{bus.toUpperCase()}</span>
             </div>
           </button>
 
@@ -295,13 +295,13 @@ export function BroadcastMonitor({
         ) : asset ? (
           /* Consulta leve de arquivo: não confirma sinal/saída do engine. */
           <div className="relative w-full h-full flex items-center justify-center bg-black">
-            <span className="absolute bottom-1 left-1 right-1 z-30 rounded bg-black/80 px-2 py-1 text-[9px] text-amber-300 pointer-events-none">
+            <span className="absolute bottom-1 left-1 right-1 z-30 rounded bg-black/80 px-2 py-1 text-[10px] text-amber-300 pointer-events-none">
               {hasMediaError ? 'Proxy indisponível — confira a fila de mídia' : 'Proxy de consulta — não confirma PGM/PVW'}
             </span>
             {webrtcFailed && webrtcPath && (
               <button
                 onClick={() => setWebrtcFailed(false)}
-                className="absolute top-1.5 left-1.5 z-30 px-2 py-0.5 rounded bg-surface-card/90 hover:bg-surface-card text-[9px] font-label-mono text-outline hover:text-white border border-border-subtle cursor-pointer flex items-center gap-1 shadow"
+                className="absolute top-1.5 left-1.5 z-30 px-2 py-0.5 rounded bg-surface-card/90 hover:bg-surface-card text-[10px] font-label-mono text-outline hover:text-white border border-border-subtle cursor-pointer flex items-center gap-1 shadow"
                 title="Tentar reconectar stream WebRTC"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-armed-amber animate-pulse"></span>
@@ -391,14 +391,14 @@ export function BroadcastMonitor({
                     </button>
                     <button
                       onClick={(e) => handleFrameStep(-1, e)}
-                      className="px-1 py-0.5 rounded bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface text-[9px] font-bold cursor-pointer"
+                      className="px-1 py-0.5 rounded bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface text-[10px] font-bold cursor-pointer"
                       title="Voltar 1 quadro (-1f)"
                     >
                       -1f
                     </button>
                     <button
                       onClick={(e) => handleFrameStep(1, e)}
-                      className="px-1 py-0.5 rounded bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface text-[9px] font-bold cursor-pointer"
+                      className="px-1 py-0.5 rounded bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface text-[10px] font-bold cursor-pointer"
                       title="Avançar 1 quadro (+1f)"
                     >
                       +1f
@@ -442,7 +442,7 @@ export function BroadcastMonitor({
             <div className="font-label-caps text-[10px] uppercase font-semibold tracking-wider text-outline/80">
               {emptyMonitorText(isPgm,isPlaying,Boolean(webrtcPath&&webrtcFailed)).title}
             </div>
-            <div className="font-label-mono text-[9px] text-outline/60 text-center">
+            <div className="font-label-mono text-[10px] text-outline/60 text-center">
               {emptyMonitorText(isPgm,isPlaying,Boolean(webrtcPath&&webrtcFailed)).detail}
             </div>
           </div>
@@ -453,7 +453,7 @@ export function BroadcastMonitor({
             composição SVG/RGBA autoritativa. */}
 
         {/* Tarja Inferior Permanente (Design Stitch) */}
-        <div className="absolute bottom-0 inset-x-0 bg-surface-base/80 backdrop-blur-sm px-2 py-0.5 flex items-center justify-between font-label-mono text-[9px] text-on-surface z-10 pointer-events-none">
+        <div className="absolute bottom-0 inset-x-0 bg-surface-base/80 backdrop-blur-sm px-2 py-0.5 flex items-center justify-between font-label-mono text-[10px] text-on-surface z-10 pointer-events-none">
           <span
             className={`font-bold tabular-nums ${
               isPgm ? 'text-on-air-crimson' : 'text-armed-amber'

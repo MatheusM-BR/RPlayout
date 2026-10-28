@@ -48,7 +48,7 @@ export function SessionAlertsDialog({
                   Problemas &amp; Alertas da Sessão
                 </h3>
                 <span
-                  className={`font-label-caps text-[9px] px-2 py-0.5 rounded font-bold uppercase ${
+                  className={`font-label-caps text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
                     problemas.length > 0
                       ? 'bg-status-danger/20 text-status-danger-bright border border-status-danger/40'
                       : 'bg-status-ok/20 text-status-ok-bright border border-status-ok/40'
@@ -67,7 +67,7 @@ export function SessionAlertsDialog({
             {problemas.length > 0 && (
               <button
                 onClick={onLimpar}
-                className="px-2.5 py-1 rounded bg-surface-base hover:bg-surface-container text-outline hover:text-on-surface border border-border-subtle font-label-caps text-[9.5px] transition-colors cursor-pointer"
+                className="px-2.5 py-1 rounded bg-surface-base hover:bg-surface-container text-outline hover:text-on-surface border border-border-subtle font-label-caps text-[11px] transition-colors cursor-pointer"
                 title="Limpar todos os problemas da memória desta sessão"
               >
                 LIMPAR LOGS
@@ -114,7 +114,7 @@ export function SessionAlertsDialog({
                     className="p-3 bg-surface-panel rounded-xl border border-border-subtle flex items-start gap-3 shadow-xs hover:border-border-strong transition-colors"
                   >
                     <span
-                      className={`font-label-caps text-[9px] font-bold px-2 py-0.5 rounded border shrink-0 uppercase tracking-wider ${badgeClass}`}
+                      className={`font-label-caps text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 uppercase tracking-wider ${badgeClass}`}
                     >
                       {p.origem}
                     </span>
@@ -122,7 +122,7 @@ export function SessionAlertsDialog({
                       <p className="font-body-md text-[12.5px] text-on-surface font-mono break-words leading-relaxed">
                         {p.texto}
                       </p>
-                      <span className="font-label-mono text-[9.5px] text-outline mt-1 block">
+                      <span className="font-label-mono text-[11px] text-outline mt-1 block">
                         Registrado às {p.quando}
                       </span>
                     </div>

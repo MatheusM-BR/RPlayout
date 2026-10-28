@@ -354,7 +354,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
           >
             <span className="material-symbols-outlined text-[16px]">output</span>
             Perfis de Saída
-            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[9px] font-label-mono text-outline">
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[10px] font-label-mono text-outline">
               {outputs.length}
             </span>
           </button>
@@ -369,7 +369,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
           >
             <span className="material-symbols-outlined text-[16px]">share</span>
             Destinos &amp; Relays
-            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[9px] font-label-mono text-outline">
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[10px] font-label-mono text-outline">
               {data?.destinations.length ?? 0}
             </span>
           </button>
@@ -397,11 +397,11 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
             <span className="material-symbols-outlined text-[16px]">vital_signs</span>
             Saúde &amp; Telemetria
             {criticalPending !== null && criticalPending > 0 ? (
-              <span className="ml-1 px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 font-label-mono text-[9px] font-bold">
+              <span className="ml-1 px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 font-label-mono text-[10px] font-bold">
                 {criticalPending}
               </span>
             ) : warnPending !== null && warnPending > 0 ? (
-              <span className="ml-1 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-label-mono text-[9px] font-bold">
+              <span className="ml-1 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-label-mono text-[10px] font-bold">
                 {warnPending}
               </span>
             ) : null}
@@ -417,7 +417,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
           >
             <span className="material-symbols-outlined text-[16px]">person_add</span>
             Convidados (SRT)
-            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[9px] font-label-mono text-outline">
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[10px] font-label-mono text-outline">
               {data?.guests.length ?? 0}
             </span>
           </button>
@@ -680,7 +680,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           {output.bitrateKbps !== null && output.role!=='PREVIEW' && output.role!=='MONITOR' && (
                             <button
                               type="button"
-                              className="px-1.5 py-0.5 text-[9px] font-label-mono font-bold rounded bg-surface-panel hover:bg-surface-panel/80 text-primary border border-border-subtle cursor-pointer"
+                              className="px-1.5 py-0.5 text-[10px] font-label-mono font-bold rounded bg-surface-panel hover:bg-surface-panel/80 text-primary border border-border-subtle cursor-pointer"
                               onClick={() =>
                                 void guard(async () => {
                                   const result=await api.patchOutput(output.id, { bitrateKbps: null },channelId,output.configurationRevision)
@@ -885,7 +885,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
 
                         {relay && (
                           <div className="text-[11px] font-label-mono text-outline mt-1.5 flex flex-wrap items-center gap-2">
-                            <span className="px-1.5 py-0.2 rounded bg-surface-base border border-border-subtle text-[9px] text-primary">
+                            <span className="px-1.5 py-0.2 rounded bg-surface-base border border-border-subtle text-[10px] text-primary">
                               {relay.transport}{relay.transport === 'SRT' ? ` · ${relay.mode}` : ''}
                             </span>
                             {relay.latencyMs != null && <span>· Latência: {relay.latencyMs} ms</span>}

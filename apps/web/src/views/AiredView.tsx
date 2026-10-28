@@ -266,7 +266,7 @@ export function AiredView({
                 <h1 className="font-headline-md text-headline-md tracking-wider text-on-surface uppercase leading-none font-bold">
                   AIRED // REGISTRO AS-RUN
                 </h1>
-                <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold uppercase">
+                <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold uppercase">
                   REGISTRO OPERACIONAL
                 </span>
               </div>
@@ -328,10 +328,10 @@ export function AiredView({
               Duração registrada / estimada
             </span>
             <div className="font-timecode-display text-[26px] text-primary font-bold tabular-nums leading-tight mt-1">
-              {formattedTotalTime}
+              {entries === null ? '—' : formattedTotalTime}
             </div>
-            <span className="font-label-mono text-[9px] text-outline mt-0.5">
-              {totalFrames.toLocaleString()} quadros no log · inclui registros legados
+            <span className="font-label-mono text-[10px] text-outline mt-0.5">
+              {entries === null ? 'Consultando o registro…' : `${totalFrames.toLocaleString()} quadros no log · inclui registros legados`}
             </span>
           </div>
 
@@ -340,9 +340,9 @@ export function AiredView({
               Ocorrências registradas
             </span>
             <div className="font-timecode-display text-[26px] text-on-surface font-bold tabular-nums leading-tight mt-1">
-              {filteredEntries.length}
+              {entries === null ? '—' : filteredEntries.length}
             </div>
-            <span className="font-label-mono text-[9px] text-status-ok-bright mt-0.5">
+            <span className="font-label-mono text-[10px] text-status-ok-bright mt-0.5">
               {eofCount} fins de arquivo • {takeCount} cortes (TAKE/live)
             </span>
           </div>
@@ -352,9 +352,9 @@ export function AiredView({
               Paradas registradas
             </span>
             <div className="font-timecode-display text-[26px] text-status-ok-bright font-bold tabular-nums leading-tight mt-1">
-              {stopCount}
+              {entries === null ? '—' : stopCount}
             </div>
-            <span className="font-label-mono text-[9px] text-outline mt-0.5">
+            <span className="font-label-mono text-[10px] text-outline mt-0.5">
               {summary.missingDurations} durações N/D · {summary.estimates} estimadas
             </span>
           </div>
@@ -366,7 +366,7 @@ export function AiredView({
             <div className="font-timecode-display text-[24px] text-accent-ice-bright font-bold tabular-nums leading-tight mt-1">
               NÃO HOMOLOGADA
             </div>
-            <span className="font-label-mono text-[9px] text-status-ok-bright mt-0.5">
+            <span className="font-label-mono text-[10px] text-status-ok-bright mt-0.5">
               Origem/certificados não aferidos
             </span>
           </div>
@@ -386,7 +386,7 @@ export function AiredView({
 
               {/* Data/Hora Início */}
               <div className="flex items-center gap-1.5 bg-surface-panel px-2.5 py-1 rounded border border-border-subtle hover:border-border-strong transition-colors">
-                <span className="font-label-caps text-[8.5px] text-outline uppercase font-bold">De:</span>
+                <span className="font-label-caps text-[10px] text-outline uppercase font-bold">De:</span>
                 <input
                   type="date"
                   value={startDate}
@@ -413,7 +413,7 @@ export function AiredView({
 
               {/* Data/Hora Fim */}
               <div className="flex items-center gap-1.5 bg-surface-panel px-2.5 py-1 rounded border border-border-subtle hover:border-border-strong transition-colors">
-                <span className="font-label-caps text-[8.5px] text-outline uppercase font-bold">Até:</span>
+                <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Até:</span>
                 <input
                   type="date"
                   value={endDate}
@@ -440,7 +440,7 @@ export function AiredView({
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => handlePreset('24h')}
-                  className={`px-2 py-1 rounded font-label-caps text-[9.5px] transition-colors cursor-pointer ${
+                  className={`px-2 py-1 rounded font-label-caps text-[11px] transition-colors cursor-pointer ${
                     quickPreset === '24h'
                       ? 'bg-primary text-surface-base font-bold shadow-sm'
                       : 'bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface'
@@ -451,7 +451,7 @@ export function AiredView({
                 </button>
                 <button
                   onClick={() => handlePreset('today')}
-                  className={`px-2 py-1 rounded font-label-caps text-[9.5px] transition-colors cursor-pointer ${
+                  className={`px-2 py-1 rounded font-label-caps text-[11px] transition-colors cursor-pointer ${
                     quickPreset === 'today'
                       ? 'bg-primary text-surface-base font-bold shadow-sm'
                       : 'bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface'
@@ -462,7 +462,7 @@ export function AiredView({
                 </button>
                 <button
                   onClick={() => handlePreset('yesterday')}
-                  className={`px-2 py-1 rounded font-label-caps text-[9.5px] transition-colors cursor-pointer ${
+                  className={`px-2 py-1 rounded font-label-caps text-[11px] transition-colors cursor-pointer ${
                     quickPreset === 'yesterday'
                       ? 'bg-primary text-surface-base font-bold shadow-sm'
                       : 'bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface'
@@ -473,7 +473,7 @@ export function AiredView({
                 </button>
                 <button
                   onClick={() => handlePreset('7days')}
-                  className={`px-2 py-1 rounded font-label-caps text-[9.5px] transition-colors cursor-pointer ${
+                  className={`px-2 py-1 rounded font-label-caps text-[11px] transition-colors cursor-pointer ${
                     quickPreset === '7days'
                       ? 'bg-primary text-surface-base font-bold shadow-sm'
                       : 'bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface'
@@ -484,7 +484,7 @@ export function AiredView({
                 </button>
                 <button
                   onClick={() => handlePreset('all')}
-                  className={`px-2 py-1 rounded font-label-caps text-[9.5px] transition-colors cursor-pointer ${
+                  className={`px-2 py-1 rounded font-label-caps text-[11px] transition-colors cursor-pointer ${
                     quickPreset === 'all'
                       ? 'bg-primary text-surface-base font-bold shadow-sm'
                       : 'bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface'
@@ -553,7 +553,7 @@ export function AiredView({
         {/* 5. TABELA DENSA DE AS-RUN */}
         <div className="px-margin py-space-md flex flex-col min-h-[400px]">
           <div className="bg-surface-card rounded-xl border border-border-subtle shadow-md overflow-hidden flex flex-col min-h-[360px]">
-            <div className="grid grid-cols-12 bg-surface-panel px-4 py-2 font-label-caps text-[9.5px] text-outline uppercase tracking-wider border-b border-border-subtle items-center select-none sticky top-0 z-10">
+            <div className="grid grid-cols-12 bg-surface-panel px-4 py-2 font-label-caps text-[11px] text-outline uppercase tracking-wider border-b border-border-subtle items-center select-none sticky top-0 z-10">
               <div className="col-span-1">#</div>
               <div className="col-span-2">Início UTC → Fim</div>
               <div className="col-span-1">Duração</div>
@@ -593,13 +593,13 @@ export function AiredView({
 
                       <div className="col-span-2 font-label-mono text-[11px] text-on-surface tabular-nums">
                         <div className="flex items-center gap-1 flex-wrap">
-                          <span className="text-outline text-[9px]">{startDatePart}</span>
+                          <span className="text-outline text-[10px]">{startDatePart}</span>
                           <span>{startTimePart}</span>
                           <span className="text-outline mx-0.5">→</span>
                           {entry.endedAt ? (
                             <>
                               {endDatePart && endDatePart !== startDatePart && (
-                                <span className="text-outline text-[9px]">{endDatePart}</span>
+                                <span className="text-outline text-[10px]">{endDatePart}</span>
                               )}
                               <span className="text-outline">{endTimePart}</span>
                             </>
@@ -614,14 +614,14 @@ export function AiredView({
                       </div>
 
                       <div className="col-span-1">
-                        <span className="px-1.5 py-0.5 rounded font-label-caps text-[8.5px] bg-primary-container/30 text-primary font-bold uppercase border border-primary/30">
+                        <span className="px-1.5 py-0.5 rounded font-label-caps text-[10px] bg-primary-container/30 text-primary font-bold uppercase border border-primary/30">
                           {entry.type || 'VT'}
                         </span>
                       </div>
 
                       <div className="col-span-4 font-body-sm text-body-sm text-on-surface truncate pr-2">
                         <span className="font-semibold">{entry.title}</span>
-                        <span className="text-outline font-label-mono text-[9.5px] block truncate">
+                        <span className="text-outline font-label-mono text-[11px] block truncate">
                           ID: {entry.id} · {entry.executionKind ?? 'UNKNOWN'} · {duration.evidence}
                         </span>
                       </div>
@@ -629,7 +629,7 @@ export function AiredView({
                       {/* Badges Canônicos Fase C: INTEGRAL, TRUNCADO, DESCARTADO, FALHA */}
                       <div className="col-span-2">
                         <span
-                          className={`max-w-full px-1.5 py-0.5 rounded font-label-caps text-[9.5px] font-bold border inline-flex items-center gap-1 break-words ${asRunBadge.style}`}
+                          className={`max-w-full px-1.5 py-0.5 rounded font-label-caps text-[11px] font-bold border inline-flex items-center gap-1 break-words ${asRunBadge.style}`}
                         >
                           <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
                           <span>{asRunBadge.label}</span>
@@ -637,7 +637,7 @@ export function AiredView({
                       </div>
 
                       <div className="col-span-1 text-right">
-                        <span className="inline-block max-w-full break-words font-label-mono text-[8px] text-armed-amber font-bold bg-armed-amber/10 border border-armed-amber/30 px-1 py-0.5 rounded">
+                        <span className="inline-block max-w-full break-words font-label-mono text-[10px] text-armed-amber font-bold bg-armed-amber/10 border border-armed-amber/30 px-1 py-0.5 rounded">
                           NÃO HOMOLOGADA
                         </span>
                       </div>

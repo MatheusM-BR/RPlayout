@@ -438,7 +438,7 @@ export function DocsView({
                 <h1 className="font-headline-md text-headline-md tracking-wider text-on-surface uppercase leading-none font-bold">
                   DOCS // MANUAL OPERACIONAL BROADCAST
                 </h1>
-                <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-primary-container text-on-primary-container border border-border-strong font-bold uppercase">
+                <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-primary-container text-on-primary-container border border-border-strong font-bold uppercase">
                   VERSÃO 1.1 ESTÁVEL
                 </span>
               </div>
@@ -523,7 +523,7 @@ export function DocsView({
                           {chapter.title}
                         </span>
                         <span
-                          className={`text-[8.5px] px-1.5 py-0.2 rounded font-label-caps font-bold shrink-0 ${
+                          className={`text-[10px] px-1.5 py-0.2 rounded font-label-caps font-bold shrink-0 ${
                             isActive
                               ? 'bg-surface-base/30 text-on-primary-container'
                               : 'bg-surface-panel text-outline'
@@ -582,7 +582,7 @@ export function DocsView({
                       <h2 className="font-headline-md text-[18px] text-on-surface font-bold">
                         {activeChapter.title}
                       </h2>
-                      <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/40 font-bold">
+                      <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/40 font-bold">
                         {activeChapter.badge}
                       </span>
                     </div>
@@ -603,7 +603,7 @@ export function DocsView({
                         <span className="w-2 h-2 rounded-full bg-primary"></span>
                         {sec.title}
                       </h3>
-                      <span className="font-label-caps text-[9px] px-2 py-0.5 rounded bg-surface-panel border border-border-subtle text-outline font-bold">
+                      <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-surface-panel border border-border-subtle text-outline font-bold">
                         {sec.tag}
                       </span>
                     </div>

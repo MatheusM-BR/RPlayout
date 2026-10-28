@@ -258,7 +258,7 @@ export function CanonicalProtocolSelector({
             type="button"
             onClick={() => void fetchSources(true)}
             disabled={isLoadingSources}
-            className="text-primary hover:text-accent-ice text-[9px] lowercase flex items-center gap-1 cursor-pointer transition-colors"
+            className="text-primary hover:text-accent-ice text-[10px] lowercase flex items-center gap-1 cursor-pointer transition-colors"
             title="Escanear rede e placas novamente"
           >
             <span className={`material-symbols-outlined text-[12px] ${isLoadingSources ? 'animate-spin' : ''}`}>
@@ -305,7 +305,7 @@ export function CanonicalProtocolSelector({
               Blackmagic DeckLink • Portas Físicas de Hardware
             </span>
             {sdiFamily?.available && (
-              <span className="text-[9px] font-label-mono text-status-ok-bright font-bold px-1.5 py-0.2 rounded bg-status-ok/15 border border-status-ok/30">
+              <span className="text-[10px] font-label-mono text-status-ok-bright font-bold px-1.5 py-0.2 rounded bg-status-ok/15 border border-status-ok/30">
                 PLUGIN DISPONÍVEL
               </span>
             )}
@@ -325,14 +325,14 @@ export function CanonicalProtocolSelector({
               <button
                 type="button"
                 onClick={() => setUseManualSdi(true)}
-                className="self-start text-[9.5px] font-bold text-accent-ice hover:underline mt-1 cursor-pointer"
+                className="self-start text-[11px] font-bold text-accent-ice hover:underline mt-1 cursor-pointer"
               >
                 + Informar conector manualmente (ex: sdi:0)
               </button>
             </div>
           ) : useManualSdi ? (
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Conector SDI Manual
               </label>
               <div className="flex gap-2">
@@ -354,7 +354,7 @@ export function CanonicalProtocolSelector({
             </div>
           ) : (
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Porta Física Detectada pelo Driver
               </label>
               <select
@@ -384,7 +384,7 @@ export function CanonicalProtocolSelector({
               <span className="material-symbols-outlined text-primary text-[15px]">sensors</span>
               NDI • Fontes de Rede
             </span>
-            <span className="text-[9px] font-label-mono text-accent-ice font-bold">
+            <span className="text-[10px] font-label-mono text-accent-ice font-bold">
               Descoberta no servidor
             </span>
           </div>
@@ -393,7 +393,7 @@ export function CanonicalProtocolSelector({
           {mode === 'INPUT' ? (
             sources && sources.ndi.sources.length > 0 && !useManualNdi ? (
               <div className="flex flex-col gap-1">
-                <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+                <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                   Fontes NDI Listadas
                 </label>
                 <select
@@ -411,7 +411,7 @@ export function CanonicalProtocolSelector({
                 <button
                   type="button"
                   onClick={() => {setManualNdiSource(initialProtocolConfig(selectedNdiSource).name);setUseManualNdi(true)}}
-                  className="self-start text-[9.5px] font-bold text-accent-ice hover:underline mt-1 cursor-pointer"
+                  className="self-start text-[11px] font-bold text-accent-ice hover:underline mt-1 cursor-pointer"
                 >
                   + Digitar nome de stream NDI personalizado
                 </button>
@@ -424,7 +424,7 @@ export function CanonicalProtocolSelector({
                     Nenhuma fonte NDI listada nesta consulta. Isso não confirma ausência de sinal; informe o nome ou revise a descoberta no servidor:
                   </span>
                 </div>
-                <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+                <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                   Nome do Dispositivo / Stream NDI
                 </label>
                 <input
@@ -438,7 +438,7 @@ export function CanonicalProtocolSelector({
             )
           ) : (
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Nome da Fonte NDI Transmitida para a Rede
               </label>
               <input
@@ -448,7 +448,7 @@ export function CanonicalProtocolSelector({
                 placeholder="RPLAYOUT_PGM_MASTER"
                 className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
               />
-              <span className="text-[9px] text-outline">
+              <span className="text-[10px] text-outline">
                 Será anunciada automaticamente como fonte NDI para outros switchers (TriCaster, vMix, OBS).
               </span>
             </div>
@@ -464,7 +464,7 @@ export function CanonicalProtocolSelector({
               <span className="material-symbols-outlined text-purple-400 text-[15px]">lock</span>
               Secure Reliable Transport (SRT) • Conexão Ponto a Ponto
             </span>
-            <span className="text-[9px] font-label-mono text-purple-400 font-bold">
+            <span className="text-[10px] font-label-mono text-purple-400 font-bold">
               ARQ + AES-256
             </span>
           </div>
@@ -472,7 +472,7 @@ export function CanonicalProtocolSelector({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             {/* Host / Endereço */}
             <div className="sm:col-span-2 flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Host / Endereço IP Remoto ou Local
               </label>
               <input
@@ -486,7 +486,7 @@ export function CanonicalProtocolSelector({
 
             {/* Porta */}
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Porta UDP
               </label>
               <input
@@ -503,7 +503,7 @@ export function CanonicalProtocolSelector({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             {/* Modo de Conexão */}
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Modo SRT
               </label>
               <select
@@ -519,7 +519,7 @@ export function CanonicalProtocolSelector({
 
             {/* Latência (Buffer) */}
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Latência de Buffer (ms)
               </label>
               <input
@@ -535,12 +535,12 @@ export function CanonicalProtocolSelector({
 
             {/* Senha / Passphrase */}
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold flex items-center justify-between">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold flex items-center justify-between">
                 <span>Senha (Passphrase)</span>
                 <button
                   type="button"
                   onClick={() => setShowSrtPassphrase(!showSrtPassphrase)}
-                  className="text-outline hover:text-on-surface text-[9px] cursor-pointer"
+                  className="text-outline hover:text-on-surface text-[10px] cursor-pointer"
                 >
                   {showSrtPassphrase ? 'ocultar' : 'ver'}
                 </button>
@@ -565,7 +565,7 @@ export function CanonicalProtocolSelector({
               <span className="material-symbols-outlined text-red-400 text-[15px]">live_tv</span>
               RTMP / CDN Ingest • YouTube, Twitch, Facebook Live
             </span>
-            <span className="text-[9px] font-label-mono text-red-400 font-bold">
+            <span className="text-[10px] font-label-mono text-red-400 font-bold">
               Porta Padrão 1935
             </span>
           </div>
@@ -573,7 +573,7 @@ export function CanonicalProtocolSelector({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             {/* Endereço do Servidor */}
             <div className="sm:col-span-2 flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Endereço do Servidor / URL Base
               </label>
               <input
@@ -587,7 +587,7 @@ export function CanonicalProtocolSelector({
 
             {/* Porta */}
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Porta TCP
               </label>
               <input
@@ -604,12 +604,12 @@ export function CanonicalProtocolSelector({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {/* Chave de Transmissão / Senha */}
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold flex items-center justify-between">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold flex items-center justify-between">
                 <span>Chave de Transmissão (Stream Key / Senha)</span>
                 <button
                   type="button"
                   onClick={() => setShowRtmpKey(!showRtmpKey)}
-                  className="text-outline hover:text-on-surface text-[9px] cursor-pointer"
+                  className="text-outline hover:text-on-surface text-[10px] cursor-pointer"
                 >
                   {showRtmpKey ? 'ocultar' : 'ver'}
                 </button>
@@ -625,7 +625,7 @@ export function CanonicalProtocolSelector({
 
             {/* Latência / Buffer */}
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Latência / Buffer (ms)
               </label>
               <input
@@ -650,7 +650,7 @@ export function CanonicalProtocolSelector({
             Gravação Contínua em Disco (Matroska / MKV)
           </span>
           <div className="flex flex-col gap-1">
-            <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">
+            <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
               Caminho de Gravação
             </label>
             <input
@@ -676,7 +676,7 @@ export function CanonicalProtocolSelector({
           </span>
           {mode === 'INPUT' ? (
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">Fonte OMT descoberta na rede</label>
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">Fonte OMT descoberta na rede</label>
               <div className="flex gap-2">
                 <select
                   value={selectedOmtSource}
@@ -703,7 +703,7 @@ export function CanonicalProtocolSelector({
             </div>
           ) : (
             <div className="flex flex-col gap-1">
-              <label className="text-[9.5px] font-label-caps text-outline uppercase font-semibold">Nome da saída OMT publicada</label>
+              <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">Nome da saída OMT publicada</label>
               <input
                 type="text"
                 value={omtOutputName}
