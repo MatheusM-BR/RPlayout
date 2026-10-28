@@ -13,7 +13,11 @@ export function IntegrationsPanel({ channelId, onMessage }: { channelId: string;
   const [busy,setBusy] = useState(false)
   const busyRef = useRef(false)
   const [name, setName] = useState(''); const [url, setUrl] = useState('')
-  const [events, setEvents] = useState('asrun.started,asrun.ended,operational-playlist.published,editorial-playlist.imported,engine.error,scheduler.degraded,source.lost,source.failed,host.degraded')
+  // Padrão: o recomendado para Telegram (alertas críticos e lembretes sem ciente).
+  const [selected, setSelected] = useState<string[]>(TELEGRAM_EVENTS)
+  const [extraEvents, setExtraEvents] = useState('')
+  const events = [...selected, ...extraEvents.split(',').map(value => value.trim()).filter(Boolean)].join(',')
+  const isTelegram = /api\.telegram\.org\/bot/i.test(url)
   const generation = useRef(0)
   const listReads=useRef(new BoundedLatestRead()),reviewReads=useRef(new BoundedLatestRead())
   const [editing,setEditing]=useState<string|null>(null),[catalog,setCatalog]=useState<IntegrationCatalogReview|null>(null),[deliveryReview,setDeliveryReview]=useState<IntegrationDeliveryReview|null>(null),[loaded,setLoaded]=useState(false)
@@ -68,21 +72,48 @@ export function IntegrationsPanel({ channelId, onMessage }: { channelId: string;
     setDeliveryReview(reading.value)
   }
   return <div className="field">
-    <label>Gateways e alertas externos</label>
-    <p className="detalhe">Fila persistente: reenvio automático com espera progressiva, até 8 tentativas. O destinatário deve deduplicar pelo identificador de entrega. Senhas e caminhos de webhook não aparecem na tela.</p>
-    <p className="detalhe">Eventos: asrun.started, asrun.ended, operational-playlist.published, editorial-playlist.imported, engine.error, output.retrying, scheduler.degraded, source.lost, source.failed, source.on_pgm, host.degraded, host.running. Alarmes do PGM: signal.black, signal.freeze, signal.silence; recuperação medida: signal.black_recovered, signal.freeze_recovered, signal.silence_recovered. Fim da observação, sem confirmar recuperação: signal.black_unobserved, signal.freeze_unobserved, signal.silence_unobserved. A assinatura signal.recovered mantém a recuperação de silêncio anterior. Importar altera somente a grade editorial; a publicação operacional tem evento separado. Assinaturas antigas de playlist.published/playlist.inserted devem ser revisadas.</p>
+    <label>Alertas externos (Telegram ou webhook)</label>
+    <p className="detalhe">Cada evento escolhido vira uma mensagem. Fila persistente com até 8 tentativas; a URL privada não volta para a tela depois de salva.</p>
     {error && <p role="alert" className="text-on-air-crimson">{error}</p>}
     <ul className="canais">{items.map(item => <li key={item.id}>
       <div className="quem"><div className="nome">{item.name} <span className="pill">{item.enabled ? 'ATIVO':'DESLIGADO'}</span></div><div className="detalhe mono">{item.url} · {item.events.join(', ')}</div></div>
       <button className="btn small" disabled={busy} onClick={() => setEditing(item.id)}>Conferir / editar / testar</button>
     </li>)}</ul>
-    <div className="pastas-add">
-      <input aria-label="Nome do gateway" placeholder="nome" value={name} onChange={event => setName(event.target.value)}/>
-      <input aria-label="URL privada do gateway" placeholder="https://gateway/eventos" value={url} onChange={event => setUrl(event.target.value)}/>
-      <input aria-label="Eventos do gateway" placeholder="engine.error,source.lost,host.degraded" value={events} onChange={event => setEvents(event.target.value)}/>
-      <button className="btn small" disabled={busy} onClick={()=>void perform(inspectCatalog,'Catálogo conferido. Cadastre para este canal; mudanças posteriores serão recusadas.')}>CONFERIR CADASTRO</button>
-      <button className="btn small" disabled={busy || !name || !url||!catalog?.canEdit} onClick={() => void perform(async expected=>{await api.addIntegration({channelId,name,url,events:events.split(',').map(value=>value.trim()).filter(Boolean)},catalog!);if(generation.current===expected)setCatalog(null)},'Gateway cadastrado desligado; ative após conferir.',true,true)}>ADICIONAR CONFERIDO</button>
-    </div>
+    <section className="mt-3 grid gap-3 rounded-lg border border-border-subtle bg-surface-panel p-3" aria-label="Novo destino de alertas">
+      <h3 className="font-label-caps text-[12px] font-bold">NOVO DESTINO</h3>
+      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+        <label className="grid gap-1 text-[12px] text-outline">Nome
+          <input className="w-full rounded border border-border-subtle bg-surface-container px-2 py-1.5 text-[13px] text-on-surface" aria-label="Nome do gateway" placeholder="ex.: Telegram MCR" value={name} onChange={event => setName(event.target.value)}/>
+        </label>
+        <label className="grid gap-1 text-[12px] text-outline">URL privada
+          <input className="w-full rounded border border-border-subtle bg-surface-container px-2 py-1.5 text-[13px] text-on-surface" aria-label="URL privada do gateway" placeholder="https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<ID>" value={url} onChange={event => setUrl(event.target.value)}/>
+          <span className="text-[11px]">{isTelegram ? 'Telegram reconhecido: a mensagem sai em texto legível.' : 'Telegram: https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<ID>. Outros: webhook que aceite POST JSON.'}</span>
+        </label>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-[12px]">
+        <span className="text-outline">Atalhos:</span>
+        <button type="button" className="btn small" onClick={() => setSelected(TELEGRAM_EVENTS)}>Só alertas (recomendado)</button>
+        <button type="button" className="btn small" onClick={() => setSelected(EVENT_GROUPS.flatMap(group => group.events.filter(entry => entry.common).map(entry => entry.id)))}>Alertas + operação</button>
+        <button type="button" className="btn small" onClick={() => setSelected([])}>Limpar</button>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {EVENT_GROUPS.map(group => <fieldset key={group.title} className="rounded border border-border-subtle p-2">
+          <legend className="px-1 font-label-caps text-[11px] font-bold text-outline">{group.title}</legend>
+          {group.events.map(entry => <label key={entry.id} className="flex items-start gap-2 py-0.5 text-[12px]" title={entry.id}>
+            <input type="checkbox" checked={selected.includes(entry.id)} onChange={event => setSelected(current => event.target.checked ? [...current, entry.id] : current.filter(value => value !== entry.id))}/>
+            <span>{entry.label}</span>
+          </label>)}
+        </fieldset>)}
+      </div>
+      <label className="grid gap-1 text-[12px] text-outline">Outros eventos (separados por vírgula, opcional)
+        <input className="w-full rounded border border-border-subtle bg-surface-container px-2 py-1.5 text-[13px] text-on-surface" aria-label="Eventos do gateway" placeholder="ex.: signal.black_unobserved" value={extraEvents} onChange={event => setExtraEvents(event.target.value)}/>
+      </label>
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="btn small" disabled={busy} onClick={()=>void perform(inspectCatalog,'Catálogo conferido. Cadastre para este canal; mudanças posteriores serão recusadas.')}>1. CONFERIR</button>
+        <button className="btn small primary" disabled={busy || !name || !url||!catalog?.canEdit||!events} onClick={() => void perform(async expected=>{await api.addIntegration({channelId,name,url,events:events.split(',').map(value=>value.trim()).filter(Boolean)},catalog!);if(generation.current===expected)setCatalog(null)},'Destino cadastrado desligado: use "Conferir / editar / testar" para enviar um teste e ativar.',true,true)}>2. CADASTRAR</button>
+        <span className="text-[11px] text-outline">{selected.length + extraEvents.split(',').filter(value => value.trim()).length} evento(s). Entra desligado; teste e ative na lista acima.</span>
+      </div>
+    </section>
     <h3 className="mt-4">Últimas 100 entregas deste canal</h3>
     {!loaded&&<p role="status">Fila ainda não consultada; não é confirmação de fila vazia.</p>}
     {loaded&&!error && deliveries.length === 0 && <p className="detalhe">Nenhuma entrega registrada. Cadastre e ative um gateway com os eventos desejados.</p>}
@@ -103,3 +134,38 @@ export function IntegrationsPanel({ channelId, onMessage }: { channelId: string;
     {editing&&<IntegrationEditor key={editing} id={editing} onClose={()=>setEditing(null)} onSaved={message=>{const expected=generation.current;setEditing(null);onMessage(message);void reload(expected).catch(cause=>{if(generation.current===expected)setError('Operação confirmada, mas a lista não pôde ser atualizada. Não repita o comando. '+String(cause))})}}/>}
   </div>
 }
+
+const TELEGRAM_EVENTS = ['alert.critical', 'alert.reminder']
+const EVENT_GROUPS: Array<{ title: string; events: Array<{ id: string; label: string; common?: boolean }> }> = [
+  { title: 'Alertas', events: [
+    { id: 'alert.critical', label: 'Incidente crítico novo', common: true },
+    { id: 'alert.reminder', label: 'Lembrete: crítico sem ciente (2 em 2 min)', common: true },
+    { id: 'alert.warning', label: 'Aviso (inclui CPU alta em builds; ruidoso)' },
+  ] },
+  { title: 'Sinal do PGM', events: [
+    { id: 'signal.black', label: 'Tela preta', common: true },
+    { id: 'signal.freeze', label: 'Imagem congelada', common: true },
+    { id: 'signal.silence', label: 'Silêncio', common: true },
+    { id: 'signal.black_recovered', label: 'Tela preta recuperada' },
+    { id: 'signal.freeze_recovered', label: 'Congelamento recuperado' },
+    { id: 'signal.silence_recovered', label: 'Silêncio recuperado' },
+  ] },
+  { title: 'Engine, saídas e servidor', events: [
+    { id: 'engine.error', label: 'Erro do engine', common: true },
+    { id: 'output.retrying', label: 'Saída reconectando', common: true },
+    { id: 'host.degraded', label: 'Servidor degradado' },
+    { id: 'host.running', label: 'Servidor voltou' },
+  ] },
+  { title: 'Fontes ao vivo', events: [
+    { id: 'source.lost', label: 'Fonte perdida', common: true },
+    { id: 'source.failed', label: 'Fonte falhou' },
+    { id: 'source.on_pgm', label: 'Fonte entrou no PGM' },
+  ] },
+  { title: 'Grade e veiculação', events: [
+    { id: 'scheduler.degraded', label: 'Agendador degradado', common: true },
+    { id: 'operational-playlist.published', label: 'Grade publicada' },
+    { id: 'editorial-playlist.imported', label: 'Grade importada (editorial)' },
+    { id: 'asrun.started', label: 'Item entrou no ar' },
+    { id: 'asrun.ended', label: 'Item saiu do ar' },
+  ] },
+]

@@ -275,15 +275,16 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
       if (t < viewportStartMs || t > viewportEndMs) continue
       const leftP = ((t - viewportStartMs) / visibleDurationMs) * 100
 
-      // Formatar label SMPTE ou HH:MM
-      const frames = msToFrames(t, rate)
-      const tc = wallTime(frames, rate)
-      let label = tc.substring(0, 5) // HH:MM
-
+      // Rótulo direto do tempo (antes vinha de quadros arredondados para baixo
+      // e o eixo mostrava 00:59, 01:59…).
+      const totalSeconds = Math.round(t / 1000)
+      const two = (value: number) => String(value).padStart(2, '0')
+      const hhmm = `${two(Math.floor(totalSeconds / 3600) % 24)}:${two(Math.floor(totalSeconds / 60) % 60)}`
+      let label = hhmm
       if (activeZoomKey === 'ZOOM_1H' || activeZoomKey === 'ZOOM_5M') {
-        label = tc.substring(0, 8) // HH:MM:SS
+        label = `${hhmm}:${two(totalSeconds % 60)}`
       } else if (activeZoomKey === 'ZOOM_10S') {
-        label = tc // HH:MM:SS:FF
+        label = wallTime(msToFrames(t, rate), rate) // HH:MM:SS:FF
       }
 
       ticks.push({
@@ -293,7 +294,9 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
         leftPercent: leftP,
       })
     }
-    return ticks
+    // No máximo ~12 rótulos: com 24 marcas os textos se sobrepunham.
+    const every = Math.max(1, Math.ceil(ticks.length / 12))
+    return ticks.map((tick, index) => (index % every === 0 ? tick : { ...tick, label: '' }))
   }, [viewportStartMs, viewportEndMs, visibleDurationMs, zoomConfig.tickIntervalMs, activeZoomKey, rate])
 
   // Playhead posição horizontal em percentual
@@ -327,12 +330,9 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 <span className="font-headline-md text-headline-md uppercase text-on-surface font-bold tracking-wide">
                   Timeline Multicamada
                 </span>
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-status-ok/20 border border-status-ok/40 text-status-ok font-label-mono text-[12px] font-bold">
-                  <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span> NTP LOCKED
-                </span>
               </div>
               <div className="font-label-mono text-[12px] text-outline">
-                Sincronismo Frame-Accurate • {channel.name || 'Canal Master'}
+                Relógio do sistema • {channel.name || 'Canal Master'}
               </div>
             </div>
           </div>
@@ -340,7 +340,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
           {/* Timecode Luminescente do Playhead NTP no ar */}
           <div className="px-3 py-1 rounded-lg bg-surface-base/90 border border-on-air-crimson/50 flex flex-col items-center shadow-inner">
             <span className="font-label-caps text-[11px] text-on-air-crimson/90 font-bold uppercase tracking-wider">
-              PLAYHEAD NTP NO AR
+              HORA DO PLAYHEAD
             </span>
             <span className="font-timecode-display text-[22px] font-bold text-on-air-crimson tabular-nums leading-none tracking-wider drop-shadow-[0_0_8px_rgba(255,59,48,0.55)]">
               {playheadTimecode}
@@ -810,10 +810,6 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
               {detectedGaps === 0 ? '100% PREENCHIDA' : `${detectedGaps} LACUNA(S)`}
             </strong>
           </span>
-        </div>
-        <div className="flex items-center gap-space-sm text-status-ok font-bold">
-          <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span>
-          <span>PLAYHEAD ACCURACY: ±0 FRAMES (SMPTE-LOCKED)</span>
         </div>
       </div>
     </div>

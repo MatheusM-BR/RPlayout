@@ -77,12 +77,12 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
             <span className="text-outline">LINKS ATIVOS:</span>
             <span className="text-on-surface font-bold">{links.length}</span>
           </div>
-          <div className="px-2 py-1 rounded bg-status-ok/10 border border-status-ok/30 flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span>
+          {links.length > 0 && <div className="px-2 py-1 rounded bg-status-ok/10 border border-status-ok/30 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span>
             <span className="text-status-ok font-bold">
               {links.filter((l) => l.telemetry?.linkState === 'OPTIMAL').length} ÓTIMOS
             </span>
-          </div>
+          </div>}
         </div>
       </div>
 

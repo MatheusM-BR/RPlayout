@@ -208,7 +208,7 @@ export function MasterControlView({
   const [folderModalOpen, setFolderModalOpen] = useState(false)
 
   // Fase E: Alternância entre Grade Linear e Timeline Visual Multicamada 24H
-  const [viewMode, setViewMode] = useState<'LINEAR' | 'TIMELINE'>('LINEAR')
+  const viewMode = 'LINEAR' as 'LINEAR' | 'TIMELINE'
 
   // Fase E: Gaveta lateral interativa de Conflitos e Gaps (Conflict Drawer)
   const [isConflictDrawerOpen, setIsConflictDrawerOpen] = useState(false)
@@ -1275,33 +1275,9 @@ export function MasterControlView({
                         )}
                       </div>
 
-                      {/* SELETOR DE VISUALIZAÇÃO: GRADE LINEAR vs TIMELINE MULTICAMADA 24H (FASE E) */}
-                      <div className="flex items-center bg-surface-base p-1 rounded-lg border border-border-subtle">
-                        <button
-                          onClick={() => setViewMode('LINEAR')}
-                          className={`px-3 py-1 rounded font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                            viewMode === 'LINEAR'
-                              ? 'bg-surface-panel text-accent-ice border border-accent-ice/50 shadow-sm'
-                              : 'text-outline hover:text-on-surface hover:bg-surface-container'
-                          }`}
-                          title="Visualização em Lista Tabular Monumental"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">table_rows</span>
-                          GRADE LINEAR
-                        </button>
-                        <button
-                          onClick={() => setViewMode('TIMELINE')}
-                          className={`px-3 py-1 rounded font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                            viewMode === 'TIMELINE'
-                              ? 'bg-accent-ice text-white shadow-sm ring-1 ring-accent-ice/80'
-                              : 'text-outline hover:text-on-surface hover:bg-surface-container'
-                          }`}
-                          title="Visualização Contínua em 4 Pistas (NTP, CG, SCTE, R128)"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">view_timeline</span>
-                          TIMELINE MULTICAMADA (24H)
-                        </button>
-                      </div>
+                      {/* A "Timeline multicamada" saiu: LUFS, SCTE e grafismos dela eram
+                          estimados pelo título do item, não dados reais. A linha do tempo
+                          de 24 h com lacunas reais fica na Playlist. */}
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -1650,7 +1626,7 @@ export function MasterControlView({
                                         handleOpenEditLine(item)
                                       }}
                                       className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
-                                      title="Editar Disciplina Temporal & Flags (Fase A)"
+                                      title="Editar horário e compensação do item"
                                     >
                                       <span className="material-symbols-outlined text-[15px]">tune</span>
                                     </button>
@@ -1978,7 +1954,7 @@ export function MasterControlView({
                 </span>
                 <div>
                   <h3 className="font-headline-md text-headline-md font-bold uppercase tracking-wide">
-                    {editingItemView ? 'Configurações de Automação do Item (Fase A)' : 'Adicionar Linha na Grade'}
+                    {editingItemView ? 'Horário e compensação do item' : 'Adicionar Linha na Grade'}
                   </h3>
                   <p className="font-label-mono text-label-mono text-outline">
                     {editingItemView
@@ -2202,10 +2178,10 @@ export function MasterControlView({
                 <div className="flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[16px] text-accent-ice-bright">schedule</span>
                   <span className="font-label-caps text-label-caps text-on-surface font-bold uppercase tracking-wider">
-                    Disciplina Temporal &amp; Políticas de Compensação (Fase A)
+                    Horário e compensação
                   </span>
                 </div>
-                <span className="text-[12px] font-label-mono text-outline">FRAME-ACCURATE ENGINE</span>
+                
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

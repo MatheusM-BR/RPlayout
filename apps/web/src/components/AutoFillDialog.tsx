@@ -192,11 +192,11 @@ export function AutoFillDialog(props:Props) {
               <h2 className="font-headline-sm text-sm font-bold text-on-surface tracking-wide uppercase flex items-center gap-2">
                 Assistente de AutoFill
                 <span className="px-1.5 py-0.2 rounded bg-primary/20 text-primary text-[12px] font-label-mono">
-                  MAM AI 24H
+                  ACERVO
                 </span>
               </h2>
               <span className="font-label-mono text-[12px] text-outline">
-                Preenchimento inteligente e ponderado de gaps e faixas da grade linear
+                Propõe arquivos aprovados do acervo para preencher lacunas e faixas; nada entra sem você aplicar
               </span>
             </div>
           </div>

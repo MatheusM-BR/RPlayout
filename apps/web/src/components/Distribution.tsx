@@ -276,11 +276,11 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                 {data?.server.running ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                    ONLINE ({data.server.host})
+                    MEDIAMTX ATIVO ({data.server.host})
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30">
-                    OFFLINE
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30" title="O servidor de distribuição (RTMP/SRT/HLS/monitor) não está rodando">
+                    MEDIAMTX PARADO
                   </span>
                 )}
                 {data?.server.exposed && (
@@ -1191,10 +1191,10 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                     Eventos Pendentes
                   </span>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 font-label-mono text-xs font-bold border border-red-500/30">
+                    <span className={`px-2 py-0.5 rounded font-label-mono text-xs font-bold border ${criticalPending ? 'bg-red-500/20 text-red-400 border-red-500/30' : 'bg-surface-container text-outline border-border-subtle'}`}>
                       Críticos sem reconhecimento: {criticalPending??'N/D'}
                     </span>
-                    <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-label-mono text-xs font-bold border border-amber-500/30">
+                    <span className={`px-2 py-0.5 rounded font-label-mono text-xs font-bold border ${warnPending ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' : 'bg-surface-container text-outline border-border-subtle'}`}>
                       Atenção sem reconhecimento: {warnPending??'N/D'}
                     </span>
                   </div>
@@ -1260,7 +1260,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                     {visibleHealthEvents.map((event) => (
                       <tr key={event.id} className="border-b border-border-subtle/50 hover:bg-surface-panel/60 transition-colors">
                         <td className="py-2.5 px-3 text-outline">
-                          {event.occurredAt.replace('T', ' ').slice(0, 19)}
+                          <span title={`UTC: ${event.occurredAt}`}>{new Date(event.occurredAt).toLocaleString('pt-BR', { hour12: false })}</span>
                         </td>
                         <td className="py-2.5 px-3 font-semibold text-on-surface">{event.component}</td>
                         <td className="py-2.5 px-3">
@@ -1419,7 +1419,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
         {/* FOOTER MODAL */}
         <footer className="px-6 py-3.5 border-t border-border-subtle flex items-center justify-between shrink-0 bg-surface-panel/40">
           <span className="text-[12px] font-label-mono text-outline">
-            RPlayout Broadcast Distribution Server · Padrão SMPTE / ITU-R
+            Distribuição pelo MediaMTX desta estação
           </span>
           <button
             type="button"

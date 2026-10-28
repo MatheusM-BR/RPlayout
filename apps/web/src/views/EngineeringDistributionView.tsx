@@ -165,6 +165,7 @@ export function EngineeringDistributionView({
   })
 
   const restartEngine = async () => {
+    if (!window.confirm(`Reiniciar o engine de ${channel.name}? O ar para por alguns segundos.`)) return
     setEngineeringAction('restart')
     try {
       await api.restartChannel(channel.id)

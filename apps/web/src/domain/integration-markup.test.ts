@@ -18,5 +18,5 @@ it('editor não habilita gravação ou teste antes de conferir destino e escopo'
 })
 it('fila ainda não consultada não é apresentada como vazia ou resposta de gateway',()=>{
   const markup=renderToStaticMarkup(createElement(IntegrationsPanel,{channelId:'ch',onMessage:()=>{}}))
-  expect(markup).toContain('Fila ainda não consultada');expect(markup).not.toContain('Nenhuma entrega registrada');expect(markup).toContain('CONFERIR CADASTRO')
+  expect(markup).toContain('Fila ainda não consultada');expect(markup).not.toContain('Nenhuma entrega registrada');expect(markup).toContain('1. CONFERIR')
 })

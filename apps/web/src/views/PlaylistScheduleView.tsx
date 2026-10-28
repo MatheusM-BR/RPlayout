@@ -1744,7 +1744,7 @@ export function PlaylistScheduleView({
                 <div
                   onClick={() => handleOpenAutoFillForGap(timelineData.gaps[0])}
                   className="bg-armed-amber/15 border border-armed-amber/50 p-2 rounded flex items-center justify-between cursor-pointer hover:bg-armed-amber/25 transition-colors"
-                  title="Clique para abrir Autofill inteligente de gaps"
+                  title="Abrir Auto-Fill para esta lacuna"
                 >
                   <div className="flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-armed-amber text-[16px]">warning</span>
@@ -2070,7 +2070,7 @@ export function PlaylistScheduleView({
                 <button
                   onClick={() => handleOpenAutoFill()}
                   className="flex items-center gap-1 bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle px-2 py-1 rounded font-body-sm text-[11px] transition-colors cursor-pointer"
-                  title="Preenchimento automático inteligente de buracos na grade"
+                  title="Propor arquivos do acervo para preencher lacunas"
                 >
                   <span className="material-symbols-outlined text-[15px] text-armed-amber">auto_fix_high</span>
                   <span>Auto-Fill Gaps</span>

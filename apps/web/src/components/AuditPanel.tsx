@@ -1,3 +1,4 @@
+import { localDateTime, localParts } from '../format.js'
 import { useEffect, useMemo, useState } from 'react'
 import { csvRows } from '../domain/csv.js'
 import { api } from '../api.js'
@@ -45,7 +46,7 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
         (entry) =>
           (!user || (entry.actorUsername ?? '').toLowerCase().includes(user.toLowerCase())) &&
           (!action || entry.kind === action) &&
-          (!date || entry.createdAt.slice(0, 10) === date),
+          (!date || localParts(entry.createdAt).date === date),
       ),
     [entries, user, action, date],
   )
@@ -144,7 +145,7 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
                   className="border-b border-border-subtle/30 hover:bg-surface-panel/40 transition-colors"
                 >
                   <td className="py-2 px-space-sm text-outline tabular-nums">
-                    {entry.createdAt.replace('T', ' ').slice(0, 19)}
+                    <span title={`UTC: ${entry.createdAt}`}>{localDateTime(entry.createdAt)}</span>
                   </td>
                   <td className="py-2 px-space-sm text-on-surface font-semibold">
                     {entry.actorUsername ?? 'Sessão Local'}

@@ -171,7 +171,7 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
                       : 'bg-armed-amber/20 text-armed-amber border border-armed-amber/40'
                   }`}
                 >
-                  {issue.type}
+                  {ISSUE_LABEL[issue.type] ?? issue.type}
                 </span>
               </div>
               <div className="font-body-sm text-body-sm font-semibold text-on-surface truncate">
@@ -193,3 +193,5 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
     </aside>
   )
 }
+
+const ISSUE_LABEL: Record<string, string> = { GAP: 'LACUNA', OVERRUN: 'ESTOURO', ANCHOR: 'HORÁRIO FIXO', MISSING_MEDIA: 'ARQUIVO AUSENTE', OFFLINE: 'FONTE FORA', DURATION_ZERO: 'DURAÇÃO ZERO' }

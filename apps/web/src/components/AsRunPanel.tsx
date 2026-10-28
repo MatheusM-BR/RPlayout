@@ -1,3 +1,4 @@
+import { localDateTime, localParts } from '../format.js'
 import { useEffect, useState } from 'react'
 import type { Rate } from '@rplayout/protocol'
 import { api } from '../api.js'
@@ -41,8 +42,8 @@ export function AsRunPanel({ channelId, rate, onClose }: Props) {
       (entry) =>
         (!filtro.nome || entry.title.toLowerCase().includes(filtro.nome.toLowerCase())) &&
         (!filtro.categoria || entry.type === filtro.categoria) &&
-        (!filtro.data || entry.startedAt.slice(0, 10) === filtro.data) &&
-        (!filtro.hora || entry.startedAt.slice(11, 16).startsWith(filtro.hora)),
+        (!filtro.data || localParts(entry.startedAt).date === filtro.data) &&
+        (!filtro.hora || localParts(entry.startedAt).time.startsWith(filtro.hora)),
     ) ?? null
 
   return (
@@ -63,7 +64,7 @@ export function AsRunPanel({ channelId, rate, onClose }: Props) {
                 Relatório de Exibição Comercial (As-Run Log)
               </h2>
               <p className="font-label-mono text-label-mono text-outline">
-                Comprovante oficial de veiculação linear com timestamp NTP e aferição de frames no ar
+                Registro operacional de veiculação (relógio da estação; não homologado)
               </p>
             </div>
           </div>
@@ -165,11 +166,11 @@ export function AsRunPanel({ channelId, rate, onClose }: Props) {
                       }`}
                     >
                       <td className="py-2 px-space-sm text-outline tabular-nums">
-                        {entry.startedAt.replace('T', ' ').slice(0, 19)}
+                        <span title={`UTC: ${entry.startedAt}`}>{localDateTime(entry.startedAt)}</span>
                       </td>
                       <td className="py-2 px-space-sm tabular-nums">
                         {entry.endedAt ? (
-                          <span className="text-outline">{entry.endedAt.replace('T', ' ').slice(0, 19)}</span>
+                          <span className="text-outline"><span title={`UTC: ${entry.endedAt}`}>{localDateTime(entry.endedAt)}</span></span>
                         ) : (
                           <span className="inline-flex items-center gap-1 font-label-caps text-[11px] px-1.5 py-0.5 rounded bg-on-air-crimson text-surface-base font-bold animate-pulse">
                             NO AR AGORA

@@ -1,4 +1,5 @@
 import type { Problema } from '../Problemas.js'
+import { groupProblems } from '../../domain/group-problems.js'
 
 interface Props {
   open: boolean
@@ -58,7 +59,7 @@ export function SessionAlertsDialog({
                 </span>
               </div>
               <p className="font-body-sm text-[11px] text-outline mt-0.5">
-                Central unificada de anomalias em tempo real com atalhos diretos para Configurações e Engenharia
+                Erros vistos por esta tela; repetidos aparecem agrupados
               </p>
             </div>
           </div>
@@ -95,35 +96,42 @@ export function SessionAlertsDialog({
                   Nenhum problema detectado na sessão
                 </h4>
                 <p className="font-body-sm text-[11.5px] text-outline mt-1 max-w-md">
-                  O engine Rust, pipelines de transporte e conexões de rede estão operando normalmente sem erros ou anomalias registradas.
+                  Nada registrado por esta tela desde que foi aberta. Incidentes do servidor ficam em Monitor › Incidentes do canal.
                 </p>
               </div>
             </div>
           ) : (
             <div className="flex flex-col gap-2">
-              {problemas.map((p) => {
+              {groupProblems(problemas).map((group) => {
                 let badgeClass = 'bg-surface-container text-outline border-border-subtle'
-                if (p.origem === 'SERVIDOR') badgeClass = 'bg-blue-500/20 text-blue-400 border-blue-500/40'
-                if (p.origem === 'SAÍDA') badgeClass = 'bg-amber-500/20 text-amber-400 border-amber-500/40'
-                if (p.origem === 'ARQUIVO') badgeClass = 'bg-purple-500/20 text-purple-400 border-purple-500/40'
-                if (p.origem === 'TELA') badgeClass = 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40'
-
+                if (group.origem === 'SERVIDOR') badgeClass = 'bg-blue-500/20 text-blue-400 border-blue-500/40'
+                if (group.origem === 'SAÍDA') badgeClass = 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                if (group.origem === 'ARQUIVO') badgeClass = 'bg-purple-500/20 text-purple-400 border-purple-500/40'
+                if (group.origem === 'TELA') badgeClass = 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40'
+                const last = group.itens[group.itens.length - 1]!
+                const single = group.itens.length === 1
                 return (
                   <div
-                    key={p.id}
+                    key={group.key}
                     className="p-3 bg-surface-panel rounded-xl border border-border-subtle flex items-start gap-3 shadow-xs hover:border-border-strong transition-colors"
                   >
                     <span
                       className={`font-label-caps text-[11px] font-bold px-2 py-0.5 rounded border shrink-0 uppercase tracking-wider ${badgeClass}`}
                     >
-                      {p.origem}
+                      {group.origem}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <p className="font-body-md text-[12.5px] text-on-surface font-mono break-words leading-relaxed">
-                        {p.texto}
+                      <p className="font-body-md text-[13px] text-on-surface break-words leading-relaxed">
+                        {single ? last.texto : <><strong>{group.itens.length}×</strong> {group.motivo}</>}
                       </p>
+                      {!single && group.sujeitos.length > 0 && (
+                        <details className="mt-1">
+                          <summary className="cursor-pointer text-[12px] text-outline">{group.sujeitos.slice(0, 3).join(', ')}{group.sujeitos.length > 3 ? ` e mais ${group.sujeitos.length - 3}` : ''}</summary>
+                          <ul className="mt-1 list-disc pl-5 text-[12px] text-on-surface-variant">{group.sujeitos.map(subject => <li key={subject}>{subject}</li>)}</ul>
+                        </details>
+                      )}
                       <span className="font-label-mono text-[12px] text-outline mt-1 block">
-                        Registrado às {p.quando}
+                        {single ? `Registrado às ${last.quando}` : `Último às ${last.quando}`}
                       </span>
                     </div>
                   </div>

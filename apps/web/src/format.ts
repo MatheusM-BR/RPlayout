@@ -26,3 +26,16 @@ export function formatStandardRate(rate: Rate, scan?: string, height = 1080): st
 export function rateFpsLabel(rate: Rate, scan?: string): string {
   return formatStandardRate(rate, scan)
 }
+
+/** Data e hora local da estação para um instante ISO (registros guardam UTC). */
+export function localDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const at = new Date(iso)
+  return Number.isNaN(at.getTime()) ? iso : at.toLocaleString('pt-BR', { hour12: false })
+}
+
+/** Data (AAAA-MM-DD) e hora (HH:MM) locais para filtrar registros em UTC. */
+export function localParts(iso: string): { date: string; time: string } {
+  const at = new Date(iso), two = (value: number) => String(value).padStart(2, '0')
+  return { date: `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`, time: `${two(at.getHours())}:${two(at.getMinutes())}` }
+}

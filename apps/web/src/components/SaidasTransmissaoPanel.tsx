@@ -200,6 +200,9 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
 
   const handleRestartChannel = async () => {
     if(controlsBlocked)return
+    // Reiniciar o engine tira o canal do ar por alguns segundos: antes era um
+    // clique só, num botão azul de ação principal.
+    if(!window.confirm(`Reiniciar o engine e as saídas de ${channel.name}? O ar para por alguns segundos e as saídas reconectam.`))return
     setIsSaving(true)
     try {
       await api.restartChannel(channel.id)
@@ -250,7 +253,8 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
           <button
             onClick={handleRestartChannel}
             disabled={controlsBlocked}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-primary-container hover:bg-accent-ice text-on-primary-container font-headline-md text-headline-md tracking-wide transition-all shadow-sm cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/50 font-label-caps text-[11px] font-bold transition-all cursor-pointer disabled:opacity-50"
+            title="Derruba o ar por alguns segundos; pede confirmação"
           >
             <span className="material-symbols-outlined text-[16px]">restart_alt</span>
             <span>REINICIAR SAÍDAS / ENGINE</span>
