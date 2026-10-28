@@ -1,3 +1,4 @@
+import { confirmAction } from '../../domain/confirm.js'
 import { deniedReason, useCan } from '../../domain/permissions.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api.js'
@@ -74,7 +75,7 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
   const toggleAutomation = async () => {
     if (!status) return
     const enabled = !status.automaticActionsEnabled
-    if (enabled && !window.confirm('Autorizar a sonda a intervir no PGM conforme a política selecionada? A ação exige engine real e configuração verificada. O retorno da contingência é manual.')) return
+    if (enabled && !(await confirmAction('Autorizar a sonda a intervir no PGM conforme a política selecionada? A ação exige engine real e configuração verificada. O retorno da contingência é manual.'))) return
     setPending(true)
     try { await api.setPgmProbePolicy(channelId, enabled); await refresh() }
     catch (error) { if (currentChannel.current === channelId) setFailure(error instanceof Error ? error.message : String(error)) }

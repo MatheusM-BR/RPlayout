@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import {useEffect,useRef,useState} from 'react'
 import type {AccountCatalogReview,AccountSessionsReview,ReviewedAccount} from '@rplayout/protocol'
 import {api} from '../api.js'
@@ -28,7 +29,7 @@ export function UsersPanel({onMessage}:{onMessage:(text:string)=>void}) {
   const resetDrafts=()=>{setEditor(null);setSessionReview(null);setUsername('');setPassword('');setRole('OPERATOR');setNewPassword('')}
   const load=async(confirm:boolean)=>{
     if(busyRef.current)return
-    if(confirm&&(dirty||editor||sessionReview)&&!window.confirm('Reabrir descarta os rascunhos e conferências atuais. Continuar?'))return
+    if(confirm&&(dirty||editor||sessionReview)&&!(await confirmAction('Reabrir descarta os rascunhos e conferências atuais. Continuar?')))return
     const id=start();if(id===null)return
     const reading=reads.current.start()!
     try {
@@ -99,7 +100,7 @@ export function UsersPanel({onMessage}:{onMessage:(text:string)=>void}) {
       onMessage(`${result.revokedCount} registro(s) de sessão encerrado(s). A conta foi preservada.${result.requiresLogin?' Entre novamente.':''}`)
     }catch(cause){failure(id,cause)}finally{finish(id)}
   }
-  const cancel=()=>{if(busyRef.current)return;if(editor&&!window.confirm('Descartar os campos desta edição de conta?'))return;setEditor(null);setSessionReview(null);setNewPassword('')}
+  const cancel=async()=>{if(busyRef.current)return;if(editor&&!(await confirmAction('Descartar os campos desta edição de conta?')))return;setEditor(null);setSessionReview(null);setNewPassword('')}
   return <section className="p-4 flex flex-col gap-4 bg-surface-card rounded border border-border-subtle text-on-surface">
     <header className="flex flex-wrap justify-between gap-2"><h2 className="font-bold">Usuários e acesso</h2><button className={buttonClass} disabled={busy} onClick={()=>void load(true)}>Reabrir conferência das contas</button></header>
     <p className="text-sm text-outline">Editar e marcar não grava automaticamente. Salvar exige a conferência original; mudanças em outra estação são recusadas. Senhas e tokens nunca são exibidos na consulta.</p>

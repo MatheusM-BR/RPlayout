@@ -1,3 +1,4 @@
+import { confirmAction } from '../../domain/confirm.js'
 import { useEffect, useState,useRef } from 'react'
 import { api } from '../../api'
 import { formatTimecode, type Rate } from '@rplayout/protocol'
@@ -21,9 +22,9 @@ function InterruptedItemsContent({channelId,rate}:{channelId:string;rate:Rate}){
   }, [channelId])
   const resolve = async (item:typeof items[number], action: 'RESUME' | 'DISCARD'|'ACKNOWLEDGE') => {
     if(busyRef.current)return
-    if (action === 'RESUME' && !window.confirm('Retomar este VT troca o PGM atual pela última posição informada pelo engine. Confirmar?')) return
-    if(action==='ACKNOWLEDGE' && !window.confirm('Encerrar esta pendência sem confirmar sucesso nem repetir o retorno? PGM deve estar parado e CUE limpo.'))return
-    if(action==='DISCARD' && !window.confirm('Descartar apenas o retorno deste VT, preservando o histórico e o PGM atual?'))return
+    if (action === 'RESUME' && !(await confirmAction('Retomar este VT troca o PGM atual pela última posição informada pelo engine. Confirmar?'))) return
+    if(action==='ACKNOWLEDGE' && !(await confirmAction('Encerrar esta pendência sem confirmar sucesso nem repetir o retorno? PGM deve estar parado e CUE limpo.')))return
+    if(action==='DISCARD' && !(await confirmAction('Descartar apenas o retorno deste VT, preservando o histórico e o PGM atual?')))return
     busyRef.current=true;setBusy(true); setMessage(null)
     let sent=false
     try {

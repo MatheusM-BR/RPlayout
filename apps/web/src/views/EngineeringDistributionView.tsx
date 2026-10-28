@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect } from 'react'
 import type { Channel, ManagedLiveSource, RedundantStreamPair, SrtTelemetry } from '@rplayout/protocol'
@@ -167,7 +168,7 @@ export function EngineeringDistributionView({
 
   const canRestart = useCan('OUTPUT_CONTROL')
   const restartEngine = async () => {
-    if (!window.confirm(`Reiniciar o engine de ${channel.name}? O ar para por alguns segundos.`)) return
+    if (!(await confirmAction(`Reiniciar o engine de ${channel.name}? O ar para por alguns segundos.`))) return
     setEngineeringAction('restart')
     try {
       await api.restartChannel(channel.id)

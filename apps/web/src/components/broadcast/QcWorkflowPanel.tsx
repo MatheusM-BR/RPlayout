@@ -1,3 +1,4 @@
+import { confirmAction } from '../../domain/confirm.js'
 import { useEffect, useRef, useState } from 'react'
 import {QcRenderedBusPolicyFields} from './QcRenderedBusPolicyFields.js'
 import { DEFAULT_QC_PROFILE, type Channel, type QcProfile,type QcReview } from '@rplayout/protocol'
@@ -38,12 +39,12 @@ export function QcWorkflowPanel({ assetId, contentHash, channel, onChanged,onRev
       .catch(error => { if (active) setMessage(error.message) })
     return () => { active = false; generation.current += 1;onReviewRef.current?.(null) }
   }, [assetId, contentHash, channel.id,reopenKey,refreshKey])
-  const reopen=()=>{
-    if((notes.trim()||editing) && !window.confirm('Reabrir a conferência descarta a ressalva e o perfil em edição. Continuar?'))return
+  const reopen=async()=>{
+    if((notes.trim()||editing) && !(await confirmAction('Reabrir a conferência descarta a ressalva e o perfil em edição. Continuar?')))return
     setReopenKey(value=>value+1)
   }
-  const toggleProfile=()=>{
-    if(editing){if(!window.confirm('Descartar os campos do perfil em edição?'))return;setEditing(false);return}
+  const toggleProfile=async()=>{
+    if(editing){if(!(await confirmAction('Descartar os campos do perfil em edição?')))return;setEditing(false);return}
     if(!assessment||stale||externalBusy)return
     setProfile(assessment.profile);setProfileRevision(assessment.review.configurationRevision);setEditing(true)
   }

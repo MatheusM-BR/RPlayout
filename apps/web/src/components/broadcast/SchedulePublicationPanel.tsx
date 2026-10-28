@@ -1,3 +1,4 @@
+import { confirmAction } from '../../domain/confirm.js'
 import {useEffect,useRef,useState} from 'react'
 import {api,type SchedulePublicationReview,type SchedulePublicationStatus} from '../../api.js'
 
@@ -22,7 +23,7 @@ export function SchedulePublicationPanel({channelId,defaultOpen=false}:{channelI
   const execute=async(action:'REVIEW'|'ENABLE'|'DISABLE')=>{
     if(busy.current||!status)return
     const captured=ticket.current,version=status.version,checked=review
-    if(action==='ENABLE'&&(!matching||!window.confirm(`Autorizar montagem e publicação recorrentes de até ${days} dias futuros vazios pela pauta? Só arquivos aprovados serão usados. Dias existentes não serão substituídos. PGM/CUE não mudam agora; passagem para o ar exige autorização separada. STOP/falha suspende a política.`)))return
+    if(action==='ENABLE'&&(!matching||!(await confirmAction(`Autorizar montagem e publicação recorrentes de até ${days} dias futuros vazios pela pauta? Só arquivos aprovados serão usados. Dias existentes não serão substituídos. PGM/CUE não mudam agora; passagem para o ar exige autorização separada. STOP/falha suspende a política.`))))return
     busy.current=true;setPending(true);setError(null)
     try{
       if(action==='REVIEW'){const result=await api.schedulePublicationReview(channelId,days,limit);if(ticket.current===captured)setReview(result.review)}

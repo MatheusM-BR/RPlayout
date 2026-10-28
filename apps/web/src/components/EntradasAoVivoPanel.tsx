@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import { useState, useEffect, useCallback,useRef } from 'react'
 import type { Channel, ManagedLiveSource,LiveSourceReview } from '@rplayout/protocol'
 import { api } from '../api.js'
@@ -143,9 +144,9 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
     }
   }
 
-  const beginEdit = (source: ManagedLiveSource) => {
+  const beginEdit = async (source: ManagedLiveSource) => {
     if(pending.current||!review)return
-    if(isAdding&&!confirm('Descartar o rascunho e abrir esta entrada?'))return
+    if(isAdding&&!(await confirmAction('Descartar o rascunho e abrir esta entrada?')))return
     setFormReview(review);setNeedsReopen(false)
     setEditingSource(source)
     setKeepConnection(Boolean(source.credentialProtected))
@@ -162,7 +163,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
 
   const handleDeleteLiveSource = async (id: string, sourceName: string) => {
     if(pending.current||needsReopen||!review)return
-    if (!confirm(`Deseja remover a entrada ao vivo "${sourceName}"?`)) return
+    if (!(await confirmAction(`Deseja remover a entrada ao vivo "${sourceName}"?`))) return
     pending.current=true;setIsSaving(true)
     let applied=false
     try {
@@ -256,8 +257,8 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
 
         <div className="flex items-center gap-3 text-xs text-outline">
           <span>{needsReopen?'Alteração não confirmada. Reabra a lista; o rascunho está preservado.':'Cadastro não troca o PGM/PVW. Descoberta não confirma sinal.'}</span>
-          <button type="button" disabled={isSaving||isLoadingList} className="text-primary disabled:opacity-50" onClick={()=>{
-            if(pending.current||isAdding&&!confirm('Descartar o rascunho e conferir novamente as entradas?'))return
+          <button type="button" disabled={isSaving||isLoadingList} className="text-primary disabled:opacity-50" onClick={async()=>{
+            if(pending.current||isAdding&&!(await confirmAction('Descartar o rascunho e conferir novamente as entradas?')))return
             resetForm();setIsAdding(false);void loadLiveSourcesList().catch(()=>onMessage('Falha ao conferir as entradas. Nenhuma ação enviada.'))
           }}>Reabrir lista</button>
         </div>

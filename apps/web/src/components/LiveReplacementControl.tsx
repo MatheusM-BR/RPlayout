@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import {useEffect,useRef,useState} from 'react'
 import type {ManagedLiveSource} from '@rplayout/protocol'
 import {api,type LiveReplacementView} from '../api.js'
@@ -61,10 +62,10 @@ export function LiveReplacementControl({channelId,info,sources}:Props){
     const key=attemptKey.current.key
     void run(()=>api.liveReplacementPrepare(channelId,target.id,key))
   }
-  const command=(operation:'commit'|'cancel'|'status')=>{
+  const command=async(operation:'commit'|'cancel'|'status')=>{
     if(!openTransactionId)return
-    if(operation==='commit'&&!window.confirm(`Cortar o PGM para ${target?.name??'a fonte alternativa'}? A live continua a mesma ocorrência; o relógio e o CUE são preservados.`))return
-    if(operation==='cancel'&&!window.confirm('Cancelar a fonte alternativa preparada? O PGM atual não muda.'))return
+    if(operation==='commit'&&!(await confirmAction(`Cortar o PGM para ${target?.name??'a fonte alternativa'}? A live continua a mesma ocorrência; o relógio e o CUE são preservados.`)))return
+    if(operation==='cancel'&&!(await confirmAction('Cancelar a fonte alternativa preparada? O PGM atual não muda.')))return
     void run(()=>api.liveReplacementCommand(channelId,openTransactionId,operation))
   }
   const ready=view?.receipt?.phase==='READY'&&!view.closed

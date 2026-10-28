@@ -1,3 +1,5 @@
+import { ConfirmHost } from './components/ConfirmHost.js'
+import { confirmOpen } from './domain/confirm.js'
 import { ShortcutsDialog } from './components/ShortcutsDialog.js'
 import { useStoredChoice } from './domain/stored-choice.js'
 ﻿import { setSessionAccessRole } from './domain/permissions.js'
@@ -700,7 +702,7 @@ export function App() {
         setDialog(null)
         return
       }
-      if (typing || dialog || shortcutsOpen || panelLock === 'on') return
+      if (typing || dialog || shortcutsOpen || panelLock === 'on' || confirmOpen()) return
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault()
         void undo(event.shiftKey ? 'redo' : 'undo')
@@ -1182,6 +1184,7 @@ export function App() {
         <button className="mt-2 rounded border px-2 py-1" onClick={()=>void refreshLibrary().catch(cause=>{if(!(cause instanceof SupersededContextError))anotar('SERVIDOR',cause instanceof Error?cause.message:'Acervo não consultado.')})}>Reconsultar acervo</button>
       </aside>}
       {scanRequest!==null&&<div className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center"><ScanCommandDialog measure={scanRequest} onClose={()=>setScanRequest(null)} onRegistered={()=>{}}/></div>}
+      <ConfirmHost />
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
       {panelLock === 'on' && <>
         <div aria-hidden="true" className="fixed inset-0 z-[110] cursor-not-allowed bg-black/10" />

@@ -1,3 +1,4 @@
+import { confirmAction } from '../../domain/confirm.js'
 import {useState} from 'react'
 import type {RedundantStreamPair} from '@rplayout/protocol'
 interface Props {pair?:RedundantStreamPair;onSwitchStream?:(target:'PRIMARY'|'BACKUP')=>void|Promise<void>;onToggleAutoFailover?:(enabled:boolean)=>void;onMessage?:(message:string)=>void}
@@ -6,7 +7,7 @@ interface Props {pair?:RedundantStreamPair;onSwitchStream?:(target:'PRIMARY'|'BA
 export function RedundancyFailoverPanel({pair,onSwitchStream,onMessage}:Props){
   const [pending,setPending]=useState(false)
   const record=async(target:'PRIMARY'|'BACKUP')=>{
-    if(pending||!onSwitchStream||!window.confirm('Registrar preferência de fonte? Isto não altera PGM nem arma failover automático. Para entrar no ar, faça CUE/TAKE da fonte publicada.'))return
+    if(pending||!onSwitchStream||!(await confirmAction('Registrar preferência de fonte? Isto não altera PGM nem arma failover automático. Para entrar no ar, faça CUE/TAKE da fonte publicada.')))return
     setPending(true)
     try{await onSwitchStream(target)}catch(error){onMessage?.(error instanceof Error?error.message:'Escolha não registrada.')}finally{setPending(false)}
   }

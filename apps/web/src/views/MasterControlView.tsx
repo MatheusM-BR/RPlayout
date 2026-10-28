@@ -1,3 +1,4 @@
+import { confirmAction, notify } from '../domain/confirm.js'
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
 import { finalCount, gradeEndWarning, mmss, nextFixedCommitment, countdownText } from '../domain/broadcast-cues.js'
 import { beep, enableAlarmSound } from '../domain/alarm-sound.js'
@@ -307,7 +308,7 @@ export function MasterControlView({
 
   const handleRemoveFolder = async (root: MediaRoot) => {
     if(!folderReview||folderPending.current)return
-    if (!window.confirm(`Remover pasta "${root.label}" do acervo? Os arquivos já na grade continuam.`)) return
+    if (!(await confirmAction(`Remover pasta "${root.label}" do acervo? Os arquivos já na grade continuam.`))) return
     setIsFolderLoading(true)
     folderPending.current=true;const run=folderEpoch.current
     try {
@@ -396,7 +397,7 @@ export function MasterControlView({
     setSourceFormReview(sourceListReview);setSourceNeedsReopen(false);setSourceSaveMessage(null)
   }
   const reopenSourceList=async()=>{
-    if(sourcePending.current||!window.confirm('Descartar o rascunho de entrada e conferir novamente a lista?'))return
+    if(sourcePending.current||!(await confirmAction('Descartar o rascunho de entrada e conferir novamente a lista?')))return
     resetLiveInput();setSourceFormReview(null);setSourceNeedsReopen(true)
     try{
       const next=await loadLiveSources()
@@ -627,10 +628,10 @@ export function MasterControlView({
     }
   }
 
-  const handleBulkDelete = () => {
+  const handleBulkDelete = async () => {
     if (selectedItemIds.size === 0) return
     const ids = Array.from(selectedItemIds)
-    if (!window.confirm(`Deseja remover os ${ids.length} itens selecionados da grade?`)) return
+    if (!(await confirmAction(`Deseja remover os ${ids.length} itens selecionados da grade?`))) return
     if (onBulkRemoveItems) {
       onBulkRemoveItems(ids)
     } else {
@@ -1990,7 +1991,7 @@ export function MasterControlView({
                   }
                   void saveCustomSource(newSource)
                     .then(() => {if(sourceChannel.current===channel.id)setLiveInputModalOpen(false)})
-                    .catch(error => {if(sourceChannel.current===channel.id)window.alert(`Cadastro não confirmado. Rascunho preservado: ${error instanceof Error?error.message:'Reabra a lista.'}`)})
+                    .catch(error => {if(sourceChannel.current===channel.id)void notify(`Cadastro não confirmado. Rascunho preservado: ${error instanceof Error?error.message:'Reabra a lista.'}`)})
                 }}
                 disabled={sourceSaveBusy||sourceNeedsReopen||!sourceFormReview||!newLiveValid || !newLiveTitle.trim()}
                 className="px-4 py-2 rounded-lg bg-primary hover:bg-accent-ice text-surface-base font-body-sm font-bold shadow transition-all cursor-pointer"
@@ -2401,7 +2402,7 @@ export function MasterControlView({
                           sourceRef: newLiveRef.trim(),
                           family: newLiveFamily,
                           durationFrames: durFrames,
-                        }).catch(() => window.alert('A entrada foi incluída na grade, mas não pôde ser salva nas Configurações.'))
+                        }).catch(() => void notify('A entrada foi incluída na grade, mas não pôde ser salva nas Configurações.'))
                       }
                       onInsertAsset(
                         null,

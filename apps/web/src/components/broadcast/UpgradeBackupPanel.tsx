@@ -1,3 +1,4 @@
+import { confirmAction } from '../../domain/confirm.js'
 import {useEffect,useRef,useState} from 'react'
 import {api,type UpgradeBackupReport} from '../../api.js'
 import {commandRequestId} from '../../domain/request-id.js'
@@ -14,7 +15,7 @@ export function UpgradeBackupPanel(){
       try{id=commandRequestId();sessionStorage.setItem(storage,id);setRequestId(id)}catch{setError('Não foi possível guardar o pedido seguro neste navegador.');return}
     }
     if(!id)return
-    if(action==='RECONCILE'&&!window.confirm('Encerrar apenas o pedido de um criador comprovadamente morto? Nenhum arquivo será apagado e o backup não será repetido.'))return
+    if(action==='RECONCILE'&&!(await confirmAction('Encerrar apenas o pedido de um criador comprovadamente morto? Nenhum arquivo será apagado e o backup não será repetido.')))return
     pending.current=true;setBusy(true);setError('')
     try{
       const value=action==='CREATE'?await api.createUpgradeBackup(id):action==='RECONCILE'?await api.reconcileUpgradeBackup(id):await api.upgradeBackup(id)

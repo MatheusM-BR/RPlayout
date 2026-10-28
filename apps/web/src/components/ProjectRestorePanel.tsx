@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import {useEffect,useRef,useState} from 'react'
 import {PROJECT_SECTIONS,type ProjectRestoreReview} from '@rplayout/protocol'
 import {api} from '../api.js'
@@ -41,7 +42,7 @@ export function ProjectRestorePanel({channelId,canRestore,externalBusy,onMessage
   const restore=async()=>{
     if(!review||blocked||!canRestore||externalBusy||pending.current)return
     const displayed=review
-    if(!window.confirm(`Restaurar “${displayed.label}” com o impacto conferido? Exige PGM parado e CUE limpo e reinicia o engine, sem TAKE automático.`)||!start())return
+    if(!(await confirmAction(`Restaurar “${displayed.label}” com o impacto conferido? Exige PGM parado e CUE limpo e reinicia o engine, sem TAKE automático.`))||!start())return
     setBlocked(true)
     try{
       const result=await api.restoreChannelProject(channelId,displayed.projectId,displayed)

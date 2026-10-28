@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import { useCallback, useEffect, useState,useRef } from 'react'
 import { api } from '../api.js'
 import { ServerFileTargetDialog } from './ServerFileTargetDialog.js'
@@ -320,7 +321,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
         {operation && operation.state!=='IDLE' && <div role="alert" className="px-6 py-3 border-b border-armed-amber text-armed-amber text-xs">
           <p>{operation.reason} Pare o PGM e limpe o CUE antes de reconciliar. Não haverá TAKE automático.</p>
           <button type="button" disabled={busy || !operation.reconcilable || outputRevision===undefined} className="mt-2 text-primary disabled:opacity-40" onClick={()=>void guard(async()=>{
-            if(!operation.runId || !window.confirm('Reabrir as saídas gravadas com PGM parado e CUE limpo? Não haverá TAKE automático.'))return
+            if(!operation.runId || !(await confirmAction('Reabrir as saídas gravadas com PGM parado e CUE limpo? Não haverá TAKE automático.')))return
             await api.reconcileConfiguration(channelId,operation.runId,outputRevision)
             if(mounted.current)onMessage('Configuração reconciliada com o canal parado. Confira o sinal antes de CUE/TAKE.')
           },true)}>RECONCILIAR CONFIGURAÇÃO PARADA</button>
@@ -547,8 +548,8 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                     Trocar um publisher pode interromper brevemente a saída. Habilitar ou remover solicita reinício controlado; confira o sinal no destino.
                   </p>
                 </div>
-                <button type="button" disabled={busy} className="text-xs text-primary disabled:opacity-40" onClick={()=>{
-                  if(window.confirm('Reabrir a configuração atual e descartar os rascunhos de saída/bitrate?'))void refresh(true)
+                <button type="button" disabled={busy} className="text-xs text-primary disabled:opacity-40" onClick={async()=>{
+                  if(await confirmAction('Reabrir a configuração atual e descartar os rascunhos de saída/bitrate?'))void refresh(true)
                 }}>REABRIR CONFIGURAÇÃO</button>
               </div>
 

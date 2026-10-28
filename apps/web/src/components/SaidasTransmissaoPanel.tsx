@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect, useCallback,useRef } from 'react'
 import type { Channel } from '@rplayout/protocol'
@@ -90,7 +91,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
 
   const handleDelete = async (output: OutputProfile) => {
     if(controlsBlocked)return
-    if (!window.confirm(`Tem certeza que deseja excluir a saída "${output.name}"?`)) return
+    if (!(await confirmAction(`Tem certeza que deseja excluir a saída "${output.name}"?`))) return
     setIsSaving(true)
     try {
       const result=await api.removeOutput(output.id,channel.id,output.configurationRevision)
@@ -185,7 +186,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
 
   const handleDeletePreset = async (preset: TransmissionPreset) => {
     if(controlsBlocked)return
-    if (!window.confirm(`Remover o preset "${preset.name}"? As saídas já criadas não serão alteradas.`)) return
+    if (!(await confirmAction(`Remover o preset "${preset.name}"? As saídas já criadas não serão alteradas.`))) return
     setIsSaving(true)
     try {
       await api.removeTransmissionPreset(channel.id, preset.id,presetRevision)
@@ -204,7 +205,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
     if(controlsBlocked)return
     // Reiniciar o engine tira o canal do ar por alguns segundos: antes era um
     // clique só, num botão azul de ação principal.
-    if(!window.confirm(`Reiniciar o engine e as saídas de ${channel.name}? O ar para por alguns segundos e as saídas reconectam.`))return
+    if(!(await confirmAction(`Reiniciar o engine e as saídas de ${channel.name}? O ar para por alguns segundos e as saídas reconectam.`)))return
     setIsSaving(true)
     try {
       await api.restartChannel(channel.id)
@@ -268,7 +269,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
       {operation && operation.state!=='IDLE' && <div role="alert" className="border border-armed-amber rounded p-3 text-armed-amber text-sm">
         <p>{operation.reason} Pare o PGM e limpe o CUE antes de reconciliar. A reconciliação reabre as saídas gravadas, sem TAKE automático.</p>
         <button type="button" disabled={!operation.reconcilable || isSaving || isLoading} className="mt-2 text-primary disabled:opacity-40" onClick={async()=>{
-          if(!operation.runId || !window.confirm('Reconstruir as saídas da configuração gravada? PGM precisa estar parado e CUE limpo. Nenhum TAKE será automático.'))return
+          if(!operation.runId || !(await confirmAction('Reconstruir as saídas da configuração gravada? PGM precisa estar parado e CUE limpo. Nenhum TAKE será automático.')))return
           setIsSaving(true)
           try{await api.reconcileConfiguration(channel.id,operation.runId,outputRevision);if(mounted.current){onMessage('Configuração reconciliada com o canal parado. Confira o sinal antes de CUE/TAKE.');await loadData();onChanged()}}
           catch(error){if(mounted.current)onMessage(error instanceof Error?error.message:'Reconciliação não confirmada.')}
@@ -518,8 +519,8 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
             Defina o protocolo de envio, o destino remoto ou conector físico e o identificador do stream.
           </p>
           <p className="text-outline text-[11px] mt-2">Atualizar a lista não reconfirma seu rascunho. Em conflito, reabra para conferir a configuração atual.</p>
-          <button type="button" disabled={isLoading || isSaving} className="mt-2 text-primary text-[11px] disabled:opacity-40" onClick={()=>{
-            if((newName || newTarget || presetName) && !window.confirm('Reabrir a configuração atual descarta os campos da nova saída/preset. Deseja continuar?'))return
+          <button type="button" disabled={isLoading || isSaving} className="mt-2 text-primary text-[11px] disabled:opacity-40" onClick={async()=>{
+            if((newName || newTarget || presetName) && !(await confirmAction('Reabrir a configuração atual descarta os campos da nova saída/preset. Deseja continuar?')))return
             void loadData(true)
           }}>REABRIR CONFIGURAÇÃO E LIMPAR RASCUNHO</button>
           {draftRevision!==undefined && presetRevision!==undefined && draftRevision!==presetRevision && <p role="status" className="text-armed-amber text-[11px] mt-2">A configuração mudou. O rascunho mantém a revisão anterior; confira antes de salvar o preset.</p>}

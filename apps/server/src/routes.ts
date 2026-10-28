@@ -247,6 +247,8 @@ import {
   rollbackOperationalPlaylist,
   diffOperationalItems,
   diffOperationalGraphics,
+  onOperationalRevision,
+  type RevisionEvent,
 } from './domain/operational-playlist.js'
 import {requireOperationalReview} from './domain/operational-review.js'
 import type {OperationalReview} from '@rplayout/protocol'
@@ -2287,6 +2289,27 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
     return results
   }
+  /** Toda revisão nova de um canal de origem chega aqui (publicação manual,
+   * montagem automática, rollback, ajuste no ar). Publicação completa é
+   * copiada para o espelho; mudanças só do plano no ar (rollback, ajuste de
+   * live, inserção, compensação) não são copiadas com segurança pela grade
+   * editável, então o espelho fica PENDENTE com o motivo e segue na última
+   * publicação completa. A publicação manual já propaga na própria rota. */
+  const explicitMirrorRevisions=new Set<string>()
+  const changeLabel:Record<string,string>={ROLLBACK:'um rollback',LIVE_DURATION:'um ajuste de duração de live',INSERT:'uma inserção no ar',COMPENSATION:'uma compensação de horário',ADJUST:'um ajuste no ar'}
+  const reactToSourceRevision=async(event:RevisionEvent)=>{
+    if(explicitMirrorRevisions.delete(event.revisionId)||event.rundownId.startsWith('espelho-'))return
+    const active=app.db.select({active:operationalPlaylistRevisions.active}).from(operationalPlaylistRevisions).where(eq(operationalPlaylistRevisions.id,event.revisionId)).get()
+    if(!active?.active)return
+    const rundown=await getRundown(app.db,event.rundownId)
+    if(!rundown||!mirrorsFrom(app.db,rundown.channelId).length)return
+    if(event.change==='PUBLISH'){await propagateMirrors(rundown.channelId,event.rundownId,event.actor);onChange();return}
+    const reason=`A origem publicou ${changeLabel[event.change]??'um ajuste no ar'} (revisão ${event.revision}), que não é copiado para o espelho. Este canal segue na última publicação completa; publique a revisão na origem para sincronizar.`
+    for(const mirror of mirrorsFrom(app.db,rundown.channelId))recordMirrorSync(app.db,mirror.targetChannelId,reason)
+    onChange()
+  }
+  const offRevision=onOperationalRevision(event=>{void reactToSourceRevision(event).catch(error=>server.log.warn({err:error,rundownId:event.rundownId},'Espelho: reação à revisão da origem falhou.'))})
+  server.addHook('onClose',async()=>{offRevision()})
   // ---- Programação multicanal (cópia e espelho) ----
   const shareDenied=(request:FastifyRequest)=>(access.required()&&!access.identity(request))||!canShareAcrossChannels(access.role(request))||!can(access.role(request),'PLAYLIST_EDIT')
   const programmingError=(reply:{code:(status:number)=>{send:(body:unknown)=>unknown}},error:unknown)=>error instanceof ChannelProgrammingError?reply.code(error.status).send({error:error.message}):error instanceof CollaborativeEditError?reply.code(error.status).send(error.payload):reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:String(error))})
@@ -2373,6 +2396,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         if(isLoaded)protectReviewedExecution(runtime,payload,context)
         if(onAirId && !runtime.operationalRevision && runtime.executionView)assertOnAirMediaUnchanged({rate:runtime.channel.rate,items:runtime.executionView.items.map(entry=>entry.item),assets:runtime.executionView.items.flatMap(entry=>entry.asset?[entry.asset]:[])},payload,onAirId)
       })
+      explicitMirrorRevisions.add(revision.id)
     }
     catch (error) { if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
     let refreshError:string|null=null

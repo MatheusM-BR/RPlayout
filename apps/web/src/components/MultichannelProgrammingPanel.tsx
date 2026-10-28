@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Channel, Rundown } from '@rplayout/protocol'
 import { api, type ChannelMirror } from '../api.js'
@@ -57,7 +58,7 @@ export function MultichannelProgrammingPanel({ channel, channels, onMessage, onC
             {mirror.unlockedAt ? <p className="text-[12px] text-armed-amber">Destravado por {mirror.unlockedBy ?? '—'} em {localDateTime(mirror.unlockedAt)}: {mirror.unlockReason}. Outras grades podem ir ao ar {mirror.unlockExpiresAt ? `até ${localDateTime(mirror.unlockExpiresAt)}, quando volta a travar sozinho` : 'até alguém travar de novo (Playlist ou Master)'}.</p> : <p className="text-[12px] text-outline">Travado: só a grade espelhada vai ao ar. Em emergência o operador destrava na Playlist ou no Master, com motivo registrado.</p>}
             {mirror.lastSyncError && <p role="alert" className="text-[12px] text-armed-amber">Pendente: {mirror.lastSyncError}</p>}
             <p className="text-[12px] text-outline">Para colocar no ar, carregue a grade "Espelho de …" na Playlist deste canal; depois ela se atualiza a cada publicação da origem.</p>
-            <button type="button" className="btn small justify-self-start" disabled={busy || !state.canShare} onClick={() => { if (window.confirm(`Desligar o espelho de ${nameOf(mirror.sourceChannelId)}? A grade espelhada vira uma cópia comum, editável.`)) void run(async () => { await api.setChannelMirror(channel.id, null); return 'Espelho desligado. A grade espelhada ficou como cópia editável.' }) }}>Desligar espelho</button>
+            <button type="button" className="btn small justify-self-start" disabled={busy || !state.canShare} onClick={async () => { if (await confirmAction(`Desligar o espelho de ${nameOf(mirror.sourceChannelId)}? A grade espelhada vira uma cópia comum, editável.`)) void run(async () => { await api.setChannelMirror(channel.id, null); return 'Espelho desligado. A grade espelhada ficou como cópia editável.' }) }}>Desligar espelho</button>
           </> : <>
             <p className="text-[12px] text-outline">Vínculo contínuo: tudo que a origem publicar entra neste canal. A grade espelhada fica travada aqui, só a origem edita.</p>
             <label className="grid gap-1 text-[12px] text-outline">Canal de origem
@@ -68,7 +69,7 @@ export function MultichannelProgrammingPanel({ channel, channels, onMessage, onC
             </label>
             {others.length > compatible.length && <p className="text-[11px] text-outline">{others.length - compatible.length} canal(is) com cadência diferente não aparecem.</p>}
             {state.mirrorsFrom.length > 0 && <p className="text-[12px] text-outline">Este canal é origem de: {state.mirrorsFrom.map(row => nameOf(row.targetChannelId)).join(', ')}. Um canal espelhado não pode ser origem de outro.</p>}
-            <button type="button" className="btn small primary justify-self-start" disabled={busy || !state.canShare || !mirrorSource} onClick={() => { if (window.confirm(`Ligar espelho: ${channel.name} passará a rodar a programação publicada em ${nameOf(mirrorSource)}. Continuar?`)) void run(async () => { const result = await api.setChannelMirror(channel.id, mirrorSource); return result.initial ? (result.initial.ok ? `Espelho ligado e sincronizado (${result.initial.items ?? 0} itens). Carregue a grade espelhada na Playlist para pôr no ar.` : `Espelho ligado; primeira sincronização pendente: ${result.initial.error}`) : 'Espelho ligado. A grade chega na próxima publicação da origem.' }) }}>Ligar espelho</button>
+            <button type="button" className="btn small primary justify-self-start" disabled={busy || !state.canShare || !mirrorSource} onClick={async () => { if (await confirmAction(`Ligar espelho: ${channel.name} passará a rodar a programação publicada em ${nameOf(mirrorSource)}. Continuar?`)) void run(async () => { const result = await api.setChannelMirror(channel.id, mirrorSource); return result.initial ? (result.initial.ok ? `Espelho ligado e sincronizado (${result.initial.items ?? 0} itens). Carregue a grade espelhada na Playlist para pôr no ar.` : `Espelho ligado; primeira sincronização pendente: ${result.initial.error}`) : 'Espelho ligado. A grade chega na próxima publicação da origem.' }) }}>Ligar espelho</button>
           </>}
         </div>
 

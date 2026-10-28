@@ -1,3 +1,4 @@
+import { confirmAction } from '../../domain/confirm.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type ManualExternalRun } from '../../api.js'
 
@@ -83,8 +84,8 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
         <label className="field text-[11px]">Equipamento<select aria-label="Equipamento para roteamento" value={selected} onChange={e => setSelected(e.target.value)}><option value="">Selecione</option>{devices.filter(device => device.kind === 'VIDEOHUB_ROUTER' && device.enabled).map(device => <option key={device.id} value={device.id}>{device.name} · {device.host}:{device.port}</option>)}</select></label>
         <label className="field text-[11px]">Entrada (0…N)<input aria-label="Entrada da matriz" type="number" min="0" max="65535" value={source} onChange={e => setSource(Number(e.target.value))}/></label>
         <label className="field text-[11px]">Saída (0…N)<input aria-label="Saída da matriz" type="number" min="0" max="65535" value={destination} onChange={e => setDestination(Number(e.target.value))}/></label>
-        <button className="btn small" disabled={busy || !canRoute} onClick={() => {
-          if (!selectedDevice || !confirm(`Alterar ${selectedDevice.name}: saída ${destination} receberá entrada ${source}. Isso pode interromper o sinal externo. Confirmar?`)) return
+        <button className="btn small" disabled={busy || !canRoute} onClick={async () => {
+          if (!selectedDevice || !(await confirmAction(`Alterar ${selectedDevice.name}: saída ${destination} receberá entrada ${source}. Isso pode interromper o sinal externo. Confirmar?`))) return
           void perform(() => control(selectedDevice, 'ROUTE_CROSSPOINT'), 'Videohub confirmou o crosspoint solicitado. Confira vídeo/áudio no destino físico.')
         }}>CONFIRMAR ROTEAMENTO</button>
       </div>
@@ -98,8 +99,8 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
       {run.acknowledgement && <span className="block text-outline">Conferência do operador: {run.acknowledgement} — não equivale a confirmação do pedido original.</span>}
       {run.state === 'FIRING' && <div className="mt-2 flex flex-wrap gap-2">
         <input className={formField + ' flex-1'} aria-label={`Conferência do pedido ${run.requestId}`} placeholder="Descreva o que conferiu no equipamento" value={notes[run.requestId] ?? ''} onChange={e => setNotes({ ...notes, [run.requestId]: e.target.value })}/>
-        <button className="btn small" disabled={busy || (notes[run.requestId]?.trim().length ?? 0) < 10} onClick={() => {
-          if (!confirm('Registrar sua conferência e liberar novos roteamentos? O pedido original continuará sem confirmação; nenhum comando será reenviado.')) return
+        <button className="btn small" disabled={busy || (notes[run.requestId]?.trim().length ?? 0) < 10} onClick={async () => {
+          if (!(await confirmAction('Registrar sua conferência e liberar novos roteamentos? O pedido original continuará sem confirmação; nenhum comando será reenviado.'))) return
           void perform(() => api.acknowledgeExternalCommand(run.requestId, notes[run.requestId]!.trim()), 'Incerteza reconhecida pelo operador, sem reenvio e sem confirmação física do pedido original.')
         }}>REGISTRAR CONFERÊNCIA</button>
       </div>}

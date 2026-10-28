@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import { MultichannelProgrammingPanel } from '../components/MultichannelProgrammingPanel.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect, useCallback,useRef } from 'react'
@@ -110,7 +111,7 @@ export function SettingsView({
   },[onMessage])
   useEffect(()=>{void loadArchivedChannels()},[loadArchivedChannels,channels])
   const handleReactivateChannel=async(archived:Channel)=>{
-    if(!window.confirm(`Reativar “${archived.name}”? O PGM continuará parado. As saídas e chaves cadastradas voltarão a ficar disponíveis; confira a configuração antes de operar.`))return
+    if(!(await confirmAction(`Reativar “${archived.name}”? O PGM continuará parado. As saídas e chaves cadastradas voltarão a ficar disponíveis; confira a configuração antes de operar.`)))return
     setIsSaving(true)
     try{await api.reactivateChannel(archived.id);await loadArchivedChannels();onChanged();onMessage(`Canal “${archived.name}” reativado, sem TAKE automático.`)}
     catch(error){onMessage(error instanceof Error ? error.message : 'Não foi possível reativar o canal.')}
@@ -155,7 +156,7 @@ export function SettingsView({
 
   // Cria um novo canal
   const reloadChannelConfiguration=async()=>{
-    if(!window.confirm('Reabrir a configuração atual do servidor? Isso descarta somente os campos locais deste formulário.'))return
+    if(!(await confirmAction('Reabrir a configuração atual do servidor? Isso descarta somente os campos locais deste formulário.')))return
     const id=currentEditingChannel.id
     setIsSaving(true)
     try{
@@ -185,7 +186,7 @@ export function SettingsView({
   // Archive never deletes history. Only the server knows the global active
   // count: the browser may see a single channel because of access policy.
   const handleDeleteChannel = async (id: string, nome: string) => {
-    if (!window.confirm(`Arquivar o canal “${nome}”? Pare o PGM e limpe o CUE primeiro. Ele sairá da operação, mas grades, publicações, histórico de exibição e auditoria serão preservados.`)) {
+    if (!(await confirmAction(`Arquivar o canal “${nome}”? Pare o PGM e limpe o CUE primeiro. Ele sairá da operação, mas grades, publicações, histórico de exibição e auditoria serão preservados.`))) {
       return
     }
     setIsSaving(true)

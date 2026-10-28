@@ -1,3 +1,4 @@
+import { confirmAction } from '../domain/confirm.js'
 import { useState } from 'react'
 import { formatVideoFormat, type Channel } from '@rplayout/protocol'
 import { api } from '../api.js'
@@ -58,10 +59,10 @@ export function SettingsDialog({
       .finally(() => setBusy(false))
   }
 
-  const apagar = (id: string, nome: string): void => {
+  const apagar = async (id: string, nome: string): Promise<void> => {
     // Apagar canal leva grade, saídas e as-run junto: pergunta com o nome
     // escrito, para ninguém confirmar no automático.
-    if (!window.confirm(`Apagar o canal "${nome}"? A grade dele vai junto.`)) return
+    if (!(await confirmAction(`Apagar o canal "${nome}"? A grade dele vai junto.`))) return
     setBusy(true)
     api
       .removeChannel(id)

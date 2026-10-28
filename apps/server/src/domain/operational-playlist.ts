@@ -94,7 +94,32 @@ export function diffOperationalGraphics(previous: OperationalPayload | null, nex
   return [...ids].filter(id => JSON.stringify([contract(previous,id),secondaryContract(previous,id)]) !== JSON.stringify([contract(next,id),secondaryContract(next,id)]))
 }
 
+/** Aviso de nova revisão ativa, entregue depois que a transação terminou
+ * (better-sqlite3 é síncrono: no setImmediate ela já foi confirmada ou
+ * desfeita, e quem escuta confere se a revisão existe). Usado pelo espelho
+ * multicanal para não depender de cada caminho de publicação lembrar dele. */
+export type RevisionChange = 'PUBLISH' | 'ROLLBACK' | 'LIVE_DURATION' | 'INSERT' | 'COMPENSATION' | 'ADJUST'
+export interface RevisionEvent { rundownId: string; revisionId: string; revision: number; change: RevisionChange; actor: string | null }
+const revisionListeners = new Set<(event: RevisionEvent) => void>()
+export function onOperationalRevision(listener: (event: RevisionEvent) => void): () => void {
+  revisionListeners.add(listener)
+  return () => { revisionListeners.delete(listener) }
+}
+const revisionChange = (payload: OperationalPayload, auditKind: string | undefined): RevisionChange =>
+  auditKind === 'OPERATIONAL_PLAYLIST_ROLLBACK' ? 'ROLLBACK'
+  : auditKind === 'OPERATIONAL_PLAYLIST_PUBLISHED' ? 'PUBLISH'
+  : payload.operation?.kind ?? 'ADJUST'
+
 export function persistRevision(db: Pick<Db, 'transaction'>, rundownId: string, payload: OperationalPayload, actor: string | null,audit?:{kind:string;payload:Record<string,unknown>}) {
+  const row = persistRevisionRow(db, rundownId, payload, actor, audit)
+  if (revisionListeners.size) {
+    const event: RevisionEvent = { rundownId, revisionId: row.id, revision: row.revision, change: revisionChange(payload, audit?.kind), actor }
+    setImmediate(() => { for (const listener of revisionListeners) { try { listener(event) } catch { /* quem escuta registra o próprio erro */ } } })
+  }
+  return row
+}
+
+function persistRevisionRow(db: Pick<Db, 'transaction'>, rundownId: string, payload: OperationalPayload, actor: string | null,audit?:{kind:string;payload:Record<string,unknown>}) {
   return db.transaction((tx) => {
     const grade=tx.select().from(rundowns).where(eq(rundowns.id,rundownId)).get()
     const channel=grade && tx.select().from(channels).where(eq(channels.id,grade.channelId)).get()

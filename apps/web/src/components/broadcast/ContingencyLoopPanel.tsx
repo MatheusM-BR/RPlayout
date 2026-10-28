@@ -1,3 +1,4 @@
+import { confirmAction } from '../../domain/confirm.js'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api.js'
 import type { PgmProbeAutoAction } from '@rplayout/protocol'
@@ -23,8 +24,8 @@ export function ContingencyLoopPanel({ channelId, status, onChanged, defaultOpen
     return () => { active = false }
   }, [channelId, open, reload])
   const execute = async (action: 'CONFIGURE' | 'ENTER' | 'RETURN') => {
-    if (action === 'ENTER' && !window.confirm('Acionar a playlist de contingência? O arquivo aprovado será preparado e cortará o PGM somente após confirmação do engine. A posição do item anterior será preservada; o retorno é manual.')) return
-    if (action === 'RETURN' && !window.confirm('Retornar ao VT na posição preservada? A mídia e a publicação serão conferidas antes do corte. Desligue a intervenção automática para evitar novo disparo.')) return
+    if (action === 'ENTER' && !(await confirmAction('Acionar a playlist de contingência? O arquivo aprovado será preparado e cortará o PGM somente após confirmação do engine. A posição do item anterior será preservada; o retorno é manual.'))) return
+    if (action === 'RETURN' && !(await confirmAction('Retornar ao VT na posição preservada? A mídia e a publicação serão conferidas antes do corte. Desligue a intervenção automática para evitar novo disparo.'))) return
     setPending(true); setFailure(null)
     try { await api.setContingencyLoop(channelId, action, action === 'CONFIGURE' ? revisionId || null : undefined); if (currentChannel.current !== channelId) return; setReload(value => value + 1); await onChanged() }
     catch (error) { if (currentChannel.current === channelId) setFailure(error instanceof Error ? error.message : String(error)) }

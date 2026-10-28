@@ -5,6 +5,7 @@ import {createApp,runtimeFor,type App} from '../app.js'
 import {registerRoutes} from '../routes.js'
 import {channels,graphicTemplates,itemGraphics,mediaAssets,rundownItems,rundowns,sessions,users} from '../db/schema.js'
 import {sessionDigest} from './access.js'
+import {publishOperationalPlaylistNow,rollbackOperationalPlaylist} from './operational-playlist.js'
 import {copyRundownToChannel,isMirrorLocked,mirrorOf,mirrorRundownId,setMirror,setMirrorUnlock,syncMirrorRundown} from './channel-programming.js'
 vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',DEVICES_BINARY:'',AUTH_USER:'',AUTH_PASSWORD:'',DEFAULT_ROLE:'ADMIN'}))
 
@@ -141,5 +142,23 @@ describe('rotas de programação multicanal',()=>{
     expect(isMirrorLocked(app.db,'B')).toBe(false)
     const headers=login('OPERATOR',['B'])
     expect((await server.inject({method:'POST',url:'/api/channels/B/mirror/unlock',headers,payload:{reason:'Teste',duration:'2d'}})).statusCode).toBe(400)
+  })
+  it('publicação automática na origem chega ao espelho; rollback na origem deixa o espelho PENDENTE com o motivo',async()=>{
+    setMirror(app.db,'B','A',null)
+    const a=(await runtimeFor(app,'A'))!
+    await runtimeFor(app,'B')
+    const tick=()=>new Promise(resolve=>setTimeout(resolve,80))
+    const first=publishOperationalPlaylistNow(app.db,a.channel,'rA','agenda')
+    await tick()
+    const target=mirrorRundownId('B','rA')
+    expect(app.sqlite.prepare('SELECT count(*) AS n FROM operational_playlist_revisions WHERE rundown_id=? AND active=1').get(target)).toEqual({n:1})
+    expect(mirrorOf(app.db,'B')).toEqual(expect.objectContaining({lastSyncError:null}))
+    expect(mirrorOf(app.db,'B')!.lastSyncAt).not.toBeNull()
+    app.sqlite.prepare("UPDATE rundown_items SET title='a1 editado' WHERE id='a1'").run()
+    publishOperationalPlaylistNow(app.db,a.channel,'rA','agenda')
+    await tick()
+    await rollbackOperationalPlaylist(app.db,'rA',first.id,'op')
+    await tick()
+    expect(mirrorOf(app.db,'B')!.lastSyncError).toContain('rollback')
   })
 })

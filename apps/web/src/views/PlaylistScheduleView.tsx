@@ -1,3 +1,4 @@
+import { confirmAction, notify } from '../domain/confirm.js'
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
 import { MirrorStatus } from '../components/MirrorStatus.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
@@ -272,12 +273,12 @@ export function PlaylistScheduleView({
 
   /** Horário escolhido -> âncora na base da grade. Horário que já passou
    * pergunta antes de ir para amanhã; nada é gravado sem resposta. */
-  const anchorForChoice = (hms: string, day: DayChoice, gradeDate: string | null | undefined): { kind: 'FIXED'; at: number } | null => {
+  const anchorForChoice = async (hms: string, day: DayChoice, gradeDate: string | null | undefined): Promise<{ kind: 'FIXED'; at: number } | null> => {
     const seconds = parseHms(hms)
     if (seconds === null) throw new Error('Horário inválido. Use HH:MM:SS, de 00:00:00 a 23:59:59.')
     let instant = resolveWallInstant(seconds, day, gradeDate)
     if (instant.getTime() < Date.now() - 1000) {
-      if (!window.confirm(`${formatHms(seconds)} de hoje já passou. Agendar para amanhã no mesmo horário?`)) return null
+      if (!(await confirmAction(`${formatHms(seconds)} de hoje já passou. Agendar para amanhã no mesmo horário?`))) return null
       instant = resolveWallInstant(seconds, 'tomorrow', gradeDate)
     }
     return { kind: 'FIXED', at: anchorFramesFor(instant, rate, gradeDate) }
@@ -589,7 +590,7 @@ export function PlaylistScheduleView({
       setFeedbackMessage(`✓ Grade copiada com sucesso para ${selectedDate}!`)
       setTimeout(() => setFeedbackMessage(null), 4000)
     } catch (err: any) {
-      alert(`Erro ao copiar grade: ${err.message}`)
+      void notify(`Erro ao copiar grade: ${err.message}`)
     } finally {
       setIsLoadingDate(false)
     }
@@ -605,7 +606,7 @@ export function PlaylistScheduleView({
       setFeedbackMessage(`✓ Grade em branco criada para ${selectedDate}!`)
       setTimeout(() => setFeedbackMessage(null), 4000)
     } catch (err: any) {
-      alert(`Erro ao criar grade: ${err.message}`)
+      void notify(`Erro ao criar grade: ${err.message}`)
     } finally {
       setIsLoadingDate(false)
     }
@@ -804,7 +805,7 @@ export function PlaylistScheduleView({
     const ids = editorialSelection(activeView,selectedItemIds)
     if (!activeView || ids.length === 0 || isBulkDeleting) return
     const count = ids.length
-    if (!window.confirm(`Deseja remover os ${count} itens selecionados da grade linear?`)) return
+    if (!(await confirmAction(`Deseja remover os ${count} itens selecionados da grade linear?`))) return
     setIsBulkDeleting(true)
     try {
       const targetRundownId = activeView.rundown.id
@@ -826,7 +827,7 @@ export function PlaylistScheduleView({
         onPublishToMaster()
       }
     } catch (err: any) {
-      alert(`Erro ao remover itens selecionados: ${err.message}`)
+      void notify(`Erro ao remover itens selecionados: ${err.message}`)
     } finally {
       setIsBulkDeleting(false)
     }
@@ -893,7 +894,7 @@ export function PlaylistScheduleView({
       setFeedbackMessage(`✓ "${asset.title}" inserido na programação!`)
       setTimeout(() => setFeedbackMessage(null), 3000)
     } catch (err: any) {
-      alert(`Erro ao inserir item: ${err.message}`)
+      void notify(`Erro ao inserir item: ${err.message}`)
     }
   }
 
@@ -909,7 +910,7 @@ export function PlaylistScheduleView({
       const gradeDate = target.view.rundown.date
       const anchor = liveProgramStart === 'FLOW' ? { kind: 'FLOW' as const }
         : liveProgramStart === 'NOW' ? { kind: 'FIXED' as const, at: anchorFramesFor(new Date(), rate, gradeDate) }
-        : anchorForChoice(liveProgramTimeHms, liveProgramDay, gradeDate)
+        : await anchorForChoice(liveProgramTimeHms, liveProgramDay, gradeDate)
       if (!anchor) return
 
       const snapshot = await api.addItem(rId, {
@@ -934,7 +935,7 @@ export function PlaylistScheduleView({
       setTimeout(() => setFeedbackMessage(null), 3500)
       setShowLiveProgramModal(false)
     } catch (err: any) {
-      alert(`Erro ao criar programa ao vivo: ${err.message}`)
+      void notify(`Erro ao criar programa ao vivo: ${err.message}`)
     } finally {
       setIsCreatingLive(false)
     }
@@ -980,7 +981,7 @@ export function PlaylistScheduleView({
       let anchorPayload: any = { kind: 'FLOW' }
 
       if (timeAnchorKind === 'FIXED') {
-        const anchor = anchorForChoice(timeInputHms, timeInputDay, activeView?.rundown.date)
+        const anchor = await anchorForChoice(timeInputHms, timeInputDay, activeView?.rundown.date)
         if (!anchor) return
         anchorPayload = anchor
       }
@@ -1011,7 +1012,7 @@ export function PlaylistScheduleView({
         void refreshAvailableRundowns()
       }
     } catch (err: any) {
-      alert(`Erro ao salvar horário: ${err.message}`)
+      void notify(`Erro ao salvar horário: ${err.message}`)
     } finally {
       setIsSavingTime(false)
     }

@@ -1,3 +1,4 @@
+import { confirmAction } from '../../domain/confirm.js'
 import {useEffect,useRef,useState} from 'react'
 import type {MultiviewLayout,MultiviewReview} from '@rplayout/protocol'
 import {api} from '../../api.js'
@@ -29,7 +30,7 @@ export function SharedMultiview({channelId,sources,loading=false,onWatchingBus}:
     void load().catch(()=>undefined)
   },[channelId])
   async function reopen(){
-    if(pending.current||dirty.current&&!window.confirm('Reabrir descarta o layout local em edição. Continuar?'))return
+    if(pending.current||dirty.current&&!(await confirmAction('Reabrir descarta o layout local em edição. Continuar?')))return
     pending.current=true;setBusy(true);setBlocked(true)
     try{await load()}catch{/* Only the current request sets its own error. */}
     finally{pending.current=false;if(mounted.current)setBusy(false)}
