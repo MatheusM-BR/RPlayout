@@ -42,7 +42,7 @@ export function monitorRecovery(beat:()=>void,retry:()=>void):()=>void{
 /** Text for the empty screen. A failed WHEP while PGM is on air must not tell
  * the operator to press TAKE: the program is running, only this view is not. */
 export function emptyMonitorText(isPgm:boolean,onAir:boolean,monitorFailed:boolean):{title:string;detail:string}{
-  if(monitorFailed)return {title:'Monitor do engine reconectando',detail:isPgm&&onAir?'PGM no ar. O vídeo deste monitor não chegou ao navegador (WebRTC, porta 8889); nova tentativa a cada 6 s.':'O vídeo deste monitor não chegou ao navegador (WebRTC, porta 8889); nova tentativa a cada 6 s.'}
+  if(monitorFailed)return {title:isPgm&&onAir?'Saída no ar · prévia sem vídeo':'Monitor do engine reconectando',detail:isPgm&&onAir?'O canal está no ar (confira SAÍDAS no cabeçalho). Só a prévia deste navegador não recebeu vídeo (WebRTC, porta 8889); nova tentativa a cada 6 s.':'O vídeo deste monitor não chegou ao navegador (WebRTC, porta 8889); nova tentativa a cada 6 s.'}
   if(isPgm&&onAir)return {title:'Monitor aguardando imagem',detail:'PGM no ar; o monitor do engine ainda está abrindo.'}
   return isPgm?{title:'Nenhum Sinal no Ar',detail:'Pressione TAKE para iniciar a transmissão'}:{title:'Nenhum Item Armado',detail:'Clique em um item da grade ou no acervo MAM'}
 }

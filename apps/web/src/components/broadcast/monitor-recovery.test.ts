@@ -22,8 +22,8 @@ it('WHEP caído continua avisando o servidor e tenta de novo, em vez de desistir
 })
 
 it('PGM no ar com monitor falho não manda apertar TAKE',()=>{
-  expect(emptyMonitorText(true,true,true).title).toBe('Monitor do engine reconectando')
-  expect(emptyMonitorText(true,true,true).detail).toContain('PGM no ar')
+  expect(emptyMonitorText(true,true,true).title).toBe('Saída no ar · prévia sem vídeo')
+  expect(emptyMonitorText(true,true,true).detail).toContain('canal está no ar')
   expect(emptyMonitorText(true,true,false).detail).not.toContain('TAKE')
   expect(emptyMonitorText(true,false,false).detail).toContain('TAKE')
   expect(emptyMonitorText(false,false,true).title).toBe('Monitor do engine reconectando')
