@@ -4,7 +4,8 @@ import {api} from '../api.js'
 import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 import {graphicsHeaders} from '../domain/graphics-review.js'
 import {ReviewedOperationConfirm} from './broadcast/ReviewedOperationConfirm.js'
-import {importGtzip} from '../domain/gtzip.js'
+import {exportGtzip,importGtzip} from '../domain/gtzip.js'
+import {renderTemplate} from '@rplayout/protocol'
 type Draft=Pick<GraphicTemplate,'name'|'svg'|'fields'|'fadeMs'|'holdSeconds'>
 const blank=():Draft=>({name:'',svg:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080"></svg>',fields:[],fadeMs:300,holdSeconds:null})
 interface Props{channelId:string;onMutation:()=>void;onMessage:(value:string)=>void;onDirtyChange?:(value:boolean)=>void;onBusyChange?:(value:boolean)=>void;disabled?:boolean}
@@ -64,6 +65,17 @@ function TemplatesEditor({channelId,onMutation,onMessage,onDirtyChange,onBusyCha
       setGtReport([`Título "${result.name}" importado: ${result.fields.length} campo(s) (${result.fields.map(field=>field.label).join(', ')||'nenhum'}), entrada ${result.fadeMs} ms.`,...result.report])
     }catch(failure){setGtReport([failure instanceof Error?failure.message:'Não foi possível ler o título GT.'])}
   }
+  /** Salva o rascunho como título GT (.gtzip) para abrir no GT Designer/vMix. */
+  const exportGt=async()=>{
+    try{
+      const thumbnail=await svgThumbnail(renderTemplate({svg:draft.svg,fields:draft.fields},{})).catch(()=>null)
+      const {bytes,report}=exportGtzip(draft.svg,{name:draft.name||'Arte RPlayout',fields:draft.fields,thumbnail})
+      const url=URL.createObjectURL(new Blob([bytes as BlobPart],{type:'application/zip'}))
+      const link=document.createElement('a');link.href=url;link.download=`${(draft.name||'arte-rplayout').replace(/[\\/:*?"<>|]+/g,'-')}.gtzip`;link.click()
+      window.setTimeout(()=>URL.revokeObjectURL(url),5000)
+      setGtReport([`Título salvo como .gtzip (${Math.round(bytes.length/1024)} KB).`,...report])
+    }catch(failure){setGtReport([failure instanceof Error?failure.message:'Não foi possível gerar o .gtzip.'])}
+  }
   const stale=Boolean(review&&proof&&(review.revision!==proof.revision||review.sharedRevision!==proof.sharedRevision))
   const edit=(patch:Partial<Draft>)=>{setDraft(value=>({...value,...patch}));setDirty(true)}
   return <section aria-label="Edição conferida de artes">
@@ -77,6 +89,7 @@ function TemplatesEditor({channelId,onMutation,onMessage,onDirtyChange,onBusyCha
     <button className="btn" disabled={occupied||blocked} onClick={()=>choose(null)}>Nova arte</button>
     <fieldset disabled={occupied||blocked}>
       <label>Importar título do vMix (.gtzip / .gtxml) <input type="file" accept=".gtzip,.gtxml" onChange={event=>{void importGt(event.target.files?.[0]);event.target.value=''}}/></label>
+      <button type="button" className="btn" disabled={!draft.svg.trim()} onClick={()=>void exportGt()}>Salvar como título vMix (.gtzip)</button>
       {gtReport&&<ul aria-label="Relatório da importação do título GT">{gtReport.map(line=><li key={line}>{line}</li>)}</ul>}
       <label>Nome <input value={draft.name} onChange={event=>edit({name:event.target.value})}/></label>
       <label>SVG <textarea rows={10} value={draft.svg} onChange={event=>{const svg=event.target.value;edit({svg,fields:fieldsUsedIn(svg).map(key=>draft.fields.find(field=>field.key===key)??{key,label:key,defaultValue:''})})}}/></label>
@@ -95,4 +108,18 @@ function TemplatesEditor({channelId,onMutation,onMessage,onDirtyChange,onBusyCha
       <button disabled={busy||disabled} onClick={()=>setIntent(null)}>Manter arte em edição</button>
     </section>}
   </section>
+}
+
+/** Miniatura 640x360 da arte (PNG), como a dos títulos do vMix. */
+async function svgThumbnail(svg:string):Promise<Uint8Array>{
+  const image=new Image()
+  const url=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}))
+  try{
+    await new Promise<void>((resolve,reject)=>{image.onload=()=>resolve();image.onerror=()=>reject(new Error('miniatura'));image.src=url})
+    const canvas=document.createElement('canvas');canvas.width=640;canvas.height=360
+    canvas.getContext('2d')!.drawImage(image,0,0,640,360)
+    const blob=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,'image/png'))
+    if(!blob)throw new Error('miniatura')
+    return new Uint8Array(await blob.arrayBuffer())
+  }finally{URL.revokeObjectURL(url)}
 }

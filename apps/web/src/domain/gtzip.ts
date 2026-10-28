@@ -94,7 +94,12 @@ export function parseXml(text: string): XmlNode {
   const stack = [root]
   const tagRe = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>|<(\/?)([A-Za-z_][\w.:-]*)((?:\s+[\w.:-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/g
   let match: RegExpExecArray | null
+  let last = 0
   while ((match = tagRe.exec(text))) {
+    // Texto entre tags (ex.: conteúdo de <text>) fica em attrs['#text'] do pai.
+    const between = text.slice(last, match.index)
+    last = tagRe.lastIndex
+    if (between.trim()) { const parent = stack[stack.length - 1]!; parent.attrs['#text'] = (parent.attrs['#text'] ?? '') + entity(between) }
     if (!match[2]) continue
     const [, closing, tag, attrText, selfClosing] = match
     if (closing) {
@@ -408,3 +413,164 @@ export async function importGtzip(bytes: Uint8Array, fileName: string, inflateRa
   }
   return { ...convertGtDocument(decodeText(document), name, images), thumbnail: files.get('thumbnail.png') ?? null }
 }
+
+// ---------------------------------------------------------------- exportação (.gtzip)
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; table[n] = c >>> 0 }
+  return table
+})()
+function crc32(data: Uint8Array): number {
+  let c = 0xffffffff
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]!) & 0xff]! ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+/** Zip sem compressão (como os .gtzip do vMix). */
+export function writeZip(files: Array<[string, Uint8Array]>): Uint8Array {
+  const encoder = new TextEncoder(), parts: Uint8Array[] = [], central: Uint8Array[] = []
+  let offset = 0
+  for (const [name, data] of files) {
+    const nameBytes = encoder.encode(name), crc = crc32(data)
+    const local = new Uint8Array(30 + nameBytes.length), lv = new DataView(local.buffer)
+    lv.setUint32(0, 0x04034b50, true); lv.setUint16(4, 20, true); lv.setUint32(14, crc, true); lv.setUint32(18, data.length, true); lv.setUint32(22, data.length, true); lv.setUint16(26, nameBytes.length, true)
+    local.set(nameBytes, 30)
+    const entry = new Uint8Array(46 + nameBytes.length), cv = new DataView(entry.buffer)
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true); cv.setUint32(16, crc, true); cv.setUint32(20, data.length, true); cv.setUint32(24, data.length, true); cv.setUint16(28, nameBytes.length, true); cv.setUint32(42, offset, true)
+    entry.set(nameBytes, 46)
+    parts.push(local, data); central.push(entry); offset += local.length + data.length
+  }
+  const size = central.reduce((sum, part) => sum + part.length, 0)
+  const end = new Uint8Array(22), ev = new DataView(end.buffer)
+  ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, central.length, true); ev.setUint16(10, central.length, true); ev.setUint32(12, size, true); ev.setUint32(16, offset, true)
+  const all = [...parts, ...central, end], out = new Uint8Array(all.reduce((sum, part) => sum + part.length, 0))
+  let at = 0
+  for (const part of all) { out.set(part, at); at += part.length }
+  return out
+}
+
+const xmlAttr = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+/** Cor SVG (#rrggbb + opacidade) → `#AARRGGBB` do vMix. */
+export function toGtColor(color: string | undefined, opacity = 1): string {
+  const hex = /^#([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(color ?? '')
+  if (!hex) return '#00000000'
+  const rgb = hex[1]!.length === 3 ? hex[1]!.split('').map(ch => ch + ch).join('') : hex[1]!
+  return `#${Math.round(Math.max(0, Math.min(1, opacity)) * 255).toString(16).padStart(2, '0')}${rgb}`.toUpperCase()
+}
+
+interface GtExportOptions { name: string; fields: GtField[]; thumbnail?: Uint8Array | null; randomId?: () => string }
+
+/** Arte SVG do RPlayout → título GT (.gtzip) que abre no GT Designer e no vMix.
+ * Achata a composição em posições absolutas: retângulo, elipse, polígono
+ * (vira triângulo pela caixa), imagem e texto; campos `{{chave}}` viram
+ * TextBlocks com o nome do vMix (rótulo sem `.Text`). Storyboards gravados na
+ * importação voltam para os objetos de cada grupo. */
+export function exportGtzip(svg: string, options: GtExportOptions): { bytes: Uint8Array; report: string[] } {
+  const report = new Set<string>()
+  const randomId = options.randomId ?? (() => crypto.randomUUID())
+  const root = parseXml(svg).children.find(node => node.tag === 'svg')
+  if (!root) throw new Error('Arte sem <svg>.')
+  const [, , vw, vh] = (root.attrs.viewBox ?? '0 0 1920 1080').split(/[\s,]+/).map(Number)
+  const width = Math.round(vw || 1920), height = Math.round(vh || 1080)
+  const gradients = new Map<string, string>()
+  for (const node of root.children.find(entry => entry.tag === 'defs')?.children ?? []) {
+    if (node.tag === 'linearGradient' && node.attrs.id) {
+      const stop = node.children.find(entry => entry.tag === 'stop')
+      if (stop) gradients.set(node.attrs.id, toGtColor(stop.attrs['stop-color'], num(stop.attrs['stop-opacity'], 1)))
+    }
+  }
+  const meta = /<metadata id="rplayout-gt">([\s\S]*?)<\/metadata>/.exec(svg)
+  const animation = meta ? (JSON.parse(meta[1]!.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')) as GtAnimation) : null
+  const labelOf = new Map(options.fields.map(field => [field.key, field.label.replace(/\.Text$/, '')]))
+  const defaultOf = new Map(options.fields.map(field => [field.key, field.defaultValue]))
+  const elements: string[] = [], resources: Array<{ file: string; guid: string; data: Uint8Array }> = []
+  const members = new Map<number, string[]>(), used = new Set<string>()
+  const unique = (base: string) => { let name = base || 'Objeto', n = 2; while (used.has(name)) name = `${base} ${n++}`; used.add(name); return name }
+  const paint = (node: XmlNode, attr: 'fill' | 'stroke') => {
+    const value = node.attrs[attr]
+    if (!value || value === 'none') return attr === 'fill' && !value ? '#FFFFFFFF' : '#00000000'
+    const ref = /^url\(#(.+)\)$/.exec(value)
+    if (ref) { report.add('Gradiente exportado como cor sólida (primeira parada).'); return gradients.get(ref[1]!) ?? '#FFFFFFFF' }
+    return toGtColor(value, num(node.attrs[`${attr}-opacity`], 1))
+  }
+  const brush = (tag: string, kind: 'Fill' | 'Stroke', color: string) => `<${tag}.${kind}><Brush Color="${color}" /></${tag}.${kind}>`
+  const walk = (node: XmlNode, ox: number, oy: number, group: number[]) => {
+    let x = ox, y = oy
+    const transform = node.attrs.transform ?? ''
+    for (const match of transform.matchAll(/translate\(\s*([-\d.eE]+)[\s,]+([-\d.eE]+)\s*\)/g)) { x += Number(match[1]); y += Number(match[2]) }
+    if (/skew|rotate|scale/.test(transform)) report.add('Inclinação/rotação/escala não exportadas (o objeto sai reto).')
+    const groups = node.attrs['data-a'] ? [...group, Number(node.attrs['data-a'])] : group
+    const named = node.attrs['data-gt']
+    const add = (xml: string, name: string) => { elements.push(xml); for (const n of groups) members.set(n, [...(members.get(n) ?? []), name]) }
+    const nameFor = () => unique(named ?? `${node.tag}`)
+    switch (node.tag) {
+      case 'rect': {
+        const name = nameFor(), w = num(node.attrs.width), h = num(node.attrs.height), r = num(node.attrs.rx)
+        add(`<Rectangle Name="${xmlAttr(name)}" Dimensions="${round(w)},${round(h)},0" Location="${round(x + num(node.attrs.x))},${round(y + num(node.attrs.y))},0"${r ? ` Radius="${round(r)},${round(num(node.attrs.ry, r))}"` : ''}${node.attrs['stroke-width'] ? ` StrokeThickness="${round(num(node.attrs['stroke-width']))}"` : ''}>${brush('Rectangle', 'Fill', paint(node, 'fill'))}${brush('Rectangle', 'Stroke', paint(node, 'stroke'))}</Rectangle>`, name)
+        return
+      }
+      case 'ellipse': case 'circle': {
+        const name = nameFor(), rx = num(node.attrs.rx ?? node.attrs.r), ry = num(node.attrs.ry ?? node.attrs.r)
+        add(`<Ellipse Name="${xmlAttr(name)}" Dimensions="${round(rx * 2)},${round(ry * 2)},0" Location="${round(x + num(node.attrs.cx) - rx)},${round(y + num(node.attrs.cy) - ry)},0">${brush('Ellipse', 'Fill', paint(node, 'fill'))}${brush('Ellipse', 'Stroke', paint(node, 'stroke'))}</Ellipse>`, name)
+        return
+      }
+      case 'polygon': {
+        const points = (node.attrs.points ?? '').trim().split(/[\s,]+/).map(Number)
+        const xs = points.filter((_, i) => i % 2 === 0), ys = points.filter((_, i) => i % 2 === 1)
+        if (!xs.length) return
+        const name = nameFor(), minX = Math.min(...xs), minY = Math.min(...ys)
+        report.add('Polígono exportado como triângulo pela caixa.')
+        add(`<Triangle Name="${xmlAttr(name)}" Dimensions="${round(Math.max(...xs) - minX)},${round(Math.max(...ys) - minY)},0" Location="${round(x + minX)},${round(y + minY)},0">${brush('Triangle', 'Fill', paint(node, 'fill'))}</Triangle>`, name)
+        return
+      }
+      case 'image': {
+        const href = node.attrs.href ?? node.attrs['xlink:href'] ?? ''
+        const data = /^data:image\/(png|jpeg|gif|bmp);base64,(.+)$/.exec(href)
+        if (!data) { report.add('Imagem externa (não embutida) não exportada.'); return }
+        const name = nameFor(), guid = randomId(), file = `${randomId()}\\IMAGE${resources.length + 1}.${data[1] === 'jpeg' ? 'jpg' : data[1]}`
+        const binary = atob(data[2]!), bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        resources.push({ file, guid, data: bytes })
+        add(`<Image Name="${xmlAttr(name)}" Dimensions="${round(num(node.attrs.width))},${round(num(node.attrs.height))},0" Location="${round(x + num(node.attrs.x))},${round(y + num(node.attrs.y))},0"${node.attrs.preserveAspectRatio === 'none' ? ' SizeMode="Stretch"' : ''}><Image.Bitmap><Bitmap Source="${xmlAttr(file)}" /></Image.Bitmap></Image>`, name)
+        return
+      }
+      case 'text': {
+        const raw = textOf(node) ?? ''
+        const key = /^\{\{\s*([a-zA-Z0-9_-]+)\s*\}\}$/.exec(raw.trim())?.[1]
+        const size = num(node.attrs['font-size'], 48)
+        const anchor = node.attrs['text-anchor'] ?? 'start'
+        const text = key ? defaultOf.get(key) ?? '' : raw
+        const name = unique(key ? labelOf.get(key) ?? key : named ?? 'Texto')
+        const boxW = Math.max(size, (text.length || 8) * size * 0.62), boxH = size * 1.25
+        const tx = x + num(node.attrs.x), ty = y + num(node.attrs.y)
+        const left = anchor === 'middle' ? tx - boxW / 2 : anchor === 'end' ? tx - boxW : tx
+        const family = (node.attrs['font-family'] ?? 'Segoe UI').split(',')[0]!.trim().replace(/^['"]|['"]$/g, '')
+        add(`<TextBlock Name="${xmlAttr(name)}" Dimensions="${round(boxW)},${round(boxH)},0" Location="${round(left)},${round(ty - size * 0.95)},0" Text="${xmlAttr(text)}" FontFamily="${xmlAttr(family)}" FontSize="${round(size)}"${node.attrs['font-weight'] === 'bold' ? ' FontWeight="Bold"' : ''}${anchor === 'middle' ? ' TextAlign="Center"' : anchor === 'end' ? ' TextAlign="Right"' : ''} VerticalAlign="Center" TextWordWrapping="NoWrap" AutoSize="Shrink">${brush('TextBlock', 'Fill', paint(node, 'fill'))}</TextBlock>`, name)
+        return
+      }
+      case 'metadata': case 'defs': return
+      default: for (const child of node.children) walk(child, x, y, groups)
+    }
+  }
+  for (const child of root.children) walk(child, 0, 0, [])
+  const boards: string[] = []
+  if (animation) {
+    const board = (steps: GtStep[], type: string | null) => {
+      const lines = steps.flatMap(step => (members.get(step.n) ?? []).map(name => `<${step.kind} Object="${xmlAttr(name)}"${step.delayMs ? ` Delay="${step.delayMs / 1000}"` : ''}${step.durationMs !== 500 ? ` Duration="${step.durationMs / 1000}"` : ''}${step.direction ? ` Direction="${step.direction}"` : ''}${step.easing ? ` Interpolation="${step.easing}"` : ''} />`))
+      if (lines.length) boards.push(`<Storyboard${type ? ` Type="${type}"` : ''}><Storyboard.Animations>${lines.join('')}</Storyboard.Animations></Storyboard>`)
+    }
+    board(animation.enter, null)
+    board(animation.exit, 'TransitionOut')
+  } else report.add('Arte sem animação gravada: entra e sai como corte no vMix.')
+  const documentXml = `<?xml version="1.0" encoding="utf-8"?>\r\n<Composition Width="${width}" Height="${height}">\r\n<Layer Name="RPlayout" Dimensions="${width},${height},0" Locked="False"><Layer.Composition><Composition Width="${width}" Height="${height}">${elements.join('')}</Composition></Layer.Composition></Layer>${boards.join('')}</Composition>`
+  const encoder = new TextEncoder()
+  const resourcesXml = `<resources>${resources.map(entry => `<resource filename="${xmlAttr(entry.file)}"><source guid="${entry.guid}">${xmlAttr(entry.file)}</source></resource>`).join('')}</resources>`
+  const types = `<?xml version="1.0" encoding="utf-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="text/xml" /><Default Extension="png" ContentType="image/png" />${resources.map(entry => `<Override PartName="/${entry.guid}" ContentType="application/octet-stream" />`).join('')}</Types>`
+  const files: Array<[string, Uint8Array]> = [['document.xml', encoder.encode(documentXml)], ...resources.map(entry => [entry.guid, entry.data] as [string, Uint8Array]), ['resources.xml', encoder.encode(resourcesXml)]]
+  if (options.thumbnail) files.push(['thumbnail.png', options.thumbnail])
+  files.push(['[Content_Types].xml', encoder.encode(types)])
+  return { bytes: writeZip(files), report: [...report] }
+}
+
+function textOf(node: XmlNode): string | null { return node.attrs['#text'] ?? null }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { deflateRawSync } from 'node:zlib'
 import { renderTemplate } from '@rplayout/protocol'
-import { convertGtDocument, gtColor, importGtzip, parseXml, readZip, transitionInMs } from './gtzip.js'
+import { convertGtDocument, exportGtzip, gtColor, importGtzip, parseXml, readZip, transitionInMs } from './gtzip.js'
 
 const doc = `<?xml version="1.0" encoding="utf-16"?>
 <Composition Width="1920" Height="1080">
@@ -115,5 +115,28 @@ describe('importação de título GT do vMix', () => {
   it('recusa arquivo que não é título GT', async () => {
     await expect(importGtzip(new Uint8Array([1, 2, 3]), 'x.gtzip', inflate)).rejects.toThrow('zip')
     await expect(importGtzip(zip({ 'a.txt': new Uint8Array([1]) }), 'x.gtzip', inflate)).rejects.toThrow('document.xml')
+  })
+})
+
+describe('exportação para .gtzip', () => {
+  it('ida e volta mantém campos, objetos, imagem e animação', async () => {
+    const first = convertGtDocument(doc, 'Tarja', source => (source.endsWith('IMAGE1.png') ? png : null))
+    let n = 0
+    const { bytes, report } = exportGtzip(first.svg, { name: 'Tarja', fields: first.fields, randomId: () => `id-${++n}` })
+    const again = await importGtzip(bytes, 'Tarja.gtzip', inflate)
+    expect(again.fields.map(field => [field.label, field.defaultValue])).toEqual([['Headline.Text', 'NOME & CARGO'], ['Description.Text', 'Descrição']])
+    expect(again.svg).toContain('data:image/png;base64,')
+    expect(again.animation.enter.map(step => step.kind).sort()).toEqual(['Fade', 'Fly', 'None'])
+    expect(again.animation.exit.map(step => step.direction)).toContain('Right')
+    expect(report.join(' ')).toContain('Gradiente')
+    const files = await readZip(bytes, inflate)
+    expect([...files.keys()].sort()).toEqual(['[Content_Types].xml', 'document.xml', 'id-1', 'resources.xml'])
+  })
+  it('arte SVG comum vira título com texto e retângulo', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080"><rect x="60" y="900" width="800" height="120" fill="#0b2a4a" fill-opacity="0.8"/><text x="100" y="980" font-family="Inter, Helvetica" font-size="46" fill="#f2f5fb">{{nome}}</text></svg>'
+    const { bytes } = exportGtzip(svg, { name: 'Crédito', fields: [{ key: 'nome', label: 'Nome', defaultValue: 'FULANO' }] })
+    const back = await importGtzip(bytes, 'Crédito.gtzip', inflate)
+    expect(back.fields).toEqual([{ key: 'Nome', label: 'Nome.Text', defaultValue: 'FULANO' }])
+    expect(back.svg).toContain('fill="#0b2a4a" fill-opacity="0.8"')
   })
 })
