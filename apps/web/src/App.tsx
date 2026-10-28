@@ -1,4 +1,5 @@
-﻿import { liveDefaultFrames } from './liveSource.js'
+﻿import { setSessionAccessRole } from './domain/permissions.js'
+import { liveDefaultFrames } from './liveSource.js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { setAirState } from './domain/air-state.js'
 import { wallClock, setCurrentGradeDate, anchorFramesFor } from './domain/wall-clock.js'
@@ -334,6 +335,7 @@ export function App() {
       service:api, refreshLibrary, active:()=>active,signal:controller.signal,
       onSession:session=>{
         setSessionRole(session.label)
+        setSessionAccessRole(session.role)
         setAuthRequired(session.required)
         setAuthenticated(session.authenticated)
       },
@@ -1426,8 +1428,8 @@ export function App() {
               </div>
 
               {!authRequired && (
-                <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 px-4 py-3 rounded-lg flex items-center gap-3">
-                  <span className="material-symbols-outlined text-amber-400 text-[20px]">warning</span>
+                <div className="bg-armed-amber/10 border border-armed-amber/30 text-armed-amber px-4 py-3 rounded-lg flex items-center gap-3">
+                  <span className="material-symbols-outlined text-armed-amber text-[20px]">warning</span>
                   <div className="font-body-sm text-xs">
                     <strong>Este servidor está operando em modo local sem senha.</strong>
                     <span className="ml-1 opacity-80">

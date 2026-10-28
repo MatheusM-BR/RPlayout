@@ -295,7 +295,7 @@ export function BroadcastMonitor({
         ) : asset ? (
           /* Consulta leve de arquivo: não confirma sinal/saída do engine. */
           <div className="relative w-full h-full flex items-center justify-center bg-black">
-            <span className="absolute bottom-1 left-1 right-1 z-30 rounded bg-black/80 px-2 py-1 text-[11px] text-amber-300 pointer-events-none">
+            <span className="absolute bottom-1 left-1 right-1 z-30 rounded bg-black/80 px-2 py-1 text-[11px] text-armed-amber pointer-events-none">
               {hasMediaError ? 'Proxy indisponível — confira a fila de mídia' : 'Proxy de consulta — não confirma PGM/PVW'}
             </span>
             {webrtcFailed && webrtcPath && (

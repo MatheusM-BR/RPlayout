@@ -42,14 +42,14 @@ function InterruptedItemsContent({channelId,rate}:{channelId:string;rate:Rate}){
     finally {busyRef.current=false;if(mounted.current)setBusy(false)}
   }
   if (!items.length && !message) return null
-  return <section className="mt-2 p-3 rounded border border-amber-500/40 bg-amber-950/20 text-xs" aria-label="VTs interrompidos">
-    {items.length > 0 && <p className="mb-2 text-amber-200">VT interrompido pelo ao vivo — escolha retomar ou descartar. Posição: último registro do engine.</p>}
+  return <section className="mt-2 p-3 rounded border border-armed-amber/40 bg-armed-amber/20 text-xs" aria-label="VTs interrompidos">
+    {items.length > 0 && <p className="mb-2 text-armed-amber">VT interrompido pelo ao vivo — escolha retomar ou descartar. Posição: último registro do engine.</p>}
     {items.map(item => <div key={item.id} className="flex flex-wrap items-center gap-2 mb-1">
       <span className="flex-1">{item.title} · {formatTimecode(item.frames, rate)}</span>
       <button disabled={busy || item.state !== 'PENDING'} className="px-3 py-1 rounded border border-primary text-primary disabled:opacity-40" onClick={() => void resolve(item, 'RESUME')}>Retomar no PGM</button>
       <button disabled={busy || item.state !== 'PENDING'} className="px-3 py-1 rounded border border-outline disabled:opacity-40" onClick={() => void resolve(item, 'DISCARD')}>Descartar retorno</button>
-      {item.state!=='PENDING' && <span role="status" className="text-amber-200">{item.operation?.message??'Retorno em andamento ou inconclusivo. Não será repetido automaticamente.'}</span>}
-      {item.canReconcile && <button disabled={busy} className="px-3 py-1 border rounded border-amber-400 text-amber-200 disabled:opacity-40" onClick={()=>void resolve(item,'ACKNOWLEDGE')}>Encerrar pendência com PGM parado</button>}
+      {item.state!=='PENDING' && <span role="status" className="text-armed-amber">{item.operation?.message??'Retorno em andamento ou inconclusivo. Não será repetido automaticamente.'}</span>}
+      {item.canReconcile && <button disabled={busy} className="px-3 py-1 border rounded border-armed-amber text-armed-amber disabled:opacity-40" onClick={()=>void resolve(item,'ACKNOWLEDGE')}>Encerrar pendência com PGM parado</button>}
     </div>)}
     {message && <p role="status">{message}</p>}
   </section>

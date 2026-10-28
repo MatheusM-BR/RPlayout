@@ -120,6 +120,8 @@ import {HaError} from './domain/ha-replication.js'
 import {HaRecoveryError} from './domain/ha-recovery.js'
 import { createEditorialRundown, EditorialRundownError } from './domain/editorial-rundown.js'
 import { diagnosticValue, sanitizeDiagnostic } from './domain/sanitize-diagnostic.js'
+import { ChannelProgrammingError, copyRundownToChannel, isActiveMirrorRundown, mirrorOf, mirrorsFrom, recordMirrorSync, setMirror, syncMirrorRundown } from './domain/channel-programming.js'
+import { canShareAcrossChannels } from './domain/permissions.js'
 import {databaseStorageStatus} from './db/process-database.js'
 import {HaBindingError,haBindingRequest,type HaBindingInventory} from './domain/ha-bindings.js'
 import {haReturnBindingRequest,haReturnBindingReviewRequest} from './domain/ha-return-bindings.js'
@@ -698,6 +700,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       for (const channelId of channelIds) {
         if (app.sqlite.prepare('SELECT 1 FROM channels WHERE id=? AND archived_at IS NOT NULL').get(channelId)) return reply.code(409).send({error:'Este canal está arquivado e disponível somente para histórico. Reative-o explicitamente antes de editar ou comandar a operação.'})
       }
+    }
+    // Grade espelhada: o conteúdo vem do canal de origem; editar aqui seria
+    // sobrescrito na próxima publicação de lá.
+    if (!['GET','HEAD','OPTIONS'].includes(request.method) && route!=='/api/rundowns/:id/operational-publish' && /^\/api\/(rundowns\/:id|items\/:id|blocks\/:blockId)(?:\/|$)/.test(route)) {
+      const touched=new Set<string>()
+      if(route.startsWith('/api/rundowns/:id')&&params?.id)touched.add(params.id)
+      if(route.startsWith('/api/items/:id')&&params?.id)for(const row of app.sqlite.prepare('SELECT rundown_id AS id FROM rundown_items WHERE id=?').all(params.id) as {id:string}[])touched.add(row.id)
+      if(route.startsWith('/api/blocks/:blockId')&&params?.blockId)for(const row of app.sqlite.prepare('SELECT DISTINCT rundown_id AS id FROM rundown_items WHERE block_id=?').all(params.blockId) as {id:string}[])touched.add(row.id)
+      if([...touched].some(id=>isActiveMirrorRundown(app.db,id)))return reply.code(409).send({error:'Esta grade espelha outro canal. Edite no canal de origem ou desligue o espelho em Configurações › Canais.'})
     }
     if (!identity || identity.channelIds === null) return
     if (sharedTemplateMutation) return reply.code(403).send({error:'Sua conta pode usar grafismos compartilhados, mas não editar, remover ou compartilhar estes modelos.'})
@@ -2242,6 +2253,71 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       catch{throw new Error('A revisão alteraria ou removeria a mídia/fonte/corte/áudio do item no CUE. Limpe o CUE e confira novamente antes de publicar.')}
     }
   }
+  /** Espelho: cada publicação no canal de origem atualiza e publica a grade
+   * espelhada dos canais vinculados. O item no ar do canal espelhado é
+   * protegido como numa publicação manual; se a revisão mexer nele, o espelho
+   * fica pendente (registrado) e o operador daquele canal decide. */
+  const propagateMirrors=async(sourceChannelId:string,sourceRundownId:string,actor:string|null,onlyTarget?:string)=>{
+    const results:Array<{channelId:string;ok:boolean;loaded?:boolean;rundownId?:string;items?:number;skippedGraphics?:number;unboundLive?:number;error?:string}>=[]
+    for(const mirror of mirrorsFrom(app.db,sourceChannelId).filter(row=>!onlyTarget||row.targetChannelId===onlyTarget)){
+      try{
+        const target=await runtimeFor(app,mirror.targetChannelId)
+        if(!target)throw new Error('Canal espelhado sem execução.')
+        const work=async()=>{
+          const report=syncMirrorRundown(app.db,mirror.targetChannelId,sourceRundownId)
+          const loaded=target.executionView?.rundown.id===report.rundownId
+          const onAir=loaded?target.transport.state().onAir?.itemId??null:null
+          const context=target.interruptionContext()
+          await publishOperationalPlaylist(app.db,target.channel,report.rundownId,`espelho:${actor??'sistema'}`,onAir,(_review,payload)=>{if(loaded)protectReviewedExecution(target,payload,context)})
+          if(loaded)await target.refresh()
+          return {loaded,...report}
+        }
+        const done=await (target.transport instanceof EngineTransport?target.transport.mutatePlaylist(work,()=>true):work()) as Awaited<ReturnType<typeof work>>
+        recordMirrorSync(app.db,mirror.targetChannelId,null)
+        results.push({channelId:mirror.targetChannelId,ok:true,...done})
+      }catch(error){
+        const message=sanitizeDiagnostic(error instanceof Error?error.message:String(error))
+        try{recordMirrorSync(app.db,mirror.targetChannelId,message)}catch{}
+        results.push({channelId:mirror.targetChannelId,ok:false,error:message})
+      }
+    }
+    return results
+  }
+  // ---- Programação multicanal (cópia e espelho) ----
+  const shareDenied=(request:FastifyRequest)=>(access.required()&&!access.identity(request))||!canShareAcrossChannels(access.role(request))||!can(access.role(request),'PLAYLIST_EDIT')
+  const programmingError=(reply:{code:(status:number)=>{send:(body:unknown)=>unknown}},error:unknown)=>error instanceof ChannelProgrammingError?reply.code(error.status).send({error:error.message}):error instanceof CollaborativeEditError?reply.code(error.status).send(error.payload):reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:String(error))})
+  server.get('/api/channels/:id/programming', async (request) => {
+    const {id}=request.params as {id:string}
+    const visible=(channelId:string)=>access.channelAllowed(request,channelId)
+    return {mirror:mirrorOf(app.db,id),mirrorsFrom:mirrorsFrom(app.db,id).filter(row=>visible(row.targetChannelId)),canShare:!shareDenied(request)}
+  })
+  server.post('/api/channels/:id/copy-rundown', async (request, reply) => {
+    const {id}=request.params as {id:string}
+    if(shareDenied(request))return reply.code(403).send({error:'Copiar grade entre canais exige Supervisor ou Administrador.'})
+    const body=z.object({copyFromRundownId:z.string().min(1),date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),name:z.string().trim().min(1).max(200).optional()}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe a grade de origem e, se quiser, a data e o nome.'})
+    // O preHandler já conferiu o acesso aos dois canais (destino e dono da grade).
+    try{const report=copyRundownToChannel(app.db,{sourceRundownId:body.data.copyFromRundownId,targetChannelId:id,date:body.data.date,name:body.data.name});onChange();return reply.code(201).send(report)}
+    catch(error){return programmingError(reply,error)}
+  })
+  server.put('/api/channels/:id/mirror', async (request, reply) => {
+    const {id}=request.params as {id:string}
+    if(shareDenied(request))return reply.code(403).send({error:'Ligar ou desligar espelho exige Supervisor ou Administrador.'})
+    const body=z.object({sourceChannelId:z.string().min(1).nullable()}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe o canal de origem (ou nulo para desligar).'})
+    const source=body.data.sourceChannelId
+    if(source&&!access.channelAllowed(request,source))return reply.code(403).send({error:'Sua conta não pode acessar o canal de origem.'})
+    let mirror
+    try{mirror=setMirror(app.db,id,source,access.identity(request)?.username??null)}catch(error){return programmingError(reply,error)}
+    let initial=null
+    // Primeira sincronização: a grade publicada que a origem executa agora.
+    if(mirror){
+      const origin=await runtimeFor(app,mirror.sourceChannelId),rundownId=origin?.operationalRevision?origin.executionView?.rundown.id:null
+      if(rundownId)initial=(await propagateMirrors(mirror.sourceChannelId,rundownId,access.identity(request)?.username??null,id))[0]??null
+    }
+    onChange()
+    return {mirror:mirror?mirrorOf(app.db,id):null,initial}
+  })
   server.post('/api/rundowns/:id/operational-publish', async (request, reply) => {
     const { id } = request.params as { id: string }
     if (!(await allowed(request, 'PLAYLIST_PUBLISH'))) {
@@ -2275,6 +2351,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const reload=isLoaded||(!runtime.executionView&&runtime.view?.rundown.id===id)
     if(reload)try{await runtime.refresh()}catch{refreshError='Revisão gravada, mas a atualização da execução não foi confirmada. Confira o canal; não repita a publicação.'}
     const payload = readOperationalPayload(revision.payload)
+    const mirrors=await propagateMirrors(runtime.channel.id,id,actor)
     try{onChange()}catch{refreshError??='Revisão gravada; atualização da tela não confirmada. Confira o canal.'}
     try{await emitIntegrationEvent(app.db, 'operational-playlist.published', {
       rundownId: id,
@@ -2289,6 +2366,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       applied:true,
       executionUpdated:reload?refreshError===null:null,
       refreshError,
+      mirrors,
     })
     }, () => runtime.executionView?.rundown.id === id)
   })

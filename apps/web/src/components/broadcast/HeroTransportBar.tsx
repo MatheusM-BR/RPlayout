@@ -151,7 +151,7 @@ export const HeroTransportBar = React.memo(function HeroTransportBar({
               disabled={!armedItem}
               className={`col-span-6 py-3 px-space-md rounded font-headline-xl text-headline-xl font-bold uppercase tracking-wider flex items-center justify-center gap-space-sm transition-all shadow-lg select-none ${
                 armedItem
-                  ? 'bg-on-air-crimson hover:bg-red-600 text-white shadow-[0_0_16px_rgba(255,59,48,0.5)] active:scale-[0.98]'
+                  ? 'bg-on-air-crimson hover:bg-on-air-crimson text-white shadow-[0_0_16px_rgba(255,59,48,0.5)] active:scale-[0.98]'
                   : 'bg-surface-container text-outline cursor-not-allowed opacity-40'
               }`}
             >

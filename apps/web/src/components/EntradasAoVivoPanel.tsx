@@ -370,10 +370,10 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                         ls.kind === 'SRT'
                           ? 'bg-primary/20 text-primary border-primary/30'
                           : ls.kind === 'RTMP'
-                          ? 'bg-red-500/20 text-red-400 border-red-500/30'
+                          ? 'bg-on-air-crimson/20 text-on-air-crimson border-on-air-crimson/30'
                           : ls.kind === 'NDI'
                           ? 'bg-accent-ice/20 text-accent-ice-bright border-accent-ice/30'
-                          : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                          : 'bg-status-ok/20 text-status-ok-bright border-status-ok/30'
                       }`}>
                         {ls.kind}
                       </span>

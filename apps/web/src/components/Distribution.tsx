@@ -274,17 +274,17 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                   Saídas do Canal &amp; Distribuição
                 </h2>
                 {data?.server.running ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-status-ok/20 text-status-ok-bright border border-status-ok/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span>
                     MEDIAMTX ATIVO ({data.server.host})
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30" title="O servidor de distribuição (RTMP/SRT/HLS/monitor) não está rodando">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/30" title="O servidor de distribuição (RTMP/SRT/HLS/monitor) não está rodando">
                     MEDIAMTX PARADO
                   </span>
                 )}
                 {data?.server.exposed && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-armed-amber/20 text-armed-amber border border-armed-amber/30">
                     <span className="material-symbols-outlined text-[13px]">warning</span>
                     EXPOSTO EXTERNAMENTE
                   </span>
@@ -308,7 +308,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
 
         {/* ERRO BANNER */}
         {error && (
-          <div className="px-6 py-2.5 bg-red-500/10 border-b border-red-500/30 text-red-400 text-xs font-label-mono flex items-center justify-between">
+          <div className="px-6 py-2.5 bg-on-air-crimson/10 border-b border-on-air-crimson/30 text-on-air-crimson text-xs font-label-mono flex items-center justify-between">
             <span className="flex items-center gap-2">
               <span className="material-symbols-outlined text-[16px]">error</span>
               {error}
@@ -327,7 +327,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
         </div>}
 
         {/* NAVEGAÇÃO DE ABAS */}
-        {healthActionError && <div role="alert" className="shrink-0 px-6 py-2.5 bg-red-500/10 border-b border-red-500/30 text-red-400 text-xs flex items-center justify-between gap-3">
+        {healthActionError && <div role="alert" className="shrink-0 px-6 py-2.5 bg-on-air-crimson/10 border-b border-on-air-crimson/30 text-on-air-crimson text-xs flex items-center justify-between gap-3">
           <span>Reconhecimento não gravado: {healthActionError} O incidente continua pendente; confira antes de tentar novamente.</span>
           <button type="button" onClick={()=>setHealthActionError(null)}>FECHAR AVISO</button>
         </div>}
@@ -397,11 +397,11 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
             <span className="material-symbols-outlined text-[16px]">vital_signs</span>
             Saúde &amp; Telemetria
             {criticalPending !== null && criticalPending > 0 ? (
-              <span className="ml-1 px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 font-label-mono text-[12px] font-bold">
+              <span className="ml-1 px-1.5 py-0.2 rounded bg-on-air-crimson/20 text-on-air-crimson font-label-mono text-[12px] font-bold">
                 {criticalPending}
               </span>
             ) : warnPending !== null && warnPending > 0 ? (
-              <span className="ml-1 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-label-mono text-[12px] font-bold">
+              <span className="ml-1 px-1.5 py-0.2 rounded bg-armed-amber/20 text-armed-amber font-label-mono text-[12px] font-bold">
                 {warnPending}
               </span>
             ) : null}
@@ -440,7 +440,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                       Sinal mestre em <span className="text-primary">{channel.format.channel}</span>
                       {channel.format.channel !== channel.format.network && (
                         <span className="text-outline font-normal">
-                          {' '}· Saída de rede adaptada para <span className="text-emerald-400">{channel.format.network}</span> (progressivo)
+                          {' '}· Saída de rede adaptada para <span className="text-status-ok-bright">{channel.format.network}</span> (progressivo)
                         </span>
                       )}
                     </div>
@@ -511,7 +511,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                             <span
                               className={`px-2 py-0.5 rounded text-[12px] font-label-mono font-bold ${
                                 path.ready
-                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                  ? 'bg-status-ok/20 text-status-ok-bright border border-status-ok/30'
                                   : 'bg-surface-base text-outline border border-border-subtle'
                               }`}
                             >
@@ -579,11 +579,11 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                             </span>
                           )}
                           {!output.enabled ? (
-                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/30">
                               DESLIGADA
                             </span>
                           ) : (
-                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-status-ok/20 text-status-ok-bright border border-status-ok/30">
                               LIGADA
                             </span>
                           )}
@@ -591,11 +591,11 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                             <span
                               className={`px-2 py-0.5 rounded text-[12px] font-label-mono font-bold ${
                                 saude.health === 'onAir'
-                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                  ? 'bg-status-ok/20 text-status-ok-bright border border-status-ok/30'
                                   : saude.health === 'connecting'
-                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                  ? 'bg-armed-amber/20 text-armed-amber border border-armed-amber/30'
                                   : saude.health === 'retrying' || saude.health === 'failed'
-                                  ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                  ? 'bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/30'
                                   : 'bg-surface-base text-outline border border-border-subtle'
                               }`}
                             >
@@ -637,7 +637,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                                 : 'Aguardando fluxo de pacotes'}
                             </span>
                             {saude.attempts > 1 && <span>· {saude.attempts} tentativas</span>}
-                            {saude.error && <span className="text-red-400">· {saude.error}</span>}
+                            {saude.error && <span className="text-on-air-crimson">· {saude.error}</span>}
                           </div>
                         )}
                       </div>
@@ -709,8 +709,8 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           }
                           className={`px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border ${
                             output.enabled
-                              ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/30 text-amber-400'
-                              : 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30 text-emerald-400'
+                              ? 'bg-armed-amber/15 hover:bg-armed-amber/25 border-armed-amber/30 text-armed-amber'
+                              : 'bg-status-ok/15 hover:bg-status-ok/25 border-status-ok/30 text-status-ok-bright'
                           }`}
                         >
                           {output.enabled ? 'DESLIGAR' : 'LIGAR'}
@@ -725,7 +725,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                                 onMessage(result.engineError?`Saída removida do cadastro; atenção no engine: ${result.engineError}`:'Saída removida do cadastro. Reinício controlado solicitado.')
                               })
                             }
-                            className="px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border bg-red-500/10 hover:bg-red-500/20 border-red-500/30 text-red-400"
+                            className="px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border bg-on-air-crimson/10 hover:bg-on-air-crimson/20 border-on-air-crimson/30 text-on-air-crimson"
                           >
                             REMOVER
                           </button>
@@ -828,7 +828,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                 </div>
 
                 {outKind === 'SDI' && decklinkSources.length === 0 && (
-                  <p className="text-[12px] text-amber-400 font-label-mono mt-1">
+                  <p className="text-[12px] text-armed-amber font-label-mono mt-1">
                     {decklinkReason}
                   </p>
                 )}
@@ -865,10 +865,10 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                             <span
                               className={`px-2 py-0.5 rounded text-[12px] font-label-mono font-bold ${
                                 relay.state === 'NO AR'
-                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                  ? 'bg-status-ok/20 text-status-ok-bright border border-status-ok/30'
                                   : relay.state === 'CONECTANDO'
-                                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                  : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                  ? 'bg-armed-amber/20 text-armed-amber border border-armed-amber/30'
+                                  : 'bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/30'
                               }`}
                             >
                               {relay.state}
@@ -904,7 +904,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                               ? `${relay.delivered.toLocaleString('pt-BR')} pacotes entregues`
                               : 'Aguardando entrega de pacotes'}
                             {relay.attempts > 1 && ` · ${relay.attempts} tentativas`}
-                            {relay.reason && <span className="text-red-400"> · {relay.reason}</span>}
+                            {relay.reason && <span className="text-on-air-crimson"> · {relay.reason}</span>}
                           </div>
                         )}
                       </div>
@@ -919,8 +919,8 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           }
                           className={`px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border ${
                             destination.enabled
-                              ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/30 text-amber-400'
-                              : 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30 text-emerald-400'
+                              ? 'bg-armed-amber/15 hover:bg-armed-amber/25 border-armed-amber/30 text-armed-amber'
+                              : 'bg-status-ok/15 hover:bg-status-ok/25 border-status-ok/30 text-status-ok-bright'
                           }`}
                         >
                           {destination.enabled ? 'DESLIGAR' : 'LIGAR'}
@@ -930,7 +930,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           onClick={() =>
                             void guard(() => api.removeDestination(destination.id).then(() => undefined))
                           }
-                          className="px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border bg-red-500/10 hover:bg-red-500/20 border-red-500/30 text-red-400"
+                          className="px-3 py-1.5 rounded-lg text-xs font-label-caps font-bold cursor-pointer transition-colors border bg-on-air-crimson/10 hover:bg-on-air-crimson/20 border-on-air-crimson/30 text-on-air-crimson"
                         >
                           REMOVER
                         </button>
@@ -1105,7 +1105,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           </td>
                           <td className="py-2.5 px-3 text-outline">{process.pid ?? '—'}</td>
                           <td className="py-2.5 px-3">
-                            <span className="px-2 py-0.5 rounded text-[11px] bg-surface-base border border-border-subtle text-emerald-400 font-bold">
+                            <span className="px-2 py-0.5 rounded text-[11px] bg-surface-base border border-border-subtle text-status-ok-bright font-bold">
                               {process.state}
                             </span>
                           </td>
@@ -1171,8 +1171,8 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                       <span
                         className={`px-2 py-0.5 rounded text-[12px] font-label-mono font-bold ${
                           n1.reachable
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                            ? 'bg-status-ok/20 text-status-ok-bright border border-status-ok/30'
+                            : 'bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/30'
                         }`}
                       >
                         {n1.reachable ? 'ALCANÇÁVEL' : 'INDISPONÍVEL'}
@@ -1191,10 +1191,10 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                     Eventos Pendentes
                   </span>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className={`px-2 py-0.5 rounded font-label-mono text-xs font-bold border ${criticalPending ? 'bg-red-500/20 text-red-400 border-red-500/30' : 'bg-surface-container text-outline border-border-subtle'}`}>
+                    <span className={`px-2 py-0.5 rounded font-label-mono text-xs font-bold border ${criticalPending ? 'bg-on-air-crimson/20 text-on-air-crimson border-on-air-crimson/30' : 'bg-surface-container text-outline border-border-subtle'}`}>
                       Críticos sem reconhecimento: {criticalPending??'N/D'}
                     </span>
-                    <span className={`px-2 py-0.5 rounded font-label-mono text-xs font-bold border ${warnPending ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' : 'bg-surface-container text-outline border-border-subtle'}`}>
+                    <span className={`px-2 py-0.5 rounded font-label-mono text-xs font-bold border ${warnPending ? 'bg-armed-amber/20 text-armed-amber border-armed-amber/30' : 'bg-surface-container text-outline border-border-subtle'}`}>
                       Atenção sem reconhecimento: {warnPending??'N/D'}
                     </span>
                   </div>
@@ -1267,10 +1267,10 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           <span
                             className={`px-2 py-0.5 rounded text-[11px] font-bold ${
                               event.severity === 'CRITICAL'
-                                ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                ? 'bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/30'
                                 : event.severity === 'WARN'
-                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                ? 'bg-armed-amber/20 text-armed-amber border border-armed-amber/30'
+                                : 'bg-status-ok/20 text-status-ok-bright border border-status-ok/30'
                             }`}
                           >
                             {event.severity}
@@ -1340,7 +1340,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                         <div className="flex items-center gap-2 mb-1">
                           <span className="font-headline-md text-sm font-bold text-on-surface">{guest.label}</span>
                           {path?.ready && (
-                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-status-ok/20 text-status-ok-bright border border-status-ok/30">
                               CONECTADO
                             </span>
                           )}
@@ -1371,7 +1371,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                               onMessage(`Chave de acesso de ${guest.label} foi revogada.`)
                             })
                           }
-                          className="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-xs font-label-caps text-red-400 font-bold cursor-pointer transition-colors"
+                          className="px-3 py-1.5 rounded-lg bg-on-air-crimson/10 hover:bg-on-air-crimson/20 border border-on-air-crimson/30 text-xs font-label-caps text-on-air-crimson font-bold cursor-pointer transition-colors"
                         >
                           REVOGAR
                         </button>

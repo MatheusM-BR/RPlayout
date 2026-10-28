@@ -1,3 +1,4 @@
+import { deniedReason, useCan } from '../../domain/permissions.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api.js'
 import { ContingencyLoopPanel } from './ContingencyLoopPanel.js'
@@ -31,6 +32,8 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
   const [status, setStatus] = useState<ProbeStatus | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  const canAcknowledge = useCan('CHANNEL_STOP')
+  const canPolicy = useCan('OUTPUT_CONTROL')
   const currentChannel = useRef(channelId)
   currentChannel.current = channelId
 
@@ -150,7 +153,7 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
             </span>}
         <span className="shrink-0 font-label-mono text-[12px] text-outline hidden 2xl:inline">{telemetryAvailable ? `Amostra ${new Date(status!.lastSampleAt!).toLocaleTimeString('pt-BR')}` : 'Aguardando medição do engine'}</span>
         {status && alert && showAlertBanner && !status.emergencySlateActive && !failure && (
-          <button disabled={pending} onClick={() => void acknowledge()} className="shrink-0 px-2.5 py-1 rounded border border-on-air-crimson bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[11px] font-bold">
+          <button disabled={pending || !canAcknowledge} title={canAcknowledge ? 'Registrar que o alerta foi visto (para os lembretes externos)' : deniedReason('registrar ciente de incidentes')} onClick={() => void acknowledge()} className="shrink-0 px-2.5 py-1 rounded border border-on-air-crimson bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[11px] font-bold">
             CIENTE
           </button>
         )}
@@ -159,7 +162,7 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
             {pending ? 'PROCESSANDO…' : status.emergencySlateActive ? 'DESARMAR SLATE' : 'ACIONAR SLATE'}
           </button>
         )}
-        {status && <button type="button" disabled={pending} onClick={() => void toggleAutomation()} className="shrink-0 text-[11px] px-2 py-1 rounded border border-border-subtle" title="Intervenção automática da sonda no PGM">
+        {status && <button type="button" disabled={pending || !canPolicy} onClick={() => void toggleAutomation()} className="shrink-0 text-[11px] px-2 py-1 rounded border border-border-subtle disabled:opacity-60" title={canPolicy ? 'Intervenção automática da sonda no PGM' : deniedReason('mudar a intervenção automática')}>
           {status.automaticActionsEnabled ? 'AUTO: LIGADA' : 'AUTO: DESLIGADA'}
         </button>}
       </div>

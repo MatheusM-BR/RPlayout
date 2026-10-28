@@ -51,7 +51,7 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
   return <section id="studio-automation-panel" className={`rounded-xl border border-border-subtle bg-surface-card p-4 ${className}`}>
     <h3 className="font-headline-md text-[15px] font-bold text-on-surface">AUTOMAÇÃO DE ESTÚDIO & CONTROLE EXTERNO</h3>
     <p className="mt-1 text-[11px] text-outline">Consulta não muda a matriz. Roteamento altera um equipamento externo e pode afetar o sinal. Confirmação de estado não homologa vídeo/áudio físico.</p>
-    {error && <p role="alert" className="mt-2 rounded border border-red-400/30 p-2 text-[11px] text-red-300">{error}</p>}
+    {error && <p role="alert" className="mt-2 rounded border border-on-air-crimson/30 p-2 text-[11px] text-on-air-crimson">{error}</p>}
     {!devices.length && <p className="my-3 text-[11px] text-outline">Nenhum equipamento cadastrado. Não há drivers fictícios conectados.</p>}
     <div className="my-3 grid gap-2 md:grid-cols-3">{devices.map(device => {
       const last = runs.find(run => run.command.deviceId === device.id)
@@ -76,7 +76,7 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
       <input aria-label="Porta do equipamento" className={formField} type="number" min="1" max="65535" value={draft.port} onChange={e => setDraft({ ...draft, port: e.target.value })}/>
       <button type="submit" className="btn small" disabled={busy}>CADASTRAR</button>
     </form>
-    <div className="my-3 rounded-lg border border-amber-400/30 p-3">
+    <div className="my-3 rounded-lg border border-armed-amber/30 p-3">
       <h4 className="text-[12px] font-bold text-on-surface">Roteamento manual · Videohub</h4>
       <p className="my-1 text-[11px] text-outline">Portas do protocolo começam em 0: entrada 0 corresponde ao conector 1. Selecione o equipamento explicitamente. Não há tentativa automática após falha.</p>
       <div className="flex flex-wrap items-end gap-3">
@@ -88,7 +88,7 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
           void perform(() => control(selectedDevice, 'ROUTE_CROSSPOINT'), 'Videohub confirmou o crosspoint solicitado. Confira vídeo/áudio no destino físico.')
         }}>CONFIRMAR ROTEAMENTO</button>
       </div>
-      {uncertain && <p className="mt-2 text-[11px] text-amber-300">Há um pedido em andamento ou incerto. Roteamento bloqueado nesta tela; confira o equipamento e o registro. A consulta sem corte continua disponível.</p>}
+      {uncertain && <p className="mt-2 text-[11px] text-armed-amber">Há um pedido em andamento ou incerto. Roteamento bloqueado nesta tela; confira o equipamento e o registro. A consulta sem corte continua disponível.</p>}
     </div>
     <h4 className="text-[12px] font-bold text-on-surface">Pedidos recentes e incertos · registro persistente</h4>
     <p className="mb-2 text-[11px] text-outline">Após queda, FIRING permanece incerto e o mesmo pedido não é reenviado. Aprovação de um pedido não comprova a imagem física.</p>

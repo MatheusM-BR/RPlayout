@@ -37,10 +37,10 @@ export function CadenceConversionDialog({request,onCancel,onApplied}:{request:Ca
         <p>{report.rundowns} grades · {report.items} itens · {report.events} eventos secundários</p>
         <p className="my-2 text-sm">{report.roundedValues} valores arredondados; erro máximo de {report.maxRoundingErrorMs.toFixed(3)} ms. {report.inheritedTrims} cortes herdados serão fixados neste canal.</p>
         <ul className="list-disc pl-5 my-3 space-y-2 text-sm">{report.warnings.map(warning=><li key={warning}>{warning}</li>)}</ul>
-        {!!report.pendingInterruptions && <p role="alert" className="text-amber-400">Resolva os {report.pendingInterruptions} VTs interrompidos antes de converter.</p>}
+        {!!report.pendingInterruptions && <p role="alert" className="text-armed-amber">Resolva os {report.pendingInterruptions} VTs interrompidos antes de converter.</p>}
         <label className="flex gap-2 my-4 text-sm"><input type="checkbox" disabled={busy || !!report.pendingInterruptions} checked={confirmed} onChange={event=>setConfirmed(event.target.checked)}/>Entendi: devo parar o PGM, limpar o CUE e republicar as grades. O histórico não será convertido.</label>
       </>}
-      {error && <p role="alert" className="my-3 text-amber-400">{error}</p>}
+      {error && <p role="alert" className="my-3 text-armed-amber">{error}</p>}
       <footer className="flex gap-3 justify-end mt-4">
         <button disabled={busy} onClick={onCancel}>VOLTAR</button>
         <button disabled={busy} onClick={()=>setRefresh(value=>value+1)}>RECALCULAR</button>

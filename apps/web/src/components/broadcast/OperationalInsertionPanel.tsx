@@ -55,12 +55,12 @@ function InsertionContent({channelId,rate,assets,defaultOpen=false}:{channelId:s
         <button type="button" disabled={pending||!selected} onClick={()=>void perform('NEXT')} className="border rounded p-2 disabled:opacity-40">Conferir inserir próximo</button>
         <button type="button" disabled={pending||!selected} onClick={()=>void perform('NOW')} className="border rounded p-2 disabled:opacity-40">Conferir inserir agora</button>
       </div>
-      {review&&<div role="status"><p>Conferido: {review.item.title} · {review.input.mode==='NOW'?'AGORA':'PRÓXIMO'} · revisão de origem {review.sourceRevisionId}.</p><p>{review.notice}</p>{review.conflicts.map((conflict,index)=><p key={index} className="text-amber-300">{conflict.message}</p>)}{!review.nativeEngine&&<p>Canal simulado: inserção Próximo é apenas planejamento; Agora exige engine real.</p>}</div>}
+      {review&&<div role="status"><p>Conferido: {review.item.title} · {review.input.mode==='NOW'?'AGORA':'PRÓXIMO'} · revisão de origem {review.sourceRevisionId}.</p><p>{review.notice}</p>{review.conflicts.map((conflict,index)=><p key={index} className="text-armed-amber">{conflict.message}</p>)}{!review.nativeEngine&&<p>Canal simulado: inserção Próximo é apenas planejamento; Agora exige engine real.</p>}</div>}
       <ReviewedOperationConfirm reviewKey={review?`${channelId}:${review.input.requestId}:${review.reviewToken}`:null} label={review?.input.mode==='NOW'?'Confirmar inserir agora':'Confirmar inserção'}
         confirmation={review?.input.mode==='NOW'?`Autorizo inserir “${review.item.title}” AGORA e interromper o PGM somente após quadro confirmado. Rascunhos não serão publicados.`:`Autorizo inserir “${review?.item.title??''}” como PRÓXIMO, preservando PGM/CUE e respeitando o Auto Next do item atual.`}
         disabled={pending||!review||review.input.mode==='NOW'&&!review.nativeEngine} onConfirm={()=>perform('CONFIRM')}/>
       {pending&&<p role="status">Preparando e conferindo revisão/sinal… Não repita o pedido.</p>}
-      {message&&<p role="status" className="text-amber-300">{message}</p>}
+      {message&&<p role="status" className="text-armed-amber">{message}</p>}
     </div>}
   </section>
 }

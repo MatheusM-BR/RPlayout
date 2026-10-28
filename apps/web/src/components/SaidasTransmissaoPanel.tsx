@@ -1,3 +1,4 @@
+import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect, useCallback,useRef } from 'react'
 import type { Channel } from '@rplayout/protocol'
 import { api } from '../api.js'
@@ -198,6 +199,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
     }
   }
 
+  const canRestart = useCan('OUTPUT_CONTROL')
   const handleRestartChannel = async () => {
     if(controlsBlocked)return
     // Reiniciar o engine tira o canal do ar por alguns segundos: antes era um
@@ -252,9 +254,9 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
           </button>
           <button
             onClick={handleRestartChannel}
-            disabled={controlsBlocked}
+            disabled={controlsBlocked || !canRestart}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/50 font-label-caps text-[11px] font-bold transition-all cursor-pointer disabled:opacity-50"
-            title="Derruba o ar por alguns segundos; pede confirmação"
+            title={canRestart ? 'Derruba o ar por alguns segundos; pede confirmação' : deniedReason('reiniciar o canal')}
           >
             <span className="material-symbols-outlined text-[16px]">restart_alt</span>
             <span>REINICIAR SAÍDAS / ENGINE</span>
@@ -360,12 +362,12 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                           </span>
                         )}
                         {isRtmp && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-amber-500/20 text-amber-400 border border-amber-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-armed-amber/20 text-armed-amber border border-armed-amber/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">podcasts</span> RTMP / CDN
                           </span>
                         )}
                         {isFile && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">video_file</span> ARQUIVO
                           </span>
                         )}

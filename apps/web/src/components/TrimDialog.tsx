@@ -259,7 +259,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                   </div>
                 )}
               </div>
-              {!tocável && <button type="button" onClick={()=>{setTocável(true);setMotivo(null)}} className="text-sm text-amber-300 self-start">Tentar abrir o proxy novamente</button>}
+              {!tocável && <button type="button" onClick={()=>{setTocável(true);setMotivo(null)}} className="text-sm text-armed-amber self-start">Tentar abrir o proxy novamente</button>}
 
               {/* TIMELINE RULER NA PARTE INFERIOR COM MARCADORES I / O */}
               <div className="flex flex-col gap-1 pt-space-xs">
@@ -469,7 +469,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
           />
           <EditScopeReviewPanel state={scopeReview}/>
           {asset?.defaultTrim && !asset.defaultTrimRate && (
-            <p className="text-sm text-amber-300" role="note">Este padrão antigo não informa a taxa de quadros. Confira a entrada e a saída; ao salvar como padrão do acervo, a taxa deste canal será registrada. Itens com corte próprio não mudam.</p>
+            <p className="text-sm text-armed-amber" role="note">Este padrão antigo não informa a taxa de quadros. Confira a entrada e a saída; ao salvar como padrão do acervo, a taxa deste canal será registrada. Itens com corte próprio não mudam.</p>
           )}
         </div>
 

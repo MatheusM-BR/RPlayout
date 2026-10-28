@@ -562,10 +562,10 @@ export function CanonicalProtocolSelector({
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-red-400 text-[15px]">live_tv</span>
+              <span className="material-symbols-outlined text-on-air-crimson text-[15px]">live_tv</span>
               RTMP / CDN Ingest • YouTube, Twitch, Facebook Live
             </span>
-            <span className="text-[12px] font-label-mono text-red-400 font-bold">
+            <span className="text-[12px] font-label-mono text-on-air-crimson font-bold">
               Porta Padrão 1935
             </span>
           </div>

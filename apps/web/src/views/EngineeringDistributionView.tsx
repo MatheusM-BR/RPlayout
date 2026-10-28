@@ -1,3 +1,4 @@
+import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect } from 'react'
 import type { Channel, ManagedLiveSource, RedundantStreamPair, SrtTelemetry } from '@rplayout/protocol'
 import type { Live, Monitors } from '../types.js'
@@ -164,6 +165,7 @@ export function EngineeringDistributionView({
     return true
   })
 
+  const canRestart = useCan('OUTPUT_CONTROL')
   const restartEngine = async () => {
     if (!window.confirm(`Reiniciar o engine de ${channel.name}? O ar para por alguns segundos.`)) return
     setEngineeringAction('restart')
@@ -308,8 +310,8 @@ export function EngineeringDistributionView({
               {onOpenHealth && <button type="button" onClick={onOpenHealth} className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel text-on-surface text-[11px] font-bold rounded-lg border border-border-subtle"><span className="material-symbols-outlined text-[15px]">vital_signs</span>INCIDENTES DO CANAL</button>}
               {live?.reconfiguration?.ready === false && <span role="status" className="text-xs text-armed-amber max-w-52">{live.reconfiguration.reason ?? 'Aguardando recuperação do canal…'}</span>}
               <button
-                disabled={engineeringAction !== null || live?.reconfiguration?.ready === false}
-                title={live?.reconfiguration?.reason ?? 'Reinício com interrupção controlada e recuperação do checkpoint'}
+                disabled={engineeringAction !== null || live?.reconfiguration?.ready === false || !canRestart}
+                title={!canRestart ? deniedReason('reiniciar o engine') : live?.reconfiguration?.reason ?? 'Reinício com interrupção controlada e recuperação do checkpoint (pede confirmação)'}
                 onClick={() => void restartEngine()}
                 className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel hover:bg-surface-container text-on-surface text-[11px] font-label-caps font-bold rounded-lg border border-border-subtle hover:border-border-strong transition-all shadow-sm cursor-pointer"
               >

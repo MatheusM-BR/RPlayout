@@ -167,7 +167,7 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
           </table>
 
           {loading && <div role="status" className="p-space-lg text-center text-outline">Consultando registros autorizados…</div>}
-          {error && <div role="alert" className="p-space-lg text-center text-red-400">{error}</div>}
+          {error && <div role="alert" className="p-space-lg text-center text-on-air-crimson">{error}</div>}
           {!loading && !error && filtered.length === 0 && (
             <div className="p-space-lg text-center text-outline font-body-sm text-body-sm">
               Nenhum evento registrado com os filtros selecionados.

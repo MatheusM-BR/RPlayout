@@ -119,7 +119,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                           {link.name}
                         </span>
                         {link.role === 'BACKUP' && (
-                          <span className="px-1.5 py-0.2 rounded text-[11px] font-label-caps font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40">
+                          <span className="px-1.5 py-0.2 rounded text-[11px] font-label-caps font-bold bg-armed-amber/20 text-armed-amber border border-armed-amber/40">
                             BACKUP
                           </span>
                         )}
@@ -146,7 +146,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                         link.mode === 'caller'
                           ? 'bg-blue-500/15 text-blue-400 border-blue-500/30'
                           : link.mode === 'listener'
-                          ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                          ? 'bg-status-ok/15 text-status-ok-bright border-status-ok/30'
                           : 'bg-purple-500/15 text-purple-400 border-purple-500/30'
                       }`}
                     >
@@ -187,9 +187,9 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                     <span
                       className={`font-bold text-[13px] ${
                         (link.telemetry?.packetLossPercent ?? 0) > 5
-                          ? 'text-red-400'
+                          ? 'text-on-air-crimson'
                           : (link.telemetry?.packetLossPercent ?? 0) > 1
-                          ? 'text-amber-400'
+                          ? 'text-armed-amber'
                           : 'text-status-ok-bright'
                       }`}
                     >
@@ -211,7 +211,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                     <span className="text-on-surface font-bold text-[13px] flex items-center gap-1">
                       {link.telemetry?.reconnectCount ?? '—'}
                       {(link.telemetry?.packetsDropped ?? 0) > 0 && (
-                        <span className="text-[11px] text-red-400 font-normal">
+                        <span className="text-[11px] text-on-air-crimson font-normal">
                           ({link.telemetry?.packetsDropped} drop)
                         </span>
                       )}
@@ -305,14 +305,14 @@ function getSrtStateConfig(state: SrtLinkState) {
     case 'DEGRADED':
       return {
         label: 'DEGRADED (JITTER)',
-        badgeClass: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
-        dotClass: 'bg-amber-400',
+        badgeClass: 'bg-armed-amber/15 text-armed-amber border border-armed-amber/30',
+        dotClass: 'bg-armed-amber',
       }
     case 'CRITICAL':
       return {
         label: 'CRITICAL (PERDA)',
-        badgeClass: 'bg-red-500/15 text-red-400 border border-red-500/30',
-        dotClass: 'bg-red-400 animate-ping',
+        badgeClass: 'bg-on-air-crimson/15 text-on-air-crimson border border-on-air-crimson/30',
+        dotClass: 'bg-on-air-crimson animate-ping',
       }
     case 'DISCONNECTED':
     default:

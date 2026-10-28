@@ -1,3 +1,5 @@
+import { useChannelMirror } from '../domain/use-channel-mirror.js'
+import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { wallClock, nowHms, parseHms, formatHms, anchorWall, anchorFramesFor, resolveWallInstant, type DayChoice } from '../domain/wall-clock.js'
 import {itemDisplayTitle} from '../domain/item-title.js'
@@ -101,6 +103,8 @@ export function PlaylistScheduleView({
   onRemoveAsset,
   onPruneAssets,
 }: Props) {
+  const mirror = useChannelMirror(channel.id)
+  const canPublish = useCan('PLAYLIST_PUBLISH')
   const now = new Date()
   const todayDateIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 
@@ -638,10 +642,13 @@ export function PlaylistScheduleView({
       onPublishToMaster(snapshot)
       setPublishedSuccess(true)
       setShowOperationalReview(false)
+      // Espelhos: o publicador vê na hora se os canais vinculados acompanharam.
+      const mirrorNames=(published.mirrors??[]).map(result=>`${channels.find(entry=>entry.id===result.channelId)?.name??result.channelId}: ${result.ok?'atualizado':`pendente (${result.error})`}`)
       setFeedbackMessage(
-        published.conflicts.length > 0
+        (published.conflicts.length > 0
           ? `Revisão operacional ${published.revision} publicada com ${published.conflicts.length} alerta(s) de timing.`
-          : `Revisão operacional ${published.revision} publicada e sincronizada com o Master.`,
+          : `Revisão operacional ${published.revision} publicada e sincronizada com o Master.`)
+        + (mirrorNames.length ? ` Espelhos — ${mirrorNames.join(' · ')}.` : ''),
       )
       setTimeout(() => {
         setPublishedSuccess(false)
@@ -1237,6 +1244,7 @@ export function PlaylistScheduleView({
         {/* SUB-HEADER TÁTICO: Programação & Automação Linear */}
         <div className="bg-surface-container px-margin py-2 border-b border-border-subtle flex flex-wrap items-center justify-between gap-2 shadow-sm">
           <div className="flex flex-wrap items-center gap-space-sm">
+            {mirror && <span className="max-w-full truncate px-2 py-0.5 rounded border border-accent-ice/50 bg-accent-ice/10 text-accent-ice-bright font-label-caps text-[11px] font-bold" title="Este canal roda o que o canal de origem publicar. A grade espelhada não é editada aqui.">ESPELHO DE {(channels.find(entry => entry.id === mirror.sourceChannelId)?.name ?? 'outro canal').toUpperCase()}{mirror.lastSyncError ? ' · PENDENTE' : mirror.lastSyncAt ? '' : ' · AGUARDANDO 1ª PUBLICAÇÃO'}</span>}
             <div className="flex items-center gap-1.5">
               <span className="material-symbols-outlined text-accent-ice text-[18px]">splitscreen_left</span>
               <h1 className="font-headline-md text-headline-md text-on-surface uppercase tracking-wide">
@@ -2099,7 +2107,8 @@ export function PlaylistScheduleView({
               <div className="flex items-center gap-2">
                 <button
                   onClick={openOperationalReview}
-                  disabled={isPublishingOperational || !activeView?.rundown.id}
+                  disabled={isPublishingOperational || !activeView?.rundown.id || (isLoadedEditorial && !canPublish)}
+                  title={isLoadedEditorial && !canPublish ? deniedReason('publicar a grade') : undefined}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded font-label-caps text-[11px] font-bold shadow-md transition-all cursor-pointer ${
                     publishedSuccess
                       ? 'bg-status-ok text-surface-base shadow-[0_0_12px_#00FF66]'

@@ -105,7 +105,7 @@ export function SessionAlertsDialog({
               {groupProblems(problemas).map((group) => {
                 let badgeClass = 'bg-surface-container text-outline border-border-subtle'
                 if (group.origem === 'SERVIDOR') badgeClass = 'bg-blue-500/20 text-blue-400 border-blue-500/40'
-                if (group.origem === 'SAÍDA') badgeClass = 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                if (group.origem === 'SAÍDA') badgeClass = 'bg-armed-amber/20 text-armed-amber border-armed-amber/40'
                 if (group.origem === 'ARQUIVO') badgeClass = 'bg-purple-500/20 text-purple-400 border-purple-500/40'
                 if (group.origem === 'TELA') badgeClass = 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40'
                 const last = group.itens[group.itens.length - 1]!

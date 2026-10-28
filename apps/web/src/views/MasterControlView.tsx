@@ -1,3 +1,5 @@
+import { useChannelMirror } from '../domain/use-channel-mirror.js'
+import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { wallClock, localDateKey } from '../domain/wall-clock.js'
 import {itemDisplayTitle} from '../domain/item-title.js'
@@ -188,6 +190,8 @@ export function MasterControlView({
   const [transitionMode, setTransitionMode] = useState<'CUT' | 'MIX' | 'WIPE'>('CUT')
   const [adjustingLive, setAdjustingLive] = useState(false)
   const liveAdjustmentLock=useRef(false)
+  const canStop = useCan('CHANNEL_STOP')
+  const mirror = useChannelMirror(channel.id)
   const [liveAdjustOpen, setLiveAdjustOpen] = useState(false)
   const [pendingLiveAdjustment,setPendingLiveAdjustment]=useState<{channelId:string;body:Parameters<typeof api.adjustLiveDuration>[1]}|null>(null)
   const submitLiveAdjustment=async(operation:{channelId:string;body:Parameters<typeof api.adjustLiveDuration>[1]})=>{
@@ -877,7 +881,7 @@ export function MasterControlView({
       />
 
       <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto xl:overflow-hidden">
-        {publicationRequired && <div role="alert" className="px-margin py-3 bg-amber-500/10 text-amber-400">A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.</div>}
+        {publicationRequired && <div role="alert" className="px-margin py-3 bg-armed-amber/10 text-armed-amber">A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.</div>}
         {/* 1.1 FAIXA DE STATUS DE ALTURA FIXA (U5): sonda + itens interrompidos */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0 flex flex-col gap-1">
           <PgmProbeBanner channelId={channel.id} showContingency={false} />
@@ -1030,12 +1034,13 @@ export function MasterControlView({
 
                     <button
                       onClick={handleArmAbort}
-                      className={`col-span-2 h-12 rounded-lg border border-border-subtle flex flex-col items-center justify-center transition-all cursor-pointer ${
+                      disabled={!canStop}
+                      className={`col-span-2 h-12 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg border border-border-subtle flex flex-col items-center justify-center transition-all cursor-pointer ${
                         abortArmed
                           ? 'bg-on-air-crimson text-white animate-pulse border-on-air-glow'
                           : 'bg-surface-container hover:bg-error-container text-outline hover:text-on-error-container'
                       }`}
-                      title={abortArmed ? 'CLIQUE PARA CONFIRMAR PARADA IMEDIATA' : 'Parada de emergência com trava de segurança (ABORT)'}
+                      title={!canStop ? deniedReason('parar o canal (ABORT)') : abortArmed ? 'CLIQUE PARA CONFIRMAR PARADA IMEDIATA' : 'Parada de emergência com trava de segurança (ABORT)'}
                     >
                       <span className="material-symbols-outlined text-[15px]">stop</span>
                       <span className="font-label-mono text-[12px] uppercase font-bold">
@@ -1268,9 +1273,10 @@ export function MasterControlView({
                         {!mamOpen && <button type="button" onClick={() => setMamPanel('open')} className="px-2 py-1 rounded border border-border-subtle text-[11px] font-label-caps font-bold text-primary flex items-center gap-1 hover:bg-surface-container" title="Mostrar a biblioteca ao lado da grade">
                           <span className="material-symbols-outlined text-[16px]">folder</span>BIBLIOTECA
                         </button>}
-                        <span className="font-headline-md text-headline-md uppercase text-on-surface font-semibold tracking-wide">
+                        <span className="font-headline-md text-headline-md uppercase text-on-surface font-semibold tracking-wide whitespace-nowrap">
                           Grade de Exibição
                         </span>
+                        {mirror && <span className="max-w-[16rem] truncate whitespace-nowrap px-1.5 py-0.5 rounded border border-accent-ice/50 bg-accent-ice/10 text-accent-ice-bright font-label-caps text-[11px] font-bold" title={`Espelho de ${channels.find(entry => entry.id === mirror.sourceChannelId)?.name ?? 'outro canal'}: este canal roda o que a origem publicar.${mirror.lastSyncError ? ` Pendente: ${mirror.lastSyncError}` : ''}`}>{mirror.lastSyncError ? 'ESPELHO PENDENTE ← ' : 'ESPELHO ← '}{(channels.find(entry => entry.id === mirror.sourceChannelId)?.name ?? 'outro canal').toUpperCase()}</span>}
                         <span className="font-label-mono text-[12px] text-outline" title="Grade carregada no canal">
                           {view.rundown.name} · {view.rundown.date ? view.rundown.date.split('-').reverse().slice(0, 2).join('/') : 'sem data'}{view.rundown.loop ? ' · loop' : ''}
                         </span>
@@ -1524,9 +1530,9 @@ export function MasterControlView({
                                     {eventType === 'FIXED' && (
                                       <span
                                         title="Horário Fixo Ancorado no Relógio da Emissora"
-                                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-amber-950/60 border border-amber-600/50 text-amber-300 text-[11px] font-label-caps tracking-wider font-bold shrink-0"
+                                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-armed-amber/60 border border-armed-amber/50 text-armed-amber text-[11px] font-label-caps tracking-wider font-bold shrink-0"
                                       >
-                                        <span className="material-symbols-outlined text-[11px] text-amber-400">lock_clock</span>
+                                        <span className="material-symbols-outlined text-[11px] text-armed-amber">lock_clock</span>
                                         FIXO
                                       </span>
                                     )}
@@ -1569,9 +1575,9 @@ export function MasterControlView({
                                         {isProtected && (
                                           <span
                                             title="Material Comercial ou Editorial Protegido: Bloqueado contra corte e descarte automático"
-                                            className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 font-label-mono text-[12px] font-bold"
+                                            className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-status-ok/70 border border-status-ok/50 text-status-ok-bright font-label-mono text-[12px] font-bold"
                                           >
-                                            <span className="material-symbols-outlined text-[11px] text-emerald-400">shield</span>
+                                            <span className="material-symbols-outlined text-[11px] text-status-ok-bright">shield</span>
                                             PROT
                                           </span>
                                         )}
@@ -1612,7 +1618,7 @@ export function MasterControlView({
                                         eventType === 'HARD_TIME'
                                           ? 'text-rose-400'
                                           : eventType === 'FIXED'
-                                            ? 'text-amber-400'
+                                            ? 'text-armed-amber'
                                             : eventType === 'LIVE'
                                               ? 'text-accent-ice-bright'
                                               : 'text-purple-400'
@@ -1984,7 +1990,7 @@ export function MasterControlView({
             </div>
 
             {/* MODO EDIÇÃO: Exibe cabeçalho informativo do item já presente na grade */}
-            {lineConfigError && <div role="alert" className="mx-6 mb-3 rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-sm text-red-200">{lineConfigError} Feche e reabra o item para comparar com a versão atual antes de editar novamente.</div>}
+            {lineConfigError && <div role="alert" className="mx-6 mb-3 rounded-lg border border-on-air-crimson/40 bg-on-air-crimson/10 p-3 text-sm text-on-air-crimson">{lineConfigError} Feche e reabra o item para comparar com a versão atual antes de editar novamente.</div>}
             {editingItemView ? (
               <div className="bg-surface-panel p-3 rounded-lg border border-border-subtle flex items-center justify-between">
                 <div className="flex items-center gap-2.5 min-w-0">
@@ -2234,9 +2240,9 @@ export function MasterControlView({
                           setLineProtected(val)
                           if (val) setLineTrimmable(false)
                         }}
-                        className="rounded border-border-subtle text-emerald-500 focus:ring-emerald-500"
+                        className="rounded border-border-subtle text-status-ok-bright focus:ring-emerald-500"
                       />
-                      <span className="flex items-center gap-1 font-semibold text-emerald-400">
+                      <span className="flex items-center gap-1 font-semibold text-status-ok-bright">
                         <span className="material-symbols-outlined text-[14px]">shield</span>
                         PROTECTED
                       </span>

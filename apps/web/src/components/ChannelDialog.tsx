@@ -246,7 +246,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
           {channel.configurationRevision!==baseline.configurationRevision&&<p role="alert" className="text-xs text-armed-amber">A configuração mudou enquanto esta janela estava aberta. Seus campos foram conservados. Feche e reabra para conferir a nova configuração antes de aplicar.</p>}
           {/* AVISO DE RECONSTRUÇÃO */}
           {muda && (
-            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[12px] font-label-mono text-amber-400 flex items-start gap-2">
+            <div className="p-3 rounded-lg bg-armed-amber/10 border border-armed-amber/30 text-[12px] font-label-mono text-armed-amber flex items-start gap-2">
               <span className="material-symbols-outlined text-[16px] shrink-0 mt-0.5">warning</span>
               <span>
                 Alterar o formato recria o pipeline e provoca uma interrupção controlada. Mudar FPS ou o total de canais de áudio exige PGM parado e CUE limpo, revisão e nova publicação das grades, sem TAKE automático.

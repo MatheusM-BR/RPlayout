@@ -1707,7 +1707,7 @@ function QualityControlSession({
                   <button
                     onClick={() => void handleReject()}
                     disabled={!qcDecisionReady||qcDecisionBusy}
-                    className="flex items-center gap-1 px-3 py-1 rounded bg-on-air-crimson text-white font-label-caps text-[11px] font-bold hover:bg-red-600 transition-colors shadow-sm cursor-pointer disabled:opacity-40"
+                    className="flex items-center gap-1 px-3 py-1 rounded bg-on-air-crimson text-white font-label-caps text-[11px] font-bold hover:bg-on-air-crimson transition-colors shadow-sm cursor-pointer disabled:opacity-40"
                     title="Mover clipe para os rejeitados / quarentena"
                   >
                     <span className="material-symbols-outlined text-[14px]">cancel</span>

@@ -1,3 +1,5 @@
+import { MultichannelProgrammingPanel } from '../components/MultichannelProgrammingPanel.js'
+import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect, useCallback,useRef } from 'react'
 import { sameRate, type Channel, type Scan, type FieldOrder } from '@rplayout/protocol'
 import {CadenceConversionDialog,type CadenceConversionRequest} from '../components/CadenceConversionDialog.js'
@@ -57,6 +59,8 @@ export function SettingsView({
   onOpenGraphics,
   onOpenAudit,
 }: Props) {
+  const canManageUsers = useCan('USER_MANAGE')
+  const canConfigure = useCan('OUTPUT_CONTROL')
   const [activeTab, setActiveTab] = useState<SettingsTab>('canais')
   const canRestoreProject = sessionRole === 'Supervisor' || sessionRole === 'Administrador'
   const [engineProcess, setEngineProcess] = useState<Awaited<ReturnType<typeof api.processes>>['processes'][number]>()
@@ -380,7 +384,7 @@ export function SettingsView({
                 </div>
               </button>
 
-              <button
+              {canManageUsers && <button
                 onClick={() => setActiveTab('usuarios')}
                 className={`flex items-center gap-3 p-2.5 rounded-lg text-left transition-all cursor-pointer ${
                   activeTab === 'usuarios'
@@ -393,7 +397,7 @@ export function SettingsView({
                   <span className="font-body-sm text-[12.5px] leading-tight">Usuários & Acesso</span>
                   <span className="font-label-mono text-[12px] opacity-75">Contas e papéis RBAC</span>
                 </div>
-              </button>
+              </button>}
 
               <button
                 onClick={() => setActiveTab('integracoes')}
@@ -545,7 +549,8 @@ export function SettingsView({
                       className="flex-1 bg-surface-panel text-on-surface px-3 py-1.5 rounded border border-border-subtle font-body-sm text-[12.5px] outline-none focus:border-primary"
                     />
                     <button
-                      disabled={isSaving || !newChannelName.trim()}
+                      disabled={isSaving || !newChannelName.trim() || !canConfigure}
+                      title={canConfigure ? undefined : deniedReason('criar canais')}
                       onClick={handleCreateChannel}
                       className="px-4 py-1.5 rounded bg-primary-container hover:bg-accent-ice text-on-primary-container font-headline-md text-headline-md tracking-wider transition-all disabled:opacity-40 cursor-pointer"
                     >
@@ -697,7 +702,8 @@ export function SettingsView({
                       Alterar o formato reconstrói o engine e provoca uma interrupção controlada do canal.
                     </span>
                     <button
-                      disabled={isSaving}
+                      disabled={isSaving || !canConfigure}
+                      title={canConfigure ? undefined : deniedReason('alterar o formato do canal')}
                       onClick={handleSaveChannel}
                       className="flex items-center gap-2 px-5 py-2 rounded bg-primary hover:bg-accent-ice text-surface-base font-body-sm text-[13px] font-semibold transition-all shadow-md cursor-pointer disabled:opacity-50"
                     >
@@ -710,6 +716,8 @@ export function SettingsView({
             )}
 
             {/* TAB 2: SAÍDAS DE TRANSMISSÃO */}
+            {activeTab === 'canais' && <MultichannelProgrammingPanel channel={channel} channels={channels} onMessage={onMessage} onChanged={onChanged} />}
+
             {activeTab === 'saidas' && (
               <SaidasTransmissaoPanel
                 channel={currentEditingChannel}
@@ -778,7 +786,7 @@ export function SettingsView({
             )}
 
             {/* TAB 6: USUÁRIOS E ACESSO RBAC */}
-            {activeTab === 'usuarios' && (
+            {activeTab === 'usuarios' && canManageUsers && (
               <div className="flex flex-col gap-gutter">
                 <div className="bg-surface-card rounded-xl border border-border-subtle p-5 shadow-sm">
                   <div className="border-b border-border-subtle pb-3 mb-4 flex items-center justify-between">

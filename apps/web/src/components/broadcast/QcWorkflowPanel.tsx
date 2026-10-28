@@ -89,7 +89,7 @@ export function QcWorkflowPanel({ assetId, contentHash, channel, onChanged,onRev
     {assessment ? <>
       <QcProbePolicy required={Boolean(assessment.profile.requireProbe)}/>
       <p className={assessment.checks.playable ? 'text-status-ok' : 'text-on-air-crimson'}>{assessment.checks.playable ? 'Verificações técnicas configuradas atendidas.' : 'Bloqueado pelas verificações técnicas.'}</p>
-      {[...assessment.checks.errors, ...assessment.checks.warnings].map((issue, index) => <p key={index} className="mt-1 text-amber-200">{issue}</p>)}
+      {[...assessment.checks.errors, ...assessment.checks.warnings].map((issue, index) => <p key={index} className="mt-1 text-armed-amber">{issue}</p>)}
       {assessment.decisions[0] && <p className="mt-1 text-outline">Última decisão aplicável ({assessment.decisions[0].channelId==='@all'?'todos os canais':'este canal'}): {assessment.decisions[0].status} · {assessment.decisions[0].notes ?? 'sem ressalva'}</p>}
     </> : <p>Consultando a versão…</p>}
     <label className="block mt-2">Ressalva / motivo<textarea value={notes} onChange={event => setNotes(event.target.value)} maxLength={2000} rows={2} className="block w-full mt-1 bg-surface-base border border-outline/30 rounded p-2" /></label>

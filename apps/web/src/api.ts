@@ -192,6 +192,9 @@ export interface ManualExternalRun {
   acknowledgement?: string
 }
 
+export interface ChannelMirror { targetChannelId: string; sourceChannelId: string; createdBy: string | null; createdAt: string; lastSyncAt: string | null; lastSyncError: string | null }
+export interface MirrorResult { channelId: string; ok: boolean; loaded?: boolean; rundownId?: string; items?: number; skippedGraphics?: number; unboundLive?: number; error?: string }
+
 export interface HostMetricSample {
   operations?:OperationalMetricFrame
   generatedAt: string
@@ -356,6 +359,9 @@ export const api = {
     send<{applied:true;removed:number;removedItems:number;clearedFallbacks:number;filesPreserved:true;historyPreserved:true;automaticTake:false;refreshError:string|null}>(id===null?'/api/assets/prune':`/api/assets/${encodeURIComponent(id)}`,{method:id===null?'POST':'DELETE',headers:assetRemovalHeaders(id,review),body:JSON.stringify(removalSelection(review,ids,acknowledged))}),
   /** Levanta o canal de novo, para os perfis de saída de agora valerem. */
   restartChannel: (id: string) => post<{ ok: true }>(`/api/channels/${id}/restart`, {}),
+  channelProgramming:(id:string)=>send<{mirror:ChannelMirror|null;mirrorsFrom:ChannelMirror[];canShare:boolean}>(`/api/channels/${encodeURIComponent(id)}/programming`),
+  copyRundownToChannel:(id:string,body:{copyFromRundownId:string;date?:string;name?:string})=>post<{rundownId:string;items:number;skippedGraphics:number;liveItems:number;unboundLive:number}>(`/api/channels/${encodeURIComponent(id)}/copy-rundown`,body),
+  setChannelMirror:(id:string,sourceChannelId:string|null)=>send<{mirror:ChannelMirror|null;initial:MirrorResult|null}>(`/api/channels/${encodeURIComponent(id)}/mirror`,{method:'PUT',body:JSON.stringify({sourceChannelId})}),
   warmContinuityCache: (channelId?: string) => post<{ ok: boolean; cached48h: number; missing48h: number }>(`/api/v1/continuity/cache/warm${channelId ? '?channelId=' + encodeURIComponent(channelId) : ''}`, {}),
   continuityCacheStatus: (channelId?: string) => send<import('@rplayout/protocol').ContinuityCacheStatus>(`/api/v1/continuity/cache/status${channelId ? '?channelId=' + encodeURIComponent(channelId) : ''}`),
   removeChannel: (id: string) =>
@@ -463,7 +469,7 @@ export const api = {
   reviewOperationalRollback: (id:string,revisionId:string,editorialRevision:number,signal?:AbortSignal) => send<OperationalSimulation & {sourceRevision:number}>(`/api/rundowns/${encodeURIComponent(id)}/operational-rollback-review?revisionId=${encodeURIComponent(revisionId)}`,{headers:editorialHeaders(editorialRevision),signal}),
   rollbackOperationalPlaylist: (id: string, revisionId: string,editorialRevision:number,reviewToken:string) => send<((Snapshot & {snapshotAvailable:true})|{snapshotAvailable:false}) & {revision:number;applied:true;executionUpdated:boolean|null;refreshError:string|null}>(`/api/rundowns/${encodeURIComponent(id)}/operational-rollback`, {method:'POST',headers:editorialHeaders(editorialRevision),body:JSON.stringify({revisionId,reviewToken})}),
   publishOperationalPlaylist: (rundownId: string,editorialRevision:number,reviewToken:string) =>
-    send<{ id: string; revision: number; publishedAt: string; conflicts: RundownView['schedule']['conflicts'];applied:true;executionUpdated:boolean|null;refreshError:string|null }>(
+    send<{ id: string; revision: number; publishedAt: string; conflicts: RundownView['schedule']['conflicts'];applied:true;executionUpdated:boolean|null;refreshError:string|null;mirrors?:MirrorResult[] }>(
       `/api/rundowns/${encodeURIComponent(rundownId)}/operational-publish`,
       {method:'POST',headers:editorialHeaders(editorialRevision),body:JSON.stringify({reviewToken})},
     ),
