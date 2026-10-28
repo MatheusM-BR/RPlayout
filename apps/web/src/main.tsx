@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App.js'
 import { BUILD_COMMIT, buildDate } from './build.js'
+import './fonts.js'
 import './styles.css'
 
 // Primeira linha do console: de qual código esta tela saiu. É a resposta para

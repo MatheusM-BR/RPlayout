@@ -163,9 +163,9 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
               className="p-space-sm rounded bg-surface-panel border border-border-subtle hover:border-border-strong flex flex-col gap-1 transition-colors"
             >
               <div className="flex items-center justify-between">
-                <span className="font-label-mono text-[10px] text-outline">#{issue.index + 1} • {issue.timecode}</span>
+                <span className="font-label-mono text-[12px] text-outline">#{issue.index + 1} • {issue.timecode}</span>
                 <span
-                  className={`font-label-caps text-[10px] px-1 py-0.5 rounded font-bold ${
+                  className={`font-label-caps text-[11px] px-1 py-0.5 rounded font-bold ${
                   issue.type === 'GAP' || issue.type === 'OVERRUN' || issue.type === 'ANCHOR' || issue.type === 'DURATION_ZERO'
                       ? 'bg-on-air-crimson/20 text-on-air-crimson border border-on-air-crimson/40'
                       : 'bg-armed-amber/20 text-armed-amber border border-armed-amber/40'
@@ -186,7 +186,7 @@ export const ConflictDrawer: React.FC<ConflictDrawerProps> = ({
       </div>
 
       {/* Footer Info */}
-      <div className="p-space-xs bg-surface-panel border-t border-border-subtle font-label-mono text-[10px] text-outline flex items-center justify-between">
+      <div className="p-space-xs bg-surface-panel border-t border-border-subtle font-label-mono text-[12px] text-outline flex items-center justify-between">
         <span>VARREDURA EM TEMPO REAL</span>
         <span className="text-outline">TIMING ESTIMADO</span>
       </div>

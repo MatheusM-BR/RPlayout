@@ -153,7 +153,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
                 <span className="font-headline-md text-headline-md text-on-surface font-bold tabular-nums">
                   {lufs(measured.integratedLufs)}
                 </span>
-                <span className="text-[10px] text-outline block">{measured.scope==='TRIM'?'MIX ESCOLHIDO · TRECHO SELECIONADO':mixMeasurement?'MIX ESCOLHIDO · ARQUIVO INTEIRO':'ARQUIVO BRUTO · TRILHA INICIAL'}</span>
+                <span className="text-[11px] text-outline block">{measured.scope==='TRIM'?'MIX ESCOLHIDO · TRECHO SELECIONADO':mixMeasurement?'MIX ESCOLHIDO · ARQUIVO INTEIRO':'ARQUIVO BRUTO · TRILHA INICIAL'}</span>
               </div>
 
               <div className="bg-surface-container-lowest p-space-sm rounded border border-border-subtle font-label-mono text-label-mono">
@@ -161,7 +161,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
                 <span className="font-headline-md text-headline-md text-on-surface font-bold tabular-nums">
                   {db(measured.truePeakDbtp)}
                 </span>
-                <span className="text-[10px] text-outline block">PICO MÁXIMO</span>
+                <span className="text-[11px] text-outline block">PICO MÁXIMO</span>
               </div>
 
               <div className="bg-surface-container-lowest p-space-sm rounded border border-border-subtle font-label-mono text-label-mono">
@@ -175,7 +175,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
                 >
                   {projectedLufs === null ? '—' : lufs(projectedLufs)}
                 </span>
-                <span className="text-[10px] text-outline block">ALVO: {channel.targetLufs} LUFS</span>
+                <span className="text-[11px] text-outline block">ALVO: {channel.targetLufs} LUFS</span>
               </div>
 
               <div className="bg-surface-container-lowest p-space-sm rounded border border-border-subtle font-label-mono text-label-mono">
@@ -187,7 +187,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
                 >
                   {projectedPeak === null ? '—' : db(projectedPeak)}
                 </span>
-                <span className="text-[10px] text-outline block">TETO: {channel.ceilingDbtp} dBTP</span>
+                <span className="text-[11px] text-outline block">TETO: {channel.ceilingDbtp} dBTP</span>
               </div>
             </div>
           ) : (
@@ -248,7 +248,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
 
               <div className="flex items-center gap-space-md w-full justify-center">
                 {/* Régua de dB */}
-                <div className="flex flex-col justify-between h-48 font-label-mono text-[10px] text-outline text-right py-1">
+                <div className="flex flex-col justify-between h-48 font-label-mono text-[12px] text-outline text-right py-1">
                   <span>+12 dB</span>
                   <span>+6 dB</span>
                   <span>0 dB (REF)</span>
@@ -277,7 +277,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
                 {/* Readout e Input Numérico */}
                 <div className="flex flex-col gap-2">
                   <div className="bg-surface-card p-space-sm rounded border border-border-subtle text-center min-w-[100px]">
-                    <span className="font-label-caps text-[10px] text-outline block">GANHO APLICADO</span>
+                    <span className="font-label-caps text-[11px] text-outline block">GANHO APLICADO</span>
                     <span className="font-headline-md text-headline-md font-bold text-status-ok-bright tabular-nums">
                       {applied >= 0 ? `+${applied.toFixed(1)}` : applied.toFixed(1)} dB
                     </span>
@@ -285,7 +285,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
 
                   {mode === 'MANUAL' && (
                     <div className="flex flex-col gap-1">
-                      <span className="font-label-caps text-[10px] text-outline">Ajuste Fino</span>
+                      <span className="font-label-caps text-[11px] text-outline">Ajuste Fino</span>
                       <input
                         type="number"
                         step="0.1"
@@ -342,8 +342,8 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
                       setMatrixChannels(n);setRouting({mode:'MATRIX',matrix:[Array.from({length:n},(_,i)=>i===0?1:0),Array.from({length:n},(_,i)=>i===1?1:0)]})
                     }} className="w-16 bg-surface-panel border border-border-subtle ml-2"/>
                   </label>
-                  <p className="text-[10px] text-outline">Coeficiente -1 a 1 por canal. 0 silencia; -1 inverte fase. A quantidade é conferida contra o áudio real no engine; sinal ausente não entra no PGM.</p>
-                  <div className="overflow-x-auto"><table className="text-[10px]"><thead><tr><th>Saída</th>{routing.matrix?.[0]?.map((_,i)=><th key={i}>Ch {i+1}</th>)}</tr></thead><tbody>
+                  <p className="text-[11px] text-outline">Coeficiente -1 a 1 por canal. 0 silencia; -1 inverte fase. A quantidade é conferida contra o áudio real no engine; sinal ausente não entra no PGM.</p>
+                  <div className="overflow-x-auto"><table className="text-[11px]"><thead><tr><th>Saída</th>{routing.matrix?.[0]?.map((_,i)=><th key={i}>Ch {i+1}</th>)}</tr></thead><tbody>
                     {routing.matrix?.map((row,output)=><tr key={output}><th>{output===0?'L':'R'}</th>{row.map((coefficient,input)=><td key={input}><input aria-label={`Mix ${output===0?'L':'R'} entrada ${input+1}`} type="number" min={-1} max={1} step={0.05} value={coefficient} disabled={pending} onChange={event=>{
                       const value=Number(event.target.value);if(!Number.isFinite(value)||Math.abs(value)>1)return
                       setRouting({mode:'MATRIX',matrix:routing.matrix!.map((old,index)=>index===output?old.map((v,i)=>i===input?value:v):old)})
@@ -354,7 +354,7 @@ export function AudioDialog({ view, channel, onCancel, onApply }: Props) {
                 {view.asset&&<div className="space-y-1">
                   <button type="button" onClick={()=>void startAnalysis()} disabled={pending||analysisPending||Boolean(validateAudioRouting(routing,inputChannels))||(analysisScope==='TRIM'&&!cut)||Boolean(matchingAnalysis&&['PENDING','RUNNING'].includes(matchingAnalysis.state))} className="px-2 py-2 border border-border-subtle rounded bg-surface-panel disabled:opacity-50">{analysisPending?'Solicitando análise…':matchingAnalysis?.state==='RUNNING'?'Medindo mix…':matchingAnalysis?.state==='PENDING'?'Aguardando medição…':analysisScope==='TRIM'?'Medir trecho selecionado':'Medir mix escolhido'}</button>
                   <label className="text-[11px] text-outline">Escopo da medição <select aria-label="Escopo da medição" value={analysisScope} onChange={event=>setAnalysisScope(event.target.value as 'FILE'|'TRIM')} disabled={pending||analysisPending} className="bg-surface-panel border border-border-subtle rounded"><option value="FILE">Arquivo inteiro</option><option value="TRIM" disabled={!cut}>Trecho selecionado</option></select></label>
-                  <p className="text-[10px] text-outline">Mede {analysisScope==='TRIM'?'somente o trecho selecionado':'o arquivo inteiro'}, antes do ganho/limiter, na versão, trilha e canais selecionados. Não aplica áudio, não muda o PGM e não aprova QC.</p>
+                  <p className="text-[11px] text-outline">Mede {analysisScope==='TRIM'?'somente o trecho selecionado':'o arquivo inteiro'}, antes do ganho/limiter, na versão, trilha e canais selecionados. Não aplica áudio, não muda o PGM e não aprova QC.</p>
                   {matchingAnalysis?.state==='READY'&&<p role="status">Mix medido. Ganho automático disponível; confirme o escopo antes de aplicar.</p>}
                   {matchingAnalysis?.state==='FAILED'&&<p role="alert">{matchingAnalysis.error}</p>}
                   {analysisError&&<p role="alert">{analysisError}</p>}

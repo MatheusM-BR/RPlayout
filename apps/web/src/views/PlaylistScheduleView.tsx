@@ -1243,10 +1243,10 @@ export function PlaylistScheduleView({
                 Programação &amp; Automação Linear
               </h1>
             </div>
-            <div className="bg-surface-panel px-2.5 py-0.5 rounded border border-border-subtle text-[11px] font-mono flex items-center gap-1.5">
+            <div className="bg-surface-panel px-2.5 py-0.5 rounded border border-border-subtle text-[12px] font-mono flex items-center gap-1.5">
               <span className="text-outline">DATA ATIVA:</span>
               <strong className="text-primary font-bold">{selectedDateFormatted}</strong>
-              <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
+              <span className={`text-[11px] font-bold px-1.5 py-0.2 rounded ${
                 selectedDate === todayDateIso ? 'bg-on-air-crimson text-white' : 'bg-surface-container text-accent-ice'
               }`}>
                 {dateBadgeStatus}
@@ -1254,14 +1254,14 @@ export function PlaylistScheduleView({
             </div>
             {/* Qual grade está no ar x qual está sendo editada: sem isto o operador
                 editava 27/10 achando que mexia no que tocava (loop de 20/10). */}
-            <div className={`px-2.5 py-0.5 rounded border text-[11px] font-mono flex items-center gap-1.5 ${isLoadedEditorial ? 'border-border-subtle bg-surface-panel' : 'border-armed-amber bg-armed-amber/10'}`} title={isLoadedEditorial ? 'Esta é a grade carregada no Master.' : 'Você edita outra grade; ela só vai ao ar depois de publicar/carregar no Master.'}>
+            <div className={`px-2.5 py-0.5 rounded border text-[12px] font-mono flex items-center gap-1.5 ${isLoadedEditorial ? 'border-border-subtle bg-surface-panel' : 'border-armed-amber bg-armed-amber/10'}`} title={isLoadedEditorial ? 'Esta é a grade carregada no Master.' : 'Você edita outra grade; ela só vai ao ar depois de publicar/carregar no Master.'}>
               <span className="text-on-air-crimson font-bold">● NO AR:</span>
               <strong className="text-on-surface">{view.rundown.name}</strong>
               <span className="text-outline">{view.rundown.date ? view.rundown.date.split('-').reverse().slice(0, 2).join('/') : 'sem data'}{view.rundown.loop ? ' · loop' : ''}</span>
               {!isLoadedEditorial && <span className="text-armed-amber font-bold">· EDITANDO OUTRA GRADE</span>}
             </div>
           </div>
-          <div className="flex items-center gap-space-md text-label-mono text-[10px]">
+          <div className="flex items-center gap-space-md text-label-mono text-[11px]">
             <span className="text-outline">
               GRADE ATUAL: <strong className="text-on-surface font-bold">{displayItems.length} ITENS</strong>
             </span>
@@ -1290,7 +1290,7 @@ export function PlaylistScheduleView({
               <button
                 type="button"
                 onClick={() => setSidebarTab('mam')}
-                className={`flex-1 py-1.5 px-2 rounded font-label-caps text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                className={`flex-1 py-1.5 px-2 rounded font-label-caps text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                   sidebarTab === 'mam'
                     ? 'bg-primary text-surface-base shadow-sm'
                     : 'text-outline hover:text-on-surface hover:bg-surface-panel'
@@ -1302,7 +1302,7 @@ export function PlaylistScheduleView({
               <button
                 type="button"
                 onClick={() => setSidebarTab('calendar')}
-                className={`flex-1 py-1.5 px-2 rounded font-label-caps text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                className={`flex-1 py-1.5 px-2 rounded font-label-caps text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                   sidebarTab === 'calendar'
                     ? 'bg-primary text-surface-base shadow-sm'
                     : 'text-outline hover:text-on-surface hover:bg-surface-panel'
@@ -1319,13 +1319,13 @@ export function PlaylistScheduleView({
                 {/* Cabeçalho MAM & Busca */}
                 <div className="p-2 border-b border-border-subtle flex flex-col gap-1.5 bg-surface-container-high shrink-0">
                   <div className="flex items-center justify-between">
-                    <span className="font-label-caps text-[10.5px] font-bold text-on-surface flex items-center gap-1">
+                    <span className="font-label-caps text-[11px] font-bold text-on-surface flex items-center gap-1">
                       <span className="material-symbols-outlined text-primary text-[15px]">perm_media</span>
                       ACERVO &amp; PROGRAMAÇÃO
                     </span>
                     <button
                       onClick={() => void openLiveProgram()}
-                      className="px-2 py-0.5 rounded bg-on-air-crimson/20 hover:bg-on-air-crimson text-on-air-crimson hover:text-white font-label-caps text-[10px] font-bold border border-on-air-crimson/40 transition-colors flex items-center gap-1 cursor-pointer shadow-sm"
+                      className="px-2 py-0.5 rounded bg-on-air-crimson/20 hover:bg-on-air-crimson text-on-air-crimson hover:text-white font-label-caps text-[11px] font-bold border border-on-air-crimson/40 transition-colors flex items-center gap-1 cursor-pointer shadow-sm"
                       title="Agendar programa ao vivo com horário cravado"
                     >
                       <span className="material-symbols-outlined text-[13px]">live_tv</span>
@@ -1359,7 +1359,7 @@ export function PlaylistScheduleView({
                   <div className="flex items-center gap-1 overflow-x-auto py-0.5 broadcast-scrollbar">
                     <button
                       onClick={() => setSelectedCategory('ALL')}
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-label-caps font-bold whitespace-nowrap transition-colors cursor-pointer border ${
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-label-caps font-bold whitespace-nowrap transition-colors cursor-pointer border ${
                         selectedCategory === 'ALL'
                           ? 'bg-primary text-surface-base border-primary'
                           : 'bg-surface-base text-outline border-border-subtle hover:text-on-surface'
@@ -1373,7 +1373,7 @@ export function PlaylistScheduleView({
                         <button
                           key={cat.id}
                           onClick={() => setSelectedCategory(cat.id)}
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-label-mono whitespace-nowrap transition-colors cursor-pointer border flex items-center gap-1 ${
+                          className={`px-2 py-0.5 rounded-full text-[12px] font-label-mono whitespace-nowrap transition-colors cursor-pointer border flex items-center gap-1 ${
                             isSel
                               ? 'text-surface-base font-bold shadow-sm'
                               : 'bg-surface-base text-outline border-border-subtle hover:text-on-surface'
@@ -1396,7 +1396,7 @@ export function PlaylistScheduleView({
                 </div>
 
                 {mamSelection.size>0&&(
-                  <div role="region" aria-label="Categoria em lote" className="m-1 p-1.5 rounded border border-primary/50 bg-primary/10 flex flex-wrap items-center gap-1.5 text-[10.5px]">
+                  <div role="region" aria-label="Categoria em lote" className="m-1 p-1.5 rounded border border-primary/50 bg-primary/10 flex flex-wrap items-center gap-1.5 text-[11px]">
                     <span className="font-bold text-primary">{mamSelection.size} selecionado{mamSelection.size>1?'s':''}</span>
                     <input value={bulkCategory} onChange={event=>setBulkCategory(event.target.value)} list="bulk-category-options" maxLength={128} placeholder="Categoria (vazia remove)" disabled={bulkProgress!==null} className="flex-1 min-w-[120px] px-1.5 py-0.5 bg-surface-panel border border-border-subtle rounded"/>
                     <datalist id="bulk-category-options">{availableCategoriesList.filter(cat=>cat.id!=='ALL'&&cat.id!=='Sem Categoria').map(cat=><option key={cat.id} value={cat.id}/>)}</datalist>
@@ -1456,10 +1456,10 @@ export function PlaylistScheduleView({
                               {asset.title}
                             </span>
                             {asset.isLiveSource && (
-                              <span className="font-label-caps text-[10px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap text-accent-ice border-accent-ice/40 bg-accent-ice/10" title="Fonte ao vivo">{liveProtocolLabel((asset as any).sourceRef ?? asset.path)}</span>
+                              <span className="font-label-caps text-[11px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap text-accent-ice border-accent-ice/40 bg-accent-ice/10" title="Fonte ao vivo">{liveProtocolLabel((asset as any).sourceRef ?? asset.path)}</span>
                             )}
                             <span
-                              className="font-label-caps text-[10px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap"
+                              className="font-label-caps text-[11px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap"
                               style={{
                                 color: catColor,
                                 borderColor: `${catColor}66`,
@@ -1469,13 +1469,13 @@ export function PlaylistScheduleView({
                               {catName}
                             </span>
                             {asset.ignored && (
-                              <span className="font-label-caps text-[10px] font-bold px-1 py-0.2 rounded bg-error/20 text-error border border-error/40 shrink-0">
+                              <span className="font-label-caps text-[11px] font-bold px-1 py-0.2 rounded bg-error/20 text-error border border-error/40 shrink-0">
                                 IGNORADO
                               </span>
                             )}
                           </div>
 
-                          <div className="flex items-center gap-2 shrink-0 font-label-mono text-[10px] text-outline">
+                          <div className="flex items-center gap-2 shrink-0 font-label-mono text-[12px] text-outline">
                             <span className="text-on-surface font-semibold tabular-nums">
                               {dur(durationIn(asset, rate), rate)}
                             </span>
@@ -1484,7 +1484,7 @@ export function PlaylistScheduleView({
                                 e.stopPropagation()
                                 handleInsertFromMam(asset)
                               }}
-                              className="px-1.5 py-0.5 rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[10px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm"
+                              className="px-1.5 py-0.5 rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[11px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm"
                               title="Inserir na grade do dia selecionado"
                             >
                               <span className="material-symbols-outlined text-[11px]">add</span>
@@ -1499,11 +1499,11 @@ export function PlaylistScheduleView({
                 {mamContextMenu && (
                   <div className="fixed z-50 min-w-52 rounded border border-border-strong bg-surface-card p-1 shadow-xl text-body-sm" style={{ left: mamContextMenu.x, top: mamContextMenu.y }} role="menu">
                     {isCatalogMediaAsset(mamContextMenu.asset)?<>
-                    <div className="px-2 py-1 text-[10px] font-label-caps text-outline">ACERVO COMPARTILHADO</div>
+                    <div className="px-2 py-1 text-[11px] font-label-caps text-outline">ACERVO COMPARTILHADO</div>
                     <button className="block w-full rounded px-2 py-1 text-left text-[11px] text-primary hover:bg-surface-panel cursor-pointer border-b border-border-subtle/50 pb-1.5 mb-1" onClick={()=>openMetadata(mamContextMenu.asset.id)}>Conferir título / categoria…</button>
                     {onRemoveAsset&&<button className="block w-full rounded px-2 py-1 text-left text-[11px] text-error hover:bg-surface-panel cursor-pointer" onClick={()=>{const id=mamContextMenu.asset.id;setMamContextMenu(null);onRemoveAsset(id)}}>Conferir remoção e vínculos…</button>}
 
-                    <div className="px-2 py-1 text-[10px] font-label-caps text-outline">AÇÕES DE QC</div>
+                    <div className="px-2 py-1 text-[11px] font-label-caps text-outline">AÇÕES DE QC</div>
                     <button
                       className={`block w-full rounded px-2 py-1 text-left text-[11px] cursor-pointer font-medium ${
                         mamContextMenu.asset.ignored
@@ -1515,17 +1515,17 @@ export function PlaylistScheduleView({
                       {mamContextMenu.asset.ignored ? '✓ Reativar Vídeo no MAM' : '🚫 Ignorar Vídeo (Ocultar)'}
                     </button>
                     </>:<>
-                      <div className="px-2 py-1 text-[10px] font-label-caps text-outline">ENTRADA AO VIVO — NÃO É ARQUIVO DO ACERVO</div>
+                      <div className="px-2 py-1 text-[11px] font-label-caps text-outline">ENTRADA AO VIVO — NÃO É ARQUIVO DO ACERVO</div>
                       <button className="block w-full rounded px-2 py-1 text-left text-[11px] text-primary hover:bg-surface-panel cursor-pointer" onClick={()=>{setMamContextMenu(null);if(onOpenSettings)onOpenSettings();else onNavigate('settings')}}>Configurar entrada ao vivo…</button>
                     </>}
                   </div>
                 )}
 
                 {/* Rodapé da Biblioteca */}
-                <div className="p-1.5 border-t border-border-subtle bg-surface-container-high font-label-mono text-[10px] text-outline flex items-center justify-between shrink-0">
-                  <span>{libraryLoaded ? `${filteredMamAssets.length} clipes listados` : 'Catálogo ainda não conferido'}</span>
-                  {onPruneAssets&&<button className="text-armed-amber cursor-pointer" onClick={onPruneAssets}>Conferir limpeza…</button>}
-                  <span className="text-primary font-medium">Duplo clique insere</span>
+                <div className="p-1.5 border-t border-border-subtle bg-surface-container-high font-label-mono text-[12px] text-outline flex items-center justify-between shrink-0">
+                  <span className="whitespace-nowrap">{libraryLoaded ? `${filteredMamAssets.length} clipes` : 'Não conferido'}</span>
+                  {onPruneAssets&&<button className="text-armed-amber cursor-pointer whitespace-nowrap" onClick={onPruneAssets} title="Conferir arquivos que podem ser removidos do acervo">Limpeza…</button>}
+                  <span className="text-primary font-medium whitespace-nowrap" title="Duplo clique num clipe insere na grade">2× clique insere</span>
                 </div>
               </div>
             )}
@@ -1560,7 +1560,7 @@ export function PlaylistScheduleView({
               </div>
 
               {/* Barra Rápida: [← Ontem] [Hoje] [Amanhã →] + Date Picker */}
-              <div className="bg-surface-panel/70 px-2 py-1 border-b border-border-subtle/50 flex items-center justify-between text-[10px] font-label-mono">
+              <div className="bg-surface-panel/70 px-2 py-1 border-b border-border-subtle/50 flex items-center justify-between text-[12px] font-label-mono">
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => shiftSelectedDate(-1)}
@@ -1600,18 +1600,18 @@ export function PlaylistScheduleView({
                       setCalendarMonth(new Date(d.getFullYear(), d.getMonth(), 1))
                     }
                   }}
-                  className="bg-surface-base border border-border-subtle rounded px-1 text-[10px] text-on-surface font-mono cursor-pointer"
+                  className="bg-surface-base border border-border-subtle rounded px-1 text-[12px] text-on-surface font-mono cursor-pointer"
                   title="Ir diretamente para uma data"
                 />
               </div>
 
               {/* Matriz Mensal 7x5 com Alinhamento Real de Dias */}
               <div className="p-2 flex flex-col gap-1">
-                <div className="grid grid-cols-7 text-center font-label-mono text-[10px] text-outline uppercase pb-1 border-b border-border-subtle/40">
+                <div className="grid grid-cols-7 text-center font-label-mono text-[12px] text-outline uppercase pb-1 border-b border-border-subtle/40">
                   <span>D</span><span>S</span><span>T</span><span>Q</span><span>Q</span><span>S</span><span>S</span>
                 </div>
 
-                <div className="grid grid-cols-7 gap-1 pt-1 text-center font-label-mono text-[10px]">
+                <div className="grid grid-cols-7 gap-1 pt-1 text-center font-label-mono text-[12px]">
                   {/* Células vazias do offset do início do mês */}
                   {Array.from({ length: firstDayOfWeek }).map((_, i) => (
                     <div key={`pad-${i}`} className="py-1"></div>
@@ -1665,7 +1665,7 @@ export function PlaylistScheduleView({
                 </div>
 
                 {/* Legendas Rápidas */}
-                <div className="mt-1 pt-1.5 border-t border-border-subtle/50 grid grid-cols-2 gap-1 text-[10px] font-label-mono text-outline">
+                <div className="mt-1 pt-1.5 border-t border-border-subtle/50 grid grid-cols-2 gap-1 text-[12px] font-label-mono text-outline">
                   <div className="flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-status-ok-bright"></span> Grade Pronta
                   </div>
@@ -1682,7 +1682,7 @@ export function PlaylistScheduleView({
               </div>
 
               {visibleHours < 24 && (
-                <label className="flex items-center gap-2 px-1 text-[10px] font-label-mono text-outline">
+                <label className="flex items-center gap-2 px-1 text-[12px] font-label-mono text-outline">
                   <span>JANELA {timelineLabel(0)}–{timelineLabel(visibleHours)}</span>
                   <input
                     aria-label="Deslizar janela da timeline"
@@ -1704,11 +1704,11 @@ export function PlaylistScheduleView({
               <div className="flex items-center justify-between border-b border-border-subtle pb-1.5">
                 <div className="flex items-center gap-1">
                   <span className="material-symbols-outlined text-primary text-[16px]">fact_check</span>
-                  <span className="font-label-caps text-[10px] text-on-surface font-bold">
+                  <span className="font-label-caps text-[11px] text-on-surface font-bold">
                     RESUMO DO DIA ({selectedDateObj.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })})
                   </span>
                 </div>
-                <span className={`font-label-mono text-[10px] px-1 py-0.2 rounded font-bold ${
+                <span className={`font-label-mono text-[12px] px-1 py-0.2 rounded font-bold ${
                   selectedDate === todayDateIso ? 'text-on-air-glow bg-on-air-crimson/20' : 'text-status-ok-bright bg-status-ok/15'
                 }`}>
                   {dateBadgeStatus}
@@ -1717,11 +1717,11 @@ export function PlaylistScheduleView({
 
               {/* Indicador 1: Duração Total 24h */}
               <div className="bg-surface-panel p-1.5 rounded border border-border-subtle flex items-center justify-between">
-                <span className="text-[10px] font-label-caps text-outline">TOTAL PREVISTO:</span>
-                <span className="font-timecode-table text-[11px] text-on-surface font-bold">
+                <span className="text-[11px] font-label-caps text-outline">TOTAL PREVISTO:</span>
+                <span className="font-timecode-table text-[12px] text-on-surface font-bold">
                   {dur(totalDurationFrames, rate)}
                   {timelineData.gaps.length > 0 && (
-                    <span className="text-armed-amber text-[10px] ml-1">
+                    <span className="text-armed-amber text-[11px] ml-1">
                       ({timelineData.gaps.length} gap)
                     </span>
                   )}
@@ -1730,11 +1730,11 @@ export function PlaylistScheduleView({
 
               {/* Não inferir cumprimento regulatório pela quantidade de itens. */}
               <div className="bg-surface-panel p-1.5 rounded border border-border-subtle flex flex-col gap-1">
-                <div className="flex items-center justify-between text-[10px] font-label-caps">
+                <div className="flex items-center justify-between text-[11px] font-label-caps">
                   <span className="text-outline">CONFERÊNCIA REGULATÓRIA:</span>
                   <span className="text-armed-amber font-bold font-label-mono">NÃO HOMOLOGADA</span>
                 </div>
-                <span className="text-[10px] font-label-mono text-outline">
+                <span className="text-[12px] font-label-mono text-outline">
                   Consulte a classificação da mídia e o relatório as-run. A quantidade de itens não comprova cota.
                 </span>
               </div>
@@ -1749,20 +1749,20 @@ export function PlaylistScheduleView({
                   <div className="flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-armed-amber text-[16px]">warning</span>
                     <div className="flex flex-col">
-                      <span className="font-label-caps text-[10px] text-armed-amber font-bold">GAPS DETECTADOS:</span>
-                      <span className="font-label-mono text-[10px] text-on-surface font-bold">
+                      <span className="font-label-caps text-[11px] text-armed-amber font-bold">GAPS DETECTADOS:</span>
+                      <span className="font-label-mono text-[12px] text-on-surface font-bold">
                         {timelineData.gaps.length} GAP ({dur(timelineData.gaps[0]!.duration, rate)})
                       </span>
                     </div>
                   </div>
-                  <span className="bg-armed-amber text-surface-base font-label-caps text-[10px] px-1 py-0.5 rounded font-bold">
+                  <span className="bg-armed-amber text-surface-base font-label-caps text-[11px] px-1 py-0.5 rounded font-bold">
                     RESOLVER
                   </span>
                 </div>
               )}
 
               {/* Indicador 4: Comerciais & Breaks */}
-              <div className="bg-surface-panel p-1.5 rounded border border-border-subtle flex items-center justify-between font-label-mono text-[10px]">
+              <div className="bg-surface-panel p-1.5 rounded border border-border-subtle flex items-center justify-between font-label-mono text-[12px]">
                 <span className="text-outline">Comerciais na grade:</span>
                 <span className="text-on-surface font-semibold">
                   {(() => {
@@ -1811,15 +1811,15 @@ export function PlaylistScheduleView({
                   <span className="font-label-caps text-[11px] text-on-surface font-bold tracking-wide">
                     TIMELINE CONTÍNUA 24H • DETECÇÃO DE GAPS &amp; PLAYHEAD AO VIVO
                   </span>
-                  <span className="font-label-mono text-[10px] bg-surface-container px-2 py-0.5 rounded text-accent-ice font-bold border border-border-subtle">
+                  <span className="font-label-mono text-[12px] bg-surface-container px-2 py-0.5 rounded text-accent-ice font-bold border border-border-subtle">
                     {selectedDateFormatted}
                   </span>
                 </div>
 
                 <div className="flex items-center gap-2">
                   {visibleHours < 24 && (
-                    <div className="flex items-center gap-1.5 bg-surface-panel px-2 py-0.5 rounded border border-border-subtle font-label-mono text-[10px] text-outline">
-                      <span className="text-[10px] font-bold text-accent-ice-bright">
+                    <div className="flex items-center gap-1.5 bg-surface-panel px-2 py-0.5 rounded border border-border-subtle font-label-mono text-[12px] text-outline">
+                      <span className="text-[11px] font-bold text-accent-ice-bright">
                         {timelineLabel(0)} - {timelineLabel(visibleHours)}
                       </span>
                       <button
@@ -1851,7 +1851,7 @@ export function PlaylistScheduleView({
                     </div>
                   )}
 
-                  <div className="bg-surface-panel rounded p-0.5 border border-border-subtle flex items-center gap-0.5 text-[10px] font-label-mono">
+                  <div className="bg-surface-panel rounded p-0.5 border border-border-subtle flex items-center gap-0.5 text-[12px] font-label-mono">
                     <span className="text-outline px-1">ZOOM:</span>
                     {(['24h', '12h', '6h', '1h'] as const).map((z) => (
                       <button
@@ -1871,7 +1871,7 @@ export function PlaylistScheduleView({
               </div>
 
               {/* Régua de Horas Dinâmica conforme o zoomMode */}
-              <div className="relative h-4 w-full flex text-[10px] font-label-mono text-outline select-none px-1 border-b border-border-subtle/30">
+              <div className="relative h-4 w-full flex text-[12px] font-label-mono text-outline select-none px-1 border-b border-border-subtle/30">
                 {[0, 1, 2, 3, 4, 5, 6].map((tick) => (
                   <span
                     key={tick}
@@ -1911,7 +1911,7 @@ export function PlaylistScheduleView({
                         : 'bg-primary/50 border-primary/70 hover:brightness-110'
                     }`}
                   >
-                    <span className="text-[10px] font-label-mono truncate px-0.5 text-white/90 drop-shadow">
+                    <span className="text-[12px] font-label-mono truncate px-0.5 text-white/90 drop-shadow">
                       {block.item.asset?.title?.slice(0, 15) || block.item.item.type}
                     </span>
                   </div>
@@ -1934,11 +1934,11 @@ export function PlaylistScheduleView({
                       left: `${gap.leftPct}%`,
                       width: `${gap.widthPct}%`,
                     }}
-                    title={`ALERTA DE GAP: ${gap.label} (-${dur(gap.duration, rate)}). Clique para opções ou duplo clique para AutoFill imediato.`}
+                    title={`LACUNA: ${gap.label} (${dur(gap.duration, rate)} sem programação). Clique para opções ou duplo clique para AutoFill imediato.`}
                     className="absolute top-0 bottom-0 bg-armed-amber/30 border-2 border-dashed border-armed-amber animate-pulse cursor-pointer hover:bg-armed-amber/50 z-10 flex items-center justify-center shadow-[0_0_10px_rgba(255,149,0,0.5)]"
                   >
-                    <span className="text-[10px] font-label-caps text-armed-amber font-bold tracking-tighter uppercase px-0.5 bg-[#050912]/80 rounded">
-                      ⚠️ GAP -{dur(gap.duration, rate)}
+                    <span className="text-[11px] font-label-caps text-armed-amber font-bold tracking-tighter uppercase px-0.5 bg-[#050912]/80 rounded">
+                      LACUNA {dur(gap.duration, rate)}
                     </span>
                   </div>
                 ))}
@@ -1971,7 +1971,7 @@ export function PlaylistScheduleView({
                         ✕
                       </button>
                     </div>
-                    <div className="flex items-center justify-between text-[10px] font-label-mono text-outline">
+                    <div className="flex items-center justify-between text-[12px] font-label-mono text-outline">
                       <span>Horário: <strong className="text-on-surface">{selectedGap.label}</strong></span>
                       <span className="text-armed-amber font-bold">(-{dur(selectedGap.duration, rate)})</span>
                     </div>
@@ -1980,7 +1980,7 @@ export function PlaylistScheduleView({
                         handleOpenAutoFillForGap(selectedGap)
                         setShowGapPopover(false)
                       }}
-                      className="w-full bg-armed-amber hover:bg-armed-glow text-surface-base px-2 py-1.5 rounded font-label-caps text-[10px] font-bold flex items-center justify-center gap-1.5 shadow-[0_0_8px_#FF9500] transition-all cursor-pointer"
+                      className="w-full bg-armed-amber hover:bg-armed-glow text-surface-base px-2 py-1.5 rounded font-label-caps text-[11px] font-bold flex items-center justify-center gap-1.5 shadow-[0_0_8px_#FF9500] transition-all cursor-pointer"
                     >
                       <span className="material-symbols-outlined text-[14px]">auto_fix_high</span>
                       ⚡ AUTOFILL INTELIGENTE (1-CLIQUE)
@@ -1990,7 +1990,7 @@ export function PlaylistScheduleView({
               </div>
 
               {/* Legenda de Cores da Linha do Tempo */}
-              <div className="flex flex-wrap items-center justify-between gap-1 pt-1 border-t border-border-subtle/40 text-[10px] font-label-mono text-outline">
+              <div className="flex flex-wrap items-center justify-between gap-1 pt-1 border-t border-border-subtle/40 text-[12px] font-label-mono text-outline">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="flex items-center gap-1">
                     <span className="w-2 h-2 rounded bg-on-air-crimson inline-block"></span>
@@ -2048,7 +2048,7 @@ export function PlaylistScheduleView({
                   {showExportMenu && (
                     <div className="absolute top-full left-0 mt-1 w-72 bg-surface-card border-2 border-accent-ice/40 rounded shadow-2xl p-2 z-50 flex flex-col gap-1.5 text-left select-none">
                       <div className="flex items-center justify-between border-b border-border-subtle pb-1">
-                        <span className="font-label-caps text-[10px] text-on-surface font-bold uppercase">
+                        <span className="font-label-caps text-[11px] text-on-surface font-bold uppercase">
                           EXPORTAR GRADE • ${selectedDate}
                         </span>
                         <button onClick={() => setShowExportMenu(false)} className="text-outline hover:text-on-surface font-bold text-xs cursor-pointer">✕</button>
@@ -2061,7 +2061,7 @@ export function PlaylistScheduleView({
                         className="p-1.5 rounded hover:bg-surface-panel flex items-center justify-between text-body-sm cursor-pointer text-left"
                       >
                         <span className="font-bold text-on-surface text-[11px]">Planilha CSV Oficial</span>
-                        <span className="text-[10px] text-outline">Excel / LibreOffice</span>
+                        <span className="text-[11px] text-outline">Excel / LibreOffice</span>
                       </button>
                     </div>
                   )}
@@ -2120,7 +2120,7 @@ export function PlaylistScheduleView({
                   </span>
                 </button>
                 {operationalRevision !== null && (
-                  <span className="font-label-mono text-[10px] text-status-ok-bright" title="Fotografia imutável da grade e do timing publicada para auditoria">
+                  <span className="font-label-mono text-[12px] text-status-ok-bright" title="Fotografia imutável da grade e do timing publicada para auditoria">
                     REV. {operationalRevision}
                   </span>
                 )}
@@ -2130,7 +2130,7 @@ export function PlaylistScheduleView({
 
             {/* 3. GRADE DE EXIBIÇÃO COMPACTA 24H (TABELA OU CARD DE PLANEJAMENTO SE VAZIA) */}
             <div className="flex-1 bg-surface-card rounded border border-border-subtle shadow-md overflow-hidden flex flex-col min-h-[380px]">
-              <div className="grid grid-cols-12 bg-surface-container-high px-3 py-1.5 font-label-caps text-[10px] text-outline uppercase tracking-wider border-b border-border-subtle items-center select-none sticky top-0 z-10">
+              <div className="grid grid-cols-12 bg-surface-container-high px-3 py-1.5 font-label-caps text-[11px] text-outline uppercase tracking-wider border-b border-border-subtle items-center select-none sticky top-0 z-10">
                 <div className="col-span-1 flex items-center gap-1.5">
                   <input
                     type="checkbox"
@@ -2182,7 +2182,7 @@ export function PlaylistScheduleView({
                         <span className="material-symbols-outlined text-primary text-[22px] group-hover:scale-110 transition-transform">content_copy</span>
                         <div className="flex flex-col">
                           <span className="font-bold text-xs text-on-surface">Copiar Grade Anterior</span>
-                          <span className="text-[10px] text-outline">Duplica a grade carregada no Master</span>
+                          <span className="text-[11px] text-outline">Duplica a grade carregada no Master</span>
                         </div>
                       </button>
 
@@ -2193,7 +2193,7 @@ export function PlaylistScheduleView({
                         <span className="material-symbols-outlined text-accent-ice text-[22px] group-hover:scale-110 transition-transform">post_add</span>
                         <div className="flex flex-col">
                           <span className="font-bold text-xs text-on-surface">Criar Grade em Branco</span>
-                          <span className="text-[10px] text-outline">Começar grade limpa do zero</span>
+                          <span className="text-[11px] text-outline">Começar grade limpa do zero</span>
                         </div>
                       </button>
 
@@ -2204,7 +2204,7 @@ export function PlaylistScheduleView({
                         <span className="material-symbols-outlined text-tertiary text-[22px] group-hover:scale-110 transition-transform">upload_file</span>
                         <div className="flex flex-col">
                           <span className="font-bold text-xs text-on-surface">Importar M3U / BXF</span>
-                          <span className="text-[10px] text-outline">Carregar playlist pronta de arquivo</span>
+                          <span className="text-[11px] text-outline">Carregar playlist pronta de arquivo</span>
                         </div>
                       </button>
 
@@ -2215,7 +2215,7 @@ export function PlaylistScheduleView({
                         <span className="material-symbols-outlined text-armed-amber text-[22px] group-hover:scale-110 transition-transform">auto_fix_high</span>
                         <div className="flex flex-col">
                           <span className="font-bold text-xs text-on-surface">Auto-Fill EPG Linear</span>
-                          <span className="text-[10px] text-outline">Preencher dia via catálogo MAM</span>
+                          <span className="text-[11px] text-outline">Preencher dia via catálogo MAM</span>
                         </div>
                       </button>
                     </div>
@@ -2251,7 +2251,7 @@ export function PlaylistScheduleView({
                             : 'bg-surface-card hover:bg-surface-panel'
                         }`}
                       >
-                        <div className="col-span-1 font-label-mono text-[10px] flex items-center gap-1.5">
+                        <div className="col-span-1 font-label-mono text-[12px] flex items-center gap-1.5">
                           <input
                             type="checkbox"
                             checked={isSelected}
@@ -2261,7 +2261,7 @@ export function PlaylistScheduleView({
                           <span className="text-outline">{idx + 1}</span>
                         </div>
                         <div className="col-span-2 flex items-center gap-1 flex-wrap">
-                          <span className="px-1 py-0.2 rounded font-label-caps text-[10px] bg-surface-container font-semibold text-primary">
+                          <span className="px-1 py-0.2 rounded font-label-caps text-[11px] bg-surface-container font-semibold text-primary">
                             {item.asset?.kind ?? item.item.type ?? 'VT'}
                           </span>
                           {item.asset?.categoryId && (() => {
@@ -2270,7 +2270,7 @@ export function PlaylistScheduleView({
                             const catColor = catInfo?.color || '#389BFF'
                             return (
                               <span
-                                className="px-1 py-0.2 rounded font-label-caps text-[10px] font-bold border truncate max-w-[80px]"
+                                className="px-1 py-0.2 rounded font-label-caps text-[11px] font-bold border truncate max-w-[80px]"
                                 style={{
                                   color: catColor,
                                   borderColor: `${catColor}66`,
@@ -2283,20 +2283,20 @@ export function PlaylistScheduleView({
                             )
                           })()}
                         </div>
-                        <div className="col-span-2 font-label-mono text-[10.5px] tabular-nums text-on-surface">
+                        <div className="col-span-2 font-label-mono text-[14px] tabular-nums text-on-surface">
                           {scheduleMap.get(item.item.id)?.start != null
                             ? wallClock(scheduleMap.get(item.item.id)!.start, rate, activeView?.rundown.date)
                             : '--:--:--:--'}
                         </div>
-                        <div className="col-span-2 font-label-mono text-[10.5px] tabular-nums text-outline">
+                        <div className="col-span-2 font-label-mono text-[14px] tabular-nums text-outline">
                           {dur(durationFrames, rate)}
                         </div>
-                        <div className="col-span-4 font-body-sm text-[11px] truncate text-on-surface">
+                        <div className="col-span-4 font-body-sm text-[13px] truncate text-on-surface">
                           {item.asset?.title || item.item.title || item.item.id}
                         </div>
                         <div className="col-span-1 text-right">
-                          <span title={item.asset?.probeError ?? item.asset?.qcNotes ?? (item.asset ? 'Estado de QC do arquivo' : 'O cadastro não comprova sinal da fonte')} className={`font-label-mono text-[10px] font-bold ${item.asset?.probeError || item.asset?.qcStatus === 'REJECTED' || item.asset?.ignored ? 'text-error' : qcApproved(item.asset?.qcStatus) ? 'text-status-ok-bright' : 'text-armed-amber'}`}>
-                            {item.asset?.probeError || item.asset?.ignored ? 'INDISP.' : !item.asset ? 'SINAL N/D' : item.asset.qcStatus === 'APPROVED_WITH_NOTES' ? 'QC RESSALVA' : qcApproved(item.asset.qcStatus) ? 'QC OK' : item.asset.qcStatus === 'REJECTED' ? 'REJEITADO' : item.asset.qcStatus === 'BLOCKED' ? 'BLOQUEADO' : item.asset.qcStatus === 'ANALYSIS' ? 'EM ANÁLISE' : 'QC PEND.'}
+                          <span title={item.asset?.probeError ?? item.asset?.qcNotes ?? (item.asset ? 'Estado de QC do arquivo' : 'O cadastro não comprova sinal da fonte')} className={`font-label-mono text-[12px] font-bold ${item.asset?.probeError || item.asset?.qcStatus === 'REJECTED' || item.asset?.ignored ? 'text-error' : qcApproved(item.asset?.qcStatus) ? 'text-status-ok-bright' : 'text-armed-amber'}`}>
+                            {item.asset?.probeError || item.asset?.ignored ? 'INDISPONÍVEL' : !item.asset ? (item.item.type === 'LIVE' ? 'AO VIVO' : 'SEM ARQUIVO') : item.asset.qcStatus === 'APPROVED_WITH_NOTES' ? 'QC RESSALVA' : qcApproved(item.asset.qcStatus) ? 'QC OK' : item.asset.qcStatus === 'REJECTED' ? 'REJEITADO' : item.asset.qcStatus === 'BLOCKED' ? 'BLOQUEADO' : item.asset.qcStatus === 'ANALYSIS' ? 'EM ANÁLISE' : 'QC PEND.'}
                           </span>
                         </div>
                       </div>
@@ -2309,13 +2309,13 @@ export function PlaylistScheduleView({
               {selectedItemIds.size > 1 ? (
                 <div className="p-2.5 bg-surface-container-high border-t border-border-subtle flex flex-wrap items-center justify-between gap-3 text-body-sm select-none">
                   <div className="flex items-center gap-2.5">
-                    <span className="font-label-caps text-[10px] text-accent-ice font-bold uppercase bg-accent-ice/20 px-2 py-0.5 rounded border border-accent-ice/30">
+                    <span className="font-label-caps text-[11px] text-accent-ice font-bold uppercase bg-accent-ice/20 px-2 py-0.5 rounded border border-accent-ice/30">
                       MULTISSELEÇÃO ATIVA
                     </span>
                     <span className="font-bold text-on-surface">
                       {selectedItemIds.size} itens selecionados
                     </span>
-                    <span className="font-label-mono text-[11px] text-outline">
+                    <span className="font-label-mono text-[12px] text-outline">
                       Duração somada: <strong className="text-primary">{dur(selectedTotalDurationFrames, rate)}</strong>
                     </span>
                   </div>
@@ -2323,7 +2323,7 @@ export function PlaylistScheduleView({
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setSelectedItemIds(new Set())}
-                      className="px-2.5 py-1 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline hover:text-on-surface font-label-caps text-[10px] cursor-pointer transition-colors"
+                      className="px-2.5 py-1 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline hover:text-on-surface font-label-caps text-[11px] cursor-pointer transition-colors"
                     >
                       Desmarcar Todos (Esc)
                     </button>
@@ -2331,7 +2331,7 @@ export function PlaylistScheduleView({
                     <button
                       disabled={isBulkDeleting}
                       onClick={handleBulkRemove}
-                      className="px-2.5 py-1 rounded bg-error-container/30 hover:bg-error-container text-on-error-container font-label-caps text-[10px] flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-50"
+                      className="px-2.5 py-1 rounded bg-error-container/30 hover:bg-error-container text-on-error-container font-label-caps text-[11px] flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-50"
                     >
                       <span className="material-symbols-outlined text-[14px]">delete</span>
                       {isBulkDeleting ? 'Removendo...' : `Remover ${selectedItemIds.size} Itens`}
@@ -2348,13 +2348,13 @@ export function PlaylistScheduleView({
                 return (
                   <div className="p-2.5 bg-surface-container-high border-t border-border-subtle flex flex-wrap items-center justify-between gap-3 text-body-sm select-none">
                     <div className="flex items-center gap-2.5">
-                      <span className="font-label-caps text-[10px] text-primary font-bold uppercase bg-primary/20 px-2 py-0.5 rounded border border-primary/30">
+                      <span className="font-label-caps text-[11px] text-primary font-bold uppercase bg-primary/20 px-2 py-0.5 rounded border border-primary/30">
                         ITEM SELECIONADO
                       </span>
                       <span className="font-bold text-on-surface truncate max-w-sm">
                         {selectedItem.asset?.title || selectedItem.item.title || selectedItem.item.id}
                       </span>
-                      <span className="font-label-mono text-[11px] text-outline">
+                      <span className="font-label-mono text-[12px] text-outline">
                         {dur(durationFrames, rate)}
                       </span>
                     </div>
@@ -2364,13 +2364,13 @@ export function PlaylistScheduleView({
                         <div className="flex items-center gap-1 bg-surface-panel px-2 py-1 rounded border border-border-subtle">
                           <span className="material-symbols-outlined text-[14px] text-primary">label</span>
                           <span className="text-[11px] text-outline font-label-caps font-semibold">Categoria:</span>
-                          <button onClick={()=>openMetadata(selectedItem.asset!.id)} className="bg-transparent text-on-surface text-[10px] font-label-mono font-bold outline-none cursor-pointer">Conferir / editar…</button>
+                          <button onClick={()=>openMetadata(selectedItem.asset!.id)} className="bg-transparent text-on-surface text-[12px] font-label-mono font-bold outline-none cursor-pointer">Conferir / editar…</button>
                         </div>
                       )}
 
                       <button
                         onClick={() => openEditScheduleTime(selectedItem)}
-                        className="px-2.5 py-1 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-primary hover:text-white font-label-caps text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                        className="px-2.5 py-1 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-primary hover:text-white font-label-caps text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
                         title="Configurar entrada fixa (HH:MM:SS) ou fluxo sequencial e duração"
                       >
                         <span className="material-symbols-outlined text-[14px]">schedule</span>
@@ -2379,7 +2379,7 @@ export function PlaylistScheduleView({
                       {onOpenTrim && (
                         <button
                           onClick={() => onOpenTrim(selectedItem)}
-                          className="px-2.5 py-1 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline hover:text-on-surface font-label-caps text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                          className="px-2.5 py-1 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline hover:text-on-surface font-label-caps text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
                         >
                           <span className="material-symbols-outlined text-[14px]">content_cut</span>
                           Editar Trim
@@ -2388,7 +2388,7 @@ export function PlaylistScheduleView({
                       {onOpenAudio && (
                         <button
                           onClick={() => onOpenAudio(selectedItem)}
-                          className="px-2.5 py-1 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline hover:text-on-surface font-label-caps text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                          className="px-2.5 py-1 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline hover:text-on-surface font-label-caps text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
                         >
                           <span className="material-symbols-outlined text-[14px]">volume_up</span>
                           Áudio
@@ -2397,7 +2397,7 @@ export function PlaylistScheduleView({
                       {onRemoveItem && (
                         <button
                           onClick={() => handleRemoveItem(selectedItem.item.id)}
-                          className="px-2.5 py-1 rounded bg-error-container/30 hover:bg-error-container text-on-error-container font-label-caps text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                          className="px-2.5 py-1 rounded bg-error-container/30 hover:bg-error-container text-on-error-container font-label-caps text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
                         >
                           <span className="material-symbols-outlined text-[14px]">delete</span>
                           Remover
@@ -2475,7 +2475,7 @@ export function PlaylistScheduleView({
 
             <div className="p-4 flex flex-col gap-4 text-body-sm">
               <div className="flex flex-col gap-1">
-                <span className="text-[10px] font-label-caps text-outline uppercase">Item Selecionado</span>
+                <span className="text-[11px] font-label-caps text-outline uppercase">Item Selecionado</span>
                 <span className="font-semibold text-on-surface truncate text-xs bg-surface-panel p-2 rounded border border-border-subtle">
                   {editingTimeItem.asset?.title || editingTimeItem.item.title || editingTimeItem.item.id}
                 </span>
@@ -2483,7 +2483,7 @@ export function PlaylistScheduleView({
 
               {/* Modo de Entrada: FLOW vs FIXED */}
               <div className="flex flex-col gap-1.5">
-                <span className="text-[10px] font-label-caps text-outline uppercase">Modo de Agendamento</span>
+                <span className="text-[11px] font-label-caps text-outline uppercase">Modo de Agendamento</span>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
@@ -2515,7 +2515,7 @@ export function PlaylistScheduleView({
 
               {timeAnchorKind === 'FIXED' && (
                 <div className="flex flex-col gap-1.5 p-3 rounded bg-armed-amber/10 border border-armed-amber/30">
-                  <label className="text-[10px] font-label-caps text-armed-amber font-bold uppercase flex items-center gap-1">
+                  <label className="text-[11px] font-label-caps text-armed-amber font-bold uppercase flex items-center gap-1">
                     <span className="material-symbols-outlined text-[13px]">alarm</span>
                     Horário de Início (HH:MM:SS)
                   </label>
@@ -2539,7 +2539,7 @@ export function PlaylistScheduleView({
                       </button>
                     ))}
                   </div>
-                  {parseHms(timeInputHms) === null && <span className="text-[10px] text-error">Use HH:MM:SS, de 00:00:00 a 23:59:59.</span>}
+                  {parseHms(timeInputHms) === null && <span className="text-[11px] text-error">Use HH:MM:SS, de 00:00:00 a 23:59:59.</span>}
                   <span className="text-[11px] text-outline">
                     A exibição aguardará pontualmente este horário para disparar o VT/Evento.
                   </span>
@@ -2548,7 +2548,7 @@ export function PlaylistScheduleView({
 
               {/* Duração Estimada / Override (Minutos) */}
               <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-label-caps text-outline uppercase flex items-center justify-between">
+                <label className="text-[11px] font-label-caps text-outline uppercase flex items-center justify-between">
                   <span>Duração Estimada / Override</span>
                   <span className="text-primary font-mono">{durationInputMinutes} min</span>
                 </label>
@@ -2620,10 +2620,10 @@ export function PlaylistScheduleView({
 
             <div className="p-4 flex flex-col gap-3.5 text-body-sm max-h-[80vh] overflow-y-auto broadcast-scroll">
               {liveProgramPreset
-                ? <div className="text-[11px] text-outline">Fonte: <span className="font-label-mono text-on-surface">{liveProgramSourceRef}</span></div>
+                ? <div className="text-[12px] text-outline">Fonte: <span className="font-label-mono text-on-surface">{liveProgramSourceRef}</span></div>
                 : <CanonicalProtocolSelector mode="INPUT" defaultKind="NDI" onChange={selectLiveProgramInput} />}
               <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">Início</label>
+                <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">Início</label>
                 <div className="grid grid-cols-3 gap-1.5" role="group" aria-label="Início do ao vivo">
                   {([['NOW','Agora','Entra já no ar'],['FIXED','Horário fixo','Entra no horário marcado'],['FLOW','Após o anterior','Segue a fila']] as const).map(([mode,label,hint]) => (
                     <button key={mode} type="button" onClick={() => setLiveProgramStart(mode)}
@@ -2634,7 +2634,7 @@ export function PlaylistScheduleView({
                 </div>
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
+                <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                   Título do Programa / Evento
                 </label>
                 <input
@@ -2648,7 +2648,7 @@ export function PlaylistScheduleView({
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
+                  <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                     Horário de Início (HH:MM:SS)
                   </label>
                   <input
@@ -2672,7 +2672,7 @@ export function PlaylistScheduleView({
                 </div>
 
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-label-caps text-outline uppercase font-semibold">
+                  <label className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                     Duração Estimada (minutos)
                   </label>
                   <input

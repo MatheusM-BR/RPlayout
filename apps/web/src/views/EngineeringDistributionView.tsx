@@ -10,7 +10,7 @@ import type { MultiviewSourceItem } from '../components/broadcast/OperationalMul
 import { SrtManagerPanel, type SrtLinkItem } from '../components/broadcast/SrtManagerPanel.js'
 import { RedundancyFailoverPanel } from '../components/broadcast/RedundancyFailoverPanel.js'
 import {HaReplicationPanel} from '../components/broadcast/HaReplicationPanel.js'
-import { ContinuityCacheBadge } from '../components/broadcast/ContinuityCacheBadge.js'
+import { OutputsSummary } from '../components/broadcast/OutputsSummary.js'
 import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
 import { StudioAutomationPanel } from '../components/broadcast/StudioAutomationPanel.js'
 import { HostResourcesPanel } from '../components/broadcast/HostResourcesPanel.js'
@@ -212,11 +212,11 @@ export function EngineeringDistributionView({
               {/* Card 1: GPU NVENC */}
               <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="font-label-caps text-[10px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
+                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-accent-ice text-[15px]">memory</span>
                     UTILIZAÇÃO DA GPU
                   </span>
-                  <span className="font-label-mono text-[10px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
+                  <span className="font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
                     {percent(hostMetrics?.gpu.utilizationPercent ?? null)}
                   </span>
                 </div>
@@ -224,7 +224,7 @@ export function EngineeringDistributionView({
                   <div className="font-timecode-display text-[20px] font-bold text-accent-ice-bright tracking-tight leading-none">
                     {hostMetrics?.gpu.utilizationPercent === null || !hostMetrics ? '—' : percent(hostMetrics.gpu.utilizationPercent)}
                   </div>
-                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">
+                  <span className="font-label-mono text-[12px] text-on-surface-variant font-medium">
                     {gpu?.memoryUsedMiB !== null && gpu?.memoryUsedMiB !== undefined && gpu?.memoryTotalMiB !== null && gpu?.memoryTotalMiB !== undefined
                       ? `VRAM ${gpu.memoryUsedMiB}/${gpu.memoryTotalMiB} MiB${gpu.temperatureC === null ? '' : ` • ${gpu.temperatureC}°C`}`
                       : gpu?.error ?? 'Aguardando coleta'}
@@ -238,11 +238,11 @@ export function EngineeringDistributionView({
               {/* Card 2: HOST CPU */}
               <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="font-label-caps text-[10px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
+                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-status-ok text-[15px]">developer_board</span>
                     HOST CPU
                   </span>
-                  <span className="font-label-mono text-[10px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
+                  <span className="font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
                     {percent(hostMetrics?.cpu.percent ?? null)}
                   </span>
                 </div>
@@ -250,7 +250,7 @@ export function EngineeringDistributionView({
                   <div className="font-timecode-display text-[20px] font-bold text-status-ok-bright tracking-tight leading-none">
                     {hostMetrics?.cpu.percent === null || !hostMetrics ? '—' : percent(hostMetrics.cpu.percent)}
                   </div>
-                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{hostMetrics ? `${hostMetrics.cpu.cores} núcleos • coleta a cada ${hostMetrics.sampleIntervalSeconds} s` : 'Aguardando coleta'}</span>
+                  <span className="font-label-mono text-[12px] text-on-surface-variant font-medium">{hostMetrics ? `${hostMetrics.cpu.cores} núcleos • coleta a cada ${hostMetrics.sampleIntervalSeconds} s` : 'Aguardando coleta'}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className="bg-status-ok h-full rounded-full" style={{ width: `${hostMetrics?.cpu.percent ?? 0}%` }}></div>
@@ -260,11 +260,11 @@ export function EngineeringDistributionView({
               {/* Card 3: MEMÓRIA RAM */}
               <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="font-label-caps text-[10px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
+                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-armed-amber text-[15px]">storage</span>
                     MEMÓRIA RAM
                   </span>
-                  <span className="font-label-mono text-[10px] text-accent-ice font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
+                  <span className="font-label-mono text-[12px] text-accent-ice font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
                     {percent(hostMetrics?.memory.percent ?? null)}
                   </span>
                 </div>
@@ -272,7 +272,7 @@ export function EngineeringDistributionView({
                   <div className="font-timecode-display text-[20px] font-bold text-on-surface tracking-tight leading-none">
                     {hostMetrics ? gib(hostMetrics.memory.usedBytes) : '—'}
                   </div>
-                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{hostMetrics ? `${gib(hostMetrics.memory.freeBytes)} livre / ${gib(hostMetrics.memory.totalBytes)}` : 'Aguardando coleta'}</span>
+                  <span className="font-label-mono text-[12px] text-on-surface-variant font-medium">{hostMetrics ? `${gib(hostMetrics.memory.freeBytes)} livre / ${gib(hostMetrics.memory.totalBytes)}` : 'Aguardando coleta'}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className="bg-armed-amber h-full rounded-full" style={{ width: `${hostMetrics?.memory.percent ?? 0}%` }}></div>
@@ -282,11 +282,11 @@ export function EngineeringDistributionView({
               {/* Card 4: processo do engine. Jitter pertence à telemetria do link, não ao PID. */}
               <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="font-label-caps text-[10px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
+                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-status-ok-bright text-[15px]">speed</span>
                     ENGINE &amp; PROCESSO
                   </span>
-                  <span className={`font-label-caps text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
+                  <span className={`font-label-caps text-[11px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok animate-pulse'}`}></span>{engineAlert ? 'ALERTA' : engineSimulated ? 'SIMULADO' : engineProcess?.state === 'running' ? 'ATIVO' : monitorLoaded ? 'SEM ALERTA' : '—'}
                   </span>
                 </div>
@@ -294,7 +294,7 @@ export function EngineeringDistributionView({
                   <div className="font-timecode-display text-[20px] font-bold text-status-ok tracking-tight leading-none">
                     {engineProcess?.pid ? `PID ${engineProcess.pid}` : '—'}
                   </div>
-                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{engineSimulated ? 'Transporte simulado • sem saída física' : engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : monitorLoaded ? 'Engine não iniciado' : 'Consultando…'}</span>
+                  <span className="font-label-mono text-[12px] text-on-surface-variant font-medium">{engineSimulated ? 'Transporte simulado • sem saída física' : engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : monitorLoaded ? 'Engine não iniciado' : 'Consultando…'}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className={`${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok'} h-full rounded-full`} style={{ width: engineProcess?.state === 'running' ? '100%' : engineProcess ? '45%' : '0%' }}></div>
@@ -304,13 +304,13 @@ export function EngineeringDistributionView({
 
             {/* Ações Rápidas de Engenharia */}
             <div className="flex items-center justify-end gap-2 shrink-0 border-t lg:border-t-0 lg:border-l border-border-subtle pt-2 lg:pt-0 lg:pl-3">
-              {onOpenHealth && <button type="button" onClick={onOpenHealth} className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel text-on-surface text-[10.5px] font-bold rounded-lg border border-border-subtle"><span className="material-symbols-outlined text-[15px]">vital_signs</span>INCIDENTES DO CANAL</button>}
+              {onOpenHealth && <button type="button" onClick={onOpenHealth} className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel text-on-surface text-[11px] font-bold rounded-lg border border-border-subtle"><span className="material-symbols-outlined text-[15px]">vital_signs</span>INCIDENTES DO CANAL</button>}
               {live?.reconfiguration?.ready === false && <span role="status" className="text-xs text-armed-amber max-w-52">{live.reconfiguration.reason ?? 'Aguardando recuperação do canal…'}</span>}
               <button
                 disabled={engineeringAction !== null || live?.reconfiguration?.ready === false}
                 title={live?.reconfiguration?.reason ?? 'Reinício com interrupção controlada e recuperação do checkpoint'}
                 onClick={() => void restartEngine()}
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel hover:bg-surface-container text-on-surface text-[10.5px] font-label-caps font-bold rounded-lg border border-border-subtle hover:border-border-strong transition-all shadow-sm cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel hover:bg-surface-container text-on-surface text-[11px] font-label-caps font-bold rounded-lg border border-border-subtle hover:border-border-strong transition-all shadow-sm cursor-pointer"
               >
                 <span className="material-symbols-outlined text-armed-amber text-[15px]">refresh</span>
                 <span>{engineeringAction === 'restart' ? 'REINICIANDO…' : 'REINICIAR'}</span>
@@ -318,14 +318,14 @@ export function EngineeringDistributionView({
               <button
                 disabled={engineeringAction !== null}
                 onClick={() => void warmCache()}
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel hover:bg-surface-container text-on-surface text-[10.5px] font-label-caps font-bold rounded-lg border border-border-subtle hover:border-border-strong transition-all shadow-sm cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel hover:bg-surface-container text-on-surface text-[11px] font-label-caps font-bold rounded-lg border border-border-subtle hover:border-border-strong transition-all shadow-sm cursor-pointer"
               >
                 <span className="material-symbols-outlined text-accent-ice text-[15px]">cleaning_services</span>
                 <span>{engineeringAction === 'cache' ? 'ATUALIZANDO…' : 'AQUECER CACHE'}</span>
               </button>
               <button
                 onClick={() => window.open(`/api/health-events.csv?channelId=${encodeURIComponent(channel.id)}`, '_blank', 'noopener,noreferrer')}
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-primary-container/20 hover:bg-primary-container text-primary hover:text-white text-[10.5px] font-label-caps font-bold rounded-lg border border-primary-container/40 transition-all shadow-sm cursor-pointer"
+                className="flex items-center gap-1 px-2.5 py-1.5 bg-primary-container/20 hover:bg-primary-container text-primary hover:text-white text-[11px] font-label-caps font-bold rounded-lg border border-primary-container/40 transition-all shadow-sm cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[15px]">archive</span>
                 <span>EXPORTAR SAÚDE</span>
@@ -362,17 +362,6 @@ export function EngineeringDistributionView({
             ))}
           </div>
 
-          <div className="font-label-mono text-[10px] text-outline hidden 2xl:flex items-center gap-2">
-            <span>CANAL: <strong className="text-on-surface">{channel.name}</strong></span>
-            <span>•</span>
-            <span className="text-status-ok-bright font-bold flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span>
-              24/7 BROADCAST CONTINUOUS
-            </span>
-            <div className="h-3.5 w-px bg-border-subtle"></div>
-            {/* Badge de Cobertura do Cache de Continuidade (Fase C: 48h AIR-GAP) */}
-            <ContinuityCacheBadge channelId={channel.id} />
-          </div>
         </div>
 
         {/* 4. CONTEÚDO PRINCIPAL DINÂMICO CONFORME A SUB-SEÇÃO */}
@@ -388,9 +377,10 @@ export function EngineeringDistributionView({
           {/* SEÇÃO 1: VISÃO INTEGRADA MCR (DASHBOARD) */}
           {activeSection === 'DASHBOARD' && (
             <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
-              {monitorLoadError && <div role="alert" className="shrink-0 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 font-label-mono text-[10px] text-on-air-crimson">Monitor sem dados: {monitorLoadError}</div>}
+              {monitorLoadError && <div role="alert" className="shrink-0 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 font-label-mono text-[12px] text-on-air-crimson">Monitor sem dados: {monitorLoadError}</div>}
               {/* A visão integrada cabe integralmente no viewport operacional.
                   Detalhes extensos seguem nas abas SRT e Redundância. */}
+              <OutputsSummary sample={hostMetrics} channelId={channel.id} profiles={outputs} />
               <div className="flex-1 min-h-0">
                 <OperationalMultiview
                   sources={multiviewSources}
@@ -454,20 +444,20 @@ export function EngineeringDistributionView({
                     MATRIZ DE SAÍDAS FÍSICAS E IP
                   </h2>
                 </div>
-                <span className="font-label-mono text-[10px] text-status-ok bg-status-ok/10 border border-status-ok/30 px-2 py-0.5 rounded font-bold">
+                <span className="font-label-mono text-[12px] text-status-ok bg-status-ok/10 border border-status-ok/30 px-2 py-0.5 rounded font-bold">
                   {outputs.filter((output) => output.enabled).length} SAÍDAS CONFIGURADAS
                 </span>
               </div>
 
               {outputs.length === 0 ? (
-                <p className="font-label-mono text-[11px] text-outline">Nenhuma saída cadastrada para este canal. Configure em Configurações → Saídas.</p>
+                <p className="font-label-mono text-[12px] text-outline">Nenhuma saída cadastrada para este canal. Configure em Configurações → Saídas.</p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {outputs.map((output) => {
                     const process = processes.find((row) => row.kind === 'OUTPUT' && row.channelId === channel.id && String(row.details?.url ?? '') === output.target)
                     return <article key={output.id} className="bg-surface-card rounded-lg border border-border-subtle p-3.5 shadow-sm">
-                      <div className="flex items-start justify-between gap-2"><div><strong className="font-headline-md text-[14px] text-on-surface">{output.name}</strong><p className="font-label-mono text-[10px] text-outline mt-1 break-all">{output.target || 'Destino gerenciado localmente'}</p></div><span className={`font-label-caps text-[10px] px-1.5 py-0.5 rounded border font-bold ${output.enabled ? 'text-status-ok border-status-ok/40 bg-status-ok/10' : 'text-outline border-border-subtle bg-surface-panel'}`}>{output.enabled ? 'HABILITADA' : 'DESLIGADA'}</span></div>
-                      <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[10px] mt-3"><span className="bg-surface-panel rounded px-2 py-1">{output.kind} · {output.role}</span><span className="bg-surface-panel rounded px-2 py-1">{process ? process.state.toUpperCase() : 'SEM TELEMETRIA'}</span></div>
+                      <div className="flex items-start justify-between gap-2"><div><strong className="font-headline-md text-[14px] text-on-surface">{output.name}</strong><p className="font-label-mono text-[12px] text-outline mt-1 break-all">{output.target || 'Destino gerenciado localmente'}</p></div><span className={`font-label-caps text-[12px] px-1.5 py-0.5 rounded border font-bold ${output.enabled ? 'text-status-ok border-status-ok/40 bg-status-ok/10' : 'text-outline border-border-subtle bg-surface-panel'}`}>{output.enabled ? 'HABILITADA' : 'DESLIGADA'}</span></div>
+                      <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[12px] mt-3"><span className="bg-surface-panel rounded px-2 py-1">{output.kind} · {output.role}</span><span className="bg-surface-panel rounded px-2 py-1">{process ? process.state.toUpperCase() : 'SEM TELEMETRIA'}</span></div>
                     </article>
                   })}
                 </div>
@@ -483,11 +473,11 @@ export function EngineeringDistributionView({
                         <span className="font-headline-md text-[15px] text-on-surface font-bold">
                           Blackmagic DeckLink 8K Pro
                         </span>
-                        <span className="font-label-caps text-[10px] bg-status-ok/20 text-status-ok font-bold px-1.5 py-0.5 rounded border border-status-ok/40">
+                        <span className="font-label-caps text-[11px] bg-status-ok/20 text-status-ok font-bold px-1.5 py-0.5 rounded border border-status-ok/40">
                           SDI PORT 1
                         </span>
                       </div>
-                      <span className="font-label-mono text-[10px] text-outline block mt-0.5">
+                      <span className="font-label-mono text-[12px] text-outline block mt-0.5">
                         Dispositivo Físico PCIe • Bus #01 Direct
                       </span>
                     </div>
@@ -501,13 +491,13 @@ export function EngineeringDistributionView({
                       className="w-5 h-5 accent-status-ok cursor-pointer"
                     />
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[11px] pl-1">
+                  <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[12px] pl-1">
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[10px] uppercase font-label-caps">Formato Vídeo</span>
+                      <span className="text-outline text-[11px] uppercase font-label-caps">Formato Vídeo</span>
                       <span className="text-on-surface font-bold">1080i59.94 Rec.709</span>
                     </div>
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[10px] uppercase font-label-caps">Genlock Sync</span>
+                      <span className="text-outline text-[11px] uppercase font-label-caps">Genlock Sync</span>
                       <span className="text-status-ok-bright font-bold flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span> BB LOCKED
                       </span>
@@ -524,11 +514,11 @@ export function EngineeringDistributionView({
                         <span className="font-headline-md text-[15px] text-on-surface font-bold">
                           NDI Network Broadcast
                         </span>
-                        <span className="font-label-caps text-[10px] bg-accent-ice/20 text-accent-ice-bright font-bold px-1.5 py-0.5 rounded border border-accent-ice/40">
+                        <span className="font-label-caps text-[11px] bg-accent-ice/20 text-accent-ice-bright font-bold px-1.5 py-0.5 rounded border border-accent-ice/40">
                           IP GIGABIT
                         </span>
                       </div>
-                      <span className="font-label-mono text-[10px] text-outline block mt-0.5">
+                      <span className="font-label-mono text-[12px] text-outline block mt-0.5">
                         RPLAYOUT_PGM_MASTER • Multicast Discovery
                       </span>
                     </div>
@@ -542,13 +532,13 @@ export function EngineeringDistributionView({
                       className="w-5 h-5 accent-accent-ice cursor-pointer"
                     />
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[11px] pl-1">
+                  <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[12px] pl-1">
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[10px] uppercase font-label-caps">Stream Name</span>
+                      <span className="text-outline text-[11px] uppercase font-label-caps">Stream Name</span>
                       <span className="text-on-surface font-bold">RPLAYOUT_PGM</span>
                     </div>
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[10px] uppercase font-label-caps">Bitrate Médio</span>
+                      <span className="text-outline text-[11px] uppercase font-label-caps">Bitrate Médio</span>
                       <span className="text-accent-ice-bright font-bold">125 Mbps</span>
                     </div>
                   </div>
@@ -563,11 +553,11 @@ export function EngineeringDistributionView({
                         <span className="font-headline-md text-[15px] text-on-surface font-bold">
                           SRT Caller Primário
                         </span>
-                        <span className="font-label-caps text-[10px] bg-primary/20 text-primary font-bold px-1.5 py-0.5 rounded border border-primary/40">
+                        <span className="font-label-caps text-[11px] bg-primary/20 text-primary font-bold px-1.5 py-0.5 rounded border border-primary/40">
                           INTERNET WAN
                         </span>
                       </div>
-                      <span className="font-label-mono text-[10px] text-outline block mt-0.5">
+                      <span className="font-label-mono text-[12px] text-outline block mt-0.5">
                         Caller para CDN / MUX Principal (srt://10.0.10.50:9000)
                       </span>
                     </div>
@@ -581,13 +571,13 @@ export function EngineeringDistributionView({
                       className="w-5 h-5 accent-primary cursor-pointer"
                     />
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[11px] pl-1">
+                  <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[12px] pl-1">
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[10px] uppercase font-label-caps">RTT / Latência</span>
+                      <span className="text-outline text-[11px] uppercase font-label-caps">RTT / Latência</span>
                       <span className="text-status-ok-bright font-bold">1.8 ms</span>
                     </div>
                     <div className="bg-surface-panel px-2 py-1.5 rounded border border-border-subtle/50 flex flex-col">
-                      <span className="text-outline text-[10px] uppercase font-label-caps">Packet Loss</span>
+                      <span className="text-outline text-[11px] uppercase font-label-caps">Packet Loss</span>
                       <span className="text-status-ok-bright font-bold">0.00%</span>
                     </div>
                   </div>
@@ -643,12 +633,12 @@ export function EngineeringDistributionView({
               </div>
 
               {/* Terminal Box */}
-              <div className="flex-1 bg-[#04060d] rounded-lg border border-border-subtle p-3 overflow-y-auto font-mono text-[11px] leading-relaxed flex flex-col gap-1 broadcast-scroll">
+              <div className="flex-1 bg-[#04060d] rounded-lg border border-border-subtle p-3 overflow-y-auto font-mono text-[12px] leading-relaxed flex flex-col gap-1 broadcast-scroll">
                 {filteredLogs.map((log) => (
                   <div key={log.id} className="flex items-start gap-2">
-                    <span className="text-outline text-[10px] tabular-nums">{log.time}</span>
+                    <span className="text-outline text-[12px] tabular-nums">{log.time}</span>
                     <span
-                      className={`font-bold text-[10px] px-1.5 rounded ${
+                      className={`font-bold text-[11px] px-1.5 rounded ${
                         log.level === 'OK'
                           ? 'bg-status-ok/15 text-status-ok'
                           : log.level === 'WARN'

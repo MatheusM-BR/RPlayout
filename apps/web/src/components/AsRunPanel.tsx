@@ -171,7 +171,7 @@ export function AsRunPanel({ channelId, rate, onClose }: Props) {
                         {entry.endedAt ? (
                           <span className="text-outline">{entry.endedAt.replace('T', ' ').slice(0, 19)}</span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 font-label-caps text-[10px] px-1.5 py-0.5 rounded bg-on-air-crimson text-surface-base font-bold animate-pulse">
+                          <span className="inline-flex items-center gap-1 font-label-caps text-[11px] px-1.5 py-0.5 rounded bg-on-air-crimson text-surface-base font-bold animate-pulse">
                             NO AR AGORA
                           </span>
                         )}

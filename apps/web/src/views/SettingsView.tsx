@@ -202,41 +202,19 @@ export function SettingsView({
   }
 
   // Presets de formato de vídeo
-  const applyVideoPreset = (preset: '1080i59' | '1080p59' | '720p59' | '4k59') => {
-    switch (preset) {
-      case '1080i59':
-        setWidth(1920)
-        setHeight(1080)
-        setRateNum(30000)
-        setRateDen(1001)
-        setScan('INTERLACED')
-        setFieldOrder('TFF')
-        break
-      case '1080p59':
-        setWidth(1920)
-        setHeight(1080)
-        setRateNum(60000)
-        setRateDen(1001)
-        setScan('PROGRESSIVE')
-        setFieldOrder('TFF')
-        break
-      case '720p59':
-        setWidth(1280)
-        setHeight(720)
-        setRateNum(60000)
-        setRateDen(1001)
-        setScan('PROGRESSIVE')
-        setFieldOrder('TFF')
-        break
-      case '4k59':
-        setWidth(3840)
-        setHeight(2160)
-        setRateNum(60000)
-        setRateDen(1001)
-        setScan('PROGRESSIVE')
-        setFieldOrder('TFF')
-        break
-    }
+  // Presets: o destacado é o que bate com o formulário (antes 1080i ficava
+  // sempre destacado, mesmo com o canal em 1080p29,97, que nem tinha preset).
+  const VIDEO_PRESETS = [
+    { id: '1080p29', label: '1080p29.97', width: 1920, height: 1080, num: 30000, den: 1001, scan: 'PROGRESSIVE' as const, title: 'Progressivo 29,97 qps (formato do canal RW)' },
+    { id: '1080i59', label: '1080i59.94', width: 1920, height: 1080, num: 30000, den: 1001, scan: 'INTERLACED' as const, title: 'Entrelaçado 59,94 campos (TFF)' },
+    { id: '1080p59', label: '1080p59.94', width: 1920, height: 1080, num: 60000, den: 1001, scan: 'PROGRESSIVE' as const, title: 'Progressivo 59,94 qps' },
+    { id: '720p59', label: '720p59.94', width: 1280, height: 720, num: 60000, den: 1001, scan: 'PROGRESSIVE' as const, title: 'Progressivo 59,94 qps' },
+    { id: '4k59', label: '4K 59.94', width: 3840, height: 2160, num: 60000, den: 1001, scan: 'PROGRESSIVE' as const, title: 'UHD progressivo 59,94 qps' },
+  ]
+  const applyVideoPreset = (id: string) => {
+    const preset = VIDEO_PRESETS.find(entry => entry.id === id)
+    if (!preset) return
+    setWidth(preset.width); setHeight(preset.height); setRateNum(preset.num); setRateDen(preset.den); setScan(preset.scan); setFieldOrder('TFF')
   }
 
   if(conversion)return <CadenceConversionDialog request={conversion} onCancel={()=>setConversion(null)} onApplied={message=>{
@@ -257,7 +235,6 @@ export function SettingsView({
         onNavigate={onNavigate}
         sessionRole={sessionRole}
         authRequired={authRequired}
-        isLiveOnAir={live ? Boolean(live.transport.onAir && live.transport.playing && engine.ok) : undefined}
         onOpenSettings={() => setActiveTab('canais')}
       />
 
@@ -273,7 +250,7 @@ export function SettingsView({
                 <h1 className="font-headline-md text-headline-md tracking-wider text-on-surface uppercase leading-none font-bold">
                   CONFIGURAÇÕES // SISTEMA & CANAIS
                 </h1>
-                <span className={`font-label-caps text-[10px] px-2 py-0.5 rounded border font-bold uppercase ${engine.ok ? 'bg-status-ok/20 text-status-ok-bright border-status-ok/40' : 'text-armed-amber border-armed-amber/40'}`}>
+                <span className={`font-label-caps text-[11px] px-2 py-0.5 rounded border font-bold uppercase ${engine.ok ? 'bg-status-ok/20 text-status-ok-bright border-status-ok/40' : 'text-armed-amber border-armed-amber/40'}`}>
                   {engine.label}
                 </span>
               </div>
@@ -297,7 +274,7 @@ export function SettingsView({
             )}
             <button
               onClick={() => onNavigate('master')}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-primary hover:bg-accent-ice text-surface-base font-headline-md text-headline-md tracking-wide transition-all shadow-sm cursor-pointer"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-primary hover:bg-accent-ice text-surface-base font-body-sm text-[13px] font-semibold transition-all shadow-sm cursor-pointer"
             >
               <span className="material-symbols-outlined text-[18px]">play_circle</span>
               <span>VOLTAR AO MASTER</span>
@@ -309,7 +286,7 @@ export function SettingsView({
         <div className="px-margin py-space-md flex-1 flex flex-col lg:flex-row gap-gutter">
           {/* Menu Lateral de Abas */}
           <aside className="w-full lg:w-72 flex flex-col gap-1 shrink-0">
-            <span className="font-label-caps text-[10px] text-outline uppercase font-bold px-1 mb-1">
+            <span className="font-label-caps text-[11px] text-outline uppercase font-bold px-1 mb-1">
               Categorias de Configuração
             </span>
             <div className="bg-surface-card rounded-xl border border-border-subtle p-2 flex flex-col gap-1 shadow-sm">
@@ -324,7 +301,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">tv</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Canais & Formatos</span>
-                  <span className="font-label-mono text-[10px] opacity-75">Resolução, fps, varredura</span>
+                  <span className="font-label-mono text-[12px] opacity-75">Resolução, fps, varredura</span>
                 </div>
               </button>
 
@@ -339,7 +316,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">output</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Saídas de Transmissão</span>
-                  <span className="font-label-mono text-[10px] opacity-75">DeckLink, NDI, SRT, RTMP</span>
+                  <span className="font-label-mono text-[12px] opacity-75">DeckLink, NDI, SRT, RTMP</span>
                 </div>
               </button>
 
@@ -354,7 +331,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">input</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Entradas & Ao Vivo</span>
-                  <span className="font-label-mono text-[10px] opacity-75">SDI Ingest, NDI Discovery, SRT</span>
+                  <span className="font-label-mono text-[12px] opacity-75">SDI Ingest, NDI Discovery, SRT</span>
                 </div>
               </button>
 
@@ -369,7 +346,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">inventory_2</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Projetos & Restauração</span>
-                  <span className="font-label-mono text-[10px] opacity-75">Pontos seguros por canal</span>
+                  <span className="font-label-mono text-[12px] opacity-75">Pontos seguros por canal</span>
                 </div>
               </button>
 
@@ -384,7 +361,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">folder_special</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Acervo & Pastas MAM</span>
-                  <span className="font-label-mono text-[10px] opacity-75">Diretórios de mídia locais</span>
+                  <span className="font-label-mono text-[12px] opacity-75">Diretórios de mídia locais</span>
                 </div>
               </button>
 
@@ -399,7 +376,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">palette</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Categorias & Cores</span>
-                  <span className="font-label-mono text-[10px] opacity-75">Badges operacionais</span>
+                  <span className="font-label-mono text-[12px] opacity-75">Badges operacionais</span>
                 </div>
               </button>
 
@@ -414,7 +391,7 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">group</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Usuários & Acesso</span>
-                  <span className="font-label-mono text-[10px] opacity-75">Contas e papéis RBAC</span>
+                  <span className="font-label-mono text-[12px] opacity-75">Contas e papéis RBAC</span>
                 </div>
               </button>
 
@@ -429,13 +406,13 @@ export function SettingsView({
                 <span className="material-symbols-outlined text-[18px]">hub</span>
                 <div className="flex flex-col">
                   <span className="font-body-sm text-[12.5px] leading-tight">Integrações & API</span>
-                  <span className="font-label-mono text-[10px] opacity-75">Webhooks, SCTE-35</span>
+                  <span className="font-label-mono text-[12px] opacity-75">Webhooks, SCTE-35</span>
                 </div>
               </button>
             </div>
 
             {/* Carimbo de Build e Versão */}
-            <div className="bg-surface-card rounded-xl border border-border-subtle p-3 mt-2 shadow-sm flex flex-col gap-1 font-label-mono text-[10px] text-outline">
+            <div className="bg-surface-card rounded-xl border border-border-subtle p-3 mt-2 shadow-sm flex flex-col gap-1 font-label-mono text-[12px] text-outline">
               <div className="flex items-center justify-between">
                 <span>COMMIT:</span>
                 <span className="text-on-surface font-bold">{BUILD_COMMIT || 'DEV-LOCAL'}</span>
@@ -492,26 +469,26 @@ export function SettingsView({
                                 <h4 className="font-headline-md text-[14px] text-on-surface font-bold leading-tight">
                                   {ch.name}
                                 </h4>
-                                <span className="font-label-mono text-[10px] text-outline">
+                                <span className="font-label-mono text-[12px] text-outline">
                                   ID: {ch.id.slice(0, 8)}...
                                 </span>
                               </div>
                             </div>
                             <div className="flex items-center gap-1">
                               {isFocused && (
-                                <span className="font-label-caps text-[10px] px-1.5 py-0.5 rounded bg-primary text-surface-base font-bold">
+                                <span className="font-label-caps text-[11px] px-1.5 py-0.5 rounded bg-primary text-surface-base font-bold">
                                   CANAL EM FOCO
                                 </span>
                               )}
                               {isSelected && (
-                                <span className="font-label-caps text-[10px] px-1.5 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold">
+                                <span className="font-label-caps text-[11px] px-1.5 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold">
                                   SELECIONADO
                                 </span>
                               )}
                             </div>
                           </div>
 
-                          <div className="flex items-center justify-between font-label-mono text-[10px] text-on-surface-variant border-t border-border-subtle/50 pt-2">
+                          <div className="flex items-center justify-between font-label-mono text-[12px] text-on-surface-variant border-t border-border-subtle/50 pt-2">
                             <span>
                               {ch.width}x{ch.height} • {formatStandardRate(ch.rate,ch.scan,ch.height)}
                             </span>
@@ -590,40 +567,23 @@ export function SettingsView({
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Presets:</span>
-                      <button
-                        onClick={() => applyVideoPreset('1080i59')}
-                        className="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary/30 text-primary font-label-caps text-[11px] font-bold border border-primary/40 cursor-pointer"
-                        title="Padrão Broadcast Nacional (1080i 59.94Hz, 29.97 fps, Top Field First)"
-                      >
-                        1080i59.94 (Padrão)
-                      </button>
-                      <button
-                        onClick={() => applyVideoPreset('1080p59')}
-                        className="px-2 py-0.5 rounded bg-surface-panel hover:bg-surface-container font-label-caps text-[11px] border border-border-subtle cursor-pointer"
-                        title="Padrão Progressivo 59.94 fps"
-                      >
-                        1080p59.94
-                      </button>
-                      <button
-                        onClick={() => applyVideoPreset('720p59')}
-                        className="px-2 py-0.5 rounded bg-surface-panel hover:bg-surface-container font-label-caps text-[11px] border border-border-subtle cursor-pointer"
-                      >
-                        720p59.94
-                      </button>
-                      <button
-                        onClick={() => applyVideoPreset('4k59')}
-                        className="px-2 py-0.5 rounded bg-surface-panel hover:bg-surface-container font-label-caps text-[11px] border border-border-subtle cursor-pointer"
-                      >
-                        4K 59.94
-                      </button>
+                      <span className="font-label-caps text-[11px] text-outline uppercase font-bold">Presets:</span>
+                      {VIDEO_PRESETS.map(preset => {
+                        const current = preset.width === width && preset.height === height && preset.num === rateNum && preset.den === rateDen && preset.scan === scan
+                        return (
+                          <button key={preset.id} onClick={() => applyVideoPreset(preset.id)} title={preset.title} aria-pressed={current}
+                            className={`px-2 py-0.5 rounded font-label-caps text-[11px] border cursor-pointer ${current ? 'bg-primary/20 text-primary font-bold border-primary/40' : 'bg-surface-panel hover:bg-surface-container border-border-subtle'}`}>
+                            {preset.label}{current ? ' · atual' : ''}
+                          </button>
+                        )
+                      })}
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {/* Nome do Canal */}
                     <div className="flex flex-col gap-1.5">
-                      <label className="font-label-caps text-[10px] text-outline uppercase font-bold">
+                      <label className="font-label-caps text-[11px] text-outline uppercase font-bold">
                         Nome do Canal
                       </label>
                       <input
@@ -636,7 +596,7 @@ export function SettingsView({
 
                     {/* Resolução */}
                     <div className="flex flex-col gap-1.5">
-                      <label className="font-label-caps text-[10px] text-outline uppercase font-bold">
+                      <label className="font-label-caps text-[11px] text-outline uppercase font-bold">
                         Resolução de Vídeo
                       </label>
                       <div className="flex items-center gap-2">
@@ -660,7 +620,7 @@ export function SettingsView({
 
                     {/* Cadência / Framerate */}
                     <div className="flex flex-col gap-1.5">
-                      <label className="font-label-caps text-[10px] text-outline uppercase font-bold">
+                      <label className="font-label-caps text-[11px] text-outline uppercase font-bold">
                         Taxa de Quadros (FPS)
                       </label>
                       <select
@@ -683,7 +643,7 @@ export function SettingsView({
 
                     {/* Varredura */}
                     <div className="flex flex-col gap-1.5">
-                      <label className="font-label-caps text-[10px] text-outline uppercase font-bold">
+                      <label className="font-label-caps text-[11px] text-outline uppercase font-bold">
                         Padrão de Varredura
                       </label>
                       <select
@@ -698,7 +658,7 @@ export function SettingsView({
 
                     {/* Loudness Target */}
                     <div className="flex flex-col gap-1.5">
-                      <label className="font-label-caps text-[10px] text-outline uppercase font-bold">
+                      <label className="font-label-caps text-[11px] text-outline uppercase font-bold">
                         Target de Loudness (EBU R128)
                       </label>
                       <select
@@ -715,7 +675,7 @@ export function SettingsView({
 
                     {/* True Peak Ceiling */}
                     <div className="flex flex-col gap-1.5">
-                      <label className="font-label-caps text-[10px] text-outline uppercase font-bold">
+                      <label className="font-label-caps text-[11px] text-outline uppercase font-bold">
                         Teto de Pico Verdadeiro (True Peak)
                       </label>
                       <select
@@ -733,13 +693,13 @@ export function SettingsView({
                   {currentEditingChannel.configurationRevision!==channelBaseline.configurationRevision&&<p role="alert" className="text-sm text-armed-amber">A configuração mudou desde a abertura. Seus campos foram conservados; reabra a configuração para conferir antes de aplicar.</p>}
                   <button disabled={isSaving} onClick={()=>void reloadChannelConfiguration()} className="text-primary text-sm disabled:opacity-50">REABRIR CONFIGURAÇÃO DO SERVIDOR</button>
                   <div className="flex items-center justify-between pt-3 border-t border-border-subtle">
-                    <span className="font-label-mono text-[11px] text-outline">
+                    <span className="font-label-mono text-[12px] text-outline">
                       Alterar o formato reconstrói o engine e provoca uma interrupção controlada do canal.
                     </span>
                     <button
                       disabled={isSaving}
                       onClick={handleSaveChannel}
-                      className="flex items-center gap-2 px-5 py-2 rounded bg-primary hover:bg-accent-ice text-surface-base font-headline-md text-headline-md tracking-wider transition-all shadow-md cursor-pointer disabled:opacity-50"
+                      className="flex items-center gap-2 px-5 py-2 rounded bg-primary hover:bg-accent-ice text-surface-base font-body-sm text-[13px] font-semibold transition-all shadow-md cursor-pointer disabled:opacity-50"
                     >
                       <span className="material-symbols-outlined text-[18px]">save</span>
                       <span>{isSaving ? 'SALVANDO...' : 'SALVAR CANAL'}</span>
@@ -831,7 +791,7 @@ export function SettingsView({
                         Crie credenciais para Operadores Master, Programadores de Playlist, Engenharia e Administradores de Sistema.
                       </p>
                     </div>
-                    <span className={`font-label-caps text-[10px] px-2.5 py-0.5 rounded font-bold ${
+                    <span className={`font-label-caps text-[11px] px-2.5 py-0.5 rounded font-bold ${
                       authRequired
                         ? 'bg-status-ok/20 text-status-ok-bright border border-status-ok/40'
                         : 'bg-primary/20 text-primary border border-primary/40'

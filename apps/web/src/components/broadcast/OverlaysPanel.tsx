@@ -4,11 +4,11 @@ import { api, type OverlaySlotState } from '../../api.js'
 
 /** Overlays 1–8, como no vMix: cada slot tem uma arte (título GT importado ou
  * SVG), campos e ENTRA/SAI. O 1 fica atrás, o 8 na frente. */
-interface Props { channelId: string }
+interface Props { channelId: string; defaultOpen?: boolean }
 interface Draft { templateId: string; values: Record<string, string> }
 
-export function OverlaysPanel({ channelId }: Props) {
-  const [open, setOpen] = useState(false)
+export function OverlaysPanel({ channelId, defaultOpen = false }: Props) {
+  const [open, setOpen] = useState(defaultOpen)
   const [templates, setTemplates] = useState<GraphicTemplate[]>([])
   const [slots, setSlots] = useState<OverlaySlotState[]>([])
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
@@ -51,7 +51,7 @@ export function OverlaysPanel({ channelId }: Props) {
       </button>
       {open && <div className="px-4 pb-4 grid gap-3">
         {error && <p role="alert" className="text-[12px] text-on-air-crimson">{error}</p>}
-        <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
+        <div className="grid gap-2 grid-cols-1">
           {Array.from({ length: OVERLAY_SLOTS }, (_, index) => index + 1).map(slot => {
             const state = slots.find(entry => entry.slot === slot)
             const draft = drafts[slot] ?? { templateId: '', values: {} }
@@ -59,17 +59,17 @@ export function OverlaysPanel({ channelId }: Props) {
             const animated = template ? overlayAnimationOf(template.svg) !== null : false
             const setDraft = (next: Partial<Draft>) => setDrafts(current => ({ ...current, [slot]: { ...draft, ...next } }))
             return (
-              <div key={slot} className={`rounded-lg border p-3 grid gap-2 ${state?.onAir ? 'border-on-air-crimson bg-on-air-crimson/10' : 'border-border-subtle'}`}>
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-[13px] font-semibold">OVERLAY {slot}</span>
-                  <span className={`font-mono text-[11px] ${state?.onAir ? 'text-on-air-crimson' : 'text-outline'}`}>{state?.onAir ? '● NO AR' : 'livre'}</span>
+              <div key={slot} className={`rounded-lg border px-2 py-1.5 grid gap-1.5 ${state?.onAir ? 'border-on-air-crimson bg-on-air-crimson/10' : 'border-border-subtle'}`}>
+                <div className="flex items-center gap-2">
+                  <span className="w-5 shrink-0 font-mono text-[14px] font-bold text-center" title={`Overlay ${slot}`}>{slot}</span>
+                  <select className="flex-1 min-w-0 text-[12px] bg-surface-container border border-border-subtle rounded px-2 py-1" value={draft.templateId} disabled={busy === slot}
+                    aria-label={`Arte do overlay ${slot}`}
+                    onChange={event => { const next = templates.find(entry => entry.id === event.target.value); setDraft({ templateId: event.target.value, values: Object.fromEntries((next?.fields ?? []).map(field => [field.key, draft.values[field.key] ?? field.defaultValue])) }) }}>
+                    <option value="">— escolha a arte —</option>
+                    {templates.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+                  </select>
+                  <span className={`shrink-0 font-mono text-[12px] ${state?.onAir ? 'text-on-air-crimson font-bold' : 'text-outline'}`}>{state?.onAir ? '● NO AR' : 'livre'}</span>
                 </div>
-                <select className="text-[12px] bg-surface-container border border-border-subtle rounded px-2 py-1" value={draft.templateId} disabled={busy === slot}
-                  aria-label={`Arte do overlay ${slot}`}
-                  onChange={event => { const next = templates.find(entry => entry.id === event.target.value); setDraft({ templateId: event.target.value, values: Object.fromEntries((next?.fields ?? []).map(field => [field.key, draft.values[field.key] ?? field.defaultValue])) }) }}>
-                  <option value="">— escolha a arte —</option>
-                  {templates.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-                </select>
                 {template && <span className="text-[11px] text-outline">{animated ? 'Animação do título GT' : 'Entra e sai com fade'}</span>}
                 {template?.fields.map(field => (
                   <label key={field.key} className="grid gap-1 text-[11px] text-outline">{field.label}
@@ -77,7 +77,7 @@ export function OverlaysPanel({ channelId }: Props) {
                       onChange={event => setDraft({ values: { ...draft.values, [field.key]: event.target.value } })} />
                   </label>
                 ))}
-                <div className="flex gap-2">
+                <div className="flex gap-1.5 pl-7">
                   <button type="button" className="btn primary flex-1" disabled={busy !== null || !draft.templateId} onClick={() => void command(slot, 'IN')}>ENTRA</button>
                   <button type="button" className="btn flex-1" disabled={busy !== null || !state?.onAir} onClick={() => void command(slot, 'OUT')}>SAI</button>
                   <button type="button" className="btn" title="Entra sem animação" disabled={busy !== null || !draft.templateId} onClick={() => void command(slot, 'CUT')}>CORTE</button>

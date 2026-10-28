@@ -106,10 +106,10 @@ export const AudioMeterEbu = React.memo(function AudioMeterEbu({
         </div>
         <div className="w-full h-2 bg-surface-panel rounded-full relative overflow-hidden flex">
           <div className="w-1/2 h-full bg-error/20 flex justify-start items-center">
-            <span className="font-label-mono text-[10px] text-error pl-1">-1</span>
+            <span className="font-label-mono text-[12px] text-error pl-1">-1</span>
           </div>
           <div className="w-1/2 h-full bg-status-ok/20 flex justify-end items-center">
-            <span className="font-label-mono text-[10px] text-status-ok pr-1">+1</span>
+            <span className="font-label-mono text-[12px] text-status-ok pr-1">+1</span>
           </div>
           <div
             className="absolute top-0 bottom-0 w-1.5 bg-status-ok-bright rounded shadow-[0_0_4px_#3DDBA0]"
@@ -125,7 +125,7 @@ export const AudioMeterEbu = React.memo(function AudioMeterEbu({
           <span className="font-headline-md text-headline-md text-status-ok-bright font-bold tabular-nums">
             {integrated.toFixed(1)} LUFS
           </span>
-          <span className="text-[10px] text-outline block">ALVO: {targetLufs} ±0.5</span>
+          <span className="text-[11px] text-outline block">ALVO: {targetLufs} ±0.5</span>
         </div>
 
         <div className="bg-surface-panel p-space-sm rounded border border-border-subtle">
@@ -133,7 +133,7 @@ export const AudioMeterEbu = React.memo(function AudioMeterEbu({
           <span className="font-headline-md text-headline-md text-on-surface font-bold tabular-nums">
             {truePeak.toFixed(1)} dBTP
           </span>
-          <span className="text-[10px] text-outline block">TETO: {ceilingDbtp} dBTP</span>
+          <span className="text-[11px] text-outline block">TETO: {ceilingDbtp} dBTP</span>
         </div>
 
         <div className="bg-surface-panel p-space-sm rounded border border-border-subtle">
@@ -141,7 +141,7 @@ export const AudioMeterEbu = React.memo(function AudioMeterEbu({
           <span className="font-body-lg text-body-lg text-on-surface font-bold tabular-nums">
             {momentary.toFixed(1)} LUFS
           </span>
-          <span className="text-[10px] text-outline block">JANELA: 400ms</span>
+          <span className="text-[11px] text-outline block">JANELA: 400ms</span>
         </div>
 
         <div className="bg-surface-panel p-space-sm rounded border border-border-subtle">
@@ -149,7 +149,7 @@ export const AudioMeterEbu = React.memo(function AudioMeterEbu({
           <span className="font-body-lg text-body-lg text-primary font-bold tabular-nums">
             {rangeLu.toFixed(1)} LU
           </span>
-          <span className="text-[10px] text-outline block">DINÂMICA PADRÃO</span>
+          <span className="text-[11px] text-outline block">DINÂMICA PADRÃO</span>
         </div>
       </div>
 

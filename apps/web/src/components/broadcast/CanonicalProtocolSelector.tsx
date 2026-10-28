@@ -252,13 +252,13 @@ export function CanonicalProtocolSelector({
     <div className={`flex flex-col gap-3 ${className}`}>
       {/* Seletor de Protocolo (Abas Táticas) */}
       <div className="flex flex-col gap-1.5">
-        <label className="text-[10px] font-label-caps text-outline uppercase font-bold flex items-center justify-between">
+        <label className="text-[11px] font-label-caps text-outline uppercase font-bold flex items-center justify-between">
           <span>Protocolo de {mode === 'INPUT' ? 'Entrada Ao Vivo' : 'Saída de Transmissão'}</span>
           <button
             type="button"
             onClick={() => void fetchSources(true)}
             disabled={isLoadingSources}
-            className="text-primary hover:text-accent-ice text-[10px] lowercase flex items-center gap-1 cursor-pointer transition-colors"
+            className="text-primary hover:text-accent-ice text-[11px] lowercase flex items-center gap-1 cursor-pointer transition-colors"
             title="Escanear rede e placas novamente"
           >
             <span className={`material-symbols-outlined text-[12px] ${isLoadingSources ? 'animate-spin' : ''}`}>
@@ -276,7 +276,7 @@ export function CanonicalProtocolSelector({
                 key={p}
                 type="button"
                 onClick={() => setKind(p)}
-                className={`py-1.5 px-2 rounded text-center font-label-caps text-[10.5px] font-bold transition-all cursor-pointer border ${
+                className={`py-1.5 px-2 rounded text-center font-label-caps text-[11px] font-bold transition-all cursor-pointer border ${
                   isSelected
                     ? 'bg-primary text-surface-base border-primary shadow-xs'
                     : 'bg-surface-panel/40 border-transparent text-outline hover:text-on-surface hover:bg-surface-panel'
@@ -300,26 +300,26 @@ export function CanonicalProtocolSelector({
       {kind === 'SDI' && (
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
+            <span className="text-[11px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
               <span className="material-symbols-outlined text-primary text-[15px]">developer_board</span>
               Blackmagic DeckLink • Portas Físicas de Hardware
             </span>
             {sdiFamily?.available && (
-              <span className="text-[10px] font-label-mono text-status-ok-bright font-bold px-1.5 py-0.2 rounded bg-status-ok/15 border border-status-ok/30">
+              <span className="text-[12px] font-label-mono text-status-ok-bright font-bold px-1.5 py-0.2 rounded bg-status-ok/15 border border-status-ok/30">
                 PLUGIN DISPONÍVEL
               </span>
             )}
           </div>
 
           {/* Verificação estrita de hardware: só lista se tiver placa instalada */}
-          {sdiFamily?.reason && sdiFamily.available && sdiFamily.sources.length>0 && <p role="status" className="text-[10px] text-armed-amber">{sdiFamily.reason}</p>}
+          {sdiFamily?.reason && sdiFamily.available && sdiFamily.sources.length>0 && <p role="status" className="text-[11px] text-armed-amber">{sdiFamily.reason}</p>}
           {!useManualSdi && (!sdiFamily?.available || sdiFamily.sources.length === 0) ? (
             <div className="p-2.5 rounded bg-armed-amber/10 border border-armed-amber/30 text-armed-amber flex flex-col gap-1.5">
               <div className="flex items-center gap-1.5 text-xs font-bold">
                 <span className="material-symbols-outlined text-[16px]">warning</span>
                 <span>{isLoadingSources ? 'Consultando DeckLink no servidor' : 'Nenhuma porta DeckLink enumerada nesta direção'}</span>
               </div>
-              <p className="text-[10px] text-on-surface-variant font-label-mono">
+              <p className="text-[12px] text-on-surface-variant font-label-mono">
                 {sdiFamily?.reason || 'Aguardando a descoberta no servidor. A ausência de portas na lista não confirma ausência da placa.'}
               </p>
               <button
@@ -346,7 +346,7 @@ export function CanonicalProtocolSelector({
                 <button
                   type="button"
                   onClick={() => setUseManualSdi(false)}
-                  className="px-2 py-1 bg-surface-container rounded text-outline hover:text-on-surface text-[10px] font-label-caps cursor-pointer"
+                  className="px-2 py-1 bg-surface-container rounded text-outline hover:text-on-surface text-[11px] font-label-caps cursor-pointer"
                 >
                   Voltar
                 </button>
@@ -380,16 +380,16 @@ export function CanonicalProtocolSelector({
       {kind === 'NDI' && (
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
+            <span className="text-[11px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
               <span className="material-symbols-outlined text-primary text-[15px]">sensors</span>
               NDI • Fontes de Rede
             </span>
-            <span className="text-[10px] font-label-mono text-accent-ice font-bold">
+            <span className="text-[12px] font-label-mono text-accent-ice font-bold">
               Descoberta no servidor
             </span>
           </div>
 
-          {mode==='INPUT' && sources?.ndi.reason && <p role="status" className="text-[10px] text-armed-amber">{sources.ndi.reason}</p>}
+          {mode==='INPUT' && sources?.ndi.reason && <p role="status" className="text-[11px] text-armed-amber">{sources.ndi.reason}</p>}
           {mode === 'INPUT' ? (
             sources && sources.ndi.sources.length > 0 && !useManualNdi ? (
               <div className="flex flex-col gap-1">
@@ -418,7 +418,7 @@ export function CanonicalProtocolSelector({
               </div>
             ) : (
               <div className="flex flex-col gap-1.5">
-                <div className="p-2 rounded bg-surface-base border border-border-subtle text-[10px] text-outline flex items-center gap-1.5">
+                <div className="p-2 rounded bg-surface-base border border-border-subtle text-[11px] text-outline flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[15px] text-armed-amber">info</span>
                   <span>
                     Nenhuma fonte NDI listada nesta consulta. Isso não confirma ausência de sinal; informe o nome ou revise a descoberta no servidor:
@@ -448,7 +448,7 @@ export function CanonicalProtocolSelector({
                 placeholder="RPLAYOUT_PGM_MASTER"
                 className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
               />
-              <span className="text-[10px] text-outline">
+              <span className="text-[11px] text-outline">
                 Será anunciada automaticamente como fonte NDI para outros switchers (TriCaster, vMix, OBS).
               </span>
             </div>
@@ -460,11 +460,11 @@ export function CanonicalProtocolSelector({
       {kind === 'SRT' && (
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
+            <span className="text-[11px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
               <span className="material-symbols-outlined text-purple-400 text-[15px]">lock</span>
               Secure Reliable Transport (SRT) • Conexão Ponto a Ponto
             </span>
-            <span className="text-[10px] font-label-mono text-purple-400 font-bold">
+            <span className="text-[12px] font-label-mono text-purple-400 font-bold">
               ARQ + AES-256
             </span>
           </div>
@@ -540,7 +540,7 @@ export function CanonicalProtocolSelector({
                 <button
                   type="button"
                   onClick={() => setShowSrtPassphrase(!showSrtPassphrase)}
-                  className="text-outline hover:text-on-surface text-[10px] cursor-pointer"
+                  className="text-outline hover:text-on-surface text-[11px] cursor-pointer"
                 >
                   {showSrtPassphrase ? 'ocultar' : 'ver'}
                 </button>
@@ -561,11 +561,11 @@ export function CanonicalProtocolSelector({
       {kind === 'RTMP' && (
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
+            <span className="text-[11px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
               <span className="material-symbols-outlined text-red-400 text-[15px]">live_tv</span>
               RTMP / CDN Ingest • YouTube, Twitch, Facebook Live
             </span>
-            <span className="text-[10px] font-label-mono text-red-400 font-bold">
+            <span className="text-[12px] font-label-mono text-red-400 font-bold">
               Porta Padrão 1935
             </span>
           </div>
@@ -609,7 +609,7 @@ export function CanonicalProtocolSelector({
                 <button
                   type="button"
                   onClick={() => setShowRtmpKey(!showRtmpKey)}
-                  className="text-outline hover:text-on-surface text-[10px] cursor-pointer"
+                  className="text-outline hover:text-on-surface text-[11px] cursor-pointer"
                 >
                   {showRtmpKey ? 'ocultar' : 'ver'}
                 </button>
@@ -645,7 +645,7 @@ export function CanonicalProtocolSelector({
       {/* 5. PROTOCOLO ARQUIVO (OUTPUT) */}
       {kind === 'FILE' && (
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
-          <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
+          <span className="text-[11px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
             <span className="material-symbols-outlined text-primary text-[15px]">save</span>
             Gravação Contínua em Disco (Matroska / MKV)
           </span>
@@ -670,7 +670,7 @@ export function CanonicalProtocolSelector({
       {/* 6. OPEN MEDIA TRANSPORT — descoberta por nome, sem IP manual. */}
       {kind === 'OMT' && (
         <div className="p-3 bg-surface-panel/60 rounded-lg border border-border-subtle flex flex-col gap-2.5">
-          <span className="text-[10px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
+          <span className="text-[11px] font-label-caps text-on-surface font-bold flex items-center gap-1.5">
             <span className="material-symbols-outlined text-accent-ice text-[15px]">lan</span>
             OMT • Open Media Transport
           </span>
@@ -694,12 +694,12 @@ export function CanonicalProtocolSelector({
                   <span className="material-symbols-outlined text-[16px]">refresh</span>
                 </button>
               </div>
-              <div className="rounded border border-border-subtle bg-surface-base p-2 text-[10px] text-outline leading-snug">
+              <div className="rounded border border-border-subtle bg-surface-base p-2 text-[11px] text-outline leading-snug">
                 {sources?.omt.sources.length
                   ? 'Selecione uma fonte descoberta ou cadastrada. Cadastro não confirma anúncio DNS-SD nem sinal. OMT usa nomes de fontes, sem endereço IP manual.'
                   : (sources?.omt.reason ?? 'Escaneando DNS-SD OMT (_omt._tcp.local)…')}
               </div>
-              {sources?.omt.sources.length && sources.omt.reason ? <p role="status" className="text-[10px] text-armed-amber">{sources.omt.reason}</p>:null}
+              {sources?.omt.sources.length && sources.omt.reason ? <p role="status" className="text-[11px] text-armed-amber">{sources.omt.reason}</p>:null}
             </div>
           ) : (
             <div className="flex flex-col gap-1">
@@ -711,7 +711,7 @@ export function CanonicalProtocolSelector({
                 placeholder="RPLAYOUT_PGM"
                 className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
               />
-              <div className="rounded border border-warning/40 bg-warning/5 p-2 text-[10px] text-outline leading-snug">
+              <div className="rounded border border-warning/40 bg-warning/5 p-2 text-[11px] text-outline leading-snug">
                 O engine publica vídeo e áudio pelo runtime OMT nativo incluído no pacote. O nome será anunciado na rede; a entrega é confirmada quando um receptor receber o sinal.
               </div>
             </div>
@@ -721,7 +721,7 @@ export function CanonicalProtocolSelector({
 
       {/* URI Broadcast Canônico Calculado */}
       {kind==='NDI' && <NdiAttribution/>}
-      <div className="p-2 rounded bg-surface-base border border-border-subtle/80 flex items-center justify-between text-[10px] font-label-mono">
+      <div className="p-2 rounded bg-surface-base border border-border-subtle/80 flex items-center justify-between text-[12px] font-label-mono">
         <span className="text-outline">URI Canônico:</span>
         <span
           className="text-on-surface font-semibold truncate max-w-xs sm:max-w-md select-all text-right cursor-copy"

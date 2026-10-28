@@ -48,7 +48,7 @@ export function SharedMultiview({channelId,sources,loading=false,onWatchingBus}:
   }
   return <div className="flex h-full min-h-0 flex-col gap-2">
     <div className="shrink-0 rounded border border-border-subtle bg-surface-panel px-3 py-2">
-      <div className="flex items-center gap-2"><button type="button" disabled={busy||blocked||!review} onClick={()=>void save()} className="btn">Salvar layout no canal</button><button type="button" disabled={busy} onClick={()=>void reopen()} className="btn">Reabrir conferência</button><span className="text-[10px] text-outline">Tally e sinal vêm do engine, não da configuração salva.</span></div>
+      <div className="flex items-center gap-2"><button type="button" disabled={busy||blocked||!review} onClick={()=>void save()} className="btn">Salvar layout no canal</button><button type="button" disabled={busy} onClick={()=>void reopen()} className="btn">Reabrir conferência</button><span className="text-[11px] text-outline">Tally e sinal vêm do engine, não da configuração salva.</span></div>
       <p role={blocked?'alert':'status'} className="mt-1 text-[11px] text-outline">{message}</p>
     </div>
     <div className="min-h-0 flex-1"><OperationalMultiview sources={sources} loading={loading} selectedLayout={layout} layoutDisabled={busy||!review} onLayoutChange={value=>{if(!pending.current&&review){dirty.current=true;setLayout(value)}}} onWatchingBus={onWatchingBus}/></div>

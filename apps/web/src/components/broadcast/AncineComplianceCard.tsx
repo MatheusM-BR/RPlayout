@@ -8,7 +8,7 @@ export function AncineComplianceCard({ entries, className = '' }: Props) {
   return <section className={`bg-surface-card rounded-xl border border-border-subtle p-3.5 flex flex-col gap-3 ${className}`}>
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h3 className="font-headline-md text-[13px] font-bold text-on-surface">Classificação dos registros · conferência regulatória</h3>
-      <span className="text-[10px] text-armed-amber">NÃO HOMOLOGADA</span>
+      <span className="text-[11px] text-armed-amber">NÃO HOMOLOGADA</span>
     </div>
     <p className="text-[11px] text-outline">O registro do engine não comprova transmissão física, origem nacional ou validade de certificado CPB/CRT. Não há aprovação regulatória automática.</p>
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">

@@ -157,7 +157,7 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
                   <td className="py-2 px-space-sm text-outline truncate max-w-[120px]" title={entry.itemId ?? '—'}>
                     {entry.itemId ?? '—'}
                   </td>
-                  <td className="py-2 px-space-sm text-[11px] text-on-surface-variant truncate max-w-md font-mono" title={auditDetails(entry.kind,entry.payload)}>
+                  <td className="py-2 px-space-sm text-[12px] text-on-surface-variant truncate max-w-md font-mono" title={auditDetails(entry.kind,entry.payload)}>
                     {auditDetails(entry.kind,entry.payload)}
                   </td>
                 </tr>

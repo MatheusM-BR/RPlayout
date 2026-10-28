@@ -25,13 +25,10 @@ import { LiveReplacementControl } from '../components/LiveReplacementControl.js'
 import { Whep } from '../components/Whep.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { BroadcastMonitor } from '../components/broadcast/BroadcastMonitor.js'
-import { ContinuityCacheBadge } from '../components/broadcast/ContinuityCacheBadge.js'
 import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
 import { InterruptedItemsBanner } from '../components/broadcast/InterruptedItemsBanner.js'
-import {OperationalInsertionPanel} from '../components/broadcast/OperationalInsertionPanel.js'
-import { NextPlaylistPanel } from '../components/broadcast/NextPlaylistPanel.js'
-import { DynamicCgSecondaryBar } from '../components/broadcast/DynamicCgSecondaryBar.js'
-import { OverlaysPanel } from '../components/broadcast/OverlaysPanel.js'
+import { MasterToolsPanel } from '../components/broadcast/MasterToolsPanel.js'
+import { useStoredChoice } from '../domain/stored-choice.js'
 import { MultiTrackTimeline } from '../components/broadcast/MultiTrackTimeline.js'
 import { ConflictDrawer } from '../components/broadcast/ConflictDrawer.js'
 import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
@@ -108,6 +105,22 @@ const getItemDuration = (item: ItemView | null | undefined): number => {
  * field (0 for every probed file), so the MAM list showed 00:00 for all. */
 export function libraryFrames(asset:{durationNs?:number|null;durationFrames:number},rate:{num:number;den:number}):number{
   return durationIn({durationNs:asset.durationNs??null,durationFrames:asset.durationFrames},rate)
+}
+
+/** U4: a mesma origem cadastrada por vários protocolos (ex.: saída do vMix em
+ * OMT, NDI e SRT) vira uma linha com um selo por entrada. */
+export function groupLiveVariants<T extends { id: string; title: string }>(assets: readonly T[]): Array<{ asset: T; variants: T[] }> {
+  const groups: Array<{ asset: T; variants: T[] }> = []
+  const byTitle = new Map<string, { asset: T; variants: T[] }>()
+  for (const asset of assets) {
+    const live = 'isLiveSource' in asset && Boolean((asset as { isLiveSource?: boolean }).isLiveSource)
+    if (!live) { groups.push({ asset, variants: [asset] }); continue }
+    const key = asset.title.trim().toLowerCase()
+    const group = byTitle.get(key)
+    if (group) group.variants.push(asset)
+    else { const created = { asset, variants: [asset] }; byTitle.set(key, created); groups.push(created) }
+  }
+  return groups
 }
 
 /** Why TAKE is unavailable, shown next to the button instead of a silent no-op. */
@@ -524,6 +537,10 @@ export function MasterControlView({
     return view.items.findIndex((item) => item.item.id === cueItem.item.id)
   }, [cueItem, view.items])
 
+  // Biblioteca recolhível ao lado da grade (U1); a escolha fica nesta estação.
+  const [mamPanel, setMamPanel] = useStoredChoice<'open' | 'closed'>('rplayout.master.mam', ['open', 'closed'], 'open')
+  const mamOpen = mamPanel === 'open'
+
   // Seleção direta de preview (via MAM ou grade)
   const [selectedPreviewAsset, setSelectedPreviewAsset] = useState<LibraryAsset | null>(null)
 
@@ -652,6 +669,17 @@ export function MasterControlView({
     if (ms < 15_000) setLastTake({ ms: Math.round(ms), at: new Date() })
   }, [onAirKey])
 
+  // TAKE pelo Espaço (tratado no App) também conta para a medição.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const element = event.target as HTMLElement | null
+      if (event.code !== 'Space' || event.repeat || element?.matches('input, select, textarea') || element?.isContentEditable) return
+      if (live.transport.preview && !publicationRequired) takeClickRef.current = { at: performance.now(), from: onAirKey }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [live.transport.preview, publicationRequired, onAirKey])
+
   const handleTake = () => {
     if (publicationRequired || !live.transport.preview) return
     takeClickRef.current = { at: performance.now(), from: onAirKey }
@@ -683,7 +711,7 @@ export function MasterControlView({
   const gridContainerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!followOnAir || onAirIndex < 0 || !gridContainerRef.current) return
-    const rowHeight = 48
+    const rowHeight = 40
     const targetScroll = Math.max(0, (onAirIndex - 2) * rowHeight)
     gridContainerRef.current.scrollTo({
       top: targetScroll,
@@ -847,994 +875,989 @@ export function MasterControlView({
         onOpenLiveInput={onOpenLiveInput}
       />
 
-      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto broadcast-scroll">
+      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-hidden">
         {publicationRequired && <div role="alert" className="px-margin py-3 bg-amber-500/10 text-amber-400">A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.</div>}
-        {/* 1.1 WATCHDOG & SONDA DE PGM / SLATE DE EMERGÊNCIA (FASE C) */}
-        <div className="w-full px-margin pt-2 pb-1 shrink-0">
-          <PgmProbeBanner channelId={channel.id} />
+        {/* 1.1 FAIXA DE STATUS DE ALTURA FIXA (U5): sonda + itens interrompidos */}
+        <div className="w-full px-margin pt-2 pb-1 shrink-0 flex flex-col gap-1">
+          <PgmProbeBanner channelId={channel.id} showContingency={false} />
           <InterruptedItemsBanner channelId={channel.id} rate={channel.rate} />
-          {/* Lado a lado: cada painel recolhido ocupa uma linha só, e a grade sobe. */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-1.5 items-start">
-            <NextPlaylistPanel channelId={channel.id} />
-            <OperationalInsertionPanel channelId={channel.id} rate={channel.rate} assets={allAssets}/>
-          </div>
         </div>
 
-        {/* 2. TOP OPERATIONAL STRIP (Compact Switcher & Monitors for Variante 2 - 4 Colunas) */}
-        <section className="w-full bg-surface-card px-margin py-space-sm border-b border-border-subtle shrink-0">
-          <div className="max-w-full mx-auto grid grid-cols-1 xl:grid-cols-12 gap-space-md items-stretch">
-            {/* COLUNA 1: CARD NO AR [PGM] */}
-            <div className="xl:col-span-3 flex flex-col gap-space-md justify-between">
-              <div className="bg-surface-panel/80 border border-border-subtle p-space-md rounded-xl flex flex-col justify-between shadow-md relative overflow-hidden backdrop-blur-sm h-full">
-                <div className="flex flex-col gap-1.5">
-                  <div className="flex items-center justify-between flex-wrap gap-1.5 pb-1 border-b border-border-subtle/50">
-                    <div className="flex items-center gap-1.5">
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[10px] font-bold tracking-wider">
-                        <span className={`w-1.5 h-1.5 rounded-full ${live?.transport.onAir && live.transport.playing ? 'bg-on-air-crimson animate-pulse' : 'bg-outline'}`}></span> {live?.transport.onAir ? live.transport.playing ? 'NO AR' : 'PGM PAUSADO' : 'SEM ITEM NO PGM'}
-                      </span>
-                      <span className="font-label-mono text-[10px] text-outline">
-                        {formatStandardRate(channel.rate, channel.scan, channel.height)} • {onAirItem?.item.type === 'LIVE' ? 'AO VIVO' : onAirItem?.asset?.kind ?? 'SEM ITEM'}
-                      </span>
+        {/* 2. MASTER EM 3 FAIXAS (U1): esquerda = faixa do ar + grade alta; direita = PGM/PVW + ferramentas */}
+        <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_500px] gap-space-md px-margin pb-2">
+          <div className="min-h-0 min-w-0 flex flex-col gap-space-sm">
+            {/* 2a. FAIXA DO AR: NO AR · TAKE/CUE · PRÓXIMO */}
+            <section className="shrink-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-space-sm items-stretch">
+              <div className="flex flex-col min-w-0">
+                <div className="bg-surface-panel/80 border border-border-subtle p-space-md rounded-xl flex flex-col justify-between shadow-md relative overflow-hidden backdrop-blur-sm h-full">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between flex-wrap gap-1.5 pb-1 border-b border-border-subtle/50">
+                      <div className="flex items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[11px] font-bold tracking-wider">
+                          <span className={`w-1.5 h-1.5 rounded-full ${live?.transport.onAir && live.transport.playing ? 'bg-on-air-crimson animate-pulse' : 'bg-outline'}`}></span> {live?.transport.onAir ? live.transport.playing ? 'NO AR' : 'PGM PAUSADO' : 'SEM ITEM NO PGM'}
+                        </span>
+                        <span className="font-label-mono text-[12px] text-outline">
+                          {formatStandardRate(channel.rate, channel.scan, channel.height)} • {onAirItem?.item.type === 'LIVE' ? 'AO VIVO' : onAirItem?.asset?.kind ?? 'SEM ITEM'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-start justify-between gap-2 pt-0.5">
+                      <h3 className="font-headline-md text-[17px] text-on-surface font-semibold tracking-wide leading-tight truncate" title={itemDisplayTitle(onAirItem,'Nenhum item em reprodução')}>
+                        {itemDisplayTitle(onAirItem,'Nenhum item em reprodução')}
+                      </h3>
                     </div>
                   </div>
-                  <div className="flex items-start justify-between gap-2 pt-0.5">
-                    <h3 className="font-headline-md text-[17px] text-on-surface font-semibold tracking-wide leading-tight truncate" title={itemDisplayTitle(onAirItem,'Nenhum item em reprodução')}>
-                      {itemDisplayTitle(onAirItem,'Nenhum item em reprodução')}
-                    </h3>
-                  </div>
-                </div>
-                <div className="my-1 text-center">
-                  <div className={`font-label-caps text-label-caps uppercase tracking-wider mb-0.5 ${overrunFrames > 0 ? 'text-armed-amber' : 'text-outline'}`}>{overrunFrames > 0 ? 'EXCEDIDO' : 'TEMPO RESTANTE'}</div>
-                  <div className={`font-timecode-display text-[26px] font-bold tabular-nums leading-none tracking-wider ${overrunFrames > 0 ? 'text-armed-amber' : 'text-on-air-crimson drop-shadow-[0_0_8px_rgba(255,59,48,0.45)]'}`} id="onair-countdown">
-                    {onAirItem ? (overrunFrames > 0 ? `+${dur(overrunFrames, rate)}` : dur(remainingFrames, rate)) : '00:00:00:00'}
-                  </div>
-                  {overrunFrames > 0 && <div className="text-[11px] text-armed-amber mt-0.5">previsto {dur(onAirDurationFrames, rate)}</div>}
-                  <div className="font-label-mono text-label-mono text-outline mt-1">
-                    TC {onAirItem ? dur(elapsedFrames, rate) : '00:00:00:00'}
-                  </div>
-                  {onAirItem?.item.type === 'LIVE' && <div className="mt-2 border-t border-border-subtle pt-2">
-                    <div className="text-[10px] text-outline mb-1">AJUSTAR ESTIMATIVA DO AO VIVO</div>
-                    <div className="flex flex-wrap justify-center gap-1">
-                      {[-60, -30, -5, 5, 30, 60].map(seconds => <button key={seconds} disabled={adjustingLive||Boolean(pendingLiveAdjustment)} className="px-2 py-1 rounded border border-border-subtle text-[10px] hover:border-primary disabled:opacity-40" onClick={() => {
-                        if(liveAdjustmentLock.current)return
-                        liveAdjustmentLock.current=true
-                        setAdjustingLive(true)
-                        const input={itemId:onAirItem.item.id,expectedFrames:onAirItem.item.liveConfig?.estimatedDuration??onAirItem.item.liveEstimatedDuration??onAirItem.item.durationOverride??0,deltaSeconds:seconds}
-                        void api.reviewLiveDuration(channel.id,input).then(review=>{
-                          const operation={channelId:channel.id,body:{input:review.input,reviewToken:review.reviewToken,requestId:commandRequestId()}}
-                          setPendingLiveAdjustment(operation);return submitLiveAdjustment(operation)
-                        }).catch(error=>{setLiveTimingMessage(error instanceof Error?error.message:'Não foi possível conferir o ajuste.');liveAdjustmentLock.current=false;setAdjustingLive(false)})
-                      }}>{seconds > 0 ? '+' : ''}{seconds}s</button>)}
+                  <div className="my-1 text-center">
+                    <div className={`font-label-caps text-label-caps uppercase tracking-wider mb-0.5 ${overrunFrames > 0 ? 'text-armed-amber' : 'text-outline'}`}>{overrunFrames > 0 ? 'EXCEDIDO' : 'TEMPO RESTANTE'}</div>
+                    <div className={`font-timecode-display text-[26px] font-bold tabular-nums leading-none tracking-wider ${overrunFrames > 0 ? 'text-armed-amber' : 'text-on-air-crimson drop-shadow-[0_0_8px_rgba(255,59,48,0.45)]'}`} id="onair-countdown">
+                      {onAirItem ? (overrunFrames > 0 ? `+${dur(overrunFrames, rate)}` : dur(remainingFrames, rate)) : '00:00:00:00'}
                     </div>
-                    {pendingLiveAdjustment&&<div className="flex justify-center gap-2 mt-1">
-                      <button disabled={adjustingLive} onClick={()=>{if(liveAdjustmentLock.current)return;liveAdjustmentLock.current=true;setAdjustingLive(true);void submitLiveAdjustment(pendingLiveAdjustment)}}>Conferir solicitação</button>
-                      <button disabled={adjustingLive} onClick={()=>{setPendingLiveAdjustment(null);setLiveTimingMessage('Solicitação dispensada na tela; isso não desfaz um ajuste já gravado. Confira a duração antes de outro ajuste.')}}>Dispensar aviso</button>
+                    {overrunFrames > 0 && <div className="text-[11px] text-armed-amber mt-0.5">previsto {dur(onAirDurationFrames, rate)}</div>}
+                    <div className="font-label-mono text-label-mono text-outline mt-1">
+                      TC {onAirItem ? dur(elapsedFrames, rate) : '00:00:00:00'}
+                    </div>
+                    {onAirItem?.item.type === 'LIVE' && <div className="mt-2 border-t border-border-subtle pt-2">
+                      <div className="text-[11px] text-outline mb-1">AJUSTAR ESTIMATIVA DO AO VIVO</div>
+                      <div className="flex flex-wrap justify-center gap-1">
+                        {[-60, -30, -5, 5, 30, 60].map(seconds => <button key={seconds} disabled={adjustingLive||Boolean(pendingLiveAdjustment)} className="px-2 py-1 rounded border border-border-subtle text-[11px] hover:border-primary disabled:opacity-40" onClick={() => {
+                          if(liveAdjustmentLock.current)return
+                          liveAdjustmentLock.current=true
+                          setAdjustingLive(true)
+                          const input={itemId:onAirItem.item.id,expectedFrames:onAirItem.item.liveConfig?.estimatedDuration??onAirItem.item.liveEstimatedDuration??onAirItem.item.durationOverride??0,deltaSeconds:seconds}
+                          void api.reviewLiveDuration(channel.id,input).then(review=>{
+                            const operation={channelId:channel.id,body:{input:review.input,reviewToken:review.reviewToken,requestId:commandRequestId()}}
+                            setPendingLiveAdjustment(operation);return submitLiveAdjustment(operation)
+                          }).catch(error=>{setLiveTimingMessage(error instanceof Error?error.message:'Não foi possível conferir o ajuste.');liveAdjustmentLock.current=false;setAdjustingLive(false)})
+                        }}>{seconds > 0 ? '+' : ''}{seconds}s</button>)}
+                      </div>
+                      {pendingLiveAdjustment&&<div className="flex justify-center gap-2 mt-1">
+                        <button disabled={adjustingLive} onClick={()=>{if(liveAdjustmentLock.current)return;liveAdjustmentLock.current=true;setAdjustingLive(true);void submitLiveAdjustment(pendingLiveAdjustment)}}>Conferir solicitação</button>
+                        <button disabled={adjustingLive} onClick={()=>{setPendingLiveAdjustment(null);setLiveTimingMessage('Solicitação dispensada na tela; isso não desfaz um ajuste já gravado. Confira a duração antes de outro ajuste.')}}>Dispensar aviso</button>
+                      </div>}
+                      <div className="text-[11px] text-outline mt-1">{onAirItem.item.liveConfig?.autoFollowOnEnd ?? onAirItem.item.liveAutoFollowOnEnd ? 'Saída automática ao fim da duração configurada.' : 'Saída manual: a estimativa não dispara TAKE.'}</div>
+                      {liveTimingMessage && <div role="status" className="text-[11px] text-primary mt-1">{liveTimingMessage}</div>}
+                      <LiveReplacementControl channelId={channel.id} info={live.liveReplacement??null} sources={sourceListReview?.sources??[]} />
                     </div>}
-                    <div className="text-[10px] text-outline mt-1">{onAirItem.item.liveConfig?.autoFollowOnEnd ?? onAirItem.item.liveAutoFollowOnEnd ? 'Saída automática ao fim da duração configurada.' : 'Saída manual: a estimativa não dispara TAKE.'}</div>
-                    {liveTimingMessage && <div role="status" className="text-[10px] text-primary mt-1">{liveTimingMessage}</div>}
-                    <LiveReplacementControl channelId={channel.id} info={live.liveReplacement??null} sources={sourceListReview?.sources??[]} />
-                  </div>}
-                </div>
-                <div>
-                  <div className="w-full bg-surface-container-lowest h-2 rounded-full overflow-hidden flex">
-                    <div
-                      className={`${overrunFrames > 0 ? 'bg-armed-amber' : 'bg-on-air-crimson'} h-full rounded-full transition-all duration-300`}
-                      style={{ width: `${progressPercent}%` }}
-                    ></div>
                   </div>
-                  <div className="flex justify-between items-center mt-1 font-label-mono text-label-mono text-outline">
-                    <span>Progresso do Bloco</span>
-                    <span className="text-on-surface font-medium tabular-nums">{progressPercent}%</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* COLUNA 2: MONITOR PGM */}
-            <div className="xl:col-span-3 flex flex-col h-full">
-              <BroadcastMonitor
-                bus="pgm"
-                className="w-full h-full"
-                title="PGM • Monitor Principal"
-                badgeText="NO AR"
-                webrtcPath={monitors?.program ?? null}
-                port={monitors?.port ?? 8889}
-                asset={onAirItem?.asset ?? null}
-                rate={channel.rate}
-                scan={channel.scan}
-                height={channel.height}
-                positionFrames={elapsedFrames}
-                durationFrames={onAirDurationFrames}
-                isPlaying={live.transport.playing}
-                isAudioMonitored={activeAudioBus === 'pgm'}
-                onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pgm' ? null : 'pgm'))}
-                onSeek={(frames) => onSeek('pgm', frames)}
-                onWatching={(_bus, watching) => { void api.setWatching(channel.id, 'mon', watching).catch(() => {}) }}
-              />
-            </div>
-
-            {/* COLUNA 3: MONITOR PVW */}
-            <div className="xl:col-span-3 flex flex-col h-full">
-              <BroadcastMonitor
-                bus="pvw"
-                className="w-full h-full"
-                title="PVW • CUE Selecionado"
-                badgeText={selectedPreviewAsset ? 'MAM CUED' : 'CUED'}
-                webrtcPath={monitors?.preview ?? null}
-                port={monitors?.port ?? 8889}
-                asset={activePreviewAsset}
-                rate={channel.rate}
-                scan={channel.scan}
-                height={channel.height}
-                positionFrames={live.transport.previewPosition?.frames ?? 0}
-                durationFrames={activePreviewDuration}
-                autoRemainingFrames={remainingFrames}
-                isPlaying={false}
-                isAudioMonitored={activeAudioBus === 'pvw'}
-                onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pvw' ? null : 'pvw'))}
-                onSeek={(frames) => onSeek('pvw', frames)}
-                onWatching={(bus, watching) => {
-                  void api.setWatching(channel.id, 'pvw', watching).catch(() => {})
-                }}
-              />
-              <button
-                type="button"
-                disabled={publicationRequired || !live.transport.preview}
-                onClick={() => { setSelectedPreviewAsset(null); onClearCue() }}
-                title="Limpar somente o CUE/PVW; conserva o PGM e permite selecionar outra grade com o canal parado"
-                className="mt-1 rounded border border-border-subtle px-2 py-1 text-[10px] text-on-surface-variant hover:text-on-surface disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                LIMPAR CUE / PVW
-              </button>
-              {live.transport.preview&&<PreviewFrameStatus sample={live.transport.previewFrame}/>}
-            </div>
-
-            {/* COLUNA 4: PAINEL TÁTICO + CARD PRÓXIMO [PVW] */}
-            <div className="xl:col-span-3 flex flex-col gap-space-md justify-between">
-              {/* Card Superior: Painel Tático */}
-              <div className="bg-surface-panel/90 border border-border-strong p-space-md rounded-xl flex flex-col justify-between shadow-lg relative overflow-hidden backdrop-blur-md">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-label-caps text-[10px] text-outline uppercase">Transição</span>
-                    <div className="inline-flex rounded-lg bg-surface-container-lowest p-0.5 border border-border-subtle">
-                      {(['CUT', 'MIX', 'WIPE'] as const).map((mode) => (
-                        <button
-                          key={mode}
-                          onClick={() => setTransitionMode(mode)}
-                          className={`px-1.5 py-0.5 rounded font-label-mono text-[10px] transition-colors cursor-pointer ${
-                            transitionMode === mode
-                              ? 'bg-primary-container text-on-primary-container font-semibold'
-                              : 'text-on-surface-variant hover:text-on-surface'
-                          }`}
-                        >
-                          {mode}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setIsLocked(!isLocked)}
-                    className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle hover:bg-surface-container-high transition-colors cursor-pointer"
-                    id="lock-toggle"
-                  >
-                    <span className={`material-symbols-outlined text-[13px] ${isLocked ? 'text-status-ok' : 'text-armed-amber'}`}>
-                      {isLocked ? 'lock' : 'lock_open'}
-                    </span>
-                    <span className={`font-label-caps text-[10px] font-semibold ${isLocked ? 'text-status-ok' : 'text-armed-amber'}`}>
-                      {isLocked ? 'TRAVADO' : 'PGM LIVRE'}
-                    </span>
-                  </button>
-                </div>
-
-                {takeReason&&<div role="status" className="text-[10px] text-armed-amber text-center">{takeReason}</div>}
-                {!takeReason&&takeLive&&<div role="status" className="text-[10px] text-accent-ice text-center">Ao vivo fora da grade: o TAKE insere “{takeLive.title}” logo após o item no ar e coloca no ar.</div>}
-                <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
-                  <button
-                    onClick={handleTake}
-                    className="col-span-6 h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-                    id="btn-take"
-                    disabled={takeReason!==null}
-                    title={takeReason??'Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE'}
-                  >
-                    <span className="material-symbols-outlined text-[18px]">play_arrow</span>
-                    <span>TAKE</span>
-                    <span className="bg-surface-base/20 px-1 py-0.2 rounded font-label-mono text-[10px] text-surface-base font-semibold">ESPAÇO</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      const selected = selectedItemIds.size === 1
-                        ? view.items.find((item) => selectedItemIds.has(item.item.id)) ?? null
-                        : null
-                      const target = selected ?? armedItem
-                      if (target && !publicationRequired) onCue(target.item.id)
-                    }}
-                    className="col-span-4 h-12 bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer"
-                    title="Abre em CUE no PVW o item selecionado; sem seleção, abre o Próximo (F2)"
-                  >
-                    <div className="flex items-center gap-0.5">
-                      <span className="material-symbols-outlined text-[14px]">skip_next</span>
-                      <span>CUE</span>
-                    </div>
-                    <span className="font-label-mono text-[10px] text-surface-base/80 font-medium">F2</span>
-                  </button>
-
-                  <button
-                    onClick={handleArmAbort}
-                    className={`col-span-2 h-12 rounded-lg border border-border-subtle flex flex-col items-center justify-center transition-all cursor-pointer ${
-                      abortArmed
-                        ? 'bg-on-air-crimson text-white animate-pulse border-on-air-glow'
-                        : 'bg-surface-container hover:bg-error-container text-outline hover:text-on-error-container'
-                    }`}
-                    title={abortArmed ? 'CLIQUE PARA CONFIRMAR PARADA IMEDIATA' : 'Parada de emergência com trava de segurança (ABORT)'}
-                  >
-                    <span className="material-symbols-outlined text-[15px]">stop</span>
-                    <span className="font-label-mono text-[10px] uppercase font-bold">
-                      {abortArmed ? `${abortCountdown}s` : 'ABORT'}
-                    </span>
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between font-label-mono text-[10px] text-outline pt-0.5 border-t border-border-subtle/40">
-                  <span className="inline-flex items-center gap-1 text-on-surface-variant" title="Sem placa SDI/genlock: o engine marca o tempo pelo relógio do Windows. Com DeckLink, a referência passa a ser a da placa.">
-                    REFERÊNCIA: RELÓGIO DO SISTEMA
-                  </span>
-                  <span title="Do clique no TAKE até o servidor confirmar o novo item no ar. Não inclui a latência da saída (RTMP/SRT/NDI).">
-                    {lastTake ? `ÚLTIMO TAKE: ${lastTake.ms} ms · ${lastTake.at.toLocaleTimeString('pt-BR')}` : 'ÚLTIMO TAKE: —'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Card Inferior: PRÓXIMO [PVW] */}
-              <div className="bg-surface-panel/80 border border-border-subtle p-space-md rounded-xl flex flex-col justify-between shadow-md relative overflow-hidden">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-space-sm">
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-armed-amber/20 border border-armed-amber/40 text-armed-amber font-label-caps text-label-caps font-bold tracking-wider">
-                      {cueItem ? 'CUE [PVW]' : 'PRÓXIMO [PREP]'}
-                    </span>
-                    <span className="font-label-mono text-label-mono text-armed-amber bg-surface-container px-1.5 py-0.5 rounded">
-                      {previewKind}
-                    </span>
-                  </div>
-                  <span className={`font-label-mono text-label-mono ${previewSignalState === 'PVW_READY' || previewSignalState === 'ON_PGM' ? 'text-status-ok-bright' : previewSignalState === 'LOST' || previewSignalState === 'FAILED' ? 'text-on-air-crimson' : 'text-armed-amber'}`} title={previewSignal?.message ?? undefined}>
-                    {previewSignalState ? previewSignalLabel[previewSignalState] : cueItem ? 'CUE MANUAL' : 'AUTO-PREP'}
-                  </span>
-                </div>
-
-                <div className="my-space-xs">
-                  <h3 className="font-headline-md text-[17px] text-on-surface font-semibold truncate tracking-wide" title={previewTitle}>
-                    {previewTitle}
-                  </h3>
-                  <div className="flex items-baseline justify-between mt-1">
-                    <div className="flex items-baseline gap-2">
-                      <span className="font-label-caps text-label-caps text-outline uppercase tracking-wider">Duração</span>
-                      <span className="font-timecode-display text-[24px] text-armed-amber font-bold tabular-nums leading-none tracking-wider">
-                        {dur(nextCardFrames, rate)}
-                      </span>
-                    </div>
-                    <div className="text-right">
-                      <span className="font-label-mono text-label-mono text-outline block">PREVISÃO</span>
-                      <span className="font-timecode-table text-timecode-table text-on-surface font-semibold tabular-nums">
-                        {(cueItem ?? armedItem) && scheduleMap.get((cueItem ?? armedItem)!.item.id)?.start != null
-                          ? wallClock(scheduleMap.get((cueItem ?? armedItem)!.item.id)!.start, rate, view.rundown.date)
-                          : onAirItem && scheduleMap.get(onAirItem.item.id)?.end != null
-                          ? wallClock(scheduleMap.get(onAirItem.item.id)!.end, rate, view.rundown.date)
-                          : '--:--:--:--'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-on-surface-variant font-label-mono text-label-mono pt-1.5 border-t border-border-subtle/50">
-                  <span className="text-outline">
-                    {nextCardFormat}
-                  </span>
-                  <span className="text-armed-amber font-semibold">
-                    {overrunFrames > 0 ? `ATRASADO +${dur(overrunFrames, rate)}` : `DISPARO EM ${dur(remainingFrames, rate)}`}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
- 
-        {/* 2.1 GRAFISMO: camadas fixas + SCTE e overlays 1–8 lado a lado */}
-        <div className="w-full px-margin pt-2 pb-1 shrink-0 grid grid-cols-1 2xl:grid-cols-2 gap-2 items-start">
-          <DynamicCgSecondaryBar
-            channelId={channel.id}
-          />
-          <OverlaysPanel channelId={channel.id} />
-        </div>
- 
-        {/* 3. MAIN LOWER SECTION: BIBLIOTECA MAM (ESQUERDA) & MONUMENTAL RUNDOWN (DIREITA) */}
-        <section className="w-full px-margin py-space-sm flex-1 flex flex-col min-h-[520px]">
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-gutter items-stretch flex-1">
-            {/* LEFT PANEL: BIBLIOTECA MAM (xl:col-span-3) */}
-            <div className="xl:col-span-3 bg-surface-card border border-border-subtle p-space-lg rounded-xl flex flex-col gap-space-md shadow-sm h-full">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-primary text-[20px]">folder</span>
-                  <span className="font-headline-md text-headline-md uppercase text-on-surface tracking-wide font-semibold">
-                    Biblioteca MAM
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => setFolderModalOpen(true)}
-                    className="px-2 py-0.5 rounded bg-primary/15 hover:bg-primary/30 text-primary border border-primary/40 font-label-caps text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                    title="Adicionar pastas locais ou em rede ao acervo MAM"
-                  >
-                    <span className="material-symbols-outlined text-[13px]">create_new_folder</span>
-                    + Pastas
-                  </button>
-                  <button
-                    onClick={() => { resetLiveInput(); setLiveInputModalOpen(true) }}
-                    className="px-2 py-0.5 rounded bg-accent-ice/15 hover:bg-accent-ice/30 text-accent-ice-bright border border-accent-ice/40 font-label-caps text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                    title="Adicionar fonte externa (DeckLink SDI, NDI, WebRTC, SRT) à biblioteca"
-                  >
-                    <span className="material-symbols-outlined text-[13px]">settings_input_antenna</span>
-                    + Ao Vivo
-                  </button>
-                  <span className="font-label-mono text-label-mono text-outline">
-                    {libraryLoaded ? `${allAssetsWithLive.length} ITENS` : 'ACERVO NÃO CONFERIDO'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Barra de Busca MAM */}
-              <div className="relative">
-                <span className="material-symbols-outlined absolute left-2.5 top-2.5 text-outline text-[16px]">
-                  search
-                </span>
-                <input
-                  value={mamSearch}
-                  onChange={(e) => setMamSearch(e.target.value)}
-                  className="w-full bg-surface-container-lowest text-on-surface font-body-sm text-body-sm pl-8 pr-space-md py-2 rounded-lg border border-border-subtle placeholder-outline focus:outline-none focus:border-primary transition-colors"
-                  placeholder="Buscar clipes ou matérias..."
-                  type="text"
-                />
-              </div>
-
-              {/* Filtros em Pílulas */}
-              <div className="flex gap-1.5 pb-1">
-                {(['TODOS', 'VT', 'AO VIVO'] as const).map((tag) => (
-                  <button
-                    key={tag}
-                    onClick={() => setSelectedTag(tag)}
-                    className={`px-2.5 py-1 rounded-full font-label-caps text-label-caps transition-colors cursor-pointer ${
-                      selectedTag === tag
-                        ? 'bg-primary-container text-on-primary-container font-semibold'
-                        : 'bg-surface-panel hover:bg-surface-container text-on-surface-variant'
-                    }`}
-                  >
-                    {tag}
-                  </button>
-                ))}
-              </div>
-
-              {/* Lista de Clipes com Drag & Drop */}
-              <div className="flex flex-col gap-2 max-h-[460px] overflow-y-auto pr-1.5 flex-1 broadcast-scroll">
-                {filteredAssets.length === 0 ? (
-                  <div className="p-4 text-center text-outline font-body-sm">
-                    {libraryLoaded ? 'Nenhuma mídia encontrada no filtro.' : 'Acervo ainda não conferido. A ausência de resultados não confirma acervo vazio.'}
-                  </div>
-                ) : (
-                  filteredAssets.map((asset) => {
-                    const isLive = 'isLiveSource' in asset && (asset as any).isLiveSource
-                    return (
+                  <div>
+                    <div className="w-full bg-surface-container-lowest h-2 rounded-full overflow-hidden flex">
                       <div
-                        key={asset.id}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, asset)}
-                        onClick={() => handleMamPreview(asset)}
-                        className={`px-2 h-7 rounded border cursor-grab active:cursor-grabbing flex items-center justify-between gap-2 transition-colors group relative ${
-                          selectedPreviewAsset?.id === asset.id
-                            ? 'bg-armed-amber/15 border-armed-amber/50 shadow-sm'
-                            : isLive
-                            ? 'bg-accent-ice/5 hover:bg-accent-ice/10 border-accent-ice/30'
-                            : 'bg-surface-panel hover:bg-surface-container border-border-subtle'
-                        }`}
-                        title={
-                          isLive
-                            ? 'Fonte Externa Ao Vivo: Arraste para a grade ou clique + para adicionar'
-                            : `${asset.title} • Clique para carregar e rodar preview no PVW`
-                        }
-                      >
-                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                          <span
-                            className={`material-symbols-outlined text-[15px] shrink-0 ${
-                              isLive ? 'text-accent-ice' : 'text-outline'
+                        className={`${overrunFrames > 0 ? 'bg-armed-amber' : 'bg-on-air-crimson'} h-full rounded-full transition-all duration-300`}
+                        style={{ width: `${progressPercent}%` }}
+                      ></div>
+                    </div>
+                    <div className="flex justify-between items-center mt-1 font-label-mono text-label-mono text-outline">
+                      <span>Progresso do Bloco</span>
+                      <span className="text-on-surface font-medium tabular-nums">{progressPercent}%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col min-w-0">
+                <div className="h-full bg-surface-panel/90 border border-border-strong p-space-md rounded-xl flex flex-col justify-between shadow-lg relative overflow-hidden backdrop-blur-md">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-label-caps text-[11px] text-outline uppercase">Transição</span>
+                      <div className="inline-flex rounded-lg bg-surface-container-lowest p-0.5 border border-border-subtle">
+                        {(['CUT', 'MIX', 'WIPE'] as const).map((mode) => (
+                          <button
+                            key={mode}
+                            onClick={() => setTransitionMode(mode)}
+                            className={`px-1.5 py-0.5 rounded font-label-mono text-[12px] transition-colors cursor-pointer ${
+                              transitionMode === mode
+                                ? 'bg-primary-container text-on-primary-container font-semibold'
+                                : 'text-on-surface-variant hover:text-on-surface'
                             }`}
                           >
-                            {isLive ? 'settings_input_antenna' : 'movie'}
-                          </span>
-                          <span
-                            className="font-body-sm text-[11px] font-medium text-on-surface truncate whitespace-nowrap"
-                            title={asset.title}
-                          >
-                            {asset.title}
-                          </span>
-                          {isLive && (
-                            <span className="text-accent-ice font-bold bg-accent-ice/15 px-1 py-0.2 rounded border border-accent-ice/30 text-[10px] shrink-0 whitespace-nowrap" title="Fonte ao vivo">
-                              {liveProtocolLabel((asset as any).sourceRef ?? asset.path)}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0 font-label-mono text-[10px] text-outline">
-                          <span className="text-on-surface font-semibold tabular-nums">
-                            {dur(libraryFrames(asset, rate), rate)}
-                          </span>
-
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              if (isLive) {
-                                onInsertAsset(null, undefined, {
-                                  sourceRef: (asset as any).sourceRef,
-                                  title: asset.title,
-                                  durationOverride: asset.durationFrames,
-                                })
-                              } else {
-                                onInsertAsset(asset.id)
-                              }
-                            }}
-                            className="p-0.5 rounded bg-primary-container/20 hover:bg-primary-container text-primary hover:text-white border border-primary/30 cursor-pointer"
-                            title="Adicionar à grade"
-                          >
-                            <span className="material-symbols-outlined text-[13px]">add</span>
+                            {mode}
                           </button>
-                        </div>
+                        ))}
                       </div>
-                    )
-                  })
-                )}
-              </div>
-            </div>
-
-            {/* RIGHT WIDE AREA: MONUMENTAL RUNDOWN & AUDIO EBU WIDGET (xl:col-span-9) */}
-            <div className="xl:col-span-9 flex flex-col gap-space-md min-w-0">
-              <div className="bg-surface-card border border-border-subtle p-space-lg rounded-xl flex flex-col gap-space-md shadow-sm">
-                <div className="flex flex-wrap items-center justify-between gap-3 pb-1">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-headline-md text-headline-md uppercase text-on-surface font-semibold tracking-wide">
-                        Grade de Exibição
-                      </span>
-                      <span className="font-label-mono text-[12px] text-outline" title="Grade carregada no canal">
-                        {view.rundown.name} · {view.rundown.date ? view.rundown.date.split('-').reverse().slice(0, 2).join('/') : 'sem data'}{view.rundown.loop ? ' · loop' : ''}
-                      </span>
-                      {view.rundown.loop && view.rundown.date && view.rundown.date !== localDateKey(new Date()) && (
-                        <span className="text-[11px] text-armed-amber" title="Os horários continuam certos; a data mostra quando a grade foi criada.">
-                          em loop desde {view.rundown.date.split('-').reverse().slice(0, 2).join('/')}
-                        </span>
-                      )}
                     </div>
-
-                    {/* SELETOR DE VISUALIZAÇÃO: GRADE LINEAR vs TIMELINE MULTICAMADA 24H (FASE E) */}
-                    <div className="flex items-center bg-surface-base p-1 rounded-lg border border-border-subtle">
-                      <button
-                        onClick={() => setViewMode('LINEAR')}
-                        className={`px-3 py-1 rounded font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                          viewMode === 'LINEAR'
-                            ? 'bg-surface-panel text-accent-ice border border-accent-ice/50 shadow-sm'
-                            : 'text-outline hover:text-on-surface hover:bg-surface-container'
-                        }`}
-                        title="Visualização em Lista Tabular Monumental"
-                      >
-                        <span className="material-symbols-outlined text-[16px]">table_rows</span>
-                        GRADE LINEAR
-                      </button>
-                      <button
-                        onClick={() => setViewMode('TIMELINE')}
-                        className={`px-3 py-1 rounded font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                          viewMode === 'TIMELINE'
-                            ? 'bg-accent-ice text-white shadow-sm ring-1 ring-accent-ice/80'
-                            : 'text-outline hover:text-on-surface hover:bg-surface-container'
-                        }`}
-                        title="Visualização Contínua em 4 Pistas (NTP, CG, SCTE, R128)"
-                      >
-                        <span className="material-symbols-outlined text-[16px]">view_timeline</span>
-                        TIMELINE MULTICAMADA (24H)
-                      </button>
-                    </div>
+                    <button
+                      onClick={() => setIsLocked(!isLocked)}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle hover:bg-surface-container-high transition-colors cursor-pointer"
+                      id="lock-toggle"
+                    >
+                      <span className={`material-symbols-outlined text-[13px] ${isLocked ? 'text-status-ok' : 'text-armed-amber'}`}>
+                        {isLocked ? 'lock' : 'lock_open'}
+                      </span>
+                      <span className={`font-label-caps text-[11px] font-semibold ${isLocked ? 'text-status-ok' : 'text-armed-amber'}`}>
+                        {isLocked ? 'TRAVADO' : 'PGM LIVRE'}
+                      </span>
+                    </button>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    {/* Botão de Trava de Rolagem no PGM (Scroll Lock) */}
+                  {takeReason&&<div role="status" className="text-[11px] text-armed-amber text-center">{takeReason}</div>}
+                  {!takeReason&&takeLive&&<div role="status" className="text-[11px] text-accent-ice text-center">Ao vivo fora da grade: o TAKE insere “{takeLive.title}” logo após o item no ar e coloca no ar.</div>}
+                  <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
                     <button
-                      onClick={onToggleFollowOnAir}
-                      className={`px-3 py-1.5 rounded-lg border font-body-sm text-body-sm flex items-center gap-1.5 transition-all cursor-pointer ${
-                        followOnAir
-                          ? 'bg-on-air-crimson/20 border-on-air-crimson text-on-air-crimson font-bold shadow-sm ring-1 ring-on-air-crimson/50'
-                          : 'bg-surface-panel hover:bg-surface-container border-border-subtle text-outline hover:text-on-surface'
-                      }`}
-                      title={
-                        followOnAir
-                          ? 'Rolagem travada no item NO AR. Clique para liberar rolagem manual.'
-                          : 'Rolagem livre. Clique para travar automaticamente no item NO AR.'
-                      }
+                      onClick={handleTake}
+                      className="col-span-6 h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+                      id="btn-take"
+                      disabled={takeReason!==null}
+                      title={takeReason??'Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE'}
                     >
-                      <span className="material-symbols-outlined text-[16px]">
-                        {followOnAir ? 'lock' : 'lock_open'}
-                      </span>
-                      <span>{followOnAir ? 'TRAVADO NO AR' : 'ROLAGEM LIVRE'}</span>
+                      <span className="material-symbols-outlined text-[18px]">play_arrow</span>
+                      <span>TAKE</span>
+                      <span className="bg-surface-base/20 px-1 py-0.2 rounded font-label-mono text-[12px] text-surface-base font-semibold">ESPAÇO</span>
                     </button>
 
                     <button
-                      onClick={handleOpenAddLine}
-                      className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+                      onClick={() => {
+                        const selected = selectedItemIds.size === 1
+                          ? view.items.find((item) => selectedItemIds.has(item.item.id)) ?? null
+                          : null
+                        const target = selected ?? armedItem
+                        if (target && !publicationRequired) onCue(target.item.id)
+                      }}
+                      className="col-span-4 h-12 bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer"
+                      title="Abre em CUE no PVW o item selecionado; sem seleção, abre o Próximo (F2)"
                     >
-                      <span className="material-symbols-outlined text-[16px]">add</span> Linha
+                      <div className="flex items-center gap-0.5">
+                        <span className="material-symbols-outlined text-[14px]">skip_next</span>
+                        <span>CUE</span>
+                      </div>
+                      <span className="font-label-mono text-[12px] text-surface-base/80 font-medium">F2</span>
                     </button>
+
                     <button
-                      onClick={onAutoFill}
-                      className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+                      onClick={handleArmAbort}
+                      className={`col-span-2 h-12 rounded-lg border border-border-subtle flex flex-col items-center justify-center transition-all cursor-pointer ${
+                        abortArmed
+                          ? 'bg-on-air-crimson text-white animate-pulse border-on-air-glow'
+                          : 'bg-surface-container hover:bg-error-container text-outline hover:text-on-error-container'
+                      }`}
+                      title={abortArmed ? 'CLIQUE PARA CONFIRMAR PARADA IMEDIATA' : 'Parada de emergência com trava de segurança (ABORT)'}
                     >
-                      <span className="material-symbols-outlined text-[16px]">sync</span> EPG / Autofill
+                      <span className="material-symbols-outlined text-[15px]">stop</span>
+                      <span className="font-label-mono text-[12px] uppercase font-bold">
+                        {abortArmed ? `${abortCountdown}s` : 'ABORT'}
+                      </span>
                     </button>
-                    <button
-                      onClick={() => setIsConflictDrawerOpen(true)}
-                      className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-armed-amber font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
-                      title="Verificar Conflitos da Grade (Conflict Drawer)"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">rule</span> Conflitos
-                    </button>
-                    <button
-                      onClick={onExportCsv}
-                      className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">file_download</span> Exportar
-                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between font-label-mono text-[12px] text-outline pt-0.5 border-t border-border-subtle/40">
+                    <span className="inline-flex items-center gap-1 text-on-surface-variant" title="Sem placa SDI/genlock: o engine marca o tempo pelo relógio do Windows. Com DeckLink, a referência passa a ser a da placa.">
+                      REFERÊNCIA: RELÓGIO DO SISTEMA
+                    </span>
+                    <span title="Do clique no TAKE até o servidor confirmar o novo item no ar. Não inclui a latência da saída (RTMP/SRT/NDI).">
+                      {lastTake ? `ÚLTIMO TAKE: ${lastTake.ms} ms · ${lastTake.at.toLocaleTimeString('pt-BR')}` : 'ÚLTIMO TAKE: —'}
+                    </span>
                   </div>
                 </div>
 
-                {/* Visualização Condicional: TIMELINE MULTICAMADA vs GRADE LINEAR MONUMENTAL */}
-                {viewMode === 'TIMELINE' ? (
-                  <MultiTrackTimeline
-                    channel={channel}
-                    items={view.items}
-                    onAirIndex={onAirIndex}
-                    cuedIndex={cuedIndex}
-                    elapsedFrames={elapsedFrames}
-                    remainingFrames={remainingFrames}
-                    onSelectItem={(index) => {
-                      const target = view.items[index]
-                      if (target && !publicationRequired) onCue(target.item.id)
-                    }}
-                    onAutoFill={onAutoFill}
-                    rundownId={view.rundown?.id}
-                  />
-                ) : (
-                  <>
-                    {/* Monumental Rundown Table */}
-                    <div
-                      ref={gridContainerRef}
-                  onDragOver={(e) => {
-                    e.preventDefault()
-                    e.dataTransfer.dropEffect = 'copy'
-                  }}
-                  onWheel={
-                    followOnAir
-                      ? (e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
+              </div>
+              <div className="flex flex-col min-w-0">
+                <div className="h-full bg-surface-panel/80 border border-border-subtle p-space-md rounded-xl flex flex-col justify-between shadow-md relative overflow-hidden">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-space-sm">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-armed-amber/20 border border-armed-amber/40 text-armed-amber font-label-caps text-label-caps font-bold tracking-wider">
+                        {cueItem ? 'CUE [PVW]' : 'PRÓXIMO [PREP]'}
+                      </span>
+                      <span className="font-label-mono text-label-mono text-armed-amber bg-surface-container px-1.5 py-0.5 rounded">
+                        {previewKind}
+                      </span>
+                    </div>
+                    <span className={`font-label-mono text-label-mono ${previewSignalState === 'PVW_READY' || previewSignalState === 'ON_PGM' ? 'text-status-ok-bright' : previewSignalState === 'LOST' || previewSignalState === 'FAILED' ? 'text-on-air-crimson' : 'text-armed-amber'}`} title={previewSignal?.message ?? undefined}>
+                      {previewSignalState ? previewSignalLabel[previewSignalState] : cueItem ? 'CUE MANUAL' : 'AUTO-PREP'}
+                    </span>
+                  </div>
+
+                  <div className="my-space-xs">
+                    <h3 className="font-headline-md text-[17px] text-on-surface font-semibold truncate tracking-wide" title={previewTitle}>
+                      {previewTitle}
+                    </h3>
+                    <div className="flex items-baseline justify-between mt-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-label-caps text-label-caps text-outline uppercase tracking-wider">Duração</span>
+                        <span className="font-timecode-display text-[24px] text-armed-amber font-bold tabular-nums leading-none tracking-wider">
+                          {dur(nextCardFrames, rate)}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="font-label-mono text-label-mono text-outline block">PREVISÃO</span>
+                        <span className="font-timecode-table text-timecode-table text-on-surface font-semibold tabular-nums">
+                          {(cueItem ?? armedItem) && scheduleMap.get((cueItem ?? armedItem)!.item.id)?.start != null
+                            ? wallClock(scheduleMap.get((cueItem ?? armedItem)!.item.id)!.start, rate, view.rundown.date)
+                            : onAirItem && scheduleMap.get(onAirItem.item.id)?.end != null
+                            ? wallClock(scheduleMap.get(onAirItem.item.id)!.end, rate, view.rundown.date)
+                            : '--:--:--:--'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-on-surface-variant font-label-mono text-label-mono pt-1.5 border-t border-border-subtle/50">
+                    <span className="text-outline">
+                      {nextCardFormat}
+                    </span>
+                    <span className="text-armed-amber font-semibold">
+                      {overrunFrames > 0 ? `ATRASADO +${dur(overrunFrames, rate)}` : `DISPARO EM ${dur(remainingFrames, rate)}`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* 2b. GRADE ALTA + BIBLIOTECA (recolhível) */}
+            <section className="flex-1 min-h-0 flex gap-space-sm">
+              {mamOpen && (
+                <div className="w-[340px] shrink-0 bg-surface-card border border-border-subtle p-space-md rounded-xl flex flex-col gap-space-sm shadow-sm min-h-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-primary text-[20px]">folder</span>
+                      <span className="font-headline-md text-headline-md uppercase text-on-surface tracking-wide font-semibold">
+                        Biblioteca
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button type="button" onClick={() => setMamPanel('closed')} className="px-1 py-0.5 rounded text-outline hover:text-on-surface" title="Recolher a biblioteca (a grade ganha largura)">
+                        <span className="material-symbols-outlined text-[16px]">left_panel_close</span>
+                      </button>
+                      <button
+                        onClick={() => setFolderModalOpen(true)}
+                        className="px-2 py-0.5 rounded bg-primary/15 hover:bg-primary/30 text-primary border border-primary/40 font-label-caps text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Adicionar pastas locais ou em rede ao acervo MAM"
+                      >
+                        <span className="material-symbols-outlined text-[15px]">create_new_folder</span>
+                      </button>
+                      <button
+                        onClick={() => { resetLiveInput(); setLiveInputModalOpen(true) }}
+                        className="px-2 py-0.5 rounded bg-accent-ice/15 hover:bg-accent-ice/30 text-accent-ice-bright border border-accent-ice/40 font-label-caps text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Adicionar fonte externa (DeckLink SDI, NDI, WebRTC, SRT) à biblioteca"
+                      >
+                        <span className="material-symbols-outlined text-[15px]">settings_input_antenna</span>
+                      </button>
+                      <span className="font-label-mono text-label-mono text-outline">
+                        {libraryLoaded ? allAssetsWithLive.length : '…'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Barra de Busca MAM */}
+                  <div className="relative">
+                    <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-outline text-[16px] pointer-events-none">
+                      search
+                    </span>
+                    <input
+                      value={mamSearch}
+                      onChange={(e) => setMamSearch(e.target.value)}
+                      className="w-full bg-surface-container-lowest text-on-surface font-body-sm text-body-sm pl-8 pr-space-md py-2 rounded-lg border border-border-subtle placeholder-outline focus:outline-none focus:border-primary transition-colors"
+                      placeholder="Buscar no acervo…"
+                      type="text"
+                    />
+                  </div>
+
+                  {/* Filtros em Pílulas */}
+                  <div className="flex gap-1.5 pb-1">
+                    {(['TODOS', 'VT', 'AO VIVO'] as const).map((tag) => (
+                      <button
+                        key={tag}
+                        onClick={() => setSelectedTag(tag)}
+                        className={`px-2.5 py-1 rounded-full font-label-caps text-label-caps transition-colors cursor-pointer ${
+                          selectedTag === tag
+                            ? 'bg-primary-container text-on-primary-container font-semibold'
+                            : 'bg-surface-panel hover:bg-surface-container text-on-surface-variant'
+                        }`}
+                      >
+                        {tag}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Lista de Clipes com Drag & Drop */}
+                  <div className="flex flex-col gap-2 min-h-0 overflow-y-auto pr-1.5 flex-1 broadcast-scroll">
+                    {filteredAssets.length === 0 ? (
+                      <div className="p-4 text-center text-outline font-body-sm">
+                        {libraryLoaded ? 'Nenhuma mídia encontrada no filtro.' : 'Acervo ainda não conferido. A ausência de resultados não confirma acervo vazio.'}
+                      </div>
+                    ) : (
+                      groupLiveVariants(filteredAssets).map(({ asset, variants }) => {
+                        const isLive = 'isLiveSource' in asset && (asset as any).isLiveSource
+                        return (
+                          <div
+                            key={asset.id}
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, asset)}
+                            onClick={() => handleMamPreview(asset)}
+                            className={`px-2 h-7 rounded border cursor-grab active:cursor-grabbing flex items-center justify-between gap-2 transition-colors group relative ${
+                              selectedPreviewAsset?.id === asset.id
+                                ? 'bg-armed-amber/15 border-armed-amber/50 shadow-sm'
+                                : isLive
+                                ? 'bg-accent-ice/5 hover:bg-accent-ice/10 border-accent-ice/30'
+                                : 'bg-surface-panel hover:bg-surface-container border-border-subtle'
+                            }`}
+                            title={
+                              isLive
+                                ? 'Fonte Externa Ao Vivo: Arraste para a grade ou clique + para adicionar'
+                                : `${asset.title} • Clique para carregar e rodar preview no PVW`
+                            }
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                              <span
+                                className={`material-symbols-outlined text-[15px] shrink-0 ${
+                                  isLive ? 'text-accent-ice' : 'text-outline'
+                                }`}
+                              >
+                                {isLive ? 'settings_input_antenna' : 'movie'}
+                              </span>
+                              <span
+                                className="font-body-sm text-[12.5px] font-medium text-on-surface truncate whitespace-nowrap"
+                                title={asset.title}
+                              >
+                                {asset.title}
+                              </span>
+                              {isLive && variants.map((variant) => (
+                                <button
+                                  type="button"
+                                  key={variant.id}
+                                  onClick={(e) => { e.stopPropagation(); handleMamPreview(variant) }}
+                                  className="text-accent-ice font-bold bg-accent-ice/15 px-1 py-0.2 rounded border border-accent-ice/30 text-[11px] shrink-0 whitespace-nowrap hover:bg-accent-ice/30"
+                                  title={`Abrir no PVW pela entrada ${liveProtocolLabel((variant as any).sourceRef ?? variant.path)}`}
+                                >
+                                  {liveProtocolLabel((variant as any).sourceRef ?? variant.path)}
+                                </button>
+                              ))}
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0 font-label-mono text-[12px] text-outline">
+                              <span className="text-on-surface font-semibold tabular-nums">
+                                {dur(libraryFrames(asset, rate), rate)}
+                              </span>
+
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  if (isLive) {
+                                    onInsertAsset(null, undefined, {
+                                      sourceRef: (asset as any).sourceRef,
+                                      title: asset.title,
+                                      durationOverride: asset.durationFrames,
+                                    })
+                                  } else {
+                                    onInsertAsset(asset.id)
+                                  }
+                                }}
+                                className="p-0.5 rounded bg-primary-container/20 hover:bg-primary-container text-primary hover:text-white border border-primary/30 cursor-pointer"
+                                title="Adicionar à grade"
+                              >
+                                <span className="material-symbols-outlined text-[13px]">add</span>
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
+
+              )}
+              <div className="flex-1 min-w-0 min-h-0 flex flex-col gap-space-sm">
+                <div className="bg-surface-card border border-border-subtle p-space-md rounded-xl flex flex-col gap-space-sm shadow-sm flex-1 min-h-0 min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-3 pb-1">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        {!mamOpen && <button type="button" onClick={() => setMamPanel('open')} className="px-2 py-1 rounded border border-border-subtle text-[11px] font-label-caps font-bold text-primary flex items-center gap-1 hover:bg-surface-container" title="Mostrar a biblioteca ao lado da grade">
+                          <span className="material-symbols-outlined text-[16px]">folder</span>BIBLIOTECA
+                        </button>}
+                        <span className="font-headline-md text-headline-md uppercase text-on-surface font-semibold tracking-wide">
+                          Grade de Exibição
+                        </span>
+                        <span className="font-label-mono text-[12px] text-outline" title="Grade carregada no canal">
+                          {view.rundown.name} · {view.rundown.date ? view.rundown.date.split('-').reverse().slice(0, 2).join('/') : 'sem data'}{view.rundown.loop ? ' · loop' : ''}
+                        </span>
+                        {view.rundown.loop && view.rundown.date && view.rundown.date !== localDateKey(new Date()) && (
+                          <span className="text-[11px] text-armed-amber" title="Os horários continuam certos; a data mostra quando a grade foi criada.">
+                            em loop desde {view.rundown.date.split('-').reverse().slice(0, 2).join('/')}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* SELETOR DE VISUALIZAÇÃO: GRADE LINEAR vs TIMELINE MULTICAMADA 24H (FASE E) */}
+                      <div className="flex items-center bg-surface-base p-1 rounded-lg border border-border-subtle">
+                        <button
+                          onClick={() => setViewMode('LINEAR')}
+                          className={`px-3 py-1 rounded font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                            viewMode === 'LINEAR'
+                              ? 'bg-surface-panel text-accent-ice border border-accent-ice/50 shadow-sm'
+                              : 'text-outline hover:text-on-surface hover:bg-surface-container'
+                          }`}
+                          title="Visualização em Lista Tabular Monumental"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">table_rows</span>
+                          GRADE LINEAR
+                        </button>
+                        <button
+                          onClick={() => setViewMode('TIMELINE')}
+                          className={`px-3 py-1 rounded font-label-caps text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                            viewMode === 'TIMELINE'
+                              ? 'bg-accent-ice text-white shadow-sm ring-1 ring-accent-ice/80'
+                              : 'text-outline hover:text-on-surface hover:bg-surface-container'
+                          }`}
+                          title="Visualização Contínua em 4 Pistas (NTP, CG, SCTE, R128)"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">view_timeline</span>
+                          TIMELINE MULTICAMADA (24H)
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {/* Botão de Trava de Rolagem no PGM (Scroll Lock) */}
+                      <button
+                        onClick={onToggleFollowOnAir}
+                        className={`px-3 py-1.5 rounded-lg border font-body-sm text-body-sm flex items-center gap-1.5 transition-all cursor-pointer ${
+                          followOnAir
+                            ? 'bg-on-air-crimson/20 border-on-air-crimson text-on-air-crimson font-bold shadow-sm ring-1 ring-on-air-crimson/50'
+                            : 'bg-surface-panel hover:bg-surface-container border-border-subtle text-outline hover:text-on-surface'
+                        }`}
+                        title={
+                          followOnAir
+                            ? 'Rolagem travada no item NO AR. Clique para liberar rolagem manual.'
+                            : 'Rolagem livre. Clique para travar automaticamente no item NO AR.'
                         }
-                      : undefined
-                  }
-                  className={`w-full max-h-[380px] rounded-lg border border-border-subtle broadcast-scroll relative ${
-                    followOnAir ? 'overflow-y-hidden select-none' : 'overflow-y-auto'
-                  }`}
-                >
-                  <table
+                      >
+                        <span className="material-symbols-outlined text-[16px]">
+                          {followOnAir ? 'lock' : 'lock_open'}
+                        </span>
+                        <span>{followOnAir ? 'TRAVADO NO AR' : 'ROLAGEM LIVRE'}</span>
+                      </button>
+
+                      <button
+                        onClick={handleOpenAddLine}
+                        className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">add</span> Linha
+                      </button>
+                      <button
+                        onClick={onAutoFill}
+                        className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">sync</span> EPG / Autofill
+                      </button>
+                      <button
+                        onClick={() => setIsConflictDrawerOpen(true)}
+                        className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-armed-amber font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+                        title="Verificar Conflitos da Grade (Conflict Drawer)"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">rule</span> Conflitos
+                      </button>
+                      <button
+                        onClick={onExportCsv}
+                        className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">file_download</span> Exportar
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Visualização Condicional: TIMELINE MULTICAMADA vs GRADE LINEAR MONUMENTAL */}
+                  {viewMode === 'TIMELINE' ? (
+                    <MultiTrackTimeline
+                      channel={channel}
+                      items={view.items}
+                      onAirIndex={onAirIndex}
+                      cuedIndex={cuedIndex}
+                      elapsedFrames={elapsedFrames}
+                      remainingFrames={remainingFrames}
+                      onSelectItem={(index) => {
+                        const target = view.items[index]
+                        if (target && !publicationRequired) onCue(target.item.id)
+                      }}
+                      onAutoFill={onAutoFill}
+                      rundownId={view.rundown?.id}
+                    />
+                  ) : (
+                    <>
+                      {/* Monumental Rundown Table */}
+                      <div
+                        ref={gridContainerRef}
                     onDragOver={(e) => {
                       e.preventDefault()
                       e.dataTransfer.dropEffect = 'copy'
                     }}
-                    className="w-full text-left font-body-sm text-body-sm border-collapse"
+                    onWheel={
+                      followOnAir
+                        ? (e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                          }
+                        : undefined
+                    }
+                    className={`w-full flex-1 min-h-0 rounded-lg border border-border-subtle broadcast-scroll relative ${
+                      followOnAir ? 'overflow-y-hidden select-none' : 'overflow-y-auto'
+                    }`}
                   >
-                    <thead className="bg-surface-panel/95 backdrop-blur-md sticky top-0 z-20 text-outline font-label-caps text-label-caps uppercase border-b border-border-subtle">
-                      <tr className="h-11">
-                        <th className="px-4 w-12 text-center font-timecode-table">#</th>
-                        <th className="px-4 w-32 font-timecode-table">STATUS</th>
-                        <th className="px-4 w-36 font-timecode-table">INÍCIO</th>
-                        <th className="px-4 w-36 font-timecode-table">DURAÇÃO</th>
-                        <th className="px-4 font-timecode-table">TÍTULO DO EVENTO</th>
-                        <th className="px-4 w-32 text-right font-timecode-table">TIPO</th>
-                        <th className="px-4 w-28 text-right font-timecode-table">AÇÕES</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border-subtle/30 font-timecode-table text-timecode-table text-[14px]">
-                      {view.items.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="text-center py-12 text-outline font-label-mono text-sm">
-                            Grade vazia. Adicione itens pela Biblioteca MAM ou pelo botão "+ Linha".
-                          </td>
+                    <table
+                      onDragOver={(e) => {
+                        e.preventDefault()
+                        e.dataTransfer.dropEffect = 'copy'
+                      }}
+                      className="w-full text-left font-body-sm text-body-sm border-collapse"
+                    >
+                      <thead className="bg-surface-panel/95 backdrop-blur-md sticky top-0 z-20 text-outline font-label-caps text-label-caps uppercase border-b border-border-subtle">
+                        <tr className="h-11">
+                          <th className="px-4 w-12 text-center font-timecode-table">#</th>
+                          <th className="px-4 w-32 font-timecode-table">STATUS</th>
+                          <th className="px-4 w-36 font-timecode-table">INÍCIO</th>
+                          <th className="px-4 w-36 font-timecode-table">DURAÇÃO</th>
+                          <th className="px-4 font-timecode-table">TÍTULO DO EVENTO</th>
+                          <th className="px-4 w-32 text-right font-timecode-table">TIPO</th>
+                          <th className="px-4 w-28 text-right font-timecode-table">AÇÕES</th>
                         </tr>
-                      ) : (
-                        view.items.map((item, index) => {
-                          const isItemOnAir = index === onAirIndex
-                          const isItemCued = selectedPreviewAsset === null && cueItem?.item.id === item.item.id
-                          const isItemPrepared = item.item.id === live.transport.preparedItemId
-                          const isAired = onAirIndex >= 0 && index < onAirIndex
-                          const durationFrames = getItemDuration(item)
-                          const isSelected = selectedItemIds.has(item.item.id)
-                          const unavailable = Boolean(item.item.mediaId && (!item.asset || item.asset.probeError || item.asset.ignored || !qcApproved(item.asset.qcStatus ?? 'APPROVED')))
+                      </thead>
+                      <tbody className="divide-y divide-border-subtle/30 font-timecode-table text-timecode-table text-[14px]">
+                        {view.items.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="text-center py-12 text-outline font-label-mono text-sm">
+                              Grade vazia. Adicione itens pela Biblioteca MAM ou pelo botão "+ Linha".
+                            </td>
+                          </tr>
+                        ) : (
+                          view.items.map((item, index) => {
+                            const isItemOnAir = index === onAirIndex
+                            const isItemCued = selectedPreviewAsset === null && cueItem?.item.id === item.item.id
+                            const isItemPrepared = item.item.id === live.transport.preparedItemId
+                            const isAired = onAirIndex >= 0 && index < onAirIndex
+                            const durationFrames = getItemDuration(item)
+                            const isSelected = selectedItemIds.has(item.item.id)
+                            const unavailable = Boolean(item.item.mediaId && (!item.asset || item.asset.probeError || item.asset.ignored || !qcApproved(item.asset.qcStatus ?? 'APPROVED')))
 
-                          const eventType: ScheduleEventType =
-                            item.item.eventType ??
-                            (item.item.anchor?.kind === 'HARD_TIME'
-                              ? 'HARD_TIME'
-                              : item.item.anchor?.kind === 'FIXED'
-                                ? 'FIXED'
-                                : item.item.type === 'LIVE' || item.item.sourceRef
-                                  ? 'LIVE'
-                                  : item.item.type === 'FILLER'
-                                    ? 'FILLER'
-                                    : 'SEQUENTIAL')
+                            const eventType: ScheduleEventType =
+                              item.item.eventType ??
+                              (item.item.anchor?.kind === 'HARD_TIME'
+                                ? 'HARD_TIME'
+                                : item.item.anchor?.kind === 'FIXED'
+                                  ? 'FIXED'
+                                  : item.item.type === 'LIVE' || item.item.sourceRef
+                                    ? 'LIVE'
+                                    : item.item.type === 'FILLER'
+                                      ? 'FILLER'
+                                      : 'SEQUENTIAL')
 
-                          const trimmable = Boolean(item.item.timingFlags?.trimmable ?? item.item.trimmable)
-                          const optional = Boolean(item.item.timingFlags?.optional ?? item.item.optional)
-                          const isProtected = Boolean(item.item.timingFlags?.protected ?? item.item.protected)
+                            const trimmable = Boolean(item.item.timingFlags?.trimmable ?? item.item.trimmable)
+                            const optional = Boolean(item.item.timingFlags?.optional ?? item.item.optional)
+                            const isProtected = Boolean(item.item.timingFlags?.protected ?? item.item.protected)
 
-                          let rowClass = 'hover:bg-surface-panel transition-colors border-b border-border-subtle/40 bg-surface-card h-12'
-                          if (isSelected) {
-                            rowClass = 'bg-primary-container/25 border-b border-primary/50 ring-1 ring-primary/60 text-white h-12'
-                          } else if (isItemOnAir) {
-                            rowClass = 'bg-on-air-crimson/10 border-b border-on-air-crimson/30 h-14'
-                          } else if (isItemCued) {
-                            rowClass = 'bg-armed-amber/15 border-b border-armed-amber/40 h-14 shadow-sm'
-                          } else if (isAired) {
-                            rowClass = 'opacity-50 hover:opacity-80 transition-opacity border-b border-border-subtle/40 bg-surface-card h-12'
-                          }
+                            let rowClass = 'hover:bg-surface-panel transition-colors border-b border-border-subtle/40 bg-surface-card h-10'
+                            if (isSelected) {
+                              rowClass = 'bg-primary-container/25 border-b border-primary/50 ring-1 ring-primary/60 text-white h-10'
+                            } else if (isItemOnAir) {
+                              rowClass = 'bg-on-air-crimson/10 border-b border-on-air-crimson/30 h-12'
+                            } else if (isItemCued) {
+                              rowClass = 'bg-armed-amber/15 border-b border-armed-amber/40 h-12 shadow-sm'
+                            } else if (isAired) {
+                              rowClass = 'opacity-50 hover:opacity-80 transition-opacity border-b border-border-subtle/40 bg-surface-card h-10'
+                            }
 
-                          if (dragOverIndex === index) {
-                            rowClass += ' border-t-4 border-primary ring-2 ring-primary bg-primary/20 shadow-md'
-                          }
+                            if (dragOverIndex === index) {
+                              rowClass += ' border-t-4 border-primary ring-2 ring-primary bg-primary/20 shadow-md'
+                            }
 
-                          return (
-                            <tr
-                              key={item.item.id}
-                              onDragOver={(e) => {
-                                e.preventDefault()
-                                e.stopPropagation()
-                                e.dataTransfer.dropEffect = 'copy'
-                                if (dragOverIndex !== index) setDragOverIndex(index)
-                              }}
-                              onDragLeave={() => {
-                                if (dragOverIndex === index) setDragOverIndex(null)
-                              }}
-                              onDrop={(e) => {
-                                e.preventDefault()
-                                e.stopPropagation()
-                                handleDrop(e, index)
-                                setDragOverIndex(null)
-                              }}
-                              onClick={(e) => handleRowClick(e, item, index)}
-                              className={`${rowClass} group cursor-pointer`}
-                              title="Clique para armar (CUE) no PVW • Ctrl/Shift para multiseleção"
-                            >
-                              <td className={`py-1.5 px-3 text-center font-label-mono text-label-mono ${
-                                isItemOnAir ? 'text-on-air-crimson font-bold text-[13px]' : isItemCued ? 'text-armed-amber font-bold text-[13px]' : 'text-outline text-xs'
-                              }`}>
-                                {index + 1}
-                              </td>
+                            return (
+                              <tr
+                                key={item.item.id}
+                                onDragOver={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  e.dataTransfer.dropEffect = 'copy'
+                                  if (dragOverIndex !== index) setDragOverIndex(index)
+                                }}
+                                onDragLeave={() => {
+                                  if (dragOverIndex === index) setDragOverIndex(null)
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  handleDrop(e, index)
+                                  setDragOverIndex(null)
+                                }}
+                                onClick={(e) => handleRowClick(e, item, index)}
+                                className={`${rowClass} group cursor-pointer`}
+                                title="Clique para armar (CUE) no PVW • Ctrl/Shift para multiseleção"
+                              >
+                                <td className={`py-1.5 px-3 text-center font-label-mono text-label-mono ${
+                                  isItemOnAir ? 'text-on-air-crimson font-bold text-[13px]' : isItemCued ? 'text-armed-amber font-bold text-[13px]' : 'text-outline text-xs'
+                                }`}>
+                                  {index + 1}
+                                </td>
 
-                              <td className="py-1.5 px-3">
-                                {isItemOnAir ? (
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-on-air-crimson text-surface-base font-label-caps text-[10px] font-bold">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-surface-base animate-ping"></span> NO AR
-                                  </span>
-                                ) : isItemCued ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-armed-amber text-surface-base font-label-caps text-[10px] font-bold">
-                                    CUED
-                                  </span>
-                                ) : unavailable ? (
-                                  <span className="px-2 py-0.5 rounded text-[10px] text-on-air-crimson bg-on-air-crimson/10" title={item.asset?.probeError ?? 'Mídia indisponível ou não aprovada no QC'}>BLOQUEADO</span>
-                                ) : isItemPrepared ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-ok/20 text-status-ok-bright font-label-caps text-[10px] font-bold">
-                                    PRÓXIMO
-                                  </span>
-                                ) : isAired ? (
-                                  <span className="px-2 py-0.5 rounded font-label-caps text-[10px] text-outline bg-surface-container">
-                                    EXIBIDO
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded font-label-caps text-[10px] text-status-ok-bright bg-surface-container font-semibold">
-                                    AGENDADO
-                                  </span>
-                                )}
-                              </td>
-
-                              <td className={`py-1.5 px-3 tabular-nums text-[12.5px] ${
-                                isItemOnAir ? 'text-on-surface font-bold' : isItemCued ? 'text-armed-amber font-bold' : 'text-on-surface-variant'
-                              }`}>
-                                {scheduleMap.get(item.item.id)?.start != null
-                                  ? wallClock(scheduleMap.get(item.item.id)!.start, rate, view.rundown.date)
-                                  : '--:--:--:--'}
-                              </td>
-
-                              <td className={`py-1.5 px-3 tabular-nums text-[12.5px] ${
-                                isItemOnAir ? 'text-on-air-crimson font-bold' : isItemCued ? 'text-on-surface' : 'text-on-surface-variant'
-                              }`}>
-                                {dur(durationFrames, rate)}
-                              </td>
-
-                              <td className="py-1 px-3 font-body-sm text-[12px]">
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  {/* Badges de Tipo de Evento (Fase A) */}
-                                  {eventType === 'HARD_TIME' && (
-                                    <span
-                                      title="Ponto de Sincronismo Obrigatório de Rede (Hard Sync frame-accurate no frame zero)"
-                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-rose-950/80 border border-rose-600/70 text-rose-300 text-[10px] font-label-caps tracking-wider font-bold shrink-0 shadow-xs"
-                                    >
-                                      <span className="material-symbols-outlined text-[11px] text-rose-400">schedule</span>
-                                      HARD SYNC
+                                <td className="py-1.5 px-3">
+                                  {isItemOnAir ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-on-air-crimson text-surface-base font-label-caps text-[11px] font-bold">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-surface-base animate-ping"></span> NO AR
                                     </span>
-                                  )}
-                                  {eventType === 'FIXED' && (
-                                    <span
-                                      title="Horário Fixo Ancorado no Relógio da Emissora"
-                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-amber-950/60 border border-amber-600/50 text-amber-300 text-[10px] font-label-caps tracking-wider font-bold shrink-0"
-                                    >
-                                      <span className="material-symbols-outlined text-[11px] text-amber-400">lock_clock</span>
-                                      FIXO
+                                  ) : isItemCued ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-armed-amber text-surface-base font-label-caps text-[11px] font-bold">
+                                      CUED
                                     </span>
-                                  )}
-                                  {eventType === 'LIVE' && (
-                                    <span
-                                      title="Entrada de Sinal Ao Vivo Externa / Estúdio"
-                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-accent-ice/20 border border-accent-ice/50 text-accent-ice-bright text-[10px] font-label-caps tracking-wider font-bold shrink-0"
-                                    >
-                                      <span className="material-symbols-outlined text-[11px] text-accent-ice-bright animate-pulse">sensors</span>
-                                      AO VIVO
+                                  ) : unavailable ? (
+                                    <span className="px-2 py-0.5 rounded text-[11px] text-on-air-crimson bg-on-air-crimson/10" title={item.asset?.probeError ?? 'Mídia indisponível ou não aprovada no QC'}>BLOQUEADO</span>
+                                  ) : isItemPrepared ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-ok/20 text-status-ok-bright font-label-caps text-[11px] font-bold">
+                                      PRÓXIMO
                                     </span>
-                                  )}
-                                  {eventType === 'FILLER' && (
-                                    <span
-                                      title="Item Elástico de Preenchimento (Gap Fill / Elastic)"
-                                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-purple-950/60 border border-purple-500/50 text-purple-300 text-[10px] font-label-caps tracking-wider font-bold shrink-0"
-                                    >
-                                      <span className="material-symbols-outlined text-[11px] text-purple-400">auto_awesome</span>
-                                      FILLER
-                                    </span>
-                                  )}
-
-                                  {/* Título textual com truncamento */}
-                                  <span
-                                    className={`truncate text-[12px] flex-1 min-w-0 ${
-                                      isItemOnAir
-                                        ? 'text-on-surface font-bold'
-                                        : isItemCued
-                                          ? 'text-on-surface font-semibold'
-                                          : 'text-on-surface font-medium'
-                                    }`}
-                                    title={item.asset?.title || item.item.title || item.item.id}
-                                  >
-                                    {item.asset?.title || item.item.title || item.item.id}
-                                  </span>
-
-                                  {/* Micro-tags de Timing Flags (Fase A) */}
-                                  {(isProtected || trimmable || optional) && (
-                                    <div className="flex items-center gap-1 shrink-0 ml-1">
-                                      {isProtected && (
-                                        <span
-                                          title="Material Comercial ou Editorial Protegido: Bloqueado contra corte e descarte automático"
-                                          className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 font-label-mono text-[10px] font-bold"
-                                        >
-                                          <span className="material-symbols-outlined text-[10px] text-emerald-400">shield</span>
-                                          PROT
-                                        </span>
-                                      )}
-                                      {trimmable && (
-                                        <span
-                                          title="Trimmable: Pode ter cauda reduzida para absorver atrasos e salvar a grade"
-                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[10px] font-medium tracking-tight"
-                                        >
-                                          [TRIM]
-                                        </span>
-                                      )}
-                                      {optional && (
-                                        <span
-                                          title="Opcional: Pode ser descartado da grade em caso de emergência temporal"
-                                          className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[10px] font-medium tracking-tight"
-                                        >
-                                          [OPT]
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-
-                              <td className="py-1 px-3 text-right">
-                                <div className="flex flex-col items-end justify-center leading-tight">
-                                  <span className={`font-label-caps text-label-caps font-bold ${
-                                    item.item.sourceRef
-                                      ? 'text-accent-ice'
-                                      : item.asset?.kind === 'VIDEO'
-                                      ? 'text-primary'
-                                      : 'text-armed-amber'
-                                  }`}>
-                                    {item.item.sourceRef ? 'AO VIVO' : item.asset?.kind ?? item.item.type ?? 'VT'}
-                                  </span>
-                                  {eventType !== 'SEQUENTIAL' ? (
-                                    <span className={`text-[10px] font-label-mono font-medium ${
-                                      eventType === 'HARD_TIME'
-                                        ? 'text-rose-400'
-                                        : eventType === 'FIXED'
-                                          ? 'text-amber-400'
-                                          : eventType === 'LIVE'
-                                            ? 'text-accent-ice-bright'
-                                            : 'text-purple-400'
-                                    }`}>
-                                      {eventType === 'HARD_TIME' ? 'HARD SYNC' : eventType}
+                                  ) : isAired ? (
+                                    <span className="px-2 py-0.5 rounded font-label-caps text-[11px] text-outline bg-surface-container">
+                                      EXIBIDO
                                     </span>
                                   ) : (
-                                    <span className="text-[10px] font-label-mono text-outline/60">
-                                      SEQ
+                                    <span className="px-2 py-0.5 rounded font-label-caps text-[11px] text-status-ok-bright bg-surface-container font-semibold">
+                                      AGENDADO
                                     </span>
                                   )}
-                                </div>
-                              </td>
+                                </td>
 
-                              <td className="py-2.5 px-4 text-right">
-                                <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      handleOpenEditLine(item)
-                                    }}
-                                    className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
-                                    title="Editar Disciplina Temporal & Flags (Fase A)"
-                                  >
-                                    <span className="material-symbols-outlined text-[15px]">tune</span>
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      onOpenTrim(item)
-                                    }}
-                                    className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
-                                    title="Ajustar Trim (IN / OUT)"
-                                  >
-                                    <span className="material-symbols-outlined text-[15px]">content_cut</span>
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      onOpenAudio(item)
-                                    }}
-                                    className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
-                                    title="Ajustar Canais de Áudio"
-                                  >
-                                    <span className="material-symbols-outlined text-[15px]">volume_up</span>
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      onOpenGraphics(item)
-                                    }}
-                                    className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
-                                    title="GCs e Vinhetas"
-                                  >
-                                    <span className="material-symbols-outlined text-[15px]">layers</span>
-                                  </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      onRemoveItem(item.item.id)
-                                    }}
-                                    className="p-1 rounded hover:bg-error-container text-outline hover:text-on-error-container"
-                                    title="Remover linha"
-                                  >
-                                    <span className="material-symbols-outlined text-[15px]">delete</span>
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          )
-                        })
-                      )}
+                                <td className={`py-1.5 px-3 tabular-nums text-[14px] ${
+                                  isItemOnAir ? 'text-on-surface font-bold' : isItemCued ? 'text-armed-amber font-bold' : 'text-on-surface-variant'
+                                }`}>
+                                  {scheduleMap.get(item.item.id)?.start != null
+                                    ? wallClock(scheduleMap.get(item.item.id)!.start, rate, view.rundown.date)
+                                    : '--:--:--:--'}
+                                </td>
 
-                      {/* Dropzone no fim da grade */}
-                      <tr
-                        onDragOver={(e) => {
-                          e.preventDefault()
-                          e.dataTransfer.dropEffect = 'copy'
-                          if (dragOverIndex !== view.items.length) setDragOverIndex(view.items.length)
-                        }}
-                        onDragLeave={() => {
-                          if (dragOverIndex === view.items.length) setDragOverIndex(null)
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault()
-                          handleDrop(e, view.items.length)
-                          setDragOverIndex(null)
-                        }}
-                        className={`h-11 border-2 border-dashed transition-all cursor-pointer ${
-                          dragOverIndex === view.items.length
-                            ? 'border-primary bg-primary/25 text-primary font-bold shadow-inner'
-                            : 'border-border-subtle/30 text-outline/60 hover:border-border-subtle bg-surface-base/30'
-                        }`}
-                      >
-                        <td colSpan={7} className="text-center font-label-caps text-xs py-2">
-                          {dragOverIndex === view.items.length
-                            ? '⬇ Solte aqui para inserir no fim da grade'
-                            : '+ Arraste clipes do MAM ou fontes externas para anexar à grade'}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+                                <td className={`py-1.5 px-3 tabular-nums text-[14px] ${
+                                  isItemOnAir ? 'text-on-air-crimson font-bold' : isItemCued ? 'text-on-surface' : 'text-on-surface-variant'
+                                }`}>
+                                  {dur(durationFrames, rate)}
+                                </td>
 
-                <div className="flex items-center justify-between font-label-mono text-label-mono text-outline pt-1">
-                  <span>{view.items.length} EVENTOS PROGRAMADOS</span>
-                  <span className="flex items-center gap-1.5">
-                    <span className={`w-1.5 h-1.5 rounded-full ${live.transport.playing ? 'bg-status-ok' : 'bg-outline'}`}></span>
-                    {live.transport.mode === 'SIMULATED' ? 'SIMULADO' : live.transport.mode === 'NATIVE' ? 'ENGINE NATIVO' : 'ENGINE NÃO CONFIRMADO'} · {live.transport.playing ? 'EM EXECUÇÃO' : 'PARADO'}
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
+                                <td className="py-1 px-3 font-body-sm text-[12px]">
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    {/* Badges de Tipo de Evento (Fase A) */}
+                                    {eventType === 'HARD_TIME' && (
+                                      <span
+                                        title="Ponto de Sincronismo Obrigatório de Rede (Hard Sync frame-accurate no frame zero)"
+                                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-rose-950/80 border border-rose-600/70 text-rose-300 text-[11px] font-label-caps tracking-wider font-bold shrink-0 shadow-xs"
+                                      >
+                                        <span className="material-symbols-outlined text-[11px] text-rose-400">schedule</span>
+                                        HARD SYNC
+                                      </span>
+                                    )}
+                                    {eventType === 'FIXED' && (
+                                      <span
+                                        title="Horário Fixo Ancorado no Relógio da Emissora"
+                                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-amber-950/60 border border-amber-600/50 text-amber-300 text-[11px] font-label-caps tracking-wider font-bold shrink-0"
+                                      >
+                                        <span className="material-symbols-outlined text-[11px] text-amber-400">lock_clock</span>
+                                        FIXO
+                                      </span>
+                                    )}
+                                    {eventType === 'LIVE' && (
+                                      <span
+                                        title="Entrada de Sinal Ao Vivo Externa / Estúdio"
+                                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-accent-ice/20 border border-accent-ice/50 text-accent-ice-bright text-[11px] font-label-caps tracking-wider font-bold shrink-0"
+                                      >
+                                        <span className="material-symbols-outlined text-[11px] text-accent-ice-bright animate-pulse">sensors</span>
+                                        AO VIVO
+                                      </span>
+                                    )}
+                                    {eventType === 'FILLER' && (
+                                      <span
+                                        title="Item Elástico de Preenchimento (Gap Fill / Elastic)"
+                                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-purple-950/60 border border-purple-500/50 text-purple-300 text-[11px] font-label-caps tracking-wider font-bold shrink-0"
+                                      >
+                                        <span className="material-symbols-outlined text-[11px] text-purple-400">auto_awesome</span>
+                                        FILLER
+                                      </span>
+                                    )}
 
-              {/* Integrated Horizontal Bottom Bar Widget: Audio EBU R128 Loudness Bar */}
-              <div className="bg-surface-card border border-border-subtle px-space-lg py-space-sm rounded-xl flex items-center justify-between gap-space-lg shadow-sm">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-accent-ice text-[18px]">equalizer</span>
-                    <span className="font-label-caps text-label-caps uppercase text-on-surface font-bold">
-                      {nativeMeter ? 'Áudio PGM · EBU R128' : 'Áudio PGM · sem medição nativa'}
+                                    {/* Título textual com truncamento */}
+                                    <span
+                                      className={`truncate text-[12px] flex-1 min-w-0 ${
+                                        isItemOnAir
+                                          ? 'text-on-surface font-bold'
+                                          : isItemCued
+                                            ? 'text-on-surface font-semibold'
+                                            : 'text-on-surface font-medium'
+                                      }`}
+                                      title={item.asset?.title || item.item.title || item.item.id}
+                                    >
+                                      {item.asset?.title || item.item.title || item.item.id}
+                                    </span>
+
+                                    {/* Micro-tags de Timing Flags (Fase A) */}
+                                    {(isProtected || trimmable || optional) && (
+                                      <div className="flex items-center gap-1 shrink-0 ml-1">
+                                        {isProtected && (
+                                          <span
+                                            title="Material Comercial ou Editorial Protegido: Bloqueado contra corte e descarte automático"
+                                            className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 font-label-mono text-[12px] font-bold"
+                                          >
+                                            <span className="material-symbols-outlined text-[11px] text-emerald-400">shield</span>
+                                            PROT
+                                          </span>
+                                        )}
+                                        {trimmable && (
+                                          <span
+                                            title="Trimmable: Pode ter cauda reduzida para absorver atrasos e salvar a grade"
+                                            className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[12px] font-medium tracking-tight"
+                                          >
+                                            [TRIM]
+                                          </span>
+                                        )}
+                                        {optional && (
+                                          <span
+                                            title="Opcional: Pode ser descartado da grade em caso de emergência temporal"
+                                            className="px-1 py-0.2 rounded bg-surface-container border border-border-subtle text-outline font-label-mono text-[12px] font-medium tracking-tight"
+                                          >
+                                            [OPT]
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td className="py-1 px-3 text-right">
+                                  <div className="flex flex-col items-end justify-center leading-tight">
+                                    <span className={`font-label-caps text-label-caps font-bold ${
+                                      item.item.sourceRef
+                                        ? 'text-accent-ice'
+                                        : item.asset?.kind === 'VIDEO'
+                                        ? 'text-primary'
+                                        : 'text-armed-amber'
+                                    }`}>
+                                      {item.item.sourceRef ? 'AO VIVO' : item.asset?.kind ?? item.item.type ?? 'VT'}
+                                    </span>
+                                    {eventType !== 'SEQUENTIAL' ? (
+                                      <span className={`text-[12px] font-label-mono font-medium ${
+                                        eventType === 'HARD_TIME'
+                                          ? 'text-rose-400'
+                                          : eventType === 'FIXED'
+                                            ? 'text-amber-400'
+                                            : eventType === 'LIVE'
+                                              ? 'text-accent-ice-bright'
+                                              : 'text-purple-400'
+                                      }`}>
+                                        {eventType === 'HARD_TIME' ? 'HARD SYNC' : eventType}
+                                      </span>
+                                    ) : (
+                                      <span className="text-[12px] font-label-mono text-outline/60">
+                                        SEQ
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td className="py-1 px-4 text-right">
+                                  <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        handleOpenEditLine(item)
+                                      }}
+                                      className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
+                                      title="Editar Disciplina Temporal & Flags (Fase A)"
+                                    >
+                                      <span className="material-symbols-outlined text-[15px]">tune</span>
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        onOpenTrim(item)
+                                      }}
+                                      className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
+                                      title="Ajustar Trim (IN / OUT)"
+                                    >
+                                      <span className="material-symbols-outlined text-[15px]">content_cut</span>
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        onOpenAudio(item)
+                                      }}
+                                      className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
+                                      title="Ajustar Canais de Áudio"
+                                    >
+                                      <span className="material-symbols-outlined text-[15px]">volume_up</span>
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        onOpenGraphics(item)
+                                      }}
+                                      className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
+                                      title="GCs e Vinhetas"
+                                    >
+                                      <span className="material-symbols-outlined text-[15px]">layers</span>
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        onRemoveItem(item.item.id)
+                                      }}
+                                      className="p-1 rounded hover:bg-error-container text-outline hover:text-on-error-container"
+                                      title="Remover linha"
+                                    >
+                                      <span className="material-symbols-outlined text-[15px]">delete</span>
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            )
+                          })
+                        )}
+
+                        {/* Dropzone no fim da grade */}
+                        <tr
+                          onDragOver={(e) => {
+                            e.preventDefault()
+                            e.dataTransfer.dropEffect = 'copy'
+                            if (dragOverIndex !== view.items.length) setDragOverIndex(view.items.length)
+                          }}
+                          onDragLeave={() => {
+                            if (dragOverIndex === view.items.length) setDragOverIndex(null)
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault()
+                            handleDrop(e, view.items.length)
+                            setDragOverIndex(null)
+                          }}
+                          className={`h-11 border-2 border-dashed transition-all cursor-pointer ${
+                            dragOverIndex === view.items.length
+                              ? 'border-primary bg-primary/25 text-primary font-bold shadow-inner'
+                              : 'border-border-subtle/30 text-outline/60 hover:border-border-subtle bg-surface-base/30'
+                          }`}
+                        >
+                          <td colSpan={7} className="text-center font-label-caps text-xs py-2">
+                            {dragOverIndex === view.items.length
+                              ? '⬇ Solte aqui para inserir no fim da grade'
+                              : '+ Arraste clipes do MAM ou fontes externas para anexar à grade'}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex items-center justify-between font-label-mono text-label-mono text-outline pt-1">
+                    <span>{view.items.length} EVENTOS PROGRAMADOS</span>
+                    <span className="flex items-center gap-1.5">
+                      <span className={`w-1.5 h-1.5 rounded-full ${live.transport.playing ? 'bg-status-ok' : 'bg-outline'}`}></span>
+                      {live.transport.mode === 'SIMULATED' ? 'SIMULADO' : live.transport.mode === 'NATIVE' ? 'ENGINE NATIVO' : 'ENGINE NÃO CONFIRMADO'} · {live.transport.playing ? 'EM EXECUÇÃO' : 'PARADO'}
                     </span>
                   </div>
-                  <span className="font-headline-md text-[18px] text-status-ok-bright font-bold tabular-nums">
-                    {nativeMeter && Number.isFinite(meter.integratedLufs) ? `${meter.integratedLufs.toFixed(1)} LUFS` : 'N/D'}
-                  </span>
-                </div>
+                </>
+              )}
+            </div>
 
-                <div className="flex-1 max-w-xl flex items-center gap-space-md">
-                  <div className="flex-1 flex flex-col gap-1">
+                <div className="bg-surface-card border border-border-subtle px-space-lg py-space-sm rounded-xl flex items-center justify-between gap-space-lg shadow-sm">
+                  <div className="flex items-center gap-3">
                     <div className="flex items-center gap-2">
-                      <span className="font-label-mono text-[10px] text-outline w-3">L</span>
-                      <div className="h-2 flex-1 bg-surface-container-lowest rounded-full overflow-hidden flex border border-border-subtle/40">
-                        <div
-                          className="bg-status-ok h-full rounded-full transition-all duration-150"
-                          style={{ width: `${leftPeakPercent}%` }}
-                        ></div>
-                      </div>
-                      <span className="font-label-mono text-[10px] text-on-surface tabular-nums w-8">
-                        {nativeMeter ? meter.peakDbfs[0]?.toFixed(1) ?? 'N/D' : 'N/D'}
+                      <span className="material-symbols-outlined text-accent-ice text-[18px]">equalizer</span>
+                      <span className="font-label-caps text-label-caps uppercase text-on-surface font-bold">
+                        {nativeMeter ? 'Áudio PGM · EBU R128' : 'Áudio PGM · sem medição nativa'}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-label-mono text-[10px] text-outline w-3">R</span>
-                      <div className="h-2 flex-1 bg-surface-container-lowest rounded-full overflow-hidden flex border border-border-subtle/40">
-                        <div
-                          className="bg-status-ok h-full rounded-full transition-all duration-150"
-                          style={{ width: `${rightPeakPercent}%` }}
-                        ></div>
+                    <span className="font-headline-md text-[18px] text-status-ok-bright font-bold tabular-nums">
+                      {nativeMeter && Number.isFinite(meter.integratedLufs) ? `${meter.integratedLufs.toFixed(1)} LUFS` : 'N/D'}
+                    </span>
+                  </div>
+
+                  <div className="flex-1 max-w-xl flex items-center gap-space-md">
+                    <div className="flex-1 flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-label-mono text-[12px] text-outline w-3">L</span>
+                        <div className="h-2 flex-1 bg-surface-container-lowest rounded-full overflow-hidden flex border border-border-subtle/40">
+                          <div
+                            className="bg-status-ok h-full rounded-full transition-all duration-150"
+                            style={{ width: `${leftPeakPercent}%` }}
+                          ></div>
+                        </div>
+                        <span className="font-label-mono text-[12px] text-on-surface tabular-nums w-8">
+                          {nativeMeter ? meter.peakDbfs[0]?.toFixed(1) ?? 'N/D' : 'N/D'}
+                        </span>
                       </div>
-                      <span className="font-label-mono text-[10px] text-on-surface tabular-nums w-8">
-                        {nativeMeter ? meter.peakDbfs[1]?.toFixed(1) ?? 'N/D' : 'N/D'}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-label-mono text-[12px] text-outline w-3">R</span>
+                        <div className="h-2 flex-1 bg-surface-container-lowest rounded-full overflow-hidden flex border border-border-subtle/40">
+                          <div
+                            className="bg-status-ok h-full rounded-full transition-all duration-150"
+                            style={{ width: `${rightPeakPercent}%` }}
+                          ></div>
+                        </div>
+                        <span className="font-label-mono text-[12px] text-on-surface tabular-nums w-8">
+                          {nativeMeter ? meter.peakDbfs[1]?.toFixed(1) ?? 'N/D' : 'N/D'}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="flex items-center gap-space-md font-label-mono text-label-mono text-outline">
-                  <span>FASE: {validPhase ? `${meter.correlation >= 0 ? '+' : ''}${meter.correlation.toFixed(2)}` : 'N/D'}</span>
-                  <span className={`${!validPhase ? 'text-outline' : meter.correlation < 0 ? 'text-danger' : 'text-status-ok'} flex items-center gap-1 font-semibold`}>
-                    {validPhase ? meter.correlation < 0 ? 'ANTIFASE' : 'CORRELAÇÃO POSITIVA' : 'SEM MEDIÇÃO'}
-                  </span>
-                  <div className="h-4 w-px bg-border-subtle"></div>
-                  {/* Badge de Cobertura do Cache de Continuidade (Fase C: 48h AIR-GAP) */}
-                  <ContinuityCacheBadge channelId={channel.id} />
+                  <div className="flex items-center gap-space-md font-label-mono text-label-mono text-outline">
+                    <span>FASE: {validPhase ? `${meter.correlation >= 0 ? '+' : ''}${meter.correlation.toFixed(2)}` : 'N/D'}</span>
+                    <span className={`${!validPhase ? 'text-outline' : meter.correlation < 0 ? 'text-danger' : 'text-status-ok'} flex items-center gap-1 font-semibold`}>
+                      {validPhase ? meter.correlation < 0 ? 'ANTIFASE' : 'CORRELAÇÃO POSITIVA' : 'SEM MEDIÇÃO'}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
+            </section>
           </div>
-        </section>
+
+          {/* 2c. COLUNA DIREITA: monitores e ferramentas (gaveta em abas) */}
+          <aside className="min-h-0 flex flex-col gap-space-sm">
+              <div className="flex flex-col shrink-0">
+                <BroadcastMonitor
+                  bus="pgm"
+                  className="w-full"
+                  title="PGM • Monitor Principal"
+                  badgeText="NO AR"
+                  webrtcPath={monitors?.program ?? null}
+                  port={monitors?.port ?? 8889}
+                  asset={onAirItem?.asset ?? null}
+                  rate={channel.rate}
+                  scan={channel.scan}
+                  height={channel.height}
+                  positionFrames={elapsedFrames}
+                  durationFrames={onAirDurationFrames}
+                  isPlaying={live.transport.playing}
+                  isAudioMonitored={activeAudioBus === 'pgm'}
+                  onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pgm' ? null : 'pgm'))}
+                  onSeek={(frames) => onSeek('pgm', frames)}
+                  onWatching={(_bus, watching) => { void api.setWatching(channel.id, 'mon', watching).catch(() => {}) }}
+                />
+              </div>
+
+              <div className="flex flex-col shrink-0">
+                <BroadcastMonitor
+                  bus="pvw"
+                  className="w-full"
+                  title="PVW • CUE Selecionado"
+                  badgeText={selectedPreviewAsset ? 'MAM CUED' : 'CUED'}
+                  webrtcPath={monitors?.preview ?? null}
+                  port={monitors?.port ?? 8889}
+                  asset={activePreviewAsset}
+                  rate={channel.rate}
+                  scan={channel.scan}
+                  height={channel.height}
+                  positionFrames={live.transport.previewPosition?.frames ?? 0}
+                  durationFrames={activePreviewDuration}
+                  autoRemainingFrames={remainingFrames}
+                  isPlaying={false}
+                  isAudioMonitored={activeAudioBus === 'pvw'}
+                  onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pvw' ? null : 'pvw'))}
+                  onSeek={(frames) => onSeek('pvw', frames)}
+                  onWatching={(bus, watching) => {
+                    void api.setWatching(channel.id, 'pvw', watching).catch(() => {})
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={publicationRequired || !live.transport.preview}
+                  onClick={() => { setSelectedPreviewAsset(null); onClearCue() }}
+                  title="Limpar somente o CUE/PVW; conserva o PGM e permite selecionar outra grade com o canal parado"
+                  className="mt-1 rounded border border-border-subtle px-2 py-1 text-[11px] text-on-surface-variant hover:text-on-surface disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  LIMPAR CUE / PVW
+                </button>
+                {live.transport.preview&&<PreviewFrameStatus sample={live.transport.previewFrame}/>}
+              </div>
+
+            <MasterToolsPanel channelId={channel.id} rate={channel.rate} assets={allAssets} />
+          </aside>
+        </div>
       </main>
 
       {/* MODAL 1: Ingestão de Entrada Externa / DeckLink na Biblioteca MAM */}
@@ -1989,7 +2012,7 @@ export function MasterControlView({
                     <div className="font-body-sm text-body-sm font-bold text-on-surface truncate">
                       {editingItemView.asset?.title || editingItemView.item.title || editingItemView.item.id}
                     </div>
-                    <div className="text-[11px] font-label-mono text-outline">
+                    <div className="text-[12px] font-label-mono text-outline">
                       ID: {editingItemView.item.id.slice(0, 12)}... • Tipo Base: {editingItemView.item.type}
                     </div>
                   </div>
@@ -2079,7 +2102,7 @@ export function MasterControlView({
                               </div>
                               <div className="flex items-center gap-2 font-label-mono text-label-mono text-outline">
                                 {isLive && (
-                                  <span className="text-accent-ice font-bold text-[10px] bg-accent-ice/15 px-1 py-0.2 rounded">
+                                  <span className="text-accent-ice font-bold text-[11px] bg-accent-ice/15 px-1 py-0.2 rounded">
                                     AO VIVO
                                   </span>
                                 )}
@@ -2182,7 +2205,7 @@ export function MasterControlView({
                     Disciplina Temporal &amp; Políticas de Compensação (Fase A)
                   </span>
                 </div>
-                <span className="text-[10px] font-label-mono text-outline">FRAME-ACCURATE ENGINE</span>
+                <span className="text-[12px] font-label-mono text-outline">FRAME-ACCURATE ENGINE</span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2243,7 +2266,7 @@ export function MasterControlView({
                         onChange={(e) => setLineTrimmable(e.target.checked)}
                         className="rounded border-border-subtle text-primary focus:ring-primary disabled:opacity-50"
                       />
-                      <span className={`font-mono text-[11px] ${lineProtected ? 'opacity-50' : 'text-primary'}`}>
+                      <span className={`font-mono text-[12px] ${lineProtected ? 'opacity-50' : 'text-primary'}`}>
                         [TRIM] TRIMMABLE
                       </span>
                       <span className="text-[11px] text-outline ml-auto">Permite corte de cauda</span>
@@ -2257,7 +2280,7 @@ export function MasterControlView({
                         onChange={(e) => setLineOptional(e.target.checked)}
                         className="rounded border-border-subtle text-primary focus:ring-primary disabled:opacity-50"
                       />
-                      <span className={`font-mono text-[11px] ${lineProtected ? 'opacity-50' : 'text-primary'}`}>
+                      <span className={`font-mono text-[12px] ${lineProtected ? 'opacity-50' : 'text-primary'}`}>
                         [OPT] OPTIONAL
                       </span>
                       <span className="text-[11px] text-outline ml-auto">Descartável em emergência</span>
@@ -2406,7 +2429,7 @@ export function MasterControlView({
                   <span className="font-headline-sm text-sm font-semibold text-on-surface block">
                     Pastas do Servidor
                   </span>
-                  <span className="font-label-mono text-[11px] text-outline">
+                  <span className="font-label-mono text-[12px] text-outline">
                     Navegue pelo disco ou NAS do servidor diretamente nesta página remota.
                   </span>
                 </div>
@@ -2458,7 +2481,7 @@ export function MasterControlView({
 
             {/* Ação 2: Adição Manual por Caminho */}
             <div className="bg-surface-panel p-3.5 rounded-lg border border-border-subtle flex flex-col gap-2.5">
-              <span className="font-label-caps text-[10px] text-outline font-bold uppercase tracking-wider">
+              <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider">
                 Adicionar a Pasta Selecionada
               </span>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -2496,7 +2519,7 @@ export function MasterControlView({
 
             {/* Lista de Pastas Atualmente Monitoradas */}
             <div className="flex flex-col gap-1.5">
-              <span className="font-label-caps text-[10px] text-outline font-bold uppercase tracking-wider">
+              <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider">
                 Pastas Cadastradas ({mamRoots.length})
               </span>
               <div className="max-h-40 overflow-y-auto broadcast-scroll flex flex-col gap-1.5 border border-border-subtle/50 rounded-lg p-1.5 bg-surface-base">
@@ -2512,17 +2535,17 @@ export function MasterControlView({
                     >
                       <div className="flex flex-col min-w-0 pr-2">
                         <span className="font-semibold text-on-surface truncate">{root.label}</span>
-                        <span className="font-label-mono text-[10px] text-outline truncate" title={root.path}>
+                        <span className="font-label-mono text-[12px] text-outline truncate" title={root.path}>
                           {root.path}
                         </span>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         {root.present ? (
-                          <span className="px-1.5 py-0.5 rounded font-label-caps text-[10px] bg-status-ok/15 text-status-ok-bright font-bold border border-status-ok/30">
+                          <span className="px-1.5 py-0.5 rounded font-label-caps text-[11px] bg-status-ok/15 text-status-ok-bright font-bold border border-status-ok/30">
                             ONLINE
                           </span>
                         ) : (
-                          <span className="px-1.5 py-0.5 rounded font-label-caps text-[10px] bg-on-air-crimson/15 text-on-air-crimson font-bold border border-on-air-crimson/30">
+                          <span className="px-1.5 py-0.5 rounded font-label-caps text-[11px] bg-on-air-crimson/15 text-on-air-crimson font-bold border border-on-air-crimson/30">
                             FORA DO AR
                           </span>
                         )}

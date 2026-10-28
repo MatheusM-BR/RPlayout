@@ -294,7 +294,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                     style={{ left: pct(inFrames ?? 0) }}
                     title="Arrastar Entrada (IN)"
                   >
-                    <span className="text-[10px] text-surface-base font-bold">I</span>
+                    <span className="text-[11px] text-surface-base font-bold">I</span>
                   </div>
 
                   {/* Marcador de Saída (O) */}
@@ -304,7 +304,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                     style={{ left: pct(outFrames ?? total) }}
                     title="Arrastar Saída (OUT)"
                   >
-                    <span className="text-[10px] text-surface-base font-bold">O</span>
+                    <span className="text-[11px] text-surface-base font-bold">O</span>
                   </div>
 
                   {/* Agulha Playhead */}
@@ -315,7 +315,7 @@ export function TrimDialog({ view, rate, onCancel, onApply }: Props) {
                 </div>
 
                 {/* Escala Graduada em Frames */}
-                <div className="flex justify-between font-label-mono text-[10px] text-outline px-1">
+                <div className="flex justify-between font-label-mono text-[12px] text-outline px-1">
                   <span>00:00:00:00</span>
                   <span>{formatTimecode(Math.round(total / 2), rate)}</span>
                   <span>{formatTimecode(total, rate)}</span>

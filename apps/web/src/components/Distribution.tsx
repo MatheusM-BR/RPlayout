@@ -274,23 +274,23 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                   Saídas do Canal &amp; Distribuição
                 </h2>
                 {data?.server.running ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                     ONLINE ({data.server.host})
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30">
                     OFFLINE
                   </span>
                 )}
                 {data?.server.exposed && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
                     <span className="material-symbols-outlined text-[13px]">warning</span>
                     EXPOSTO EXTERNAMENTE
                   </span>
                 )}
               </div>
-              <span className="font-label-mono text-[10px] text-outline">
+              <span className="font-label-mono text-[12px] text-outline">
                 {data === null && !error
                   ? 'Carregando estado do cluster de distribuição…'
                   : `Canal ${channel?.channelId ?? channelId} · Transmissão, decodificadores e relays`}
@@ -354,7 +354,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
           >
             <span className="material-symbols-outlined text-[16px]">output</span>
             Perfis de Saída
-            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[10px] font-label-mono text-outline">
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[12px] font-label-mono text-outline">
               {outputs.length}
             </span>
           </button>
@@ -369,7 +369,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
           >
             <span className="material-symbols-outlined text-[16px]">share</span>
             Destinos &amp; Relays
-            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[10px] font-label-mono text-outline">
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[12px] font-label-mono text-outline">
               {data?.destinations.length ?? 0}
             </span>
           </button>
@@ -397,11 +397,11 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
             <span className="material-symbols-outlined text-[16px]">vital_signs</span>
             Saúde &amp; Telemetria
             {criticalPending !== null && criticalPending > 0 ? (
-              <span className="ml-1 px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 font-label-mono text-[10px] font-bold">
+              <span className="ml-1 px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 font-label-mono text-[12px] font-bold">
                 {criticalPending}
               </span>
             ) : warnPending !== null && warnPending > 0 ? (
-              <span className="ml-1 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-label-mono text-[10px] font-bold">
+              <span className="ml-1 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 font-label-mono text-[12px] font-bold">
                 {warnPending}
               </span>
             ) : null}
@@ -417,7 +417,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
           >
             <span className="material-symbols-outlined text-[16px]">person_add</span>
             Convidados (SRT)
-            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[10px] font-label-mono text-outline">
+            <span className="ml-1 px-1.5 py-0.2 rounded bg-surface-card text-[12px] font-label-mono text-outline">
               {data?.guests.length ?? 0}
             </span>
           </button>
@@ -433,7 +433,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
               {channel?.format && (
                 <div className="p-4 rounded-xl bg-surface-panel/60 border border-border-subtle flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <span className="text-[10px] font-label-caps uppercase text-outline font-bold tracking-wider">
+                    <span className="text-[11px] font-label-caps uppercase text-outline font-bold tracking-wider">
                       PADRÃO DE RASTERIZAÇÃO DO CANAL
                     </span>
                     <div className="text-sm font-label-mono font-bold text-on-surface mt-0.5">
@@ -445,7 +445,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                       )}
                     </div>
                   </div>
-                  <span className="px-3 py-1 rounded-lg bg-surface-base border border-border-subtle text-[11px] font-label-mono text-primary font-bold shrink-0">
+                  <span className="px-3 py-1 rounded-lg bg-surface-base border border-border-subtle text-[12px] font-label-mono text-primary font-bold shrink-0">
                     59.94 Hz BROADCAST READY
                   </span>
                 </div>
@@ -459,7 +459,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                       <span className="material-symbols-outlined text-[16px] text-primary">link</span>
                       ENDEREÇOS DO PROGRAMA (INGRESS / EGRESS)
                     </span>
-                    <span className="text-[10px] font-label-mono text-outline">
+                    <span className="text-[12px] font-label-mono text-outline">
                       Clique em qualquer link para copiar
                     </span>
                   </div>
@@ -473,10 +473,10 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-primary/20 text-primary border border-primary/30 uppercase">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-primary/20 text-primary border border-primary/30 uppercase">
                               {protocol}
                             </span>
-                            <span className="text-[10px] text-outline font-label-mono">STREAM FEED</span>
+                            <span className="text-[12px] text-outline font-label-mono">STREAM FEED</span>
                           </div>
                           <p className="text-xs font-label-mono text-on-surface truncate mt-1 group-hover:text-primary">
                             {url}
@@ -509,7 +509,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-label-mono font-bold text-on-surface">{path.name}</span>
                             <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-label-mono font-bold ${
+                              className={`px-2 py-0.5 rounded text-[12px] font-label-mono font-bold ${
                                 path.ready
                                   ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                                   : 'bg-surface-base text-outline border border-border-subtle'
@@ -518,7 +518,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                               {path.ready ? 'NO AR' : 'PARADO'}
                             </span>
                           </div>
-                          <span className="text-[11px] font-label-mono text-outline">
+                          <span className="text-[12px] font-label-mono text-outline">
                             {(path.bytesReceived / 1048576).toFixed(1)} MiB recebidos · {path.readers} {path.readers === 1 ? 'leitor ativo' : 'leitores ativos'}
                           </span>
                         </div>
@@ -566,30 +566,30 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-2 mb-1.5">
                           <h4 className="font-headline-md text-sm font-bold text-on-surface">{output.name}</h4>
-                          <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-primary/20 text-primary border border-primary/30">
+                          <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-primary/20 text-primary border border-primary/30">
                             {tipoReal(output)}
                           </span>
                           {output.role !== 'EXTRA' ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono text-outline bg-surface-base border border-border-subtle">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono text-outline bg-surface-base border border-border-subtle">
                               DO SISTEMA
                             </span>
                           ) : (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono text-armed-amber bg-armed-amber/10 border border-armed-amber/30">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono text-armed-amber bg-armed-amber/10 border border-armed-amber/30">
                               EXTRA
                             </span>
                           )}
                           {!output.enabled ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-red-500/20 text-red-400 border border-red-500/30">
                               DESLIGADA
                             </span>
                           ) : (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                               LIGADA
                             </span>
                           )}
                           {saude && (
                             <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-label-mono font-bold ${
+                              className={`px-2 py-0.5 rounded text-[12px] font-label-mono font-bold ${
                                 saude.health === 'onAir'
                                   ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                                   : saude.health === 'connecting'
@@ -615,7 +615,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                                   key={proto}
                                   type="button"
                                   onClick={() => void copy(url, onMessage)}
-                                  className="px-2 py-0.5 rounded bg-surface-base hover:bg-surface-card border border-border-subtle text-[10px] font-label-mono text-primary uppercase flex items-center gap-1 cursor-pointer transition-colors"
+                                  className="px-2 py-0.5 rounded bg-surface-base hover:bg-surface-card border border-border-subtle text-[12px] font-label-mono text-primary uppercase flex items-center gap-1 cursor-pointer transition-colors"
                                   title={`Copiar ${proto.toUpperCase()}: ${url}`}
                                 >
                                   <span className="font-bold">{proto}</span>
@@ -625,12 +625,12 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                             </div>
                           )}
                         </div>
-                        <p className="text-[11px] font-label-mono text-outline mt-0.5">
+                        <p className="text-[12px] font-label-mono text-outline mt-0.5">
                           {profileSummary(output)}
                         </p>
 
                         {saude && (
-                          <div className="text-[10px] font-label-mono text-outline mt-1.5 flex items-center gap-2">
+                          <div className="text-[12px] font-label-mono text-outline mt-1.5 flex items-center gap-2">
                             <span>
                               {saude.delivered > 0
                                 ? `${saude.delivered.toLocaleString('pt-BR')} pacotes entregues`
@@ -645,7 +645,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                       {/* Controle de Bitrate & Ações */}
                       <div className="flex flex-wrap items-center gap-3 shrink-0">
                         <div className="flex items-center gap-2 bg-surface-base px-2.5 py-1 rounded-lg border border-border-subtle">
-                          <label htmlFor={`br-${output.id}`} className="text-[10px] font-label-caps uppercase text-outline">
+                          <label htmlFor={`br-${output.id}`} className="text-[11px] font-label-caps uppercase text-outline">
                             Bitrate:
                           </label>
                           <input
@@ -676,11 +676,11 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                             }}
                             className="bg-transparent border-0 text-on-surface text-xs font-label-mono w-20 focus:outline-none"
                           />
-                          <span className="text-[10px] font-label-mono text-outline">kbps</span>
+                          <span className="text-[12px] font-label-mono text-outline">kbps</span>
                           {output.bitrateKbps !== null && output.role!=='PREVIEW' && output.role!=='MONITOR' && (
                             <button
                               type="button"
-                              className="px-1.5 py-0.5 text-[10px] font-label-mono font-bold rounded bg-surface-panel hover:bg-surface-panel/80 text-primary border border-border-subtle cursor-pointer"
+                              className="px-1.5 py-0.5 text-[12px] font-label-mono font-bold rounded bg-surface-panel hover:bg-surface-panel/80 text-primary border border-border-subtle cursor-pointer"
                               onClick={() =>
                                 void guard(async () => {
                                   const result=await api.patchOutput(output.id, { bitrateKbps: null },channelId,output.configurationRevision)
@@ -828,7 +828,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                 </div>
 
                 {outKind === 'SDI' && decklinkSources.length === 0 && (
-                  <p className="text-[11px] text-amber-400 font-label-mono mt-1">
+                  <p className="text-[12px] text-amber-400 font-label-mono mt-1">
                     {decklinkReason}
                   </p>
                 )}
@@ -863,7 +863,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           <h4 className="font-headline-md text-sm font-bold text-on-surface">{destination.name}</h4>
                           {relay && (
                             <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-label-mono font-bold ${
+                              className={`px-2 py-0.5 rounded text-[12px] font-label-mono font-bold ${
                                 relay.state === 'NO AR'
                                   ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                                   : relay.state === 'CONECTANDO'
@@ -875,7 +875,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                             </span>
                           )}
                           {!destination.enabled && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-surface-base text-outline border border-border-subtle">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-surface-base text-outline border border-border-subtle">
                               DESLIGADO
                             </span>
                           )}
@@ -884,8 +884,8 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                         <p className="text-xs font-label-mono text-on-surface truncate">{destination.url}</p>
 
                         {relay && (
-                          <div className="text-[11px] font-label-mono text-outline mt-1.5 flex flex-wrap items-center gap-2">
-                            <span className="px-1.5 py-0.2 rounded bg-surface-base border border-border-subtle text-[10px] text-primary">
+                          <div className="text-[12px] font-label-mono text-outline mt-1.5 flex flex-wrap items-center gap-2">
+                            <span className="px-1.5 py-0.2 rounded bg-surface-base border border-border-subtle text-[11px] text-primary">
                               {relay.transport}{relay.transport === 'SRT' ? ` · ${relay.mode}` : ''}
                             </span>
                             {relay.latencyMs != null && <span>· Latência: {relay.latencyMs} ms</span>}
@@ -899,7 +899,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                         )}
 
                         {relay && (
-                          <div className="text-[10px] font-label-mono text-outline mt-1">
+                          <div className="text-[12px] font-label-mono text-outline mt-1">
                             {relay.delivered > 0
                               ? `${relay.delivered.toLocaleString('pt-BR')} pacotes entregues`
                               : 'Aguardando entrega de pacotes'}
@@ -972,7 +972,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
 
                 {destUrl.trim().toLowerCase().startsWith('srt://') && (
                   <div className="p-3 rounded-lg bg-surface-base border border-border-subtle flex flex-col gap-2 mt-1">
-                    <span className="text-[10px] font-label-caps text-outline uppercase font-bold">
+                    <span className="text-[11px] font-label-caps text-outline uppercase font-bold">
                       PARÂMETROS DE TRANSMISSÃO SRT
                     </span>
                     <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
@@ -1080,7 +1080,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
               <div className="rounded-xl border border-border-subtle overflow-hidden bg-surface-panel/40">
                 <table className="w-full text-left border-collapse text-xs font-label-mono">
                   <thead>
-                    <tr className="bg-surface-base text-outline uppercase font-label-caps text-[10px] tracking-wider border-b border-border-subtle">
+                    <tr className="bg-surface-base text-outline uppercase font-label-caps text-[11px] tracking-wider border-b border-border-subtle">
                       <th className="py-2.5 px-3">Processo</th>
                       <th className="py-2.5 px-3">PID</th>
                       <th className="py-2.5 px-3">Estado</th>
@@ -1105,7 +1105,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           </td>
                           <td className="py-2.5 px-3 text-outline">{process.pid ?? '—'}</td>
                           <td className="py-2.5 px-3">
-                            <span className="px-2 py-0.5 rounded text-[10px] bg-surface-base border border-border-subtle text-emerald-400 font-bold">
+                            <span className="px-2 py-0.5 rounded text-[11px] bg-surface-base border border-border-subtle text-emerald-400 font-bold">
                               {process.state}
                             </span>
                           </td>
@@ -1145,31 +1145,31 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {scheduler && (
                   <div className="p-3.5 rounded-xl bg-surface-panel/60 border border-border-subtle flex flex-col gap-1">
-                    <span className="text-[10px] font-label-caps text-outline uppercase font-bold">
+                    <span className="text-[11px] font-label-caps text-outline uppercase font-bold">
                       Grade &amp; Scheduler
                     </span>
                     <span className="text-sm font-label-mono font-bold text-on-surface">
                       {scheduler.activeRule?.name ?? 'Modo Direto / Manual'}
                     </span>
-                    <span className="text-[11px] font-label-mono text-outline">
+                    <span className="text-[12px] font-label-mono text-outline">
                       {scheduler.minutesRemaining === null ? scheduler.reason : `${scheduler.minutesRemaining} min restantes · Projeção ${scheduler.coverageHours}h`}
                     </span>
-                    <span className="text-[10px] text-outline">
+                    <span className="text-[11px] text-outline">
                       {scheduler.source === 'PUBLISHED' ? 'Playlist publicada em execução' : scheduler.source === 'LEGACY' ? 'Execução legada — sem revisão publicada' : 'Sem playlist em execução'}
                       {scheduler.rundownDate ? ` · ${scheduler.rundownDate}` : ''}
                     </span>
-                    <span className="text-[10px] text-outline">Confira e enfileire a passagem para a próxima revisão publicada no Master.</span>
+                    <span className="text-[11px] text-outline">Confira e enfileire a passagem para a próxima revisão publicada no Master.</span>
                   </div>
                 )}
 
                 {n1?.configured && (
                   <div className="p-3.5 rounded-xl bg-surface-panel/60 border border-border-subtle flex flex-col gap-1">
-                    <span className="text-[10px] font-label-caps text-outline uppercase font-bold">
+                    <span className="text-[11px] font-label-caps text-outline uppercase font-bold">
                       Redundância N+1
                     </span>
                     <div className="flex items-center gap-2">
                       <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-label-mono font-bold ${
+                        className={`px-2 py-0.5 rounded text-[12px] font-label-mono font-bold ${
                           n1.reachable
                             ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                             : 'bg-red-500/20 text-red-400 border border-red-500/30'
@@ -1178,7 +1178,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                         {n1.reachable ? 'ALCANÇÁVEL' : 'INDISPONÍVEL'}
                       </span>
                       {n1.latencyMs != null && (
-                        <span className="text-[11px] font-label-mono text-outline">
+                        <span className="text-[12px] font-label-mono text-outline">
                           {n1.latencyMs} ms
                         </span>
                       )}
@@ -1187,7 +1187,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                 )}
 
                 <div className="p-3.5 rounded-xl bg-surface-panel/60 border border-border-subtle flex flex-col gap-1">
-                  <span className="text-[10px] font-label-caps text-outline uppercase font-bold">
+                  <span className="text-[11px] font-label-caps text-outline uppercase font-bold">
                     Eventos Pendentes
                   </span>
                   <div className="flex items-center gap-2 mt-0.5">
@@ -1248,7 +1248,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
               <div className="rounded-xl border border-border-subtle overflow-hidden bg-surface-panel/40">
                 <table className="w-full text-left border-collapse text-xs font-label-mono">
                   <thead>
-                    <tr className="bg-surface-base text-outline uppercase font-label-caps text-[10px] tracking-wider border-b border-border-subtle">
+                    <tr className="bg-surface-base text-outline uppercase font-label-caps text-[11px] tracking-wider border-b border-border-subtle">
                       <th className="py-2.5 px-3">Horário</th>
                       <th className="py-2.5 px-3">Componente</th>
                       <th className="py-2.5 px-3">Severidade</th>
@@ -1265,7 +1265,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                         <td className="py-2.5 px-3 font-semibold text-on-surface">{event.component}</td>
                         <td className="py-2.5 px-3">
                           <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            className={`px-2 py-0.5 rounded text-[11px] font-bold ${
                               event.severity === 'CRITICAL'
                                 ? 'bg-red-500/20 text-red-400 border border-red-500/30'
                                 : event.severity === 'WARN'
@@ -1284,13 +1284,13 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           <div className="flex items-center justify-between gap-3">
                             <div><span>{event.message ?? '—'}</span><IncidentContextDetails context={event.context}/></div>
                             {event.acknowledgedAt ? (
-                              <span className="px-2 py-0.5 rounded bg-surface-base text-outline text-[10px] font-bold">
+                              <span className="px-2 py-0.5 rounded bg-surface-base text-outline text-[11px] font-bold">
                                 RECONHECIDO · NÃO CONFIRMA RECUPERAÇÃO
                               </span>
                             ) : (
                               <button
                                 type="button"
-                                className="px-2.5 py-1 rounded bg-primary/20 hover:bg-primary/30 text-primary text-[10px] font-label-caps font-bold cursor-pointer transition-colors shrink-0"
+                                className="px-2.5 py-1 rounded bg-primary/20 hover:bg-primary/30 text-primary text-[11px] font-label-caps font-bold cursor-pointer transition-colors shrink-0"
                                 disabled={acknowledgingHealth!==null}
                                 title="Registra sua conferência; não confirma que o sinal foi recuperado."
                                 onClick={() => {setHealthActionError(null);setAcknowledgingHealth(event.id);void api.acknowledgeHealth(event.id).then(()=>refresh()).catch(failure=>{if(mounted.current)setHealthActionError(failure instanceof Error?failure.message:'Não foi possível reconhecer o alerta.')}).finally(()=>{if(mounted.current)setAcknowledgingHealth(null)})}}
@@ -1340,7 +1340,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                         <div className="flex items-center gap-2 mb-1">
                           <span className="font-headline-md text-sm font-bold text-on-surface">{guest.label}</span>
                           {path?.ready && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                            <span className="px-2 py-0.5 rounded text-[12px] font-label-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                               CONECTADO
                             </span>
                           )}
@@ -1418,7 +1418,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
 
         {/* FOOTER MODAL */}
         <footer className="px-6 py-3.5 border-t border-border-subtle flex items-center justify-between shrink-0 bg-surface-panel/40">
-          <span className="text-[11px] font-label-mono text-outline">
+          <span className="text-[12px] font-label-mono text-outline">
             RPlayout Broadcast Distribution Server · Padrão SMPTE / ITU-R
           </span>
           <button

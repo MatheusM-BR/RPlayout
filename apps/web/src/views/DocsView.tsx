@@ -29,347 +29,199 @@ interface DocChapter {
   }[]
 }
 
+// Manual: só o que o RPlayout faz hoje. Antes havia promessas que o sistema
+// não cumpre (NTP, fader, PARAR no Esc, conformidade ANCINE, -24 LUFS).
 const CHAPTERS: DocChapter[] = [
   {
     id: 'visao-geral',
-    title: '1. Visão Geral & Arquitetura',
+    title: '1. Visão geral',
     icon: 'account_tree',
     badge: 'ARQUITETURA',
-    summary: 'Estrutura 24/7 sem navegador no servidor, módulos desacoplados e fluxo linear de transmissão.',
+    summary: 'Como o canal fica no ar 24/7 e onde ficam dados, logs e gravações.',
     sections: [
       {
-        title: 'Filosofia de Operação Contínua',
-        tag: 'CORE 24/7',
-        content:
-          'O RPlayout opera com desacoplamento estrito entre o backend (RPlayout-Server.exe), o engine de reprodução multimídia (GStreamer/MediaMTX) e os clientes frontend. O fechamento ou queda de qualquer janela de navegador não interrompe a exibição do canal no ar.',
+        title: 'O que mantém o canal no ar',
+        tag: '24/7',
+        content: 'O servidor do RPlayout roda em segundo plano, sem janela. Fechar o navegador, uma janela de console ou o PowerShell não derruba o canal.',
         steps: [
-          'O processo RPlayout-Server.exe mantém o estado da grade, relógio NTP e banco de dados SQLite persistente.',
-          'Cada canal possui seu próprio pipeline de engine independente: a queda de um canal não afeta os demais.',
-          'Monitores de estúdio e operadores consomem fluxos WebRTC WHEP de baixa latência diretamente do MediaMTX.',
+          'Servidor (RPlayout-Server.exe): grade, decisões e banco SQLite. Log diário em <instalação>\\logs\\servidor-AAAA-MM-DD.log (14 dias).',
+          'Engine (um processo por canal): decodifica, compõe grafismos/overlays e entrega o PGM. Se cair, o servidor reinicia e retoma.',
+          'MediaMTX: distribui o PGM em RTMP/SRT/HLS e o monitor WebRTC (porta 8889) usado pelas telas.',
+          'Para desligar de propósito use desligar-rplayout.ps1 (o vigia não religa); para ligar, ligar-rplayout.ps1.',
         ],
         technicalDetails: [
-          { label: 'Serviço Backend', value: 'Node.js / Bun Core 24/7' },
-          { label: 'Pipeline Gráfico', value: 'GStreamer 1.22+ NVENC / CPU' },
-          { label: 'Loopback WebRTC/SRT', value: 'MediaMTX (RTSP 8554 / WHEP 8889 / SRT 8890)' },
-          { label: 'Armazenamento', value: 'SQLite com WAL & Transações Atômicas' },
+          { label: 'Backup do banco', value: 'Periódico + espelho em %LOCALAPPDATA%\\RPlayout\\backups-banco' },
+          { label: 'Gravação do PGM', value: 'D:\\RPlayout Gravacao PGM · segmentos de 15 min · 24 h' },
+          { label: 'Arquivo de mídia', value: 'D:\\RPlayout Arquivo de Midia (fora da instalação)' },
+          { label: 'Atualização', value: 'Só na janela 02:00–05:00 (troca leva ~3 min)' },
         ],
       },
       {
-        title: 'Módulos e Espaços de Trabalho',
+        title: 'Telas e perfis',
         tag: 'NAVEGAÇÃO',
-        content:
-          'O sistema organiza as responsabilidades operacionais em 6 estações de trabalho dedicadas acessíveis no cabeçalho superior:',
+        content: 'O perfil (embaixo do nome do usuário) escolhe quais telas aparecem no menu desta estação. Não muda permissões: o que cada usuário pode fazer continua decidido pelo servidor.',
         steps: [
-          'MASTER: Controle da exibição no ar (PGM), próximo evento (PVW), acervo MAM e grade viva.',
-          'PLAYLIST: Programação diária 24h, navegação por calendário, importação de blocos e publicação.',
-          'QC (Quality Control): Inspeção técnica de mídias, scopes (Waveform/Vectorscope/Audio) e aprovação.',
-          'MONITOR: Telemetria de engenharia, status SDI/NDI/SRT/WebRTC, failover A/B e logs de sistema.',
-          'AIRED: Comprovante oficial de veiculação (As-Run Log), conformidade regulatória ANCINE e exportação CSV.',
-          'DOCS: Manual operacional unificado, procedimentos de contingência e documentação técnica.',
-          'CONFIGURAÇÕES: Geometria de vídeo, cadência, padrões de áudio LUFS, saídas, entradas e controle RBAC.',
+          'Operação: Master e Playlist. Padrão para usuários "Operador".',
+          'Acervo: QC e Playlist.',
+          'Engenharia: Master, Monitor, Aired e Configurações.',
+          'Registro: Aired.',
+          'Completo: todas as telas. Padrão para Supervisor e Administrador.',
         ],
       },
     ],
   },
   {
     id: 'operacao-master',
-    title: '2. Operação Diária & No Ar',
+    title: '2. Operação no Master',
     icon: 'play_circle',
     badge: 'OPERAÇÃO',
-    summary: 'Procedimentos de disparo, transições TAKE, controle de fader e bloqueio de rolagem.',
+    summary: 'CUE, TAKE, live com saída manual, ferramentas e atalhos.',
     sections: [
       {
-        title: 'Comandos de Chaveamento no Ar',
-        tag: 'PLAYOUT CONTROLS',
-        content:
-          'A operação do canal em tempo real exige precisão de quadros (frame-accurate). Os comandos centrais estão permanentemente disponíveis na barra de controle do Master:',
+        title: 'Layout',
+        tag: 'MASTER',
+        content: 'Faixa do ar no topo (NO AR · TAKE/CUE · PRÓXIMO), grade alta embaixo e, à direita, monitores PGM/PVW e as ferramentas em abas.',
         steps: [
-          'PREPARAR (Armar): Carrega o item selecionado da grade no barramento de PVW, validando decodificação.',
-          'TAKE (Espaço): Executa o corte imediato entre PVW e PGM. O item anterior é registrado no As-Run Log.',
-          'PARAR (Manual): Interrompe a saída PGM e projeta a imagem de emergência / barras de cor calibradas.',
-          'PGM FIXADO (Lock Scroll): Trava a rolagem automática da grade no evento em execução, mantendo visibilidade operacional.',
+          'Abas de ferramentas: Overlays 1–8, Grafismos (logo, relógio, ticker, tarja, SCTE), Inserção, Próxima grade e Contingência. A aba escolhida fica guardada na estação.',
+          'A biblioteca ao lado da grade pode ser recolhida pelo ícone no cabeçalho dela; o botão BIBLIOTECA reabre.',
+          'A sonda do PGM ocupa uma faixa de altura fixa no topo: alertas não empurram a tela.',
         ],
-        note: 'DICA OPERACIONAL: O atalho de teclado BARRA DE ESPAÇO executa TAKE instantâneo se a janela estiver com foco.',
       },
       {
-        title: 'Controle de Áudio & Fader de Ganho',
-        tag: 'ÁUDIO BROADCAST',
-        content:
-          'O RPlayout inclui controle de ganho digital vertical estendido (-24 dB a +12 dB) e monitoração comutável entre PGM e Preview:',
+        title: 'Colocar no ar',
+        tag: 'CUE / TAKE',
+        content: 'O TAKE leva ao PGM o que está confirmado no PVW. Sem CUE, o automático segue a grade.',
         steps: [
-          'O medidor de volume do monitor de vídeo permite escuta local no navegador via WebRTC Opus.',
-          'Por segurança, o áudio de monitoração local opera em modo mutuamente exclusivo: PGM OU Preview ativo, prevenindo cacofonia.',
-          'O fader vertical na lateral da grade aplica ganho imediato ao elemento em reprodução sem interrupção de vídeo.',
-          'A regressiva de tempo restante (COUNTDOWN) pisca em vermelho de alto contraste nos últimos 30 segundos do evento.',
+          'CUE: clique no item da grade ou F2 (item selecionado ou o próximo). O PVW mostra o item armado.',
+          'TAKE: Espaço ou o botão TAKE. "ÚLTIMO TAKE: N ms" é o tempo do comando até o servidor confirmar o item no ar (não inclui a saída RTMP/SRT/NDI).',
+          'ABORT: só pelo clique, com trava e confirmação em contagem. Não há tecla para parar o canal.',
+          'LIMPAR CUE / PVW: desfaz o CUE sem mexer no PGM.',
+          'Live com saída manual: a estimativa não dispara TAKE. Passado o tempo, o card mostra EXCEDIDO +tempo e o PRÓXIMO, ATRASADO. Ajuste com os botões ±5/30/60 s.',
         ],
-        technicalDetails: [
-          { label: 'Padrão Regulatório', value: 'EBU R128 / ITU-R BS.1770-4' },
-          { label: 'Target de Loudness', value: '-24.0 LUFS (±0.5 LU)' },
-          { label: 'Teto de Pico Verdadeiro', value: '-1.0 dBTP máx' },
-          { label: 'Escala do Fader', value: '-24 dB a +12 dB com marcação unity 0 dB' },
-        ],
+        note: 'Atalhos: Espaço = TAKE · F2 = CUE · Ctrl+Z / Ctrl+Y = desfazer / refazer edição da grade · Delete = remover itens selecionados (com confirmação) · Esc = fechar diálogo.',
       },
     ],
   },
   {
     id: 'playlists-24h',
-    title: '3. Playlists 24h & Programação',
+    title: '3. Playlist',
     icon: 'calendar_month',
     badge: 'PROGRAMAÇÃO',
-    summary: 'Criação e gestão de grades diárias, navegação de datas e publicação automatizada.',
+    summary: 'Grade no ar x grade em edição, publicação, loop e lacunas.',
     sections: [
       {
-        title: 'Navegação por Calendário & Datas Futuras',
-        tag: 'CALENDAR SCHEDULER',
-        content:
-          'A tela de Playlists permite planejar a programação com dias ou semanas de antecedência. Utilize o seletor de data no cabeçalho secundário para alternar entre os dias:',
+        title: 'Editar e publicar',
+        tag: 'GRADE',
+        content: 'O selo NO AR mostra a grade que está saindo. Quando a tela mostra outra data, aparece EDITANDO OUTRA GRADE: mudanças só vão ao ar depois de PUBLICAR REVISÃO.',
         steps: [
-          'Selecione uma data no calendário para carregar a grade programada daquele dia.',
-          'Se a data futura estiver vazia, o sistema exibe opções de "Copiar Grade de Hoje" ou "Iniciar Grade Vazia".',
-          'A barra de progresso temporal (Timeline Dinâmica) reflete com precisão os horários previstos de início e término de cada bloco.',
-          'Eventos sem arquivo vinculado no MAM são sinalizados com alerta amarelo para conferência antes do ar.',
-        ],
-      },
-      {
-        title: 'Importação & Formatos de Roteiro',
-        tag: 'IMPORTAÇÃO',
-        content:
-          'O RPlayout suporta ingestão de arquivos de automação e listas em múltiplos formatos padrão de emissoras:',
-        steps: [
-          'M3U / M3U8: Aceita durações em segundos (#EXTINF) e caminhos absolutos ou relativos de arquivos.',
-          'CSV / TXT: Colunas de Código de Mídia, Título, Duração (TC), Categoria e Horário de Exibição Previsto.',
-          'Drag & Drop: Arraste arquivos .m3u diretamente sobre a janela do navegador para abrir o assistente de publicação.',
-          'PUBLICAR NA GRADE: Envia a playlist concluída para a fila ativa de exibição sem derrubar o evento que está no ar.',
+          'Grade em loop aparece como o primeiro ciclo + "repete mais N× até HH:MM:SS"; o botão mostra todas as linhas.',
+          'LACUNA na linha do tempo = período sem programação. Clique para preencher (Auto-Fill) ou insira itens.',
+          'Importar BXF / M3U traz listas externas; Revisões mostra o histórico publicado.',
+          'Status por linha: QC OK, QC PEND., QC RESSALVA, REJEITADO, BLOQUEADO, INDISPONÍVEL (arquivo ausente ou ignorado) e AO VIVO.',
         ],
       },
     ],
   },
   {
-    id: 'controle-qualidade',
-    title: '4. Controle de Qualidade (QC) & Acervo',
+    id: 'qc-acervo',
+    title: '4. QC e acervo',
     icon: 'verified',
     badge: 'QUALIDADE',
-    summary: 'Inspeção de conformidade técnica, scopes, verificação de codecs e acervo MAM.',
+    summary: 'Varredura, loudness, aprovação e perfil técnico.',
     sections: [
       {
-        title: 'Scopes em Tempo Real & Filmstrip',
-        tag: 'VETORSCOPE & WAVEFORM',
-        content:
-          'O módulo QC oferece instrumental avançado de análise para operadores técnicos e engenharia:',
-        steps: [
-          'Filmstrip Interativo: Linha do tempo visual com miniaturas em 10%, 25%, 50%, 75% e 90% do arquivo para detecção rápida de falhas.',
-          'Waveform Luminância: Análise de níveis de branco e preto (0 a 100 IRE) prevenindo clipping de vídeo.',
-          'Vectorscope Crominância: Verificação de saturação de cores e alinhamento de fase de subportadora.',
-          'Medidor de Áudio EBU: Leitura de Loudness integrado, True-Peak e balanço estéreo (correlação de fase).',
-        ],
-        technicalDetails: [
-          { label: 'Codecs de Vídeo Homologados', value: 'ProRes 422, DNxHD, H.264/AVC (High@L4.2), H.265/HEVC' },
-          { label: 'Taxa de Quadros Padrão', value: '1080i59.94 / 1080p59.94 (Padrão Broadcast)' },
-          { label: 'Amostragem de Cor', value: '4:2:2 10-bit ou 4:2:0 8-bit compatível' },
-          { label: 'Codecs de Áudio', value: 'PCM 24-bit 48kHz / AAC-LC 320kbps' },
-        ],
-      },
-      {
-        title: 'Aprovação & Rejeição no MAM',
-        tag: 'STATUS TÉCNICO',
-        content:
-          'Nenhum conteúdo com falha crítica deve ir ao ar desavisadamente. O QC classifica cada arquivo do acervo em três estados:',
-        steps: [
-          'APROVADO (Verde): Arquivo em conformidade total de resolução, aspecto 16:9, áudio estéreo e níveis regulatórios.',
-          'ATENÇÃO (Amarelo): Desvio leve de LUFS (ajustável via ganho) ou metadados incompletos.',
-          'REJEITADO (Vermelho): Ausência de vídeo/áudio, formato 9:16 vertical sem letterbox ou arquivo corrompido.',
-        ],
-      },
-    ],
-  },
-  {
-    id: 'saidas-entradas-sinais',
-    title: '5. Saídas, Entradas & Sinais',
-    icon: 'settings_input_component',
-    badge: 'ENGENHARIA',
-    summary: 'Roteamento de sinais DeckLink SDI, NDI, SRT Caller/Listener, RTMP e WebRTC WHEP.',
-    sections: [
-      {
-        title: 'Como o RPlayout Envia Sinal (Saídas)',
-        tag: 'TRANSMISSÃO',
-        content:
-          'O pipeline de saída multiplexa o sinal PGM gerado pelo engine em múltiplos destinos simultâneos conforme configurado no painel:',
-        steps: [
-          'DeckLink SDI (Hardware): Saída direta em banda base sem compressão para roteadores SDI e mestres de transmissão (sdi:0, sdi:1). Relógio travado pelo genlock da placa.',
-          'NDI (Rede Local): Fluxo multicast de alta qualidade e baixa latência anunciado na sub-rede para switchers TriCaster, vMix ou estúdios remotos.',
-          'SRT Caller / Listener: Envio protegido por correção de erros (ARQ) para CDNs, operadoras de cabo ou repetidoras de micro-ondas via porta UDP dedicada.',
-          'RTMP Push: Envio h.264/AAC para servidores YouTube Live, Facebook, Twitch ou ingestões legadas.',
-          'WebRTC WHEP (Monitor): Canal de monitoração ultra baixa latência (<150ms) com áudio Opus para navegadores dos operadores.',
-        ],
-        technicalDetails: [
-          { label: 'SDI Driver', value: 'Blackmagic Desktop Video 12.4+' },
-          { label: 'NDI Versão', value: 'NDI 5 / 6 Advanced SDK' },
-          { label: 'SRT Latência Recomendada', value: '120ms (LAN) / 800ms (WAN/Internet)' },
-          { label: 'MPEG-TS PID Padrão', value: 'Vídeo 0x100 (H.264), Áudio 0x101 (AAC/Opus)' },
-        ],
-      },
-      {
-        title: 'Como o RPlayout Recebe Sinal (Entradas & Ao Vivo)',
+        title: 'Varredura e loudness',
         tag: 'INGEST',
-        content:
-          'Fontes externas podem ser inseridas na grade como itens dinâmicos sem necessidade de arquivos físicos:',
+        content: 'ESCANEAR INGEST lê as pastas do acervo. MEDIR LOUDNESS mede EBU R128 (integrado, true peak, LRA) dos arquivos ainda sem medição; os já medidos são pulados.',
         steps: [
-          'SDI / HDMI Ingest: Placas Blackmagic DeckLink capturam câmeras ou links externos. Referência de grade: "sdi:0".',
-          'NDI Network Discovery: O sistema vasculha automaticamente a rede local em busca de fontes NDI anunciadas (ex: "ndi:Estúdio-1").',
-          'SRT Feeds Remotos: Conexão direta a links de repórteres de rua ou afiliadas informando URLs diretas (ex: srt://ip:porta).',
-          'Convidados WebRTC (Guest Links): Chaves de convidados geradas pelo sistema permitem que participantes enviem áudio e vídeo pelo navegador com baixa latência.',
+          'Sem loudness medida, o nivelamento automático do PGM não tem referência. O topo do QC mostra "N SEM LOUDNESS"; clique para medir.',
+          'A medição decodifica o arquivo inteiro e usa CPU: prefira fora de horário crítico.',
+          'Alvo e teto vêm do canal (Configurações › Canais): padrão −23 LUFS e −1 dBTP.',
+        ],
+      },
+      {
+        title: 'Aprovar, ressalvar, rejeitar',
+        tag: 'DECISÃO',
+        content: 'O perfil técnico define o que precisa estar identificado (codec, geometria, cadência, varredura, duração, áudio). Material reprovado ou bloqueado não vai ao PGM.',
+        steps: [
+          'Aprovar aparece só em itens pendentes ou com alerta; Ignorar tira o arquivo da lista sem apagar.',
+          'Os scopes usam quadros de navegação: são inspeção visual aproximada, não medição de engenharia.',
         ],
       },
     ],
   },
   {
-    id: 'aired-asrun',
-    title: '6. Comprovante de Exibição (Aired) & Auditoria',
-    icon: 'history_toggle_off',
-    badge: 'REGULATÓRIO',
-    summary: 'Auditoria de exibição legal, conformidade com ANCINE e relatórios As-Run certificados.',
+    id: 'sinais',
+    title: '5. Saídas e entradas',
+    icon: 'settings_input_antenna',
+    badge: 'ENGENHARIA',
+    summary: 'Para onde o PGM sai e como entram as fontes ao vivo.',
     sections: [
       {
-        title: 'Registro As-Run Frame-Accurate',
-        tag: 'COMPROVANTE OFICIAL',
-        content:
-          'Cada segundo transmitido no canal é registrado de forma indelével no banco de dados de veiculação (As-Run Log):',
+        title: 'Saídas',
+        tag: 'TRANSMISSÃO',
+        content: 'Cadastro em Configurações › Saídas de Transmissão. O Monitor (Visão integrada) mostra o estado de cada saída: NO AR, CONECTANDO, RECONECTANDO, FALHOU.',
         steps: [
-          'O início e término exatos de cada VT ou bloco ao vivo são carimbados pelo relógio NTP mestre da estação.',
-          'O motivo de encerramento é gravado com precisão: EOF (fim normal do arquivo), NEXT (corte manual TAKE) ou STOP (interrupção de emergência).',
-          'Duração planejada vs. duração real veiculada são comparadas para fins de auditoria de publicidade e faturamento comercial.',
+          'RTMP e SRT: envio para plataformas e receptores. NDI/OMT: rede local.',
+          'SDI (DeckLink): disponível quando houver placa e driver instalados. Sem placa, a referência de tempo é o relógio do sistema (mostrado no Master).',
+          'O monitor das telas é WebRTC (porta 8889). "Saída no ar · prévia sem vídeo" significa que só a prévia do navegador falhou; a saída segue.',
         ],
       },
       {
-        title: 'Exportação para ANCINE & Emissoras',
-        tag: 'CONFORMIDADE BR',
-        content:
-          'Gere relatórios oficiais em formato CSV compatível com os padrões de fiscalização da ANCINE e sistemas de tráfego/comercial:',
+        title: 'Entradas ao vivo',
+        tag: 'INGEST AO VIVO',
+        content: 'Fontes OMT, NDI, SRT e outras ficam na biblioteca como AO VIVO. Encontrar a fonte na rede não prova sinal: o selo de sinal vem do engine depois do CUE.',
         steps: [
-          'Filtre pelo dia da veiculação, tipo (VT, AO VIVO, COMERCIAL, GFX, SLATE, ENCHIMENTO) ou status de encerramento.',
-          'Clique em "EXPORTAR CSV ANCINE" para baixar o arquivo estruturado contendo ID, títulos, timecodes e quadros.',
-          'Utilize a opção "Imprimir" para gerar relatórios com formatação executiva para arquivamento regulatório.',
+          'Live nova entra com 60 min estimados (ajustável).',
+          'Fonte sem par reserva não tem troca automática; cadastre o par em Configurações › Entradas.',
         ],
       },
     ],
   },
   {
-    id: 'procedimentos-emergencia',
-    title: '7. Procedimentos de Emergência & Recuperação',
-    icon: 'warning',
+    id: 'aired',
+    title: '6. Aired (registro de veiculação)',
+    icon: 'history',
+    badge: 'REGISTRO',
+    summary: 'O que foi ao ar, por quanto tempo e como terminou.',
+    sections: [
+      {
+        title: 'Registro operacional',
+        tag: 'AS-RUN',
+        content: 'Cada item que entra no PGM é registrado com início, fim e motivo de encerramento (fim do arquivo, TAKE ou parada).',
+        steps: [
+          'Filtros por período, tipo (VT, AO VIVO, COMERCIAL, GFX, SLATE, ENCHIMENTO) e encerramento.',
+          'Exportar CSV ou XML As-run e Imprimir para arquivo.',
+        ],
+        note: 'É registro operacional do engine, não comprovante homologado: não atesta transmissão física nem atende sozinho a exigências regulatórias.',
+      },
+    ],
+  },
+  {
+    id: 'emergencia',
+    title: '7. Incidentes e contingência',
+    icon: 'emergency',
     badge: 'CONTINGÊNCIA',
-    summary: 'Guia tático para solução de incidentes no ar, perda de sinal, desvios de áudio e failover.',
+    summary: 'Sonda do PGM, slate, contingência, alertas e reinício.',
     sections: [
       {
-        title: 'Tela com Mensagem "SINTONIZANDO"',
-        tag: 'SINAL AUSENTE',
-        content:
-          'Se o monitor de PGM ou Preview do navegador permanecer na tela de "SINTONIZANDO":',
+        title: 'Sonda do PGM',
+        tag: 'BLACK / SILÊNCIO / FREEZE',
+        content: 'A sonda mede o PGM e alerta quando black, silêncio ou congelamento passam do limiar. Por padrão ela só alerta; a intervenção automática (AUTO) precisa ser ligada.',
         steps: [
-          '1. Verifique se o processo do canal está em execução na aba MONITOR.',
-          '2. Clique no botão "TENTAR NOVAMENTE" ou recarregue o player WebRTC.',
-          '3. Verifique se o MediaMTX está rodando na porta 8889 (WHEP).',
-          '4. Se o engine foi reiniciado recentemente, aguarde até 3 segundos para estabelecimento do buffer WebRTC.',
-        ],
-        note: 'A exibição SDI física continua operando mesmo se o monitor WebRTC do navegador estiver reconectando.',
-      },
-      {
-        title: 'Ausência de Áudio no Ar',
-        tag: 'DIAGNÓSTICO DE ÁUDIO',
-        content:
-          'Se o vídeo estiver no ar porém sem som perceptível na monitoração:',
-        steps: [
-          '1. Verifique se o ícone de alto-falante do monitor web está desmutado e o controle de volume acima de 0%.',
-          '2. Observe as barras de VU Meter: se houver barras verdes pulsando, o engine está gerando áudio corretamente.',
-          '3. Abra os Detalhes de Áudio do item na grade e confirme se a trilha correta está selecionada (Trilha 1 ou Trilha 2).',
-          '4. Verifique se o ganho do item não foi atenuado excessivamente no fader vertical.',
+          'CIENTE: registra que o operador viu o alerta e para os lembretes externos (Telegram/webhook).',
+          'ACIONAR SLATE: coloca o slate de emergência; DESARMAR SLATE volta.',
+          'Contingência e retorno (aba no Master): loop de reserva e volta manual à grade.',
         ],
       },
       {
-        title: 'Derrubada e Reinício do Engine sem Perda de Dados',
-        tag: 'RECOVERY TOTAL',
-        content:
-          'Caso haja congelamento de hardware na placa SDI ou falha grave de driver:',
+        title: 'Quando algo falha',
+        tag: 'RECUPERAÇÃO',
+        content: 'Confira primeiro os selos do cabeçalho (ENGINE, SAÍDAS, DISCO, ALERTAS) e a Visão integrada do Monitor.',
         steps: [
-          '1. Acesse o MONITOR e clique no botão de reinício rápido do canal afetado.',
-          '2. O RPlayout relê a grade imediatamente a partir da posição NTP atual sem reiniciar o servidor.',
-          '3. Em caso de necessidade de reiniciar o servidor inteiro, execute RPlayout-Server.exe; a grade pré-gravada é restaurada em menos de 2 segundos.',
-        ],
-      },
-    ],
-  },
-  {
-    id: 'manual-fluxos',
-    title: '8. Manual de Fluxos Operacionais',
-    icon: 'alt_route',
-    badge: 'MANUAL',
-    summary: 'Roteiro ponta a ponta dos fluxos operacionais: Ingest, QC, Grade, Master Playout, Monitoramento e As-Run.',
-    sections: [
-      {
-        title: 'Fluxo 1: Ingestão de Mídias e Controle de Qualidade (QC)',
-        tag: 'INGEST // QC',
-        content:
-          'O fluxo de ingestão garante que apenas mídias tecnicamente conformes entrem na cadeia de exibição da emissora.',
-        steps: [
-          '1. Escaneamento do Acervo: Na aba QC, clique em "Escanear Ingest / Acervo" para sincronizar arquivos do diretório RPLAYOUT_MEDIA.',
-          '2. Inspeção Visual e Frame-Accurate: Selecione o arquivo na tabela inferior. Visualize a reprodução de vídeo nativo (MP4/WebM) ou a régua de 24 quadros extraída via GStreamer Probe para codecs broadcast (MXF/ProRes).',
-          '3. Verificação de Níveis e Scopes: Analise o Waveform (luminância 0-100 IRE), Vectorscope (crominância) e medidores EBU R128 (-24 LUFS ±0.5, True-Peak < -1.0 dBTP).',
-          '4. Homologação ou Quarentena: Clique em "Aprovar QC" para liberar para a grade ou "Ignorar / Rejeitar" para isolar mídias fora do padrão com desvios graves.',
-        ],
-        technicalDetails: [
-          { label: 'Extração de Quadros', value: '24 quadros equidistantes via GStreamer pipeline' },
-          { label: 'Critério de Loudness', value: 'EBU R128: -24 LUFS integrado' },
-          { label: 'Aspect Ratio Seguro', value: 'Safe Action (90%) e Safe Title (80%)' },
-        ],
-      },
-      {
-        title: 'Fluxo 2: Programação Linear 24h & Planejamento Futuro (Playlist)',
-        tag: 'PROGRAMAÇÃO',
-        content:
-          'O fluxo de programação organiza a grade horária contínua para o dia atual e datas futuras com precisão de timecode.',
-        steps: [
-          '1. Seleção de Data: No calendário lateral esquerdo da aba PLAYLIST, escolha o dia desejado (hoje, amanhã ou datas futuras).',
-          '2. Criação ou Cópia de Grade: Para datas sem eventos, clique em "Copiar Grade Anterior" para duplicar a programação do dia anterior ou "Criar Grade em Branco".',
-          '3. Detecção e Resolução de GAPs: A barra de timeline contínua de 24h destaca intervalos sem programação em cor âmbar pulsante. Clique em "Auto-Fill Gaps" para preenchimento inteligente via catálogo MAM.',
-          '4. Adição e Ajuste de Eventos: Utilize "+ Evento" para inserir VTs ou fontes ao vivo, ou "Editar Trim" para definir pontos In/Out.',
-          '5. Publicação no Master: Clique em "SINCRONIZAR MASTER" (para hoje) ou "CARREGAR NO MASTER" para disponibilizar a grade na automação do ar.',
-        ],
-      },
-      {
-        title: 'Fluxo 3: Operação ao Vivo & Playout no Ar (Master Control)',
-        tag: 'CONTROLE NO AR',
-        content:
-          'O operador gerencia o canal em tempo real garantindo continuidade ininterrupta e transições perfeitas.',
-        steps: [
-          '1. Seleção e Arme (Cue): Clique no evento desejado na grade central para armá-lo no barramento de Preview (PVW).',
-          '2. Transição TAKE: Pressione a tecla BARRA DE ESPAÇO ou clique no botão TAKE para colocar o evento no ar (PGM) em corte instantâneo.',
-          '3. Monitoração e Fader de Ganho: Monitore o áudio no monitor PGM ou PVW de forma comutável (exclusiva). Ajuste o ganho fino através do fader vertical (-24 dB a +12 dB).',
-          '4. Regressiva de Segurança: Acompanhe a contagem regressiva em vermelho de alto contraste que alerta a proximidade do encerramento do evento.',
-          '5. Inserção de Fontes Externas: Pelo painel do acervo MAM, adicione fontes de placa DeckLink SDI, NDI ou SRT diretamente na grade ou no preview.',
-        ],
-      },
-      {
-        title: 'Fluxo 4: Monitoramento de Engenharia, Sinais e Redundância',
-        tag: 'TELEMETRIA',
-        content:
-          'Acompanhamento contínuo da saúde técnica das saídas SDI, fluxos IP de rede e contingência automática.',
-        steps: [
-          '1. Painel de Sinks: Na aba MONITOR, verifique o status operacional de SDI Hardware, NDI Multicast, SRT Caller/Listener e WebRTC WHEP.',
-          '2. Failover Primário/Secundário: Acompanhe o estado de redundância (Hot-Standby). Em caso de falha de decodificação no canal A, o comutador aciona o sinal de contingência B sem interrupção de portadora.',
-          '3. Terminal de Logs de Engenharia: Monitore os eventos do motor de playout em tempo real com filtros por aviso (WARN) ou motor (ENGINE).',
-          '4. Ajuste de Roteamento: Abra CONFIGURAÇÕES para calibrar cadência de quadros, dispositivos DeckLink SDI e chaves de streaming.',
-        ],
-      },
-      {
-        title: 'Fluxo 5: Comprovante de Exibição, Auditoria & ANCINE (Aired)',
-        tag: 'AS-RUN & ANCINE',
-        content:
-          'Rastreabilidade legal de cada segundo exibido para comprovação comercial e conformidade regulatória.',
-        steps: [
-          '1. Consulta Histórica: Na aba AIRED, filtre pela data de transmissão e visualize o log As-Run com horários exatos de início e término NTP.',
-          '2. Filtros Analíticos: Segregue eventos por tipo (VT, AO VIVO, COMERCIAL, GFX, SLATE, ENCHIMENTO) e motivo de encerramento (EOF, TAKE, STOP).',
-          '3. Auditoria de Desvios: Verifique o delta entre duração planejada e duração real executada no ar.',
-          '4. Exportação Regulamentar: Clique em "EXPORTAR CSV ANCINE" para emitir a planilha oficial compatível com os órgãos de fiscalização de radiodifusão.',
+          'Engine travado: Monitor › REINICIAR. O servidor recompõe a grade; o ar para por alguns segundos.',
+          'Incidentes críticos sem ciente geram lembrete a cada 2 min (até 5) no canal externo configurado.',
+          'Nunca atualize fora da janela 02:00–05:00 sem necessidade: a troca derruba o ar por ~3 min.',
         ],
       },
     ],
@@ -438,8 +290,8 @@ export function DocsView({
                 <h1 className="font-headline-md text-headline-md tracking-wider text-on-surface uppercase leading-none font-bold">
                   DOCS // MANUAL OPERACIONAL BROADCAST
                 </h1>
-                <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-primary-container text-on-primary-container border border-border-strong font-bold uppercase">
-                  VERSÃO 1.1 ESTÁVEL
+                <span className="font-label-caps text-[11px] px-2 py-0.5 rounded bg-primary-container text-on-primary-container border border-border-strong font-bold uppercase">
+                  VERSÃO 1.1
                 </span>
               </div>
               <span className="font-label-mono text-label-mono text-outline">
@@ -460,7 +312,7 @@ export function DocsView({
             </button>
             <button
               onClick={() => onNavigate('master')}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-primary hover:bg-accent-ice text-surface-base font-headline-md text-headline-md tracking-wide transition-all shadow-sm cursor-pointer"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-primary hover:bg-accent-ice text-surface-base font-body-sm text-[13px] font-semibold transition-all shadow-sm cursor-pointer"
             >
               <span className="material-symbols-outlined text-[18px]">play_circle</span>
               <span>VOLTAR AO MASTER</span>
@@ -488,7 +340,7 @@ export function DocsView({
                 <span className="material-symbols-outlined text-[16px]">close</span>
               </button>
             )}
-            <span className="font-label-mono text-[10px] text-outline px-2 py-0.5 rounded bg-surface-panel border border-border-subtle">
+            <span className="font-label-mono text-[12px] text-outline px-2 py-0.5 rounded bg-surface-panel border border-border-subtle">
               {filteredChapters.length} capítulos encontrados
             </span>
           </div>
@@ -498,7 +350,7 @@ export function DocsView({
         <div className="px-margin py-space-md flex-1 min-h-0 flex flex-col lg:flex-row gap-gutter overflow-hidden">
           {/* Sidebar de Capítulos */}
           <aside className="w-full lg:w-80 flex flex-col gap-1.5 shrink-0 overflow-y-auto broadcast-scroll pr-1">
-            <span className="font-label-caps text-[10px] text-outline uppercase font-bold px-1 mb-1">
+            <span className="font-label-caps text-[11px] text-outline uppercase font-bold px-1 mb-1">
               Índice de Capítulos
             </span>
             <div className="bg-surface-card rounded-xl border border-border-subtle p-2 flex flex-col gap-1 shadow-sm">
@@ -523,7 +375,7 @@ export function DocsView({
                           {chapter.title}
                         </span>
                         <span
-                          className={`text-[10px] px-1.5 py-0.2 rounded font-label-caps font-bold shrink-0 ${
+                          className={`text-[11px] px-1.5 py-0.2 rounded font-label-caps font-bold shrink-0 ${
                             isActive
                               ? 'bg-surface-base/30 text-on-primary-container'
                               : 'bg-surface-panel text-outline'
@@ -532,7 +384,7 @@ export function DocsView({
                           {chapter.sections.length}
                         </span>
                       </div>
-                      <p className="font-body-sm text-[10.5px] text-outline truncate mt-0.5 font-normal">
+                      <p className="font-body-sm text-[11px] text-outline truncate mt-0.5 font-normal">
                         {chapter.summary}
                       </p>
                     </div>
@@ -543,18 +395,18 @@ export function DocsView({
 
             {/* Caixa Rápida de Atalhos de Teclado */}
             <div className="bg-surface-card rounded-xl border border-border-subtle p-3 mt-2 shadow-sm flex flex-col gap-2">
-              <span className="font-label-caps text-[10px] text-primary uppercase font-bold flex items-center gap-1">
+              <span className="font-label-caps text-[11px] text-primary uppercase font-bold flex items-center gap-1">
                 <span className="material-symbols-outlined text-[14px]">keyboard</span>
                 Atalhos Rápidos de Estúdio
               </span>
-              <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[10px]">
+              <div className="grid grid-cols-2 gap-1.5 font-label-mono text-[12px]">
                 <div className="bg-surface-panel p-1.5 rounded border border-border-subtle flex items-center justify-between">
                   <span className="text-outline">TAKE:</span>
                   <span className="font-bold text-on-surface">ESPAÇO</span>
                 </div>
                 <div className="bg-surface-panel p-1.5 rounded border border-border-subtle flex items-center justify-between">
-                  <span className="text-outline">PARAR:</span>
-                  <span className="font-bold text-on-air-crimson">ESC</span>
+                  <span className="text-outline">CUE:</span>
+                  <span className="font-bold text-on-surface">F2</span>
                 </div>
                 <div className="bg-surface-panel p-1.5 rounded border border-border-subtle flex items-center justify-between">
                   <span className="text-outline">DESFAZER:</span>
@@ -582,7 +434,7 @@ export function DocsView({
                       <h2 className="font-headline-md text-[18px] text-on-surface font-bold">
                         {activeChapter.title}
                       </h2>
-                      <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/40 font-bold">
+                      <span className="font-label-caps text-[11px] px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/40 font-bold">
                         {activeChapter.badge}
                       </span>
                     </div>
@@ -603,7 +455,7 @@ export function DocsView({
                         <span className="w-2 h-2 rounded-full bg-primary"></span>
                         {sec.title}
                       </h3>
-                      <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-surface-panel border border-border-subtle text-outline font-bold">
+                      <span className="font-label-caps text-[11px] px-2 py-0.5 rounded bg-surface-panel border border-border-subtle text-outline font-bold">
                         {sec.tag}
                       </span>
                     </div>
@@ -615,7 +467,7 @@ export function DocsView({
                     {/* Passos e Procedimentos */}
                     {sec.steps && sec.steps.length > 0 && (
                       <div className="bg-surface-panel rounded-lg p-3.5 border border-border-subtle/80 flex flex-col gap-2">
-                        <span className="font-label-caps text-[10px] text-outline uppercase font-bold">
+                        <span className="font-label-caps text-[11px] text-outline uppercase font-bold">
                           Procedimento Recomendado:
                         </span>
                         <ul className="flex flex-col gap-1.5 font-body-sm text-[12px] text-on-surface">
@@ -647,10 +499,10 @@ export function DocsView({
                             key={tdIdx}
                             className="bg-surface-panel px-3 py-2 rounded border border-border-subtle flex items-center justify-between gap-2"
                           >
-                            <span className="font-label-caps text-[10px] text-outline uppercase">
+                            <span className="font-label-caps text-[11px] text-outline uppercase">
                               {td.label}
                             </span>
-                            <span className="font-label-mono text-[11px] text-accent-ice-bright font-bold truncate">
+                            <span className="font-label-mono text-[12px] text-accent-ice-bright font-bold truncate">
                               {td.value}
                             </span>
                           </div>

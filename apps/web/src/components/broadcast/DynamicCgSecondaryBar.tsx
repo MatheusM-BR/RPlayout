@@ -58,7 +58,7 @@ export function DynamicCgSecondaryBar({className='',onMessage,channelId}: Props)
   return <div id="cg-secondary-events-bar" className={`bg-surface-panel border border-border-subtle rounded-xl p-3 ${className}`}>
     <div className="flex flex-wrap items-center justify-between gap-2">
       <span className="font-headline-md font-bold">GRAFISMOS & EVENTOS</span>
-      <span className="text-[10px] text-outline">{snapshot?.simulated ? 'SIMULADO · sem saída física' : snapshot ? 'ESTADO DO SERVIDOR · confira PGM' : 'SEM CONFIRMAÇÃO'}</span>
+      <span className="text-[11px] text-outline">{snapshot?.simulated ? 'SIMULADO · sem saída física' : snapshot ? 'ESTADO DO SERVIDOR · confira PGM' : 'SEM CONFIRMAÇÃO'}</span>
       <div className="flex flex-wrap gap-2">{layers.map(layer => {
         const state=snapshot?.layers[layer.key],seconds=remaining(state)
         return <button key={layer.key} disabled={busy || !snapshot} onClick={()=>trigger(layer.key)}

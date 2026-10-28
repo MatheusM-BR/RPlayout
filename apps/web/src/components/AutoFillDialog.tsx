@@ -191,11 +191,11 @@ export function AutoFillDialog(props:Props) {
             <div className="flex flex-col">
               <h2 className="font-headline-sm text-sm font-bold text-on-surface tracking-wide uppercase flex items-center gap-2">
                 Assistente de AutoFill
-                <span className="px-1.5 py-0.2 rounded bg-primary/20 text-primary text-[10px] font-label-mono">
+                <span className="px-1.5 py-0.2 rounded bg-primary/20 text-primary text-[12px] font-label-mono">
                   MAM AI 24H
                 </span>
               </h2>
-              <span className="font-label-mono text-[10px] text-outline">
+              <span className="font-label-mono text-[12px] text-outline">
                 Preenchimento inteligente e ponderado de gaps e faixas da grade linear
               </span>
             </div>
@@ -253,7 +253,7 @@ export function AutoFillDialog(props:Props) {
           {mode === 'duration' && (
             <div className="bg-surface-panel p-4 rounded-lg border border-border-subtle flex flex-col gap-3">
               <div className="flex items-center justify-between">
-                <span className="font-label-caps text-[10px] text-outline font-bold uppercase tracking-wider">
+                <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider">
                   TEMPO A PREENCHER
                 </span>
                 <span className="px-2 py-0.5 rounded bg-primary/20 text-primary font-label-mono font-bold text-xs">
@@ -263,9 +263,9 @@ export function AutoFillDialog(props:Props) {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-label-mono text-outline flex items-center justify-between">
+                  <label className="text-[12px] font-label-mono text-outline flex items-center justify-between">
                     <span>Horas</span>
-                    <span className="text-[10px] text-primary font-bold">h</span>
+                    <span className="text-[11px] text-primary font-bold">h</span>
                   </label>
                   <input
                     type="number"
@@ -279,9 +279,9 @@ export function AutoFillDialog(props:Props) {
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-label-mono text-outline flex items-center justify-between">
+                  <label className="text-[12px] font-label-mono text-outline flex items-center justify-between">
                     <span>Minutos</span>
-                    <span className="text-[10px] text-primary font-bold">m</span>
+                    <span className="text-[11px] text-primary font-bold">m</span>
                   </label>
                   <input
                     type="number"
@@ -297,7 +297,7 @@ export function AutoFillDialog(props:Props) {
 
               {/* Atalhos Rápidos de Duração */}
               <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                <span className="text-[10px] font-label-caps text-outline mr-1">ATALHOS:</span>
+                <span className="text-[11px] font-label-caps text-outline mr-1">ATALHOS:</span>
                 {[
                   { label: '15m', h: 0, m: 15 },
                   { label: '30m', h: 0, m: 30 },
@@ -315,7 +315,7 @@ export function AutoFillDialog(props:Props) {
                       setHours(chip.h)
                       setMinutesInput(chip.m)
                     }}
-                    className={`px-2 py-0.5 rounded text-[10px] font-label-mono transition-colors cursor-pointer border ${
+                    className={`px-2 py-0.5 rounded text-[12px] font-label-mono transition-colors cursor-pointer border ${
                       hours === chip.h && minutesInput === chip.m
                         ? 'bg-primary text-surface-base border-primary font-bold'
                         : 'bg-surface-container border-border-subtle text-outline hover:text-on-surface hover:border-primary/50'
@@ -328,7 +328,7 @@ export function AutoFillDialog(props:Props) {
 
               {/* Ponto de Inserção na Grade (Modo Duração) */}
               <div className="pt-3 mt-1 border-t border-border-subtle/60 flex flex-col gap-2">
-                <span className="font-label-caps text-[10px] text-outline font-bold uppercase tracking-wider flex items-center gap-1.5">
+                <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[15px] text-primary">add_location_alt</span>
                   PONTO DE INSERÇÃO NA GRADE
                 </span>
@@ -344,11 +344,11 @@ export function AutoFillDialog(props:Props) {
                           : 'bg-surface-base border-border-subtle text-outline hover:text-on-surface'
                       }`}
                     >
-                      <span className="font-label-caps text-[10px] font-bold flex items-center gap-1">
+                      <span className="font-label-caps text-[11px] font-bold flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-armed-amber"></span>
                         No GAP Selecionado
                       </span>
-                      <span className="text-[10px] font-label-mono opacity-80">
+                      <span className="text-[12px] font-label-mono opacity-80">
                         A partir das {initialStart}
                       </span>
                     </button>
@@ -363,11 +363,11 @@ export function AutoFillDialog(props:Props) {
                         : 'bg-surface-base border-border-subtle text-outline hover:text-on-surface'
                     }`}
                   >
-                    <span className="font-label-caps text-[10px] font-bold flex items-center gap-1">
+                    <span className="font-label-caps text-[11px] font-bold flex items-center gap-1">
                       <span className="material-symbols-outlined text-[13px]">schedule</span>
                       No Horário Específico
                     </span>
-                    <span className="text-[10px] font-label-mono opacity-80">
+                    <span className="text-[12px] font-label-mono opacity-80">
                       Definir hora de início (hh:mm)
                     </span>
                   </button>
@@ -381,11 +381,11 @@ export function AutoFillDialog(props:Props) {
                         : 'bg-surface-base border-border-subtle text-outline hover:text-on-surface'
                     }`}
                   >
-                    <span className="font-label-caps text-[10px] font-bold flex items-center gap-1">
+                    <span className="font-label-caps text-[11px] font-bold flex items-center gap-1">
                       <span className="material-symbols-outlined text-[13px]">vertical_align_bottom</span>
                       No Final da Grade
                     </span>
-                    <span className="text-[10px] font-label-mono opacity-80">
+                    <span className="text-[12px] font-label-mono opacity-80">
                       Após o último item programado
                     </span>
                   </button>
@@ -393,7 +393,7 @@ export function AutoFillDialog(props:Props) {
 
                 {insertTarget === 'time' && (
                   <div className="flex items-center gap-2 mt-1 bg-surface-base p-2 rounded border border-border-subtle">
-                    <label className="text-[11px] font-label-mono text-outline">
+                    <label className="text-[12px] font-label-mono text-outline">
                       Iniciar inserção às:
                     </label>
                     <input
@@ -403,13 +403,13 @@ export function AutoFillDialog(props:Props) {
                       placeholder="ex: 14:30"
                       className="bg-surface-panel border border-border-subtle focus:border-primary text-on-surface text-sm font-label-mono px-2.5 py-1 rounded w-28 focus:outline-none"
                     />
-                    <span className="text-[10px] text-outline font-label-mono">
+                    <span className="text-[12px] text-outline font-label-mono">
                       (Os itens serão acomodados nesta hora e os subsequentes reorganizados)
                     </span>
                   </div>
                 )}
 
-                <div className="p-2 rounded bg-surface-base/80 border border-border-subtle/60 text-[10px] text-outline leading-relaxed flex items-start gap-1.5 mt-1">
+                <div className="p-2 rounded bg-surface-base/80 border border-border-subtle/60 text-[11px] text-outline leading-relaxed flex items-start gap-1.5 mt-1">
                   <span className="material-symbols-outlined text-[15px] text-primary shrink-0">info</span>
                   <span>
                     <strong>Como funciona o Modo Duração:</strong> Você define o tempo total a ser preenchido ({durationSummary}). O sistema seleciona os vídeos do MAM mais adequados e os insere <strong>{insertTarget === 'gap' ? `exatamente no GAP detectado às ${initialStart}` : insertTarget === 'time' ? `no ponto horário ${customInsertTime}` : 'no fim da programação atual'}</strong>, recalculando os horários da grade sem criar novos buracos.
@@ -422,7 +422,7 @@ export function AutoFillDialog(props:Props) {
           {mode === 'range' && (
             <div className="bg-surface-panel p-4 rounded-lg border border-border-subtle flex flex-col gap-3">
               <div className="flex items-center justify-between">
-                <span className="font-label-caps text-[10px] text-outline font-bold uppercase tracking-wider">
+                <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider">
                   FAIXA HORÁRIA DE EXIBIÇÃO
                 </span>
                 <span className="px-2 py-0.5 rounded bg-primary/20 text-primary font-label-mono font-bold text-xs">
@@ -432,7 +432,7 @@ export function AutoFillDialog(props:Props) {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-label-mono text-outline">
+                  <label className="text-[12px] font-label-mono text-outline">
                     De (Horário de Início):
                   </label>
                   <input
@@ -445,7 +445,7 @@ export function AutoFillDialog(props:Props) {
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-label-mono text-outline">
+                  <label className="text-[12px] font-label-mono text-outline">
                     Até (Horário de Término):
                   </label>
                   <input
@@ -458,7 +458,7 @@ export function AutoFillDialog(props:Props) {
                 </div>
               </div>
 
-              <div className="p-2 rounded bg-surface-base/80 border border-border-subtle/60 text-[10px] text-outline leading-relaxed flex items-start gap-1.5">
+              <div className="p-2 rounded bg-surface-base/80 border border-border-subtle/60 text-[11px] text-outline leading-relaxed flex items-start gap-1.5">
                 <span className="material-symbols-outlined text-[15px] text-primary shrink-0">info</span>
                 <span>
                   <strong>Como funciona o Modo Intervalo:</strong> Você especifica a janela exata do relógio ({timeFrom} até {timeTo}). O sistema calcula a duração ({durationSummary}) e insere os vídeos a partir das <strong>{timeFrom}</strong>, preenchendo a lacuna entre programas.
@@ -505,7 +505,7 @@ export function AutoFillDialog(props:Props) {
                       key={chip.label}
                       type="button"
                       onClick={() => setAvoidHours(chip.val)}
-                      className={`px-2 py-0.5 rounded text-[10px] font-label-mono transition-colors cursor-pointer border ${
+                      className={`px-2 py-0.5 rounded text-[12px] font-label-mono transition-colors cursor-pointer border ${
                         avoidHours === chip.val
                           ? 'bg-status-ok text-surface-base border-status-ok font-bold'
                           : 'bg-surface-container border-border-subtle text-outline hover:text-on-surface'
@@ -517,7 +517,7 @@ export function AutoFillDialog(props:Props) {
                 </div>
               </div>
 
-              <p className="text-[10px] text-outline font-body-sm leading-relaxed">
+              <p className="text-[11px] text-outline font-body-sm leading-relaxed">
                 Padrão zero (0h): todos os arquivos aprovados no acervo podem ser propostos. Se você aumentar, o sistema protege contra reprises muito próximas.
               </p>
             </div>
@@ -541,7 +541,7 @@ export function AutoFillDialog(props:Props) {
                     {`${plan.items.length} itens na proposta · ${dur(plan.window,rate)} solicitados`}
                   </span>
                 </div>
-                <span className="font-label-mono text-[11px]">
+                <span className="font-label-mono text-[12px]">
                   {plan.reason === 'FILLED'
                     ? `Saldo: ${dur(plan.leftover, rate)}`
                     : `Faltaram: ${dur(plan.leftover, rate)}`}
@@ -560,17 +560,17 @@ export function AutoFillDialog(props:Props) {
                       className="px-3 py-2 flex items-center justify-between text-body-sm hover:bg-surface-panel/60 transition-colors"
                     >
                       <div className="flex items-center gap-2.5 truncate pr-2">
-                        <span className="font-label-mono text-[10px] text-outline w-5 shrink-0">
+                        <span className="font-label-mono text-[12px] text-outline w-5 shrink-0">
                           {index + 1}.
                         </span>
-                        <span className="font-label-mono text-[11px] text-primary font-bold shrink-0">
+                        <span className="font-label-mono text-[12px] text-primary font-bold shrink-0">
                           {dur(item.durationFrames, rate)}
                         </span>
                         <div className="flex flex-col truncate">
                           <span className="font-bold text-on-surface text-xs truncate">
                             {item.title}
                           </span>
-                          <span className="text-[10px] font-label-mono text-outline truncate">
+                          <span className="text-[12px] font-label-mono text-outline truncate">
                             {item.explanation?.category ?? 'Geral'} ·{' '}
                             {item.explanation?.lastAiredAt
                               ? `Último ar: ${new Date(item.explanation.lastAiredAt).toLocaleDateString('pt-BR')}`
@@ -580,7 +580,7 @@ export function AutoFillDialog(props:Props) {
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
-                        <span className="px-1.5 py-0.5 rounded bg-surface-container text-outline text-[10px] font-label-mono">
+                        <span className="px-1.5 py-0.5 rounded bg-surface-container text-outline text-[12px] font-label-mono">
                           Score {item.explanation?.preference ?? 0}
                         </span>
                       </div>

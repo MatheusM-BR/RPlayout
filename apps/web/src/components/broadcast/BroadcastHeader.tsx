@@ -5,6 +5,10 @@ import { formatStandardRate } from '../../format.js'
 import { ContinuityCacheBadge } from './ContinuityCacheBadge.js'
 import { useAirState } from '../../domain/air-state.js'
 import { HeaderHealth } from './HeaderHealth.js'
+import { PROFILES, PROFILE_IDS, defaultProfileFor, navWorkspaces, profileShowsSettings, type ProfileId } from '../../domain/profiles.js'
+import { useStoredChoice } from '../../domain/stored-choice.js'
+
+const WORKSPACE_LABEL: Partial<Record<WorkspaceId, string>> = { master: 'Master', playlist: 'Playlist', qc: 'QC', monitor: 'Monitor', aired: 'Aired', docs: 'Docs', audit: 'Auditoria', users: 'Usuários' }
 
 interface Props {
   activeWorkspace: WorkspaceId
@@ -39,6 +43,8 @@ export function BroadcastHeader({
   const sharedAir = useAirState()
   isLiveOnAir = isLiveOnAir ?? sharedAir ?? undefined
   const [channelDropdownOpen, setChannelDropdownOpen] = useState(false)
+  const [profile, setProfile] = useStoredChoice<ProfileId>('rplayout.profile', PROFILE_IDS, defaultProfileFor(sessionRole))
+  const profileInfo = PROFILES.find(entry => entry.id === profile) ?? PROFILES[PROFILES.length - 1]!
   const rate = channel.rate
   const fps = rate.num / rate.den
 
@@ -76,13 +82,13 @@ export function BroadcastHeader({
               RPlayout
             </span>
             {isLiveOnAir === undefined ? (
-              <span className="px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline text-[10px] whitespace-nowrap">PGM: N/D</span>
+              <span className="px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline text-[11px] whitespace-nowrap">PGM: N/D</span>
             ) : isLiveOnAir ? (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[10px] font-bold tracking-wider whitespace-nowrap shrink-0">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[11px] font-bold tracking-wider whitespace-nowrap shrink-0">
                 <span className="w-1.5 h-1.5 rounded-full bg-on-air-crimson animate-pulse"></span> NO AR
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline font-label-caps text-[10px] font-bold tracking-wider whitespace-nowrap shrink-0">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline font-label-caps text-[11px] font-bold tracking-wider whitespace-nowrap shrink-0">
                 <span className="material-symbols-outlined text-[12px] text-armed-amber">pause</span> PARADO
               </span>
             )}
@@ -102,7 +108,7 @@ export function BroadcastHeader({
                 <span className="font-body-md text-body-md font-semibold text-on-surface leading-tight">
                   {channel.name || 'Canal 1 - TV Principal HD'}
                 </span>
-                <span className="font-label-mono text-[10px] text-outline leading-tight">
+                <span className="font-label-mono text-[12px] text-outline leading-tight">
                   {formatStandardRate(channel.rate, channel.scan, channel.height)} • Master Principal
                 </span>
               </div>
@@ -125,7 +131,7 @@ export function BroadcastHeader({
                     }`}
                   >
                     <span>{ch.name}</span>
-                    <span className="font-label-mono text-[10px] opacity-75">
+                    <span className="font-label-mono text-[12px] opacity-75">
                       {formatStandardRate(ch.rate, ch.scan, ch.height)}
                     </span>
                   </button>
@@ -155,67 +161,21 @@ export function BroadcastHeader({
 
         {/* Right: Nav & User Profile & Quick Dialogs */}
         <div className="flex items-center gap-space-md">
-          <nav className="flex items-center gap-space-xs bg-surface-panel p-space-xs rounded border border-border-subtle">
-            <button
-              onClick={() => onNavigate('master')}
-              className={`px-space-md py-1 uppercase transition-colors rounded font-body-sm text-body-sm ${
-                activeWorkspace === 'master'
-                  ? 'bg-primary-container text-on-primary-container font-bold border border-border-strong'
-                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
-              }`}
-            >
-              Master
-            </button>
-            <button
-              onClick={() => onNavigate('playlist')}
-              className={`px-space-md py-1 uppercase transition-colors rounded font-body-sm text-body-sm ${
-                activeWorkspace === 'playlist'
-                  ? 'bg-primary-container text-on-primary-container font-bold border border-border-strong'
-                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
-              }`}
-            >
-              Playlist
-            </button>
-            <button
-              onClick={() => onNavigate('qc')}
-              className={`px-space-md py-1 uppercase transition-colors rounded font-body-sm text-body-sm ${
-                activeWorkspace === 'qc'
-                  ? 'bg-primary-container text-on-primary-container font-bold border border-border-strong'
-                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
-              }`}
-            >
-              QC
-            </button>
-            <button
-              onClick={() => onNavigate('monitor')}
-              className={`px-space-md py-1 uppercase transition-colors rounded font-body-sm text-body-sm ${
-                activeWorkspace === 'monitor'
-                  ? 'bg-primary-container text-on-primary-container font-bold border border-border-strong'
-                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
-              }`}
-            >
-              Monitor
-            </button>
-            <button
-              onClick={() => onNavigate('aired')}
-              className={`px-space-md py-1 uppercase transition-colors rounded font-body-sm text-body-sm ${
-                activeWorkspace === 'aired'
-                  ? 'bg-primary-container text-on-primary-container font-bold border border-border-strong'
-                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
-              }`}
-            >
-              Aired
-            </button>
-            <button
-              onClick={() => onNavigate('docs')}
-              className={`px-space-md py-1 uppercase transition-colors rounded font-body-sm text-body-sm ${
-                activeWorkspace === 'docs'
-                  ? 'bg-primary-container text-on-primary-container font-bold border border-border-strong'
-                  : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
-              }`}
-            >
-              Docs
-            </button>
+          <nav className="flex items-center gap-space-xs bg-surface-panel p-space-xs rounded border border-border-subtle" aria-label={`Telas do perfil ${profileInfo.label}`}>
+            {navWorkspaces(profile, activeWorkspace).map(id => (
+              <button
+                key={id}
+                onClick={() => onNavigate(id)}
+                aria-current={activeWorkspace === id ? 'page' : undefined}
+                className={`px-space-md py-1 uppercase transition-colors rounded font-body-sm text-body-sm ${
+                  activeWorkspace === id
+                    ? 'bg-primary-container text-on-primary-container font-bold border border-border-strong'
+                    : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
+                }`}
+              >
+                {WORKSPACE_LABEL[id] ?? id}
+              </button>
+            ))}
           </nav>
 
           <div className="h-6 w-px bg-border-subtle"></div>
@@ -229,15 +189,15 @@ export function BroadcastHeader({
             >
               <span className="material-symbols-outlined text-[18px]">notifications</span>
               {problemasCount > 0 && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-on-air-crimson text-[10px] text-surface-base font-bold flex items-center justify-center animate-pulse">
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-on-air-crimson text-[11px] text-surface-base font-bold flex items-center justify-center animate-pulse">
                   {problemasCount}
                 </span>
               )}
             </button>
           )}
 
-          {/* Configurações */}
-          <button
+          {/* Configurações (perfis Engenharia e Completo) */}
+          {(profileShowsSettings(profile) || activeWorkspace === 'settings') && <button
             onClick={onOpenSettings || (() => onNavigate('settings'))}
             className={`p-1.5 rounded-lg transition-colors border ${
               activeWorkspace === 'settings'
@@ -247,7 +207,7 @@ export function BroadcastHeader({
             title="Configurações e Canais"
           >
             <span className="material-symbols-outlined text-[18px]">settings</span>
-          </button>
+          </button>}
 
           {/* Operador Master */}
           <div className="flex items-center gap-space-sm pl-space-xs">
@@ -256,10 +216,16 @@ export function BroadcastHeader({
                 {sessionRole || 'Operador Master'}
               </div>
               <div className="flex items-center justify-end gap-space-xs mt-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-ok"></span>
-                <span className="font-label-caps text-[10px] text-outline uppercase">
-                  {authRequired ? 'AUTENTICADO' : 'ONLINE'}
-                </span>
+                <span className="w-1.5 h-1.5 rounded-full bg-status-ok" title={authRequired ? 'Sessão autenticada' : 'Acesso local (sem login)'}></span>
+                <select
+                  aria-label="Perfil de navegação desta estação"
+                  title="Perfil: escolhe quais telas aparecem no menu desta estação. Não altera permissões."
+                  value={profile}
+                  onChange={event => setProfile(event.target.value as ProfileId)}
+                  className="w-auto bg-transparent font-label-caps text-[11px] text-outline uppercase border-0 p-0 pr-1 cursor-pointer hover:text-on-surface focus:outline-none"
+                >
+                  {PROFILES.map(entry => <option key={entry.id} value={entry.id} title={entry.description}>{entry.label}</option>)}
+                </select>
               </div>
             </div>
             <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shadow-sm">

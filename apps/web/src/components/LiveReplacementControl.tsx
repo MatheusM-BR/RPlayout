@@ -69,7 +69,7 @@ export function LiveReplacementControl({channelId,info,sources}:Props){
   }
   const ready=view?.receipt?.phase==='READY'&&!view.closed
 
-  return <div aria-label="Troca de fonte da live no PGM" className="mt-2 rounded border border-border-subtle p-2 text-[10px] text-left space-y-1">
+  return <div aria-label="Troca de fonte da live no PGM" className="mt-2 rounded border border-border-subtle p-2 text-[11px] text-left space-y-1">
     <div className="font-semibold">Fonte da live no PGM: {current?.name??info.pgmSourceId??'não catalogada'}</div>
     {info.selectionUncertain&&<div role="alert" className="text-armed-amber">Seleção nativa inconclusiva: consulte a transação ou confirme STOP antes de outro corte.</div>}
     <div className="flex flex-wrap gap-1">

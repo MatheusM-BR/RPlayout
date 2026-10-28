@@ -8,6 +8,8 @@ interface Props {
   channelId: string
   className?: string
   compact?: boolean
+  /** Master mostra a contingência na aba de ferramentas (ContingencyTool). */
+  showContingency?: boolean
   onSlateTriggered?: (active: boolean) => void
 }
 
@@ -25,7 +27,7 @@ function seconds(ms: number) {
  * Única apresentação da sonda PGM. Todo estado vem do processo do servidor;
  * esta tela nunca simula frames, áudio, alarmes ou a troca para slate.
  */
-export function PgmProbeBanner({ channelId, className = '', compact = false, onSlateTriggered }: Props) {
+export function PgmProbeBanner({ channelId, className = '', compact = false, showContingency = true, onSlateTriggered }: Props) {
   const [status, setStatus] = useState<ProbeStatus | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
@@ -112,8 +114,8 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
     return (
       <div className={`flex items-center gap-1.5 ${className}`} title={failure ?? 'Telemetria da sonda PGM'}>
         <div className={`flex flex-col items-center justify-center px-2 py-1 rounded border text-center ${healthy ? 'bg-surface-panel border-border-subtle text-status-ok' : 'bg-armed-amber/20 border-armed-amber text-armed-amber'}`}>
-          <span className="font-label-caps text-[10px] uppercase font-bold leading-none">SONDA</span>
-          <span className="font-label-mono text-[10px] font-bold leading-none mt-0.5">{stateLabel}</span>
+          <span className="font-label-caps text-[11px] uppercase font-bold leading-none">SONDA</span>
+          <span className="font-label-mono text-[12px] font-bold leading-none mt-0.5">{stateLabel}</span>
         </div>
       </div>
     )
@@ -121,52 +123,66 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, onS
 
   const metrics = status?.metrics
   const thresholds = status?.thresholds
+  // Faixa de altura fixa (U5): alerta e telemetria dividem a mesma linha, o
+  // layout não pula quando um alerta surge ou some.
+  const tone = failure ? 'warn' : showAlertBanner ? 'bad' : healthy ? 'ok' : 'idle'
+  const rowTone = { ok: 'bg-surface-card border-border-subtle', idle: 'bg-surface-card border-border-subtle', warn: 'bg-armed-amber/15 border-armed-amber', bad: 'bg-on-air-crimson/15 border-on-air-crimson' }[tone]
+  const chipTone = { ok: 'text-status-ok-bright border-status-ok/50', idle: 'text-outline border-border-subtle', warn: 'text-armed-amber border-armed-amber', bad: 'text-on-air-crimson border-on-air-crimson' }[tone]
+  const message = failure
+    ? `Sonda PGM indisponível: ${failure}`
+    : status?.emergencySlateActive
+      ? 'Slate de emergência confirmado pelo engine.'
+      : alert && showAlertBanner
+        ? `${alertName[alert.type]} acima do limiar: ${seconds(alert.durationMs)} / ${seconds(alert.thresholdMs)}. ${alert.actionMessage ?? ''}`
+        : null
   return (
     <section className={`w-full flex flex-col gap-1.5 ${className}`} aria-label="Sonda de qualidade do PGM">
-      {showAlertBanner && (
-        <div role="alert" className={`px-3 py-2 rounded-lg border flex flex-wrap items-center justify-between gap-3 ${failure ? 'bg-armed-amber/15 border-armed-amber text-armed-amber' : 'bg-on-air-crimson/15 border-on-air-crimson text-on-air-crimson'}`}>
-          <div className="font-label-mono text-[12px]">
-            {failure
-              ? `Sonda PGM indisponível: ${failure}`
-              : status?.emergencySlateActive
-                ? 'Slate de emergência confirmado pelo engine.'
-                : `${alertName[alert!.type]} acima do limiar: ${seconds(alert!.durationMs)} / ${seconds(alert!.thresholdMs)}. ${alert!.actionMessage ?? ''}`}
-          </div>
-          {status && alert && !status.emergencySlateActive && !failure && (
-            <button disabled={pending} onClick={() => void acknowledge()} className="ml-auto px-2.5 py-1 rounded border border-on-air-crimson bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[11px] font-bold">
-              CIENTE
-            </button>
-          )}
-          {status && (
-            <button disabled={pending} onClick={() => void toggleSlate()} className="px-2.5 py-1 rounded border border-border-subtle bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[11px] font-bold">
-              {pending ? 'PROCESSANDO…' : status.emergencySlateActive ? 'DESARMAR SLATE' : 'ACIONAR SLATE'}
-            </button>
-          )}
-        </div>
-      )}
-
-      <div className="w-full bg-surface-card border border-border-subtle px-3 py-1.5 rounded-lg flex flex-wrap items-center justify-between gap-2 shadow-xs">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <span className={`material-symbols-outlined text-[16px] ${healthy ? 'text-status-ok' : 'text-armed-amber'}`}>troubleshoot</span>
-            <span className="font-label-caps text-[10px] text-on-surface font-bold uppercase tracking-wider">Sonda de Qualidade PGM</span>
-            {alert && acknowledgedKey === alertKey && <span className="font-label-caps text-[11px] text-armed-amber font-bold">{alertName[alert.type]} · CIENTE</span>}
-          </div>
-          <div className="h-3.5 w-px bg-border-subtle" />
-          <div className="flex items-center gap-3 font-label-mono text-[11px]">
-            <span>Black: <strong className="text-on-surface">{metrics && thresholds ? `${seconds(metrics.blackDurationMs)} / ${seconds(thresholds.blackThresholdMs)}` : 'N/D'}</strong></span>
-            <span>Silêncio: <strong className="text-on-surface">{metrics && thresholds ? `${metrics.audioDbfs?.toFixed(1) ?? 'N/D'} dBFS / ${thresholds.silenceDbfs} dBFS` : 'N/D'}</strong></span>
-            <span>Freeze: <strong className="text-on-surface">{metrics && thresholds ? `${seconds(metrics.freezeDurationMs)} / ${seconds(thresholds.freezeThresholdMs)}` : 'N/D'}</strong></span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="font-label-mono text-[10px] text-outline">{telemetryAvailable ? `Amostra: ${new Date(status!.lastSampleAt!).toLocaleTimeString('pt-BR')}` : 'Aguardando medição real do engine'}</span>
-          {!compact && status && <button type="button" disabled={pending} onClick={() => void toggleAutomation()} className="text-[10px] px-2 py-1 rounded border border-border-subtle">
-            {status.automaticActionsEnabled ? 'AUTO: LIGADA' : 'AUTO: DESLIGADA'}
-          </button>}
-        </div>
+      <div role={message ? 'alert' : undefined} className={`w-full h-9 border px-3 rounded-lg flex items-center gap-3 overflow-hidden ${rowTone}`}>
+        <span className={`material-symbols-outlined text-[18px] shrink-0 ${tone === 'ok' ? 'text-status-ok' : tone === 'idle' ? 'text-outline' : tone === 'warn' ? 'text-armed-amber' : 'text-on-air-crimson'}`}>troubleshoot</span>
+        <span className="font-label-caps text-[11px] text-on-surface font-bold uppercase tracking-wider shrink-0">Sonda PGM</span>
+        <span className={`shrink-0 px-1.5 py-0.5 rounded border font-label-caps text-[11px] font-bold ${chipTone}`}>{alert && acknowledgedKey === alertKey ? `${alertName[alert.type]} · CIENTE` : stateLabel}</span>
+        {message
+          ? <span className={`min-w-0 flex-1 truncate font-label-mono text-[12px] ${tone === 'warn' ? 'text-armed-amber' : 'text-on-air-crimson'}`} title={message}>{message}</span>
+          : <span className="min-w-0 flex-1 truncate font-label-mono text-[12px] text-outline">
+              Black <strong className="text-on-surface">{metrics && thresholds ? `${seconds(metrics.blackDurationMs)} / ${seconds(thresholds.blackThresholdMs)}` : '—'}</strong>
+              {'  ·  '}Silêncio <strong className="text-on-surface">{metrics && thresholds ? `${metrics.audioDbfs?.toFixed(1) ?? '—'} / ${thresholds.silenceDbfs} dBFS` : '—'}</strong>
+              {'  ·  '}Freeze <strong className="text-on-surface">{metrics && thresholds ? `${seconds(metrics.freezeDurationMs)} / ${seconds(thresholds.freezeThresholdMs)}` : '—'}</strong>
+            </span>}
+        <span className="shrink-0 font-label-mono text-[12px] text-outline hidden 2xl:inline">{telemetryAvailable ? `Amostra ${new Date(status!.lastSampleAt!).toLocaleTimeString('pt-BR')}` : 'Aguardando medição do engine'}</span>
+        {status && alert && showAlertBanner && !status.emergencySlateActive && !failure && (
+          <button disabled={pending} onClick={() => void acknowledge()} className="shrink-0 px-2.5 py-1 rounded border border-on-air-crimson bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[11px] font-bold">
+            CIENTE
+          </button>
+        )}
+        {status && showAlertBanner && (
+          <button disabled={pending} onClick={() => void toggleSlate()} className="shrink-0 px-2.5 py-1 rounded border border-border-subtle bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[11px] font-bold">
+            {pending ? 'PROCESSANDO…' : status.emergencySlateActive ? 'DESARMAR SLATE' : 'ACIONAR SLATE'}
+          </button>
+        )}
+        {status && <button type="button" disabled={pending} onClick={() => void toggleAutomation()} className="shrink-0 text-[11px] px-2 py-1 rounded border border-border-subtle" title="Intervenção automática da sonda no PGM">
+          {status.automaticActionsEnabled ? 'AUTO: LIGADA' : 'AUTO: DESLIGADA'}
+        </button>}
       </div>
-      {status && <ContingencyLoopPanel channelId={channelId} status={status} onChanged={refresh} />}
+      {showContingency && status && <ContingencyLoopPanel channelId={channelId} status={status} onChanged={refresh} />}
     </section>
   )
+}
+
+/** Contingência e retorno como ferramenta do Master (fora da faixa do ar). */
+export function ContingencyTool({ channelId }: { channelId: string }) {
+  const [status, setStatus] = useState<ProbeStatus | null>(null)
+  const [failure, setFailure] = useState<string | null>(null)
+  const refresh = useCallback(async () => {
+    try { setStatus(await api.pgmProbeStatus(channelId)); setFailure(null) }
+    catch (error) { setFailure(error instanceof Error ? error.message : 'Não foi possível ler a sonda PGM.') }
+  }, [channelId])
+  useEffect(() => {
+    setStatus(null)
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 5_000)
+    return () => window.clearInterval(timer)
+  }, [refresh])
+  if (failure) return <p role="alert" className="text-[12px] text-armed-amber">{failure}</p>
+  if (!status) return <p className="text-[12px] text-outline">Consultando…</p>
+  return <ContingencyLoopPanel channelId={channelId} status={status} onChanged={refresh} defaultOpen />
 }

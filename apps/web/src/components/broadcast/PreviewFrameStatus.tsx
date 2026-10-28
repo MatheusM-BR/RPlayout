@@ -9,5 +9,5 @@ export function PreviewFrameStatus({sample}:{sample:Live['transport']['previewFr
  },[sample?.sampledAt])
  const age=sample?Date.now()-sample.sampledAt:Infinity
  const valid=sample&&age>=0&&age<=2000&&sample.delivered
- return <p role="status" className="text-[10px] text-on-surface-variant mt-1">{valid?(sample.pausedFile?'PVW · quadro entregue pelo decoder (arquivo pausado)':'PVW · vídeo entregue pelo decoder'):'PVW · entrega de vídeo não confirmada nesta observação'} · não comprova imagem no navegador ou transmissão.</p>
+ return <p role="status" className="text-[11px] text-on-surface-variant mt-1">{valid?(sample.pausedFile?'PVW · quadro entregue pelo decoder (arquivo pausado)':'PVW · vídeo entregue pelo decoder'):'PVW · entrega de vídeo não confirmada nesta observação'} · não comprova imagem no navegador ou transmissão.</p>
 }

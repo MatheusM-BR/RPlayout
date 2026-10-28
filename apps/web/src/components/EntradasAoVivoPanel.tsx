@@ -208,7 +208,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
             type="button"
             disabled={isLoadingSources}
             onClick={() => void loadSources(true)}
-            className="px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline hover:text-on-surface font-label-caps text-[10.5px] flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors"
+            className="px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline hover:text-on-surface font-label-caps text-[11px] flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors"
           >
             <span className={`material-symbols-outlined text-[15px] ${isLoadingSources ? 'animate-spin' : ''}`}>
               sync
@@ -272,7 +272,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
               <span className="font-headline-md text-[13px] text-primary font-bold uppercase tracking-wider">
                 {editingSource ? 'Editar Entrada' : 'Configurar Parâmetros da Nova Entrada'}
               </span>
-              <span className="text-[10px] text-outline font-label-mono">
+              <span className="text-[12px] text-outline font-label-mono">
                 Padrão Canônico Broadcast
               </span>
             </div>
@@ -290,7 +290,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
             />}
 
             <div className="flex flex-col gap-1">
-              <label htmlFor="managed-live-input-name" className="text-[10px] font-label-caps text-outline uppercase font-semibold">
+              <label htmlFor="managed-live-input-name" className="text-[11px] font-label-caps text-outline uppercase font-semibold">
                 Nome Identificador da Entrada
               </label>
               <input
@@ -302,9 +302,9 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                 placeholder="Selecione a entrada acima para definir seu nome"
                 className="w-full bg-surface-base border border-border-subtle rounded px-2.5 py-1.5 font-label-mono text-xs text-on-surface focus:outline-none focus:border-primary"
               />
-              <span className="text-[10px] text-outline">O nome acompanha a fonte selecionada até você definir um apelido.</span>
+              <span className="text-[11px] text-outline">O nome acompanha a fonte selecionada até você definir um apelido.</span>
               {nameEdited && (
-                <button type="button" className="self-start text-[10px] text-primary hover:underline"
+                <button type="button" className="self-start text-[11px] text-primary hover:underline"
                   onClick={() => { setNameEdited(false); setName(selectedProtocolResult?.nameRecommendation || '') }}>
                   Usar nome da fonte selecionada
                 </button>
@@ -352,7 +352,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
           ) : (
             <table className="w-full text-left font-label-mono text-xs border-collapse">
               <thead>
-                <tr className="border-b border-border-subtle text-outline text-[10px] font-label-caps">
+                <tr className="border-b border-border-subtle text-outline text-[11px] font-label-caps">
                   <th className="py-2.5 px-3">Nome da Fonte</th>
                   <th className="py-2.5 px-3">Protocolo</th>
                   <th className="py-2.5 px-3">Endereço / Conector Canônico</th>
@@ -379,7 +379,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                       </span>
                     </td>
                     <td
-                      className="py-2.5 px-3 text-accent-ice-bright font-mono text-[11px] truncate max-w-md cursor-copy"
+                      className="py-2.5 px-3 text-accent-ice-bright font-mono text-[12px] truncate max-w-md cursor-copy"
                       title="Botão direito para copiar o endereço"
                       onContextMenu={(event) => copyAddress(event, ls.targetUrl)}
                     >
@@ -390,7 +390,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                         type="button"
                         disabled={isSaving||needsReopen||!review}
                         onClick={() => beginEdit(ls)}
-                        className="mr-2 px-2 py-1 rounded bg-surface-container hover:bg-surface-card text-outline hover:text-on-surface border border-border-subtle text-[10px] font-label-caps font-bold transition-colors cursor-pointer"
+                        className="mr-2 px-2 py-1 rounded bg-surface-container hover:bg-surface-card text-outline hover:text-on-surface border border-border-subtle text-[11px] font-label-caps font-bold transition-colors cursor-pointer"
                         title="Editar fonte"
                       >
                         Editar
@@ -399,7 +399,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
                         type="button"
                         disabled={isSaving||needsReopen||!review}
                         onClick={() => handleDeleteLiveSource(ls.id, ls.name)}
-                        className="px-2 py-1 rounded bg-error-container/30 hover:bg-error-container text-on-error-container text-[10px] font-label-caps font-bold transition-colors cursor-pointer"
+                        className="px-2 py-1 rounded bg-error-container/30 hover:bg-error-container text-on-error-container text-[11px] font-label-caps font-bold transition-colors cursor-pointer"
                         title="Remover fonte"
                       >
                         Excluir

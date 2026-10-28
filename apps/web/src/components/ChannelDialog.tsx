@@ -88,7 +88,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
               <h2 className="font-headline-md text-base text-on-surface uppercase tracking-wider font-bold">
                 Formato do Canal
               </h2>
-              <div className="font-label-mono text-[10px] text-outline">
+              <div className="font-label-mono text-[12px] text-outline">
                 Revisão aberta em <strong className="text-primary">{formatVideoFormat(baseline)}</strong> · Grade temporizada nesta cadência
               </div>
             </div>
@@ -106,7 +106,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
         <div className="p-6 flex flex-col gap-4 overflow-y-auto broadcast-scroll max-h-[75vh]">
           {/* NOME DO CANAL */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-label-caps uppercase text-outline font-bold tracking-wider">
+            <label className="text-[11px] font-label-caps uppercase text-outline font-bold tracking-wider">
               Nome do Canal
             </label>
             <input
@@ -119,7 +119,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
 
           {/* RESOLUÇÃO */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-label-caps uppercase text-outline font-bold tracking-wider">
+            <label className="text-[11px] font-label-caps uppercase text-outline font-bold tracking-wider">
               Resolução (Raster)
             </label>
             <div className="grid grid-cols-1 gap-1.5">
@@ -142,7 +142,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
 
           {/* CADÊNCIA */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-label-caps uppercase text-outline font-bold tracking-wider">
+            <label className="text-[11px] font-label-caps uppercase text-outline font-bold tracking-wider">
               Taxa de Quadros (Cadência FPS)
             </label>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
@@ -165,7 +165,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
 
           {/* VARREDURA */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-label-caps uppercase text-outline font-bold tracking-wider">
+            <label className="text-[11px] font-label-caps uppercase text-outline font-bold tracking-wider">
               Varredura de Vídeo
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -197,7 +197,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
           {/* PRIMEIRO CAMPO */}
           {scan === 'INTERLACED' && (
             <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] font-label-caps uppercase text-outline font-bold tracking-wider">
+              <label className="text-[11px] font-label-caps uppercase text-outline font-bold tracking-wider">
                 Ordem dos Campos (Field Order)
               </label>
               <div className="grid grid-cols-2 gap-2">
@@ -228,7 +228,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
           )}
 
           {/* NOTA INFORMATIVA */}
-          <div className="p-3 rounded-lg bg-surface-panel/80 border border-border-subtle text-[11px] font-label-mono text-outline leading-relaxed">
+          <div className="p-3 rounded-lg bg-surface-panel/80 border border-border-subtle text-[12px] font-label-mono text-outline leading-relaxed">
             Formato resultante: <strong className="text-on-surface">{preview}</strong>.
             {scan === 'INTERLACED' &&
               ' Em modo entrelaçado, a grade conta quadros inteiros e o compositor renderiza em campos dobrados.'}
@@ -236,7 +236,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="channel-audio-bus" className="text-[10px] text-outline">Canais de áudio do PGM / SDI</label>
+            <label htmlFor="channel-audio-bus" className="text-[11px] text-outline">Canais de áudio do PGM / SDI</label>
             <select id="channel-audio-bus" value={audioChannels} onChange={event=>setAudioChannels(Number(event.target.value) as 2|8|16)} className="bg-surface-panel p-2 border border-border-subtle rounded text-xs">
               <option value={2}>2 · Master estéreo</option><option value={8}>8 · Master + 3 pares auxiliares</option><option value={16}>16 · Master + 7 pares auxiliares</option>
             </select>
@@ -246,7 +246,7 @@ export function ChannelDialog({ channel, onCancel, onSaved }: Props) {
           {channel.configurationRevision!==baseline.configurationRevision&&<p role="alert" className="text-xs text-armed-amber">A configuração mudou enquanto esta janela estava aberta. Seus campos foram conservados. Feche e reabra para conferir a nova configuração antes de aplicar.</p>}
           {/* AVISO DE RECONSTRUÇÃO */}
           {muda && (
-            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] font-label-mono text-amber-400 flex items-start gap-2">
+            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[12px] font-label-mono text-amber-400 flex items-start gap-2">
               <span className="material-symbols-outlined text-[16px] shrink-0 mt-0.5">warning</span>
               <span>
                 Alterar o formato recria o pipeline e provoca uma interrupção controlada. Mudar FPS ou o total de canais de áudio exige PGM parado e CUE limpo, revisão e nova publicação das grades, sem TAKE automático.

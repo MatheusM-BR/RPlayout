@@ -3,8 +3,8 @@ import { api } from '../../api.js'
 import type { PgmProbeAutoAction } from '@rplayout/protocol'
 
 type Status = Awaited<ReturnType<typeof api.pgmProbeStatus>>
-export function ContingencyLoopPanel({ channelId, status, onChanged }: { channelId: string; status: Status; onChanged: () => Promise<void> }) {
-  const [open, setOpen] = useState(false)
+export function ContingencyLoopPanel({ channelId, status, onChanged, defaultOpen = false }: { channelId: string; status: Status; onChanged: () => Promise<void>; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
   const [configuration, setConfiguration] = useState<Awaited<ReturnType<typeof api.contingencyLoop>> | null>(null)
   const [revisionId, setRevisionId] = useState('')
   const [failure, setFailure] = useState<string | null>(null)
@@ -38,7 +38,7 @@ export function ContingencyLoopPanel({ channelId, status, onChanged }: { channel
   }
   const active = status.contingency?.active === true
   return <div className="rounded border border-border-subtle bg-surface-panel">
-    <button type="button" className="flex w-full items-center justify-between px-3 py-2 text-[10px] font-label-caps" onClick={() => setOpen(value => !value)} aria-expanded={open}>
+    <button type="button" className="flex w-full items-center justify-between px-3 py-2 text-[11px] font-label-caps" onClick={() => setOpen(value => !value)} aria-expanded={open}>
       <span>{active ? 'LOOP DE CONTINGÊNCIA NO PGM' : 'CONFIGURAR CONTINGÊNCIA E RETORNO'}</span><span>{open ? '−' : '+'}</span>
     </button>
     {open && <div className="space-y-3 border-t border-border-subtle px-3 py-3 text-[11px]">

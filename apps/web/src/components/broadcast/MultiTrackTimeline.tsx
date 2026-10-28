@@ -327,11 +327,11 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 <span className="font-headline-md text-headline-md uppercase text-on-surface font-bold tracking-wide">
                   Timeline Multicamada
                 </span>
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-status-ok/20 border border-status-ok/40 text-status-ok font-label-mono text-[10px] font-bold">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-status-ok/20 border border-status-ok/40 text-status-ok font-label-mono text-[12px] font-bold">
                   <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span> NTP LOCKED
                 </span>
               </div>
-              <div className="font-label-mono text-[10px] text-outline">
+              <div className="font-label-mono text-[12px] text-outline">
                 Sincronismo Frame-Accurate • {channel.name || 'Canal Master'}
               </div>
             </div>
@@ -339,7 +339,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
 
           {/* Timecode Luminescente do Playhead NTP no ar */}
           <div className="px-3 py-1 rounded-lg bg-surface-base/90 border border-on-air-crimson/50 flex flex-col items-center shadow-inner">
-            <span className="font-label-caps text-[10px] text-on-air-crimson/90 font-bold uppercase tracking-wider">
+            <span className="font-label-caps text-[11px] text-on-air-crimson/90 font-bold uppercase tracking-wider">
               PLAYHEAD NTP NO AR
             </span>
             <span className="font-timecode-display text-[22px] font-bold text-on-air-crimson tabular-nums leading-none tracking-wider drop-shadow-[0_0_8px_rgba(255,59,48,0.55)]">
@@ -394,7 +394,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
         <div className="flex items-center gap-2">
           {detectedGaps > 0 ? (
             <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-armed-amber/20 border border-armed-amber/60 text-armed-amber font-label-mono text-[11px] font-bold animate-pulse">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-armed-amber/20 border border-armed-amber/60 text-armed-amber font-label-mono text-[12px] font-bold animate-pulse">
                 <span className="material-symbols-outlined text-[16px]">warning</span>
                 {detectedGaps} {detectedGaps === 1 ? 'GAP DETECTADO' : 'GAPS DETECTADOS'}
               </span>
@@ -412,7 +412,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-status-ok/15 border border-status-ok/30 text-status-ok font-label-mono text-[11px] font-bold">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-status-ok/15 border border-status-ok/30 text-status-ok font-label-mono text-[12px] font-bold">
               <span className="material-symbols-outlined text-[16px]">check_circle</span>
               GRADE 100% CONTÍNUA
             </div>
@@ -438,7 +438,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
         {/* 2.1 RÉGUA DE TEMPO GRADUADA (TIME RULER) */}
         <div className="flex border-b border-border-subtle bg-surface-panel/90 h-8 sticky top-0 z-20">
           {/* Label fixo lateral da régua */}
-          <div className="w-44 shrink-0 px-space-md flex items-center justify-between border-r border-border-subtle bg-surface-panel font-label-mono text-[10px] text-outline uppercase font-bold">
+          <div className="w-44 shrink-0 px-space-md flex items-center justify-between border-r border-border-subtle bg-surface-panel font-label-mono text-[12px] text-outline uppercase font-bold">
             <span>ESCALA TEMPORAL</span>
             <span className="text-accent-ice">{zoomConfig.label}</span>
           </div>
@@ -452,7 +452,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 style={{ left: `${tick.leftPercent}%` }}
               >
                 <div className="h-2 w-[1px] bg-border-strong"></div>
-                <span className="font-timecode-table text-[10px] text-outline font-semibold -ml-3 select-none">
+                <span className="font-timecode-table text-[12px] text-outline font-semibold -ml-3 select-none">
                   {tick.label}
                 </span>
                 <div className="h-1 w-[1px] bg-border-subtle"></div>
@@ -473,7 +473,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 <span className="material-symbols-outlined text-on-air-crimson text-[17px]">movie</span>
                 <span className="font-bold text-[11px] text-on-surface">1. PGM VIDEO</span>
               </div>
-              <span className="font-label-mono text-[10px] px-1 py-0.5 rounded bg-surface-container text-outline">
+              <span className="font-label-mono text-[12px] px-1 py-0.5 rounded bg-surface-container text-outline">
                 MASTER
               </span>
             </div>
@@ -519,18 +519,18 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                         {block.isGap ? `⚠ GAP: ${dur(block.durationFrames, rate)}` : block.title}
                       </span>
                       {block.isOnAir && (
-                        <span className="shrink-0 px-1 py-0.2 rounded bg-on-air-crimson text-white font-label-caps text-[10px] font-bold">
+                        <span className="shrink-0 px-1 py-0.2 rounded bg-on-air-crimson text-white font-label-caps text-[11px] font-bold">
                           AR
                         </span>
                       )}
                       {block.isCued && (
-                        <span className="shrink-0 px-1 py-0.2 rounded bg-armed-amber text-surface-base font-label-caps text-[10px] font-bold">
+                        <span className="shrink-0 px-1 py-0.2 rounded bg-armed-amber text-surface-base font-label-caps text-[11px] font-bold">
                           PVW
                         </span>
                       )}
                     </div>
                     {width > 4 && (
-                      <div className="flex items-center gap-1 font-timecode-table text-[10px] text-white/80 tabular-nums">
+                      <div className="flex items-center gap-1 font-timecode-table text-[12px] text-white/80 tabular-nums">
                         <span>{wallClock(block.startFrames, rate)}</span>
                         <span>•</span>
                         <span>{dur(block.durationFrames, rate)}</span>
@@ -552,7 +552,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 <span className="material-symbols-outlined text-cyan-400 text-[16px]">layers</span>
                 <span className="font-bold text-[11px] text-on-surface">2. SECONDARY / CG</span>
               </div>
-              <span className="font-label-mono text-[10px] px-1 py-0.5 rounded bg-surface-container text-outline">
+              <span className="font-label-mono text-[12px] px-1 py-0.5 rounded bg-surface-container text-outline">
                 OVERLAY
               </span>
             </div>
@@ -570,7 +570,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                     {/* Tarja de Lower-Third */}
                     {block.hasLowerThird && (
                       <div
-                        className="absolute top-1 bottom-1 rounded bg-cyan-500/80 border border-cyan-400/90 text-surface-base font-label-caps text-[10px] font-bold flex items-center px-1 truncate shadow-sm z-10"
+                        className="absolute top-1 bottom-1 rounded bg-cyan-500/80 border border-cyan-400/90 text-surface-base font-label-caps text-[11px] font-bold flex items-center px-1 truncate shadow-sm z-10"
                         style={{
                           left: `${left + width * 0.1}%`,
                           width: `${width * 0.7}%`,
@@ -585,14 +585,14 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                     {/* Logo d'água On-Air */}
                     {block.hasLogo && !block.hasLowerThird && (
                       <div
-                        className="absolute top-1 bottom-1 rounded bg-sky-600/40 border border-sky-400/50 text-sky-200 font-label-caps text-[10px] font-medium flex items-center px-1 truncate"
+                        className="absolute top-1 bottom-1 rounded bg-sky-600/40 border border-sky-400/50 text-sky-200 font-label-caps text-[11px] font-medium flex items-center px-1 truncate"
                         style={{
                           left: `${left}%`,
                           width: `${width}%`,
                         }}
                         title="Selo / Logotipo no ar"
                       >
-                        <span className="material-symbols-outlined text-[10px] mr-0.5">watermark</span>
+                        <span className="material-symbols-outlined text-[11px] mr-0.5">watermark</span>
                         <span>LOGO ON-AIR</span>
                       </div>
                     )}
@@ -612,7 +612,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 <span className="material-symbols-outlined text-fuchsia-400 text-[16px]">cell_tower</span>
                 <span className="font-bold text-[11px] text-on-surface">3. SCTE-35 / DPI</span>
               </div>
-              <span className="font-label-mono text-[10px] px-1 py-0.5 rounded bg-surface-container text-outline">
+              <span className="font-label-mono text-[12px] px-1 py-0.5 rounded bg-surface-container text-outline">
                 REGIONAL
               </span>
             </div>
@@ -637,16 +637,16 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                     }}
                     title={`Janela SCTE-35 DPI: Cue Out -> Cue In (${block.scteDurationSec}s)`}
                   >
-                    <div className="flex items-center gap-0.5 text-fuchsia-400 font-bold font-label-mono text-[10px]">
+                    <div className="flex items-center gap-0.5 text-fuchsia-400 font-bold font-label-mono text-[12px]">
                       <span>▶</span>
                       <span>CUE-OUT</span>
                     </div>
                     {width > 6 && (
-                      <span className="font-label-mono text-[10px] text-fuchsia-200">
+                      <span className="font-label-mono text-[12px] text-fuchsia-200">
                         SPLICE ({block.scteDurationSec}s)
                       </span>
                     )}
-                    <div className="flex items-center gap-0.5 text-purple-400 font-bold font-label-mono text-[10px]">
+                    <div className="flex items-center gap-0.5 text-purple-400 font-bold font-label-mono text-[12px]">
                       <span>CUE-IN</span>
                       <span>◀</span>
                     </div>
@@ -666,7 +666,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                 <span className="material-symbols-outlined text-status-ok text-[16px]">graphic_eq</span>
                 <span className="font-bold text-[11px] text-on-surface">4. EBU R128 AUDIO</span>
               </div>
-              <span className="font-label-mono text-[10px] px-1 py-0.5 rounded bg-surface-container text-status-ok font-bold">
+              <span className="font-label-mono text-[12px] px-1 py-0.5 rounded bg-surface-container text-status-ok font-bold">
                 -23 LUFS
               </span>
             </div>
@@ -675,7 +675,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
             <div className="flex-1 relative overflow-hidden h-full flex items-center">
               {/* Linha de Alvo Regulamentar (-23 LUFS Tracejada Verde) */}
               <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[1px] border-b border-dashed border-status-ok/60 z-10 pointer-events-none flex items-center justify-end pr-2">
-                <span className="bg-surface-base/80 px-1 font-label-mono text-[10px] text-status-ok font-bold">
+                <span className="bg-surface-base/80 px-1 font-label-mono text-[12px] text-status-ok font-bold">
                   ALVO -23 LUFS
                 </span>
               </div>
@@ -716,7 +716,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
                       style={{ height: `${heightPercent}%` }}
                     ></div>
                     {width > 5 && !block.isGap && (
-                      <span className="font-timecode-table text-[10px] text-on-surface font-semibold tabular-nums mt-0.5 truncate">
+                      <span className="font-timecode-table text-[12px] text-on-surface font-semibold tabular-nums mt-0.5 truncate">
                         {block.lufsEstimated.toFixed(1)} LUFS
                       </span>
                     )}
@@ -736,11 +736,11 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
         >
           {/* Header do Tooltip */}
           <div className="flex items-center justify-between pb-1 border-b border-border-subtle/80">
-            <span className="font-label-mono text-[10px] text-outline">
+            <span className="font-label-mono text-[12px] text-outline">
               ITEM #{hoveredBlock.index + 1} • {hoveredBlock.category}
             </span>
             <span
-              className={`font-label-caps text-[10px] px-1.5 py-0.5 rounded font-bold ${
+              className={`font-label-caps text-[11px] px-1.5 py-0.5 rounded font-bold ${
                 hoveredBlock.isGap
                   ? 'bg-on-air-crimson/30 text-on-air-crimson border border-on-air-crimson/60'
                   : hoveredBlock.isOnAir
@@ -762,17 +762,17 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
           {/* TCs e Duração */}
           <div className="grid grid-cols-2 gap-2 py-1 font-timecode-table text-xs text-outline bg-surface-base/60 p-1.5 rounded border border-border-subtle/40">
             <div>
-              <span className="block text-[10px] uppercase font-bold text-outline">INÍCIO:</span>
+              <span className="block text-[11px] uppercase font-bold text-outline">INÍCIO:</span>
               <span className="text-on-surface font-semibold">{wallClock(hoveredBlock.startFrames, rate)}</span>
             </div>
             <div>
-              <span className="block text-[10px] uppercase font-bold text-outline">DURAÇÃO:</span>
+              <span className="block text-[11px] uppercase font-bold text-outline">DURAÇÃO:</span>
               <span className="text-accent-ice font-semibold">{dur(hoveredBlock.durationFrames, rate)}</span>
             </div>
           </div>
 
           {/* Conformidade e Eventos Secundários */}
-          <div className="flex items-center justify-between text-[10px] font-label-mono pt-0.5">
+          <div className="flex items-center justify-between text-[12px] font-label-mono pt-0.5">
             <span className="text-outline">Áudio R128:</span>
             <span
               className={`font-bold ${
@@ -785,7 +785,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
             </span>
           </div>
           {hoveredBlock.hasScteCueOut && (
-            <div className="flex items-center justify-between text-[10px] font-label-mono">
+            <div className="flex items-center justify-between text-[12px] font-label-mono">
               <span className="text-fuchsia-400">SCTE-35 DPI:</span>
               <span className="text-fuchsia-300 font-bold">{hoveredBlock.scteDurationSec}s Cue Out/In</span>
             </div>
@@ -794,7 +794,7 @@ export const MultiTrackTimeline: React.FC<MultiTrackTimelineProps> = ({
       )}
 
       {/* 4. BARRA DE RODAPÉ / STATUS DA TIMELINE */}
-      <div className="px-space-md py-1 bg-surface-panel/90 border-t border-border-subtle flex flex-wrap items-center justify-between text-[10px] font-label-mono text-outline">
+      <div className="px-space-md py-1 bg-surface-panel/90 border-t border-border-subtle flex flex-wrap items-center justify-between text-[12px] font-label-mono text-outline">
         <div className="flex items-center gap-space-lg">
           <span>
             EXTENSÃO TOTAL: <strong className="text-on-surface">{clock(totalDurationFrames, rate)}</strong>

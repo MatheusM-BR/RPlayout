@@ -61,18 +61,18 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
               <h3 className="font-headline-md text-[14px] text-on-surface uppercase font-bold tracking-wide">
                 SRT MANAGER &amp; TELEMETRIA DE LINKS
               </h3>
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-label-mono font-bold bg-accent-ice/20 text-accent-ice-bright border border-accent-ice/40">
+              <span className="px-1.5 py-0.5 rounded text-[12px] font-label-mono font-bold bg-accent-ice/20 text-accent-ice-bright border border-accent-ice/40">
                 LIBSRT 1.5.3 NATIVO
               </span>
             </div>
-            <p className="font-label-mono text-[10px] text-outline">
+            <p className="font-label-mono text-[12px] text-outline">
               Monitoração de Sockets SRT, Buffer de Latência (ARQ), Criptografia AES e Métricas em Tempo Real
             </p>
           </div>
         </div>
 
         {/* Resumo Rápido de Saúde de Links */}
-        <div className="flex items-center gap-2 font-label-mono text-[10px] tabular-nums">
+        <div className="flex items-center gap-2 font-label-mono text-[12px] tabular-nums">
           <div className="px-2 py-1 rounded bg-surface-base border border-border-subtle flex items-center gap-1.5">
             <span className="text-outline">LINKS ATIVOS:</span>
             <span className="text-on-surface font-bold">{links.length}</span>
@@ -93,7 +93,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
             <div className="md:col-span-2 rounded-lg border border-dashed border-border-strong bg-surface-base p-8 text-center">
               <span className="material-symbols-outlined text-[32px] text-outline">satellite_alt</span>
               <p className="mt-2 font-headline-md text-[14px] font-bold text-on-surface">Nenhum link SRT configurado</p>
-              <p className="mt-1 font-label-mono text-[10px] text-outline">Cadastre uma fonte SRT em Configurações para acompanhar a telemetria real do socket.</p>
+              <p className="mt-1 font-label-mono text-[12px] text-outline">Cadastre uma fonte SRT em Configurações para acompanhar a telemetria real do socket.</p>
             </div>
           )}
           {links.map((link) => {
@@ -119,19 +119,19 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                           {link.name}
                         </span>
                         {link.role === 'BACKUP' && (
-                          <span className="px-1.5 py-0.2 rounded text-[10px] font-label-caps font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40">
+                          <span className="px-1.5 py-0.2 rounded text-[11px] font-label-caps font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40">
                             BACKUP
                           </span>
                         )}
                       </div>
-                      <span className="font-label-mono text-[10px] text-outline truncate" title={link.endpoint}>
+                      <span className="font-label-mono text-[12px] text-outline truncate" title={link.endpoint}>
                         {link.endpoint}
                       </span>
                     </div>
 
                     {/* Badge de Status do Enlace */}
                     <span
-                      className={`px-2 py-0.5 rounded text-[11px] font-label-mono font-bold flex items-center gap-1.5 shrink-0 ${statusConfig.badgeClass}`}
+                      className={`px-2 py-0.5 rounded text-[12px] font-label-mono font-bold flex items-center gap-1.5 shrink-0 ${statusConfig.badgeClass}`}
                     >
                       <span className={`w-2 h-2 rounded-full ${statusConfig.dotClass}`}></span>
                       {statusConfig.label}
@@ -139,7 +139,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                   </div>
 
                   {/* CHIPS DE CONFIGURAÇÃO (MODO, LATÊNCIA, STREAMID) */}
-                  <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-label-mono">
+                  <div className="flex flex-wrap items-center gap-1.5 text-[12px] font-label-mono">
                     {/* Modo: Caller / Listener / Rendezvous */}
                     <span
                       className={`px-2 py-0.5 rounded uppercase font-bold border ${
@@ -172,10 +172,10 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                 </div>
 
                 {/* PAINEL DE TELEMETRIA EM TEMPO REAL (MÉTRICAS DO SOCKET) */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-2 rounded-lg bg-surface-base/80 border border-border-subtle font-label-mono text-[11px] tabular-nums">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-2 rounded-lg bg-surface-base/80 border border-border-subtle font-label-mono text-[12px] tabular-nums">
                   {/* RTT */}
                   <div className="flex flex-col p-1">
-                    <span className="text-outline text-[10px] uppercase font-label-caps">RTT (Latency)</span>
+                    <span className="text-outline text-[11px] uppercase font-label-caps">RTT (Latency)</span>
                     <span className="text-on-surface font-bold text-[13px]">
                       {link.telemetry ? link.telemetry.rttMs.toFixed(1) : '—'} <span className="text-[11px] text-outline font-normal">ms</span>
                     </span>
@@ -183,7 +183,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
 
                   {/* Perda de Pacotes */}
                   <div className="flex flex-col p-1">
-                    <span className="text-outline text-[10px] uppercase font-label-caps">Packet Loss</span>
+                    <span className="text-outline text-[11px] uppercase font-label-caps">Packet Loss</span>
                     <span
                       className={`font-bold text-[13px] ${
                         (link.telemetry?.packetLossPercent ?? 0) > 5
@@ -199,7 +199,7 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
 
                   {/* Bitrate Efetivo */}
                   <div className="flex flex-col p-1">
-                    <span className="text-outline text-[10px] uppercase font-label-caps">Bitrate Efetivo</span>
+                    <span className="text-outline text-[11px] uppercase font-label-caps">Bitrate Efetivo</span>
                     <span className="text-accent-ice-bright font-bold text-[13px]">
                       {link.telemetry ? (link.telemetry.bitrateKbps / 1000).toFixed(2) : '—'} <span className="text-[11px] font-normal">Mbps</span>
                     </span>
@@ -207,11 +207,11 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
 
                   {/* Reconexões & Descartes */}
                   <div className="flex flex-col p-1">
-                    <span className="text-outline text-[10px] uppercase font-label-caps">Reconexões</span>
+                    <span className="text-outline text-[11px] uppercase font-label-caps">Reconexões</span>
                     <span className="text-on-surface font-bold text-[13px] flex items-center gap-1">
                       {link.telemetry?.reconnectCount ?? '—'}
                       {(link.telemetry?.packetsDropped ?? 0) > 0 && (
-                        <span className="text-[10px] text-red-400 font-normal">
+                        <span className="text-[11px] text-red-400 font-normal">
                           ({link.telemetry?.packetsDropped} drop)
                         </span>
                       )}
@@ -220,10 +220,10 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                 </div>
 
                 {/* MASCARAMENTO ESTRITO DE SENHAS & CRIPTOGRAFIA */}
-                <div className="p-2 rounded bg-surface-base border border-border-subtle flex items-center justify-between gap-2 text-[10.5px] font-label-mono">
+                <div className="p-2 rounded bg-surface-base border border-border-subtle flex items-center justify-between gap-2 text-[12px] font-label-mono">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="material-symbols-outlined text-[15px] text-accent-ice shrink-0">key</span>
-                    <span className="text-outline text-[10px] uppercase font-label-caps shrink-0">
+                    <span className="text-outline text-[11px] uppercase font-label-caps shrink-0">
                       AES-{link.pbkeylen ?? 256}:
                     </span>
                     <span className="text-on-surface font-medium truncate select-all">
@@ -263,8 +263,8 @@ export const SrtManagerPanel: React.FC<SrtManagerPanelProps> = ({
                 </div>
 
                 {/* AÇÕES TÁTICAS DO ENLACE */}
-                <div className="flex items-center justify-between pt-1 border-t border-border-subtle/50 text-[10px] font-label-caps">
-                  <span className="text-outline text-[11px] font-label-mono">
+                <div className="flex items-center justify-between pt-1 border-t border-border-subtle/50 text-[11px] font-label-caps">
+                  <span className="text-outline text-[12px] font-label-mono">
                     Último heartbeat: {link.lastActivity}
                   </span>
 

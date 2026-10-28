@@ -267,7 +267,7 @@ export function AiredView({
                 <h1 className="font-headline-md text-headline-md tracking-wider text-on-surface uppercase leading-none font-bold">
                   AIRED // REGISTRO AS-RUN
                 </h1>
-                <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold uppercase">
+                <span className="font-label-caps text-[11px] px-2 py-0.5 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40 font-bold uppercase">
                   REGISTRO OPERACIONAL
                 </span>
               </div>
@@ -302,7 +302,7 @@ export function AiredView({
             <button
               onClick={handleExportBxf}
               disabled={isExporting || !entries || !!loadError}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary-container hover:bg-accent-ice text-on-primary-container font-headline-md text-headline-md tracking-wide transition-all shadow-sm cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary-container hover:bg-accent-ice text-on-primary-container font-body-sm text-[13px] font-semibold transition-all shadow-sm cursor-pointer disabled:opacity-50"
               title="Exportar registro operacional no formato XML As-run do RPlayout"
             >
               <span className="material-symbols-outlined text-[16px]">integration_instructions</span>
@@ -325,49 +325,49 @@ export function AiredView({
         {/* 3. KPI CARDS RESUMO DA TRANSMISSÃO */}
         <div className="px-margin pt-space-md grid grid-cols-2 md:grid-cols-4 gap-gutter shrink-0">
           <div className="bg-surface-card rounded-xl border border-border-subtle p-3 flex flex-col justify-between shadow-sm">
-            <span className="font-label-caps text-[10px] text-outline uppercase tracking-wider">
+            <span className="font-label-caps text-[11px] text-outline uppercase tracking-wider">
               Duração registrada / estimada
             </span>
             <div className="font-timecode-display text-[26px] text-primary font-bold tabular-nums leading-tight mt-1">
               {entries === null ? '—' : formattedTotalTime}
             </div>
-            <span className="font-label-mono text-[10px] text-outline mt-0.5">
+            <span className="font-label-mono text-[12px] text-outline mt-0.5">
               {entries === null ? 'Consultando o registro…' : `${totalFrames.toLocaleString()} quadros no log · inclui registros legados`}
             </span>
           </div>
 
           <div className="bg-surface-card rounded-xl border border-border-subtle p-3 flex flex-col justify-between shadow-sm">
-            <span className="font-label-caps text-[10px] text-outline uppercase tracking-wider">
+            <span className="font-label-caps text-[11px] text-outline uppercase tracking-wider">
               Ocorrências registradas
             </span>
             <div className="font-timecode-display text-[26px] text-on-surface font-bold tabular-nums leading-tight mt-1">
               {entries === null ? '—' : filteredEntries.length}
             </div>
-            <span className="font-label-mono text-[10px] text-status-ok-bright mt-0.5">
+            <span className="font-label-mono text-[12px] text-status-ok-bright mt-0.5">
               {eofCount} fins de arquivo • {takeCount} cortes (TAKE/live)
             </span>
           </div>
 
           <div className="bg-surface-card rounded-xl border border-border-subtle p-3 flex flex-col justify-between shadow-sm">
-            <span className="font-label-caps text-[10px] text-outline uppercase tracking-wider">
+            <span className="font-label-caps text-[11px] text-outline uppercase tracking-wider">
               Paradas registradas
             </span>
             <div className="font-timecode-display text-[26px] text-status-ok-bright font-bold tabular-nums leading-tight mt-1">
               {entries === null ? '—' : stopCount}
             </div>
-            <span className="font-label-mono text-[10px] text-outline mt-0.5">
+            <span className="font-label-mono text-[12px] text-outline mt-0.5">
               {summary.missingDurations} durações N/D · {summary.estimates} estimadas
             </span>
           </div>
 
           <div className="bg-surface-card rounded-xl border border-border-subtle p-3 flex flex-col justify-between shadow-sm">
-            <span className="font-label-caps text-[10px] text-outline uppercase tracking-wider">
+            <span className="font-label-caps text-[11px] text-outline uppercase tracking-wider">
               Aferição Regulatória
             </span>
             <div className="font-timecode-display text-[24px] text-accent-ice-bright font-bold tabular-nums leading-tight mt-1">
               NÃO HOMOLOGADA
             </div>
-            <span className="font-label-mono text-[10px] text-status-ok-bright mt-0.5">
+            <span className="font-label-mono text-[12px] text-status-ok-bright mt-0.5">
               Origem/certificados não aferidos
             </span>
           </div>
@@ -383,11 +383,11 @@ export function AiredView({
           <div className="bg-surface-card rounded-xl border border-border-subtle p-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
             {/* Seletor de Período de Auditoria (Início e Fim de Data/Hora) */}
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Período:</span>
+              <span className="font-label-caps text-[11px] text-outline uppercase font-bold">Período:</span>
 
               {/* Data/Hora Início */}
               <div className="flex items-center gap-1.5 bg-surface-panel px-2.5 py-1 rounded border border-border-subtle hover:border-border-strong transition-colors">
-                <span className="font-label-caps text-[10px] text-outline uppercase font-bold">De:</span>
+                <span className="font-label-caps text-[11px] text-outline uppercase font-bold">De:</span>
                 <input
                   type="date"
                   value={startDate}
@@ -395,7 +395,7 @@ export function AiredView({
                     setStartDate(e.target.value)
                     setQuickPreset(null)
                   }}
-                  className="bg-transparent text-on-surface font-label-mono text-[11px] outline-none cursor-pointer"
+                  className="bg-transparent text-on-surface font-label-mono text-[12px] outline-none cursor-pointer"
                   title="Data Inicial de Veiculação"
                 />
                 <input
@@ -405,7 +405,7 @@ export function AiredView({
                     setStartTime(e.target.value)
                     setQuickPreset(null)
                   }}
-                  className="bg-transparent text-primary font-label-mono text-[11px] font-bold outline-none cursor-pointer border-l border-border-subtle pl-1.5 w-14"
+                  className="bg-transparent text-primary font-label-mono text-[12px] font-bold outline-none cursor-pointer border-l border-border-subtle pl-1.5 w-[86px]"
                   title="Hora Inicial"
                 />
               </div>
@@ -414,7 +414,7 @@ export function AiredView({
 
               {/* Data/Hora Fim */}
               <div className="flex items-center gap-1.5 bg-surface-panel px-2.5 py-1 rounded border border-border-subtle hover:border-border-strong transition-colors">
-                <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Até:</span>
+                <span className="font-label-caps text-[11px] text-outline uppercase font-bold">Até:</span>
                 <input
                   type="date"
                   value={endDate}
@@ -422,7 +422,7 @@ export function AiredView({
                     setEndDate(e.target.value)
                     setQuickPreset(null)
                   }}
-                  className="bg-transparent text-on-surface font-label-mono text-[11px] outline-none cursor-pointer"
+                  className="bg-transparent text-on-surface font-label-mono text-[12px] outline-none cursor-pointer"
                   title="Data Final de Veiculação"
                 />
                 <input
@@ -432,7 +432,7 @@ export function AiredView({
                     setEndTime(e.target.value)
                     setQuickPreset(null)
                   }}
-                  className="bg-transparent text-primary font-label-mono text-[11px] font-bold outline-none cursor-pointer border-l border-border-subtle pl-1.5 w-14"
+                  className="bg-transparent text-primary font-label-mono text-[12px] font-bold outline-none cursor-pointer border-l border-border-subtle pl-1.5 w-[86px]"
                   title="Hora Final"
                 />
               </div>
@@ -499,12 +499,12 @@ export function AiredView({
 
             {/* Pílulas de Categoria */}
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-label-caps text-[10px] text-outline uppercase font-bold mr-1">Categoria:</span>
+              <span className="font-label-caps text-[11px] text-outline uppercase font-bold mr-1">Categoria:</span>
               {(['TODOS', 'VT', 'AO VIVO', 'COMERCIAL', 'GFX', 'SLATE', 'ENCHIMENTO'] as const).map((cat) => (
                 <button
                   key={cat}
                   onClick={() => setSelectedCategory(cat)}
-                  className={`px-2.5 py-1 rounded-full font-label-caps text-[10px] transition-all cursor-pointer ${
+                  className={`px-2.5 py-1 rounded-full font-label-caps text-[11px] transition-all cursor-pointer ${
                     selectedCategory === cat
                       ? 'bg-primary text-surface-base font-bold shadow-sm'
                       : 'bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface'
@@ -517,11 +517,11 @@ export function AiredView({
 
             {/* Filtro de Status / Encerramento */}
             <div className="flex items-center gap-1.5">
-              <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Status:</span>
+              <span className="font-label-caps text-[11px] text-outline uppercase font-bold">Status:</span>
               <select
                 value={selectedStatus}
                 onChange={(e) => setSelectedStatus(e.target.value)}
-                className="bg-surface-panel text-on-surface px-2.5 py-1.5 rounded border border-border-subtle font-label-caps text-[10px] outline-none focus:border-primary cursor-pointer"
+                className="bg-surface-panel text-on-surface px-2.5 py-1.5 rounded border border-border-subtle font-label-caps text-[11px] outline-none focus:border-primary cursor-pointer"
               >
                 <option value="TODOS">Todos os Encerramentos</option>
                 <option value="EOF">Fim Normal (EOF)</option>
@@ -556,7 +556,7 @@ export function AiredView({
           <div className="bg-surface-card rounded-xl border border-border-subtle shadow-md overflow-hidden flex flex-col min-h-[360px]">
             <div className="grid grid-cols-12 bg-surface-panel px-4 py-2 font-label-caps text-[11px] text-outline uppercase tracking-wider border-b border-border-subtle items-center select-none sticky top-0 z-10">
               <div className="col-span-1">#</div>
-              <div className="col-span-2">Início UTC → Fim</div>
+              <div className="col-span-2" title="Hora local desta estação. Os arquivos exportados mantêm UTC.">Início → Fim (local)</div>
               <div className="col-span-1">Duração</div>
               <div className="col-span-1">Categoria</div>
               <div className="col-span-4">Título do Evento / Arquivo</div>
@@ -571,7 +571,7 @@ export function AiredView({
                   <span className="font-body-md text-body-md font-medium">
                     {entries === null ? 'Aguardando consulta do registro...' : 'Nenhum registro encontrado para a data e filtros selecionados.'}
                   </span>
-                  <span className="font-label-mono text-[11px] text-outline/70">
+                  <span className="font-label-mono text-[12px] text-outline/70">
                     Os itens veiculados pelo motor de playout são registrados automaticamente aqui.
                   </span>
                 </div>
@@ -580,27 +580,29 @@ export function AiredView({
                   const duration = asRunDuration(entry)
                   const frames = duration.frames
                   const asRunBadge = getAsRunBadge(entry)
-                  const startDatePart = entry.startedAt ? `${entry.startedAt.slice(8, 10)}/${entry.startedAt.slice(5, 7)}` : ''
-                  const startTimePart = entry.startedAt ? entry.startedAt.slice(11, 19) : '--:--:--'
-                  const endDatePart = entry.endedAt ? `${entry.endedAt.slice(8, 10)}/${entry.endedAt.slice(5, 7)}` : ''
-                  const endTimePart = entry.endedAt ? entry.endedAt.slice(11, 19) : 'NO AR'
+                  // Hora local da estação (o registro guarda UTC; o UTC fica no título).
+                  const local = (iso: string) => { const at = new Date(iso); return { date: `${String(at.getDate()).padStart(2, '0')}/${String(at.getMonth() + 1).padStart(2, '0')}`, time: at.toLocaleTimeString('pt-BR', { hour12: false }) } }
+                  const startDatePart = entry.startedAt ? local(entry.startedAt).date : ''
+                  const startTimePart = entry.startedAt ? local(entry.startedAt).time : '--:--:--'
+                  const endDatePart = entry.endedAt ? local(entry.endedAt).date : ''
+                  const endTimePart = entry.endedAt ? local(entry.endedAt).time : 'NO AR'
 
                   return (
                     <div
                       key={`${entry.id}-${idx}`}
                       className="grid grid-cols-12 px-4 py-2 bg-surface-card hover:bg-surface-panel items-center text-body-sm font-body-sm transition-colors"
                     >
-                      <div className="col-span-1 font-label-mono text-[11px] text-outline">{idx + 1}</div>
+                      <div className="col-span-1 font-label-mono text-[12px] text-outline">{idx + 1}</div>
 
-                      <div className="col-span-2 font-label-mono text-[11px] text-on-surface tabular-nums">
+                      <div className="col-span-2 font-label-mono text-[12px] text-on-surface tabular-nums" title={`UTC: ${entry.startedAt ?? '—'} → ${entry.endedAt ?? 'no ar'}`}>
                         <div className="flex items-center gap-1 flex-wrap">
-                          <span className="text-outline text-[10px]">{startDatePart}</span>
+                          <span className="text-outline text-[11px]">{startDatePart}</span>
                           <span>{startTimePart}</span>
                           <span className="text-outline mx-0.5">→</span>
                           {entry.endedAt ? (
                             <>
                               {endDatePart && endDatePart !== startDatePart && (
-                                <span className="text-outline text-[10px]">{endDatePart}</span>
+                                <span className="text-outline text-[11px]">{endDatePart}</span>
                               )}
                               <span className="text-outline">{endTimePart}</span>
                             </>
@@ -610,19 +612,19 @@ export function AiredView({
                         </div>
                       </div>
 
-                      <div className="col-span-1 font-label-mono text-[11px] font-bold text-on-surface tabular-nums">
+                      <div className="col-span-1 font-label-mono text-[12px] font-bold text-on-surface tabular-nums">
                         {frames !== null && duration.rate ? dur(frames, duration.rate) : duration.seconds !== null ? `≈ ${duration.seconds.toFixed(1)}s` : 'N/D'}
                       </div>
 
                       <div className="col-span-1">
-                        <span className="px-1.5 py-0.5 rounded font-label-caps text-[10px] bg-primary-container/30 text-primary font-bold uppercase border border-primary/30">
+                        <span className="px-1.5 py-0.5 rounded font-label-caps text-[11px] bg-primary-container/30 text-primary font-bold uppercase border border-primary/30">
                           {entry.type || 'VT'}
                         </span>
                       </div>
 
                       <div className="col-span-4 font-body-sm text-body-sm text-on-surface truncate pr-2">
                         <span className="font-semibold">{entry.title}</span>
-                        <span className="text-outline font-label-mono text-[11px] block truncate">
+                        <span className="text-outline font-label-mono text-[12px] block truncate">
                           ID: {entry.id} · {entry.executionKind ?? 'UNKNOWN'} · {duration.evidence}
                         </span>
                       </div>
@@ -638,7 +640,7 @@ export function AiredView({
                       </div>
 
                       <div className="col-span-1 text-right">
-                        <span className="inline-block max-w-full break-words font-label-mono text-[10px] text-armed-amber font-bold bg-armed-amber/10 border border-armed-amber/30 px-1 py-0.5 rounded">
+                        <span className="inline-block max-w-full break-words font-label-mono text-[12px] text-armed-amber font-bold bg-armed-amber/10 border border-armed-amber/30 px-1 py-0.5 rounded">
                           NÃO HOMOLOGADA
                         </span>
                       </div>

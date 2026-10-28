@@ -747,7 +747,10 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 }
 .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
-input[type='text'], input[type='number'], select {
+/* Especificidade baixa (html + :where): vence o reset do Tailwind, mas perde
+   para classes utilitárias (pl-8 de busca com ícone, w-auto, etc.). Antes,
+   o padding fixo daqui cobria o ícone de busca em todas as telas. */
+html :where(input[type='text'], input[type='number'], select) {
   width: 100%;
   background: var(--sunk);
   border: 1px solid var(--border);

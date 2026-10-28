@@ -240,7 +240,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
           <button
             onClick={() => void loadData()}
             disabled={isLoading || isSaving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle font-label-caps text-[10px] transition-colors cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle font-label-caps text-[11px] transition-colors cursor-pointer disabled:opacity-50"
           >
             <span className={`material-symbols-outlined text-[15px] ${isLoading ? 'animate-spin' : ''}`}>
               refresh
@@ -275,7 +275,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
         <div className="bg-surface-card rounded-xl border border-border-subtle p-4 shadow-sm flex flex-col gap-2.5">
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-accent-ice text-[18px]">cell_tower</span>
-            <span className="font-label-caps text-[10px] text-outline uppercase font-bold tracking-wider">
+            <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider">
               Pontos de Acesso &amp; Streams Gerados pelo Servidor
             </span>
           </div>
@@ -289,8 +289,8 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                 title="Clique para copiar o endereço"
               >
                 <div className="flex flex-col min-w-0">
-                  <span className="font-label-caps text-[10px] text-primary font-bold uppercase">{proto}</span>
-                  <span className="font-label-mono text-[11px] text-on-surface truncate">{url}</span>
+                  <span className="font-label-caps text-[11px] text-primary font-bold uppercase">{proto}</span>
+                  <span className="font-label-mono text-[12px] text-on-surface truncate">{url}</span>
                 </div>
                 <span className="material-symbols-outlined text-outline group-hover:text-primary text-[16px] shrink-0">
                   content_copy
@@ -304,10 +304,10 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
       {/* 3. GRID DE SAÍDAS CONFIGURADAS */}
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <span className="font-label-caps text-[10px] text-outline uppercase font-bold tracking-wider">
+          <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider">
             Saídas Configuradas ({outputs.length})
           </span>
-          <span className="font-label-mono text-[10px] text-outline">
+          <span className="font-label-mono text-[12px] text-outline">
             {outputs.filter((o) => o.enabled).length} habilitadas · confira o sinal
           </span>
         </div>
@@ -346,32 +346,32 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         {isDecklink && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-blue-500/20 text-blue-400 border border-blue-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-blue-500/20 text-blue-400 border border-blue-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">cable</span> DECKLINK SDI
                           </span>
                         )}
                         {isSrt && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-purple-500/20 text-purple-400 border border-purple-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-purple-500/20 text-purple-400 border border-purple-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">stream</span> SRT STREAM
                           </span>
                         )}
                         {isRtmp && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-amber-500/20 text-amber-400 border border-amber-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">podcasts</span> RTMP / CDN
                           </span>
                         )}
                         {isFile && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">video_file</span> ARQUIVO
                           </span>
                         )}
                         {isNdi && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">hub</span> NDI STREAM
                           </span>
                         )}
                         {isOmt && (
-                          <span className="px-2 py-0.5 rounded font-label-caps text-[10px] bg-teal-500/20 text-teal-400 border border-teal-500/40 font-bold flex items-center gap-1">
+                          <span className="px-2 py-0.5 rounded font-label-caps text-[11px] bg-teal-500/20 text-teal-400 border border-teal-500/40 font-bold flex items-center gap-1">
                             <span className="material-symbols-outlined text-[13px]">lan</span> OMT IP
                           </span>
                         )}
@@ -381,7 +381,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                       </div>
 
                       <span
-                        className={`px-2 py-0.5 rounded font-label-caps text-[10px] font-bold border ${
+                        className={`px-2 py-0.5 rounded font-label-caps text-[11px] font-bold border ${
                           out.enabled
                             ? 'bg-status-ok/20 text-status-ok-bright border-status-ok/40'
                             : 'bg-surface-container text-outline border-border-subtle'
@@ -395,7 +395,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                     <div className="bg-surface-panel p-2 rounded border border-border-subtle flex flex-col gap-1.5">
                       <div className="flex items-center justify-between gap-2">
                         <span
-                          className="font-label-mono text-[11px] text-on-surface break-all truncate"
+                          className="font-label-mono text-[12px] text-on-surface break-all truncate"
                           title={out.displayUrl || out.target || out.resolvedTarget || ''}
                           onContextMenu={(event) => {
                             event.preventDefault()
@@ -421,11 +421,11 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                             <button
                               key={proto}
                               onClick={() => handleCopy(url)}
-                              className="px-1.5 py-0.5 rounded bg-surface-card hover:bg-surface-container border border-border-subtle font-label-mono text-[10px] text-primary uppercase flex items-center gap-1 cursor-pointer transition-colors"
+                              className="px-1.5 py-0.5 rounded bg-surface-card hover:bg-surface-container border border-border-subtle font-label-mono text-[12px] text-primary uppercase flex items-center gap-1 cursor-pointer transition-colors"
                               title={`Copiar ${proto.toUpperCase()}: ${url}`}
                             >
                               <span>{proto}</span>
-                              <span className="material-symbols-outlined text-[10px] text-outline">content_copy</span>
+                              <span className="material-symbols-outlined text-[11px] text-outline">content_copy</span>
                             </button>
                           ))}
                         </div>
@@ -433,7 +433,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
                     </div>
 
                     {/* Detalhes Técnicos */}
-                    <div className="grid grid-cols-3 gap-2 font-label-mono text-[10px] text-outline pt-1">
+                    <div className="grid grid-cols-3 gap-2 font-label-mono text-[12px] text-outline pt-1">
                       <div>
                         <span>Resolução: </span>
                         <strong className="text-on-surface font-normal">
@@ -452,7 +452,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
 
                     {/* SRT Phase B Telemetria & Criptografia Mascarada */}
                     {isSrt && (
-                      <div className="p-2.5 rounded-lg bg-surface-base border border-purple-500/25 flex flex-col gap-1.5 font-label-mono text-[10px]">
+                      <div className="p-2.5 rounded-lg bg-surface-base border border-purple-500/25 flex flex-col gap-1.5 font-label-mono text-[12px]">
                         <div className="flex items-center justify-between">
                           <span className="text-purple-400 font-bold uppercase flex items-center gap-1.5">
                             <span className="material-symbols-outlined text-[13px] text-outline">help</span>
@@ -522,14 +522,14 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
         <fieldset disabled={controlsBlocked || draftRevision===undefined} className="contents">
         <div className="rounded-lg border border-border-subtle bg-surface-base p-3 flex flex-col gap-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-label-caps text-[10px] text-outline uppercase font-bold">Presets SRT / RTMP ({presets.length})</span>
-            <span className="font-label-mono text-[10px] text-outline">credenciais mascaradas</span>
+            <span className="font-label-caps text-[11px] text-outline uppercase font-bold">Presets SRT / RTMP ({presets.length})</span>
+            <span className="font-label-mono text-[12px] text-outline">credenciais mascaradas</span>
           </div>
           {presets.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {presets.map((preset) => (
                 <div key={preset.id} className="flex items-center gap-1 rounded border border-border-subtle bg-surface-panel px-2 py-1">
-                  <button type="button" onClick={() => void handleApplyPreset(preset)} disabled={isSaving} className="font-label-caps text-[10px] text-primary hover:text-accent-ice cursor-pointer disabled:opacity-50" title={preset.target}>
+                  <button type="button" onClick={() => void handleApplyPreset(preset)} disabled={isSaving} className="font-label-caps text-[11px] text-primary hover:text-accent-ice cursor-pointer disabled:opacity-50" title={preset.target}>
                     {preset.kind} · {preset.name}
                   </button>
                   <button type="button" onClick={() => void handleDeletePreset(preset)} disabled={isSaving} className="material-symbols-outlined text-[13px] text-outline hover:text-on-air-crimson cursor-pointer disabled:opacity-50" title="Remover preset">close</button>
@@ -541,7 +541,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
           )}
           <div className="flex gap-2">
             <input value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder="Nome do novo preset" className="min-w-0 flex-1 bg-surface-panel text-on-surface px-2 py-1 rounded border border-border-subtle font-body-sm text-[11px] outline-none focus:border-primary" />
-            <button type="button" onClick={() => void handleSavePreset()} disabled={isSaving || (newKind !== 'SRT' && newKind !== 'RTMP') || !newTarget.trim()} className="px-2.5 py-1 rounded border border-primary/50 text-primary hover:bg-primary/10 font-label-caps text-[10px] cursor-pointer disabled:opacity-40">SALVAR PRESET</button>
+            <button type="button" onClick={() => void handleSavePreset()} disabled={isSaving || (newKind !== 'SRT' && newKind !== 'RTMP') || !newTarget.trim()} className="px-2.5 py-1 rounded border border-primary/50 text-primary hover:bg-primary/10 font-label-caps text-[11px] cursor-pointer disabled:opacity-40">SALVAR PRESET</button>
           </div>
         </div>
 
@@ -575,7 +575,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
         </div>
 
         <div className="flex items-center justify-between pt-2 border-t border-border-subtle">
-          <span className="font-label-mono text-[10.5px] text-outline">
+          <span className="font-label-mono text-[12px] text-outline">
             Cadastro não comprova entrega. Confira o publisher, a imagem e o destino após aplicar.
           </span>
           <button

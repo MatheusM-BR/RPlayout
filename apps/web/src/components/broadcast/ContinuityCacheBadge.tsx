@@ -23,7 +23,7 @@ export function ContinuityCacheBadge({ className = '', channelId }: { className?
       title="Cache local; não equivale a redundância ou autonomia temporal homologada"
       className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-panel border border-border-subtle text-on-surface-variant cursor-pointer">
       <span className="material-symbols-outlined text-[15px]">offline_bolt</span>
-      <span className="font-label-caps text-[10px] font-bold whitespace-nowrap">{status ? `CACHE: ${status.totalCachedFiles} ARQUIVOS` : 'CACHE: N/D'}</span>
+      <span className="font-label-caps text-[11px] font-bold whitespace-nowrap">{status ? `CACHE: ${status.totalCachedFiles} ARQUIVOS` : 'CACHE: N/D'}</span>
     </button>
     {expanded && <div className="absolute top-full mt-2 right-0 z-50 w-72 bg-surface-card border border-border-strong rounded-xl p-3 shadow-2xl text-on-surface text-xs">
       {status ? <>

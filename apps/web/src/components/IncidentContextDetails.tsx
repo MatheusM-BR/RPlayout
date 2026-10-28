@@ -1,7 +1,7 @@
 import type {IncidentContext} from '@rplayout/protocol'
 export function IncidentContextDetails({context}:{context:IncidentContext|null|undefined}){
-  if(!context)return <p className="text-[10px] text-outline">Contexto não registrado nesta versão do incidente.</p>
-  return <details className="text-[10px] mt-1">
+  if(!context)return <p className="text-[11px] text-outline">Contexto não registrado nesta versão do incidente.</p>
+  return <details className="text-[11px] mt-1">
     <summary className="cursor-pointer text-primary">CONTEXTO NA DETECÇÃO</summary>
     <div className="space-y-1 mt-1 text-outline">
       <p>Registrado em {new Date(context.capturedAt).toLocaleString('pt-BR')}. Contexto histórico; não confirma sinal atual.</p>

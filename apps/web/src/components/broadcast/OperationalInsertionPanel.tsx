@@ -5,11 +5,11 @@ import type {LibraryAsset} from '../../types.js'
 import {commandRequestId} from '../../domain/request-id.js'
 import {ReviewedOperationConfirm} from './ReviewedOperationConfirm.js'
 
-export function OperationalInsertionPanel(props:{channelId:string;rate:Rate;assets:readonly LibraryAsset[]}){
+export function OperationalInsertionPanel(props:{channelId:string;rate:Rate;assets:readonly LibraryAsset[];defaultOpen?:boolean}){
   return <InsertionContent key={props.channelId} {...props}/>
 }
-function InsertionContent({channelId,rate,assets}:{channelId:string;rate:Rate;assets:readonly LibraryAsset[]}){
-  const [open,setOpen]=useState(false),[kind,setKind]=useState<'VIDEO'|'LIVE'>('VIDEO'),[selected,setSelected]=useState(''),[seconds,setSeconds]=useState('120')
+function InsertionContent({channelId,rate,assets,defaultOpen=false}:{channelId:string;rate:Rate;assets:readonly LibraryAsset[];defaultOpen?:boolean}){
+  const [open,setOpen]=useState(defaultOpen),[kind,setKind]=useState<'VIDEO'|'LIVE'>('VIDEO'),[selected,setSelected]=useState(''),[seconds,setSeconds]=useState('120')
   const [sources,setSources]=useState<ManagedLiveSource[]>([]),[review,setReview]=useState<OperationalInsertionReview|null>(null),[pending,setPending]=useState(false),[message,setMessage]=useState<string|null>(null)
   const mounted=useRef(true),busy=useRef(false)
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false}},[])

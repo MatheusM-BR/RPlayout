@@ -13,7 +13,7 @@ export function headerHealthTags(sample: HostMetricSample | null, channelId: str
   const channel = sample?.operations?.channels.find(entry => entry.channelId === channelId)
   const engine: Tag = !channel ? { label: 'ENGINE', value: 'N/D', level: 'unknown', title: 'Sem leitura do engine.' }
     : channel.engine.hasError || !channel.engine.ready ? { label: 'ENGINE', value: channel.engine.ready ? 'ERRO' : 'PARADO', level: 'bad', title: `Reinícios: ${channel.engine.restarts}` }
-    : { label: 'ENGINE', value: channel.engine.restarts ? `OK · ${channel.engine.restarts}↻` : 'OK', level: channel.engine.restarts ? 'warn' : 'ok', title: `Reinícios: ${channel.engine.restarts} · travamentos: ${channel.engine.stalls}` }
+    : { label: 'ENGINE', value: channel.engine.restarts || channel.engine.stalls ? `OK${channel.engine.restarts ? ` · ${channel.engine.restarts}↻` : ''}${channel.engine.stalls ? ` · ${channel.engine.stalls} trav.` : ''}` : 'OK', level: channel.engine.restarts || channel.engine.stalls ? 'warn' : 'ok', title: `Reinícios: ${channel.engine.restarts} · travamentos de saída (quadros parados): ${channel.engine.stalls}. Quadros por segundo e perdidos ainda não são informados pelo engine.` }
   const outputs = channel?.outputs ?? []
   const live = outputs.filter(output => output.state === 'onAir').length
   const failing = outputs.filter(output => output.state === 'failed' || output.state === 'retrying' || (output.hasError && output.state !== 'onAir')).length
@@ -45,8 +45,8 @@ export function HeaderHealth({ channelId, onClick }: { channelId: string; onClic
       {headerHealthTags(sample, channelId, pending).map(tag => (
         <div key={tag.label} title={tag.title} className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
           <span className={`w-1.5 h-1.5 rounded-full ${dot[tag.level]}`}></span>
-          <span className="font-label-caps text-[10px] text-on-surface-variant">{tag.label}:</span>
-          <span className={`font-label-caps text-[10px] font-bold ${text[tag.level]}`}>{tag.value}</span>
+          <span className="font-label-caps text-[11px] text-on-surface-variant">{tag.label}:</span>
+          <span className={`font-label-caps text-[11px] font-bold ${text[tag.level]}`}>{tag.value}</span>
         </div>
       ))}
     </div>
