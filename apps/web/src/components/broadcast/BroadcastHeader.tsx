@@ -5,6 +5,7 @@ import { formatStandardRate } from '../../format.js'
 import { ContinuityCacheBadge } from './ContinuityCacheBadge.js'
 import { useAirState } from '../../domain/air-state.js'
 import { HeaderHealth } from './HeaderHealth.js'
+import { clockLevel, useClockOffset } from '../../domain/clock-offset.js'
 import { PROFILES, PROFILE_IDS, defaultProfileFor, navWorkspaces, profileShowsSettings, type ProfileId } from '../../domain/profiles.js'
 import { useStoredChoice } from '../../domain/stored-choice.js'
 
@@ -59,6 +60,10 @@ export function BroadcastHeader({
   )
   const rate = channel.rate
   const fps = rate.num / rate.den
+  const offset = useClockOffset()
+  const clock = clockLevel(offset)
+  const clockTitle = !offset ? 'Hora local desta estação (comparação com o servidor ainda não medida)'
+    : `Hora local desta estação. Diferença para o servidor: ${offset.offsetMs > 0 ? '+' : '−'}${(Math.abs(offset.offsetMs) / 1000).toFixed(1)} s${clock === 'ok' ? '' : ' — acerte o relógio do Windows (sincronizar agora); as contagens de horário desta tela usam este relógio.'}`
 
   const [ntpTime, setNtpTime] = useState(() => {
     const now = new Date()
@@ -159,12 +164,13 @@ export function BroadcastHeader({
           <HeaderHealth channelId={channel.id} onClick={onOpenLiveInput} />
 
           {/* Repositioned Master Clock */}
-          <div className="flex items-center gap-2 bg-surface-base px-2 2xl:px-3 py-1 rounded-lg border border-border-subtle shadow-inner" title="Hora local desta estação">
+          <div className={`flex items-center gap-2 bg-surface-base px-2 2xl:px-3 py-1 rounded-lg border shadow-inner ${clock === 'bad' ? 'border-on-air-crimson' : clock === 'warn' ? 'border-armed-amber' : 'border-border-subtle'}`} title={clockTitle}>
             <span className="hidden 2xl:inline font-label-mono text-label-mono text-outline uppercase">HORA LOCAL</span>
             <span className="font-timecode-display text-[17px] sm:text-[20px] 2xl:text-[24px] text-on-surface tracking-wider 2xl:tracking-widest font-bold tabular-nums">
               {ntpTime}
             </span>
-            <span className="w-2 h-2 rounded-full bg-status-ok shadow-[0_0_6px_#34C759] animate-pulse"></span>
+            <span aria-hidden="true" className={`w-2 h-2 rounded-full ${clock === 'ok' ? 'bg-status-ok shadow-[0_0_6px_#34C759]' : clock === 'warn' ? 'bg-armed-amber' : clock === 'bad' ? 'bg-on-air-crimson animate-pulse motion-reduce:animate-none' : 'bg-outline'}`}></span>
+            {(clock === 'warn' || clock === 'bad') && offset && <span className={`font-label-mono text-[11px] font-bold ${clock === 'bad' ? 'text-on-air-crimson' : 'text-armed-amber'}`}>{offset.offsetMs > 0 ? '+' : '−'}{(Math.abs(offset.offsetMs) / 1000).toFixed(1)}s</span>}
           </div>
 
           {/* Badge de Continuidade e Cache 48h (XMirror) */}

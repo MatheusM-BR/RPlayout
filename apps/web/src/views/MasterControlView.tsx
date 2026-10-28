@@ -1,5 +1,6 @@
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
-import { finalCount, gradeEndWarning, mmss } from '../domain/broadcast-cues.js'
+import { finalCount, gradeEndWarning, mmss, nextFixedCommitment, countdownText } from '../domain/broadcast-cues.js'
+import { beep, enableAlarmSound } from '../domain/alarm-sound.js'
 import { MirrorStatus } from '../components/MirrorStatus.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
@@ -89,6 +90,8 @@ interface Props {
     },
   ) => void
   onOpenLiveInput?: () => void
+  /** Bloqueia cliques e teclas de operação nesta estação. */
+  onLockPanel?: () => void
 }
 
 export interface CustomLiveSource {
@@ -184,6 +187,7 @@ export function MasterControlView({
   onPreviewLiveSource,
   onInsertAsset,
   onOpenLiveInput,
+  onLockPanel,
 }: Props) {
   const publicationRequired=Boolean(view.rundown.publicationRequired)
   // MAM filter & search states
@@ -475,7 +479,6 @@ export function MasterControlView({
   }
 
   // Trava de segurança PGM e Operador
-  const [isLocked, setIsLocked] = useState(true)
 
   // 24/7 Safety: Dois passos para Stop/Abort (previne acidentes operacionais)
   const [abortArmed, setAbortArmed] = useState(false)
@@ -717,7 +720,39 @@ export function MasterControlView({
   // Fim da grade sem loop: aviso nos últimos 15 min (depois disso o canal só
   // segue se houver próxima grade publicada com passagem automática).
   const gradeEndMs = !view.rundown.loop && view.schedule && Number.isFinite(view.schedule.endsAt) ? gradeInstant(view.schedule.endsAt, rate, view.rundown.date).getTime() : null
-  const gradeEnd = onAirItem ? gradeEndWarning(gradeEndMs, Date.now()) : null
+  // Relógio de 1 s para as contagens de parede andarem mesmo com o PGM parado.
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => { const timer = window.setInterval(() => setNowMs(Date.now()), 1000); return () => window.clearInterval(timer) }, [])
+  const gradeEnd = onAirItem ? gradeEndWarning(gradeEndMs, nowMs) : null
+  // Próximo compromisso de horário (leilão com hora marcada, rede): quando
+  // entra e se a grade resolvida vai bater o horário.
+  const nextFixed = useMemo(() => nextFixedCommitment(
+    view.items.map(entry => ({ id: entry.item.id, title: entry.item.title, anchor: entry.item.anchor as { kind: string; at?: number } })),
+    scheduleMap,
+    frames => gradeInstant(frames, rate, view.rundown.date).getTime(),
+    nowMs,
+  ), [view.items, scheduleMap, rate, view.rundown.date, nowMs])
+  const nextFixedLate = nextFixed && (!nextFixed.hit || nextFixed.deviationMs >= 1000)
+  const [soundChoice, setSoundChoice] = useStoredChoice('rplayout:master-sound', ['on', 'off'] as const, 'off')
+  const [soundReady, setSoundReady] = useState(false)
+  const soundOn = soundChoice === 'on' && soundReady
+  const toggleSound = () => {
+    if (soundOn) { setSoundChoice('off'); return }
+    if (enableAlarmSound()) { setSoundReady(true); setSoundChoice('on'); beep(660, 80) }
+  }
+  // Escolha salva mas áudio ainda não liberado (recarregou a página): o primeiro clique libera.
+  useEffect(() => {
+    if (soundChoice !== 'on' || soundReady) return
+    const unlock = () => { if (enableAlarmSound()) setSoundReady(true) }
+    window.addEventListener('pointerdown', unlock, { once: true })
+    return () => window.removeEventListener('pointerdown', unlock)
+  }, [soundChoice, soundReady])
+  const remainingWhole = Math.ceil(remainingFrames / fps)
+  useEffect(() => { if (soundOn && finalCountState === 'last5') beep(remainingWhole <= 1 ? 1320 : 880, remainingWhole <= 1 ? 300 : 100) }, [soundOn, finalCountState, remainingWhole])
+  const fixedWhole = nextFixed ? Math.ceil(nextFixed.leftMs / 1000) : null
+  useEffect(() => { if (soundOn && fixedWhole !== null && fixedWhole <= 10 && fixedWhole > 0) beep(fixedWhole <= 3 ? 1320 : 990, 90) }, [soundOn, fixedWhole])
+  const gradeEndLevel = gradeEnd?.level ?? null
+  useEffect(() => { if (soundOn && gradeEndLevel === 'urgent') { beep(520, 250); window.setTimeout(() => beep(520, 250), 350) } }, [soundOn, gradeEndLevel])
   const progressPercent =
     onAirDurationFrames > 0 ? Math.min(100, Math.round((elapsedFrames / onAirDurationFrames) * 100)) : 0
 
@@ -927,6 +962,14 @@ export function MasterControlView({
                       {onAirItem ? (overrunFrames > 0 ? `+${dur(overrunFrames, rate)}` : dur(remainingFrames, rate)) : '00:00:00:00'}
                     </div>
                     {overrunFrames > 0 && <div className="text-[11px] text-armed-amber mt-0.5">previsto {dur(onAirDurationFrames, rate)}</div>}
+                    {nextFixed && nextFixed.leftMs <= 6 * 3_600_000 && <div role="status" className={`mt-1 rounded border px-1.5 py-0.5 text-left text-[11px] leading-snug ${nextFixedLate ? 'border-on-air-crimson/60 bg-on-air-crimson/10' : nextFixed.leftMs <= 60_000 ? 'border-armed-amber bg-armed-amber/15' : 'border-border-subtle bg-surface-container'}`} title={`${nextFixed.kind === 'HARD_TIME' ? 'Horário de rede (disparo obrigatório)' : 'Horário fixo'} de "${nextFixed.title}"`}>
+                      <div className="flex items-baseline justify-between gap-2 font-label-caps font-bold">
+                        <span className={nextFixed.leftMs <= 60_000 ? 'text-armed-amber' : 'text-outline'}>PRÓXIMO {nextFixed.kind === 'HARD_TIME' ? 'REDE' : 'FIXO'} {new Date(nextFixed.atMs).toLocaleTimeString('pt-BR')}</span>
+                        <span className={`font-timecode-display tabular-nums ${nextFixed.leftMs <= 60_000 ? 'text-armed-amber' : 'text-on-surface'}`}>{countdownText(nextFixed.leftMs)}</span>
+                      </div>
+                      <div className="truncate text-on-surface-variant">{nextFixed.title}</div>
+                      {nextFixedLate && <div className="font-bold text-on-air-crimson">{nextFixed.hit ? `ENTRA ${countdownText(nextFixed.deviationMs)} ATRASADO` : 'NÃO VAI BATER O HORÁRIO'} · ajuste a grade antes</div>}
+                    </div>}
                     {gradeEnd && <div role="status" title="A grade não está em loop. Depois do último item o canal só segue se houver próxima grade publicada com passagem automática." className={`mt-1 inline-block rounded border px-1.5 py-0.5 font-label-caps text-[11px] font-bold ${gradeEnd.level === 'urgent' ? 'border-on-air-crimson bg-on-air-crimson/15 text-on-air-crimson animate-pulse motion-reduce:animate-none' : 'border-armed-amber/60 bg-armed-amber/10 text-armed-amber'}`}>FIM DA GRADE ÀS {wallClock(view.schedule!.endsAt, rate, view.rundown.date)} · EM {mmss(gradeEnd.leftMs)}</div>}
                     <div className="font-label-mono text-label-mono text-outline mt-1">
                       TC {onAirItem ? dur(elapsedFrames, rate) : '00:00:00:00'}
@@ -976,18 +1019,21 @@ export function MasterControlView({
 
               <div className="flex flex-col min-w-0">
                 <div className="h-full bg-surface-panel/90 border border-border-strong p-space-md rounded-xl flex flex-col justify-between shadow-lg relative overflow-hidden backdrop-blur-md">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-1">
                     <div className="flex items-center gap-1.5">
                       <span className="font-label-caps text-[11px] text-outline uppercase">Transição</span>
                       <div className="inline-flex rounded-lg bg-surface-container-lowest p-0.5 border border-border-subtle">
                         {(['CUT', 'MIX', 'WIPE'] as const).map((mode) => (
                           <button
                             key={mode}
+                            type="button"
+                            disabled={mode !== 'CUT'}
+                            title={mode === 'CUT' ? 'Corte seco: é como o TAKE entra no ar' : `${mode} ainda não existe no engine; o TAKE é sempre corte seco`}
                             onClick={() => setTransitionMode(mode)}
                             className={`px-1.5 py-0.5 rounded font-label-mono text-[12px] transition-colors cursor-pointer ${
                               transitionMode === mode
                                 ? 'bg-primary-container text-on-primary-container font-semibold'
-                                : 'text-on-surface-variant hover:text-on-surface'
+                                : 'text-on-surface-variant hover:text-on-surface disabled:opacity-40 disabled:cursor-not-allowed'
                             }`}
                           >
                             {mode}
@@ -995,18 +1041,16 @@ export function MasterControlView({
                         ))}
                       </div>
                     </div>
-                    <button
-                      onClick={() => setIsLocked(!isLocked)}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle hover:bg-surface-container-high transition-colors cursor-pointer"
-                      id="lock-toggle"
-                    >
-                      <span className={`material-symbols-outlined text-[13px] ${isLocked ? 'text-status-ok' : 'text-armed-amber'}`}>
-                        {isLocked ? 'lock' : 'lock_open'}
-                      </span>
-                      <span className={`font-label-caps text-[11px] font-semibold ${isLocked ? 'text-status-ok' : 'text-armed-amber'}`}>
-                        {isLocked ? 'TRAVADO' : 'PGM LIVRE'}
-                      </span>
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button type="button" onClick={toggleSound} aria-pressed={soundOn} title={soundOn ? 'Som ligado: bipes nos últimos 5 s de itens longos, 10 s antes de horário fixo e no aviso final da grade' : 'Ligar bipes de contagem (só nesta estação)'} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle hover:bg-surface-container-high transition-colors">
+                        <span className={`material-symbols-outlined text-[13px] ${soundOn ? 'text-status-ok' : 'text-outline'}`}>{soundOn ? 'volume_up' : 'volume_off'}</span>
+                        <span className={`font-label-caps text-[11px] font-semibold ${soundOn ? 'text-status-ok' : 'text-outline'}`}>SOM</span>
+                      </button>
+                      {onLockPanel && <button type="button" onClick={onLockPanel} title="Bloqueia cliques e teclas de operação nesta estação (transmissões longas). Desbloqueia com um clique no aviso do topo." className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle hover:bg-surface-container-high transition-colors" id="lock-toggle">
+                        <span className="material-symbols-outlined text-[13px] text-on-surface-variant">lock</span>
+                        <span className="font-label-caps text-[11px] font-semibold text-on-surface-variant">BLOQUEAR</span>
+                      </button>}
+                    </div>
                   </div>
 
                   {takeReason&&<div role="status" className="text-[11px] text-armed-amber text-center">{takeReason}</div>}

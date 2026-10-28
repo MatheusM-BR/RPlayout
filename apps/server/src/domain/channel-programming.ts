@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { and, asc, eq, inArray, notInArray } from 'drizzle-orm'
 import type { Db } from '../db/client.js'
-import { channels, graphicTemplates, itemGraphics, liveSources, rundownItems, rundowns, secondaryEvents } from '../db/schema.js'
+import { channels, graphicTemplates, itemGraphics, liveSources, operatorDecisions, rundownItems, rundowns, secondaryEvents } from '../db/schema.js'
 import { rundownMidnight } from './rundown-clock.js'
 
 /** Programação multicanal (cópia e espelho). Quem pode: Supervisor/Admin com
@@ -10,7 +10,7 @@ export class ChannelProgrammingError extends Error {
   constructor(message: string, readonly status = 409) { super(message) }
 }
 
-export interface MirrorRow { targetChannelId: string; sourceChannelId: string; createdBy: string | null; createdAt: string; lastSyncAt: string | null; lastSyncError: string | null; unlockedBy: string | null; unlockedAt: string | null; unlockReason: string | null }
+export interface MirrorRow { targetChannelId: string; sourceChannelId: string; createdBy: string | null; createdAt: string; lastSyncAt: string | null; lastSyncError: string | null; unlockedBy: string | null; unlockedAt: string | null; unlockReason: string | null; unlockExpiresAt: string | null }
 
 const sameRate = (db: Db, a: string, b: string) => {
   const rows = db.select({ id: channels.id, num: channels.rateNum, den: channels.rateDen, archivedAt: channels.archivedAt }).from(channels).where(inArray(channels.id, [a, b])).all()
@@ -105,12 +105,27 @@ export function copyRundownToChannel(db: Db, options: { sourceRundownId: string;
   return writeRundownCopy(db, { sourceRundownId: options.sourceRundownId, targetChannelId: options.targetChannelId, targetRundownId: randomUUID(), date: options.date, name: options.name ?? `${source.name} (cópia de ${origin?.name ?? 'outro canal'})`, upsert: false })
 }
 
+/** Destraves vencidos voltam a travar, com registro na auditoria. Roda antes
+ * de qualquer leitura do espelho, então não depende de timer. */
+export function expireMirrorUnlocks(db: Db, nowIso = new Date().toISOString()): string[] {
+  const due = db.$client.prepare('SELECT target_channel_id AS id, source_channel_id AS source, unlocked_by AS by FROM channel_mirrors WHERE unlock_expires_at IS NOT NULL AND unlock_expires_at<=?').all(nowIso) as Array<{ id: string; source: string; by: string | null }>
+  if (!due.length) return []
+  // Sem transação própria: pode rodar dentro de outra (setMirror). O UPDATE
+  // condicionado só retrava uma vez; a auditoria sai só de quem retravou.
+  for (const row of due) {
+    const changed = db.$client.prepare('UPDATE channel_mirrors SET unlocked_by=NULL, unlocked_at=NULL, unlock_reason=NULL, unlock_expires_at=NULL WHERE target_channel_id=? AND unlock_expires_at<=?').run(row.id, nowIso).changes
+    if (changed) db.insert(operatorDecisions).values({ id: randomUUID(), rundownId: '@mirror', itemId: null, kind: 'MIRROR_RELOCK_AUTO', payload: { channelId: row.id, sourceChannelId: row.source, unlockedBy: row.by }, actorUsername: null, createdAt: nowIso }).run()
+  }
+  return due.map(row => row.id)
+}
+
 export function mirrorOf(db: Db, targetChannelId: string): MirrorRow | null {
-  const row = db.$client.prepare('SELECT target_channel_id AS targetChannelId, source_channel_id AS sourceChannelId, created_by AS createdBy, created_at AS createdAt, last_sync_at AS lastSyncAt, last_sync_error AS lastSyncError, unlocked_by AS unlockedBy, unlocked_at AS unlockedAt, unlock_reason AS unlockReason FROM channel_mirrors WHERE target_channel_id=?').get(targetChannelId) as MirrorRow | undefined
+  expireMirrorUnlocks(db)
+  const row = db.$client.prepare('SELECT target_channel_id AS targetChannelId, source_channel_id AS sourceChannelId, created_by AS createdBy, created_at AS createdAt, last_sync_at AS lastSyncAt, last_sync_error AS lastSyncError, unlocked_by AS unlockedBy, unlocked_at AS unlockedAt, unlock_reason AS unlockReason, unlock_expires_at AS unlockExpiresAt FROM channel_mirrors WHERE target_channel_id=?').get(targetChannelId) as MirrorRow | undefined
   return row ?? null
 }
 export function mirrorsFrom(db: Db, sourceChannelId: string): MirrorRow[] {
-  return db.$client.prepare('SELECT target_channel_id AS targetChannelId, source_channel_id AS sourceChannelId, created_by AS createdBy, created_at AS createdAt, last_sync_at AS lastSyncAt, last_sync_error AS lastSyncError, unlocked_by AS unlockedBy, unlocked_at AS unlockedAt, unlock_reason AS unlockReason FROM channel_mirrors WHERE source_channel_id=? ORDER BY target_channel_id').all(sourceChannelId) as MirrorRow[]
+  return db.$client.prepare('SELECT target_channel_id AS targetChannelId, source_channel_id AS sourceChannelId, created_by AS createdBy, created_at AS createdAt, last_sync_at AS lastSyncAt, last_sync_error AS lastSyncError, unlocked_by AS unlockedBy, unlocked_at AS unlockedAt, unlock_reason AS unlockReason, unlock_expires_at AS unlockExpiresAt FROM channel_mirrors WHERE source_channel_id=? ORDER BY target_channel_id').all(sourceChannelId) as MirrorRow[]
 }
 
 /** Liga (source) ou desliga (null) o espelho do canal alvo. Sem cadeias: um
@@ -125,7 +140,7 @@ export function setMirror(db: Db, targetChannelId: string, sourceChannelId: stri
     sameRate(db, sourceChannelId, targetChannelId)
     if (mirrorOf(db, sourceChannelId)) throw new ChannelProgrammingError('O canal de origem já espelha outro canal; escolha a origem principal.')
     if (mirrorsFrom(db, targetChannelId).length) throw new ChannelProgrammingError('Este canal é origem de outro espelho; desligue aquele espelho antes.')
-    db.$client.prepare('INSERT INTO channel_mirrors(target_channel_id,source_channel_id,created_by,created_at) VALUES(?,?,?,?) ON CONFLICT(target_channel_id) DO UPDATE SET source_channel_id=excluded.source_channel_id,created_by=excluded.created_by,unlocked_by=NULL,unlocked_at=NULL,unlock_reason=NULL,created_at=excluded.created_at,last_sync_at=NULL,last_sync_error=NULL')
+    db.$client.prepare('INSERT INTO channel_mirrors(target_channel_id,source_channel_id,created_by,created_at) VALUES(?,?,?,?) ON CONFLICT(target_channel_id) DO UPDATE SET source_channel_id=excluded.source_channel_id,created_by=excluded.created_by,unlocked_by=NULL,unlocked_at=NULL,unlock_reason=NULL,unlock_expires_at=NULL,created_at=excluded.created_at,last_sync_at=NULL,last_sync_error=NULL')
       .run(targetChannelId, sourceChannelId, actor, new Date().toISOString())
     return mirrorOf(db, targetChannelId)
   }, { behavior: 'immediate' })
@@ -166,13 +181,16 @@ export function isMirrorRundownOf(db: Db, rundownId: string, channelId: string):
 export const MIRROR_LOCK_MESSAGE = 'Canal travado no espelho: só a grade espelhada pode ir ao ar. Em emergência, use DESTRAVAR na Playlist ou no Master (o motivo fica na auditoria).'
 
 /** Destrava (com motivo) ou trava de novo o canal espelhado. */
-export function setMirrorUnlock(db: Db, channelId: string, unlock: { by: string | null; reason: string } | null): MirrorRow {
+export const UNLOCK_DURATIONS = { '1h': 3_600_000, '4h': 4 * 3_600_000, 'manual': null } as const
+export type UnlockDuration = keyof typeof UNLOCK_DURATIONS
+export function setMirrorUnlock(db: Db, channelId: string, unlock: { by: string | null; reason: string; duration?: UnlockDuration } | null): MirrorRow {
   const mirror = mirrorOf(db, channelId)
   if (!mirror) throw new ChannelProgrammingError('Este canal não espelha outro.', 404)
   if (unlock) {
     const reason = unlock.reason.trim()
     if (reason.length < 3) throw new ChannelProgrammingError('Informe o motivo do destrave.', 400)
-    db.$client.prepare('UPDATE channel_mirrors SET unlocked_by=?, unlocked_at=?, unlock_reason=? WHERE target_channel_id=?').run(unlock.by, new Date().toISOString(), reason.slice(0, 300), channelId)
-  } else db.$client.prepare('UPDATE channel_mirrors SET unlocked_by=NULL, unlocked_at=NULL, unlock_reason=NULL WHERE target_channel_id=?').run(channelId)
+    const now = Date.now(), span = UNLOCK_DURATIONS[unlock.duration ?? '4h']
+    db.$client.prepare('UPDATE channel_mirrors SET unlocked_by=?, unlocked_at=?, unlock_reason=?, unlock_expires_at=? WHERE target_channel_id=?').run(unlock.by, new Date(now).toISOString(), reason.slice(0, 300), span === null ? null : new Date(now + span).toISOString(), channelId)
+  } else db.$client.prepare('UPDATE channel_mirrors SET unlocked_by=NULL, unlocked_at=NULL, unlock_reason=NULL, unlock_expires_at=NULL WHERE target_channel_id=?').run(channelId)
   return mirrorOf(db, channelId)!
 }

@@ -2327,12 +2327,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.post('/api/channels/:id/mirror/unlock', async (request, reply) => {
     const {id}=request.params as {id:string}
     if(!(await allowed(request,'TRANSPORT')))return reply.code(403).send({error:'Seu papel não opera o transporte deste canal.'})
-    const body=z.object({reason:z.string().trim().min(3).max(300)}).strict().safeParse(request.body)
+    const body=z.object({reason:z.string().trim().min(3).max(300),duration:z.enum(['1h','4h','manual']).optional()}).strict().safeParse(request.body)
     if(!body.success)return reply.code(400).send({error:'Informe o motivo do destrave (mínimo 3 letras).'})
     const actor=access.identity(request)?.username??null
     let mirror
-    try{mirror=setMirrorUnlock(app.db,id,{by:actor,reason:body.data.reason})}catch(error){return programmingError(reply,error)}
-    await logDecision(app,'@mirror',null,'MIRROR_UNLOCK',{channelId:id,reason:body.data.reason,sourceChannelId:mirror.sourceChannelId},actor)
+    try{mirror=setMirrorUnlock(app.db,id,{by:actor,reason:body.data.reason,duration:body.data.duration??'4h'})}catch(error){return programmingError(reply,error)}
+    await logDecision(app,'@mirror',null,'MIRROR_UNLOCK',{channelId:id,reason:body.data.reason,duration:body.data.duration??'4h',expiresAt:mirror.unlockExpiresAt,sourceChannelId:mirror.sourceChannelId},actor)
     onChange()
     return {mirror}
   })

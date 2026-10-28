@@ -33,3 +33,26 @@ describe('aviso de fim da grade', () => {
     expect(mmss(0)).toBe('00:00')
   })
 })
+
+import { nextFixedCommitment, countdownText } from './broadcast-cues.js'
+describe('próximo horário fixo', () => {
+  const ms = (frames: number) => frames * 40 // 25 fps
+  const now = 1000 * 40
+  const items = [
+    { id: 'a', title: 'Fluxo', anchor: { kind: 'FLOW' } },
+    { id: 'b', title: 'Leilão 20h', anchor: { kind: 'FIXED', at: 5000 } },
+    { id: 'c', title: 'Rede', anchor: { kind: 'HARD_TIME', at: 3000 } },
+    { id: 'd', title: 'Passado', anchor: { kind: 'FIXED', at: 500 } },
+  ]
+  it('escolhe o compromisso mais próximo ainda por vir', () => {
+    const next = nextFixedCommitment(items, new Map([['c', { anchorHit: false, deviation: 50 }]]), ms, now)
+    expect(next).toEqual(expect.objectContaining({ itemId: 'c', kind: 'HARD_TIME', leftMs: 2000 * 40, hit: false, deviationMs: 2000 }))
+  })
+  it('sem âncoras futuras não mostra nada', () => {
+    expect(nextFixedCommitment([items[0]!, items[3]!], new Map(), ms, now)).toBeNull()
+  })
+  it('contagem com hora quando passa de 60 min', () => {
+    expect(countdownText(3_725_000)).toBe('01:02:05')
+    expect(countdownText(65_000)).toBe('01:05')
+  })
+})

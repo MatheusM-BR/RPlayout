@@ -7,7 +7,8 @@ export function validateChannelMirrors(sqlite:Database.Database){
   const found=sqlite.prepare("SELECT sql FROM sqlite_master WHERE name='channel_mirrors' AND type='table'").get() as {sql:string}|undefined
   if(!marked){if(found)throw new Error('Espelhos de canal sem registro de migração; preserve o banco.');return}
   const altered=table.replace('last_sync_error TEXT,CHECK','last_sync_error TEXT, unlocked_by TEXT, unlocked_at TEXT, unlock_reason TEXT,CHECK')
-  if(!found||(normalize(found.sql)!==table&&normalize(found.sql)!==normalize(altered)))throw new Error('Schema dos espelhos de canal ausente/adulterado.')
+  const altered53=table.replace('last_sync_error TEXT,CHECK','last_sync_error TEXT, unlocked_by TEXT, unlocked_at TEXT, unlock_reason TEXT, unlock_expires_at TEXT,CHECK')
+  if(!found||![table,normalize(altered),normalize(altered53)].includes(normalize(found.sql)))throw new Error('Schema dos espelhos de canal ausente/adulterado.')
 }
 export function migrateChannelMirrors(sqlite:Database.Database){
   sqlite.transaction(()=>{
@@ -39,4 +40,22 @@ export function migrateMirrorUnlock(sqlite:Database.Database){
     sqlite.prepare('INSERT INTO schema_migrations VALUES(52,?,?)').run('mirror-operator-unlock',new Date().toISOString())
   }).immediate()
   validateMirrorUnlock(sqlite)
+}
+
+/** Migração 53: prazo do destrave. Vencido, o canal volta a travar sozinho. */
+export function validateMirrorUnlockExpiry(sqlite:Database.Database){
+  const marked=sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='schema_migrations' AND type='table'").get()&&sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=53').get()
+  const hasTable=sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='channel_mirrors' AND type='table'").get()
+  const column=hasTable?(sqlite.prepare('PRAGMA table_info(channel_mirrors)').all() as Array<{name:string;type:string;notnull:number}>).find(entry=>entry.name==='unlock_expires_at'):undefined
+  if(!marked){if(column)throw new Error('Prazo de destrave sem registro de migração; preserve o banco.');return}
+  if(!column||column.type!=='TEXT'||column.notnull)throw new Error('Schema do prazo de destrave ausente/adulterado.')
+}
+export function migrateMirrorUnlockExpiry(sqlite:Database.Database){
+  sqlite.transaction(()=>{
+    if(sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=53').get())return
+    validateMirrorUnlockExpiry(sqlite)
+    sqlite.exec('ALTER TABLE channel_mirrors ADD COLUMN unlock_expires_at TEXT')
+    sqlite.prepare('INSERT INTO schema_migrations VALUES(53,?,?)').run('mirror-unlock-expiry',new Date().toISOString())
+  }).immediate()
+  validateMirrorUnlockExpiry(sqlite)
 }

@@ -1,3 +1,5 @@
+import { ShortcutsDialog } from './components/ShortcutsDialog.js'
+import { useStoredChoice } from './domain/stored-choice.js'
 ﻿import { setSessionAccessRole } from './domain/permissions.js'
 import { liveDefaultFrames } from './liveSource.js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -101,6 +103,7 @@ export function App() {
       if (event.key === 'F1') {
         event.preventDefault()
         event.stopPropagation()
+        if (!event.repeat) window.dispatchEvent(new Event('rplayout:shortcuts'))
       }
     }
     const bloquearMenuNativo = (event: MouseEvent): void => {
@@ -121,6 +124,15 @@ export function App() {
   const [libraryLoaded,setLibraryLoaded]=useState(false),[libraryError,setLibraryError]=useState<string|null>(null)
   const libraryReads=useRef(new JoinedRead<ScanStatus>())
   const [dialog, setDialog] = useState<Dialog>(null)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  useEffect(() => {
+    const toggle = () => setShortcutsOpen(open => !open)
+    window.addEventListener('rplayout:shortcuts', toggle)
+    return () => window.removeEventListener('rplayout:shortcuts', toggle)
+  }, [])
+  // Painel bloqueado: nenhuma tecla ou clique de operação nesta estação até
+  // desbloquear no aviso do topo. Para transmissões longas e mesa compartilhada.
+  const [panelLock, setPanelLock] = useStoredChoice('rplayout:panel-lock', ['on', 'off'] as const, 'off')
   const addingItem=useRef(false)
   const [isAddingItem,setIsAddingItem]=useState(false)
   /** Uma lista .m3u está sendo arrastada por cima da janela. */
@@ -688,7 +700,7 @@ export function App() {
         setDialog(null)
         return
       }
-      if (typing || dialog) return
+      if (typing || dialog || shortcutsOpen || panelLock === 'on') return
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault()
         void undo(event.shiftKey ? 'redo' : 'undo')
@@ -756,7 +768,7 @@ export function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [dialog, selected, selectedId, command, view, undo, live, takeLiveFromPreview])
+  }, [dialog, selected, selectedId, command, view, undo, live, takeLiveFromPreview, shortcutsOpen, panelLock])
 
   const move = (id: string, toIndex: number,revision?:number): void => {
     void guard(async () => {
@@ -1170,8 +1182,19 @@ export function App() {
         <button className="mt-2 rounded border px-2 py-1" onClick={()=>void refreshLibrary().catch(cause=>{if(!(cause instanceof SupersededContextError))anotar('SERVIDOR',cause instanceof Error?cause.message:'Acervo não consultado.')})}>Reconsultar acervo</button>
       </aside>}
       {scanRequest!==null&&<div className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center"><ScanCommandDialog measure={scanRequest} onClose={()=>setScanRequest(null)} onRegistered={()=>{}}/></div>}
+      {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
+      {panelLock === 'on' && <>
+        <div aria-hidden="true" className="fixed inset-0 z-[110] cursor-not-allowed bg-black/10" />
+        <div role="alert" className="fixed left-1/2 bottom-4 z-[111] flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-3 rounded-lg border border-armed-amber bg-surface-panel px-4 py-2 shadow-2xl">
+          <span className="material-symbols-outlined text-armed-amber">lock</span>
+          <span className="font-label-caps text-[12px] font-bold text-armed-amber">PAINEL BLOQUEADO</span>
+          <span className="hidden sm:inline text-[12px] text-on-surface-variant">Cliques e teclas de operação desativados nesta estação. O canal segue no ar.</span>
+          <button type="button" className="btn small primary" onClick={() => setPanelLock('off')}>DESBLOQUEAR</button>
+        </div>
+      </>}
       {currentWorkspace === 'master' && (
         <MasterControlView
+          onLockPanel={() => setPanelLock('on')}
           libraryLoaded={libraryLoaded}
           channel={view.channel}
           channels={channels}

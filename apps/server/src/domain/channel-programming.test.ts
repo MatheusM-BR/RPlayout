@@ -5,7 +5,7 @@ import {createApp,runtimeFor,type App} from '../app.js'
 import {registerRoutes} from '../routes.js'
 import {channels,graphicTemplates,itemGraphics,mediaAssets,rundownItems,rundowns,sessions,users} from '../db/schema.js'
 import {sessionDigest} from './access.js'
-import {copyRundownToChannel,mirrorRundownId,setMirror,syncMirrorRundown} from './channel-programming.js'
+import {copyRundownToChannel,isMirrorLocked,mirrorOf,mirrorRundownId,setMirror,setMirrorUnlock,syncMirrorRundown} from './channel-programming.js'
 vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',DEVICES_BINARY:'',AUTH_USER:'',AUTH_PASSWORD:'',DEFAULT_ROLE:'ADMIN'}))
 
 let app:App,server:FastifyInstance
@@ -127,5 +127,19 @@ describe('rotas de programação multicanal',()=>{
     expect((await server.inject({method:'POST',url:'/api/channels/B/mirror/unlock',headers,payload:{reason:'Emergência'}})).statusCode).toBe(200)
     expect([403,404]).toContain((await server.inject({method:'POST',url:'/api/channels/A/mirror/unlock',headers,payload:{reason:'Emergência'}})).statusCode)
     expect((await server.inject({method:'POST',url:'/api/channels/B/mirror/lock',headers})).statusCode).toBe(200)
+  })
+  it('destrave com prazo volta a travar sozinho e registra na auditoria; sem prazo fica até travar',async()=>{
+    setMirror(app.db,'B','A',null)
+    const timed=setMirrorUnlock(app.db,'B',{by:'op',reason:'Leilão extra',duration:'1h'})
+    expect(Date.parse(timed.unlockExpiresAt!)-Date.parse(timed.unlockedAt!)).toBe(3_600_000)
+    expect(isMirrorLocked(app.db,'B')).toBe(false)
+    app.sqlite.prepare("UPDATE channel_mirrors SET unlock_expires_at='2000-01-01T00:00:00.000Z'").run()
+    expect(isMirrorLocked(app.db,'B')).toBe(true)
+    expect(mirrorOf(app.db,'B')).toEqual(expect.objectContaining({unlockedAt:null,unlockExpiresAt:null}))
+    expect(app.sqlite.prepare("SELECT count(*) AS n FROM operator_decisions WHERE kind='MIRROR_RELOCK_AUTO'").get()).toEqual({n:1})
+    expect(setMirrorUnlock(app.db,'B',{by:'op',reason:'Até eu travar',duration:'manual'}).unlockExpiresAt).toBeNull()
+    expect(isMirrorLocked(app.db,'B')).toBe(false)
+    const headers=login('OPERATOR',['B'])
+    expect((await server.inject({method:'POST',url:'/api/channels/B/mirror/unlock',headers,payload:{reason:'Teste',duration:'2d'}})).statusCode).toBe(400)
   })
 })
