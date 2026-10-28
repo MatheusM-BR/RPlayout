@@ -1232,11 +1232,11 @@ export function PlaylistScheduleView({
       )}
 
       {/* 2. ÁREA OPERACIONAL PRINCIPAL (FLEX-1) */}
-      <main className="flex-1 flex flex-col min-h-0 bg-surface-base overflow-hidden">
+      <main className="flex-1 flex flex-col min-h-0 bg-surface-base overflow-y-auto lg:overflow-hidden">
         <div className="shrink-0 px-3 pt-2 max-h-[45vh] overflow-y-auto"><SchedulePublicationPanel channelId={channel.id}/></div>
         {/* SUB-HEADER TÁTICO: Programação & Automação Linear */}
-        <div className="bg-surface-container px-margin py-2 border-b border-border-subtle flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-space-sm">
+        <div className="bg-surface-container px-margin py-2 border-b border-border-subtle flex flex-wrap items-center justify-between gap-2 shadow-sm">
+          <div className="flex flex-wrap items-center gap-space-sm">
             <div className="flex items-center gap-1.5">
               <span className="material-symbols-outlined text-accent-ice text-[18px]">splitscreen_left</span>
               <h1 className="font-headline-md text-headline-md text-on-surface uppercase tracking-wide">
@@ -1280,11 +1280,11 @@ export function PlaylistScheduleView({
         </div>
 
         {/* LAYOUT SPLIT-SCREEN 2 COLUNAS: 280px (~20%) + FLEX-1 (~80%) */}
-        <div className="flex-1 p-margin flex flex-col lg:flex-row gap-gutter overflow-hidden">
+        <div className="lg:flex-1 lg:min-h-0 p-margin flex flex-col lg:flex-row gap-gutter lg:overflow-hidden">
           {/* ========================================================
               COLUNA ESQUERDA (MAM LIBRARY & CALENDÁRIO)
               ======================================================== */}
-          <aside className="w-full lg:w-[330px] xl:w-[360px] lg:flex-shrink-0 flex flex-col gap-space-sm overflow-hidden">
+          <aside className="w-full lg:w-[330px] xl:w-[360px] lg:flex-shrink-0 flex flex-col gap-space-sm h-[60vh] lg:h-auto overflow-hidden">
             {/* Seletor de Modo da Barra Lateral: [ 📁 BIBLIOTECA MAM ] [ 📅 CALENDÁRIO ] */}
             <div className="bg-surface-card rounded p-1 border border-border-subtle flex gap-1 shadow-sm shrink-0">
               <button
@@ -1802,7 +1802,7 @@ export function PlaylistScheduleView({
           {/* ========================================================
               COLUNA DIREITA (~80%): TIMELINE 24H CONTÍNUA + GRADE DE EXIBIÇÃO
               ======================================================== */}
-          <section className="flex-1 flex flex-col gap-space-sm min-w-0 overflow-hidden">
+          <section className="lg:flex-1 flex flex-col gap-space-sm min-w-0 min-h-[80vh] lg:min-h-0 overflow-hidden">
             {/* 1. TIMELINE CONTÍNUA DE 24 HORAS CONECTADA */}
             <div className="bg-surface-card rounded border border-border-subtle p-space-sm flex flex-col gap-1 shadow-md">
               <div className="flex flex-wrap items-center justify-between gap-1 border-b border-border-subtle/60 pb-1">

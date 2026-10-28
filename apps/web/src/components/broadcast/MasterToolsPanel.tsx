@@ -8,11 +8,11 @@ import { NextPlaylistPanel } from './NextPlaylistPanel.js'
 import { ContingencyTool } from './PgmProbeBanner.js'
 
 const TABS = [
-  { id: 'overlays', label: 'OVERLAYS', icon: 'layers' },
-  { id: 'gfx', label: 'GRAFISMOS', icon: 'subtitles' },
-  { id: 'insert', label: 'INSERÇÃO', icon: 'playlist_add' },
-  { id: 'next', label: 'PRÓX. GRADE', icon: 'queue_play_next' },
-  { id: 'contingency', label: 'CONTINGÊNCIA', icon: 'emergency' },
+  { id: 'overlays', label: 'OVERLAYS', short: 'OVERLAYS', icon: 'layers' },
+  { id: 'gfx', label: 'GRAFISMOS', short: 'GC', icon: 'subtitles' },
+  { id: 'insert', label: 'INSERÇÃO', short: 'INSERIR', icon: 'playlist_add' },
+  { id: 'next', label: 'PRÓX. GRADE', short: 'PRÓXIMA', icon: 'queue_play_next' },
+  { id: 'contingency', label: 'CONTINGÊNCIA', short: 'RESERVA', icon: 'emergency' },
 ] as const
 type ToolId = typeof TABS[number]['id']
 export const MASTER_TOOL_IDS: readonly ToolId[] = TABS.map(tab => tab.id)
@@ -28,7 +28,8 @@ export function MasterToolsPanel({ channelId, rate, assets }: { channelId: strin
         {TABS.map(item => (
           <button key={item.id} role="tab" type="button" aria-selected={tab === item.id} onClick={() => setTab(item.id)}
             className={`flex-1 min-w-0 flex items-center justify-center gap-1 px-1 py-2 font-label-caps text-[11px] font-bold tracking-wide border-b-2 transition-colors ${tab === item.id ? 'border-primary text-primary bg-surface-card' : 'border-transparent text-outline hover:text-on-surface'}`}>
-            <span className="truncate">{item.label}</span>
+            <span className="truncate 2xl:hidden" title={item.label}>{item.short}</span>
+            <span className="truncate hidden 2xl:inline">{item.label}</span>
           </button>
         ))}
       </div>

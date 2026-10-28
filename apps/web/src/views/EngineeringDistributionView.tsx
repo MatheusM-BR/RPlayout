@@ -204,7 +204,7 @@ export function EngineeringDistributionView({
       />
 
       {/* MAIN CONTAINER */}
-      <div className="flex-1 flex flex-col w-full bg-surface-base min-h-0 overflow-hidden">
+      <div className="flex-1 flex flex-col w-full bg-surface-base min-h-0 overflow-y-auto lg:overflow-hidden">
         {/* 2. BARRA DE STATUS / CARDS DE TELEMETRIA SUPERIOR */}
         <div className="w-full bg-surface-card border-b border-border-subtle px-4 py-2 shadow-sm shrink-0">
           <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
@@ -304,7 +304,7 @@ export function EngineeringDistributionView({
             </div>
 
             {/* Ações Rápidas de Engenharia */}
-            <div className="flex items-center justify-end gap-2 shrink-0 border-t lg:border-t-0 lg:border-l border-border-subtle pt-2 lg:pt-0 lg:pl-3">
+            <div className="flex flex-wrap items-center justify-end gap-2 shrink-0 border-t lg:border-t-0 lg:border-l border-border-subtle pt-2 lg:pt-0 lg:pl-3">
               {onOpenHealth && <button type="button" onClick={onOpenHealth} className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-panel text-on-surface text-[11px] font-bold rounded-lg border border-border-subtle"><span className="material-symbols-outlined text-[15px]">vital_signs</span>INCIDENTES DO CANAL</button>}
               {live?.reconfiguration?.ready === false && <span role="status" className="text-xs text-armed-amber max-w-52">{live.reconfiguration.reason ?? 'Aguardando recuperação do canal…'}</span>}
               <button
@@ -366,7 +366,7 @@ export function EngineeringDistributionView({
         </div>
 
         {/* 4. CONTEÚDO PRINCIPAL DINÂMICO CONFORME A SUB-SEÇÃO */}
-        <div className="flex-1 min-h-0 p-3.5 overflow-hidden flex flex-col gap-2.5">
+        <div className="lg:flex-1 lg:min-h-0 min-h-[80vh] p-3.5 lg:overflow-hidden flex flex-col gap-2.5">
           {/* WATCHDOG DE SONDA PGM & SLATE DE EMERGÊNCIA (FASE C) */}
           <PgmProbeBanner
             channelId={channel.id}

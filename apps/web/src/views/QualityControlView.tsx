@@ -1168,7 +1168,7 @@ function QualityControlSession({
         {/* 3. WORKSPACE OPERACIONAL DE 2 COLUNAS */}
         <div className="w-full flex-1 min-h-0 p-space-md grid grid-cols-12 lg:grid-rows-1 gap-space-md overflow-y-auto lg:overflow-hidden">
           {/* COLUNA ESQUERDA: LISTAGEM DE ARQUIVOS (Cols 1 a 5) */}
-          <div className="col-span-12 lg:col-span-4 flex flex-col h-64 lg:h-full min-h-0 bg-surface-card rounded-xl border border-border-subtle overflow-hidden shadow-md">
+          <div className="col-span-12 lg:col-span-4 flex flex-col h-[60vh] lg:h-full min-h-0 bg-surface-card rounded-xl border border-border-subtle overflow-hidden shadow-md">
             {/* Barra de Filtros e Busca do Acervo */}
             <div className="p-2.5 border-b border-border-subtle bg-surface-panel/50 flex flex-col gap-2 shrink-0">
               <div className="relative">

@@ -45,6 +45,18 @@ export function BroadcastHeader({
   const [channelDropdownOpen, setChannelDropdownOpen] = useState(false)
   const [profile, setProfile] = useStoredChoice<ProfileId>('rplayout.profile', PROFILE_IDS, defaultProfileFor(sessionRole))
   const profileInfo = PROFILES.find(entry => entry.id === profile) ?? PROFILES[PROFILES.length - 1]!
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const profileSelect = (
+    <select
+      aria-label="Perfil de navegação desta estação"
+      title="Perfil: escolhe quais telas aparecem no menu desta estação. Não altera permissões."
+      value={profile}
+      onChange={event => { setProfile(event.target.value as ProfileId); setProfileMenuOpen(false) }}
+      className="w-auto bg-transparent font-label-caps text-[11px] text-outline uppercase border-0 p-0 pr-1 cursor-pointer hover:text-on-surface focus:outline-none"
+    >
+      {PROFILES.map(entry => <option key={entry.id} value={entry.id} title={entry.description}>{entry.label}</option>)}
+    </select>
+  )
   const rate = channel.rate
   const fps = rate.num / rate.den
 
@@ -73,13 +85,13 @@ export function BroadcastHeader({
 
   return (
     <header className="w-full shrink-0 z-40 bg-surface-card border-b border-border-subtle select-none">
-      <div className="h-16 px-margin flex items-center justify-between gap-gutter">
+      <div className="min-h-16 px-margin py-1 lg:py-0 lg:h-16 flex flex-wrap lg:flex-nowrap items-center justify-between gap-x-3 2xl:gap-x-gutter gap-y-1">
         {/* Left: Logo + Spacious Channel Selector */}
-        <div className="flex items-center gap-space-lg">
+        <div className="order-1 flex items-center gap-2 2xl:gap-space-lg min-w-0">
           <div className="flex items-center gap-space-sm cursor-pointer" onClick={() => onNavigate('master')}>
             <span className="font-headline-md text-headline-md tracking-wider text-accent-ice uppercase font-bold text-[22px] flex items-center gap-1.5">
               <span className="material-symbols-outlined text-accent-ice text-[24px]">play_circle</span>
-              RPlayout
+              <span className="hidden sm:inline">RPlayout</span>
             </span>
             {isLiveOnAir === undefined ? (
               <span className="px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle text-outline text-[11px] whitespace-nowrap">PGM: N/D</span>
@@ -94,25 +106,25 @@ export function BroadcastHeader({
             )}
           </div>
 
-          <div className="h-8 w-px bg-border-subtle"></div>
+          <div className="hidden md:block h-8 w-px bg-border-subtle"></div>
 
           {/* Spacious Channel Selector Dropdown */}
-          <div className="relative">
+          <div className="relative min-w-0">
             <div
               onClick={() => setChannelDropdownOpen(!channelDropdownOpen)}
-              className="flex items-center gap-space-sm bg-surface-panel px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong cursor-pointer transition-colors shadow-sm ml-2"
+              className="flex items-center gap-2 bg-surface-panel px-2 2xl:px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-strong cursor-pointer transition-colors shadow-sm min-w-0"
               title="Selecionar Canal de Exibição"
             >
-              <span className="material-symbols-outlined text-accent-ice text-[20px]">tv</span>
-              <div className="flex flex-col">
-                <span className="font-body-md text-body-md font-semibold text-on-surface leading-tight">
+              <span className="material-symbols-outlined text-accent-ice text-[20px] hidden md:inline">tv</span>
+              <div className="flex flex-col min-w-0">
+                <span className="font-body-md text-body-md font-semibold text-on-surface leading-tight truncate max-w-[120px] sm:max-w-[180px] 2xl:max-w-[260px]" title={channel.name}>
                   {channel.name || 'Canal 1 - TV Principal HD'}
                 </span>
-                <span className="font-label-mono text-[12px] text-outline leading-tight">
+                <span className="font-label-mono text-[12px] text-outline leading-tight truncate hidden 2xl:block">
                   {formatStandardRate(channel.rate, channel.scan, channel.height)} • Master Principal
                 </span>
               </div>
-              <span className="material-symbols-outlined text-outline text-[18px] ml-2">expand_more</span>
+              <span className="material-symbols-outlined text-outline text-[18px]">expand_more</span>
             </div>
 
             {channelDropdownOpen && (
@@ -142,32 +154,31 @@ export function BroadcastHeader({
         </div>
 
         {/* Center: Stacked SDI/NDI/NVENC/SRT Badge Grid & Master Clock */}
-        <div className="flex items-center gap-space-xl">
+        <div className="order-2 flex items-center gap-2 2xl:gap-space-xl">
           {/* Saúde real: engine, saídas, disco, alertas */}
           <HeaderHealth channelId={channel.id} onClick={onOpenLiveInput} />
 
           {/* Repositioned Master Clock */}
-          <div className="flex items-center gap-space-sm bg-surface-base px-3 py-1 rounded-lg border border-border-subtle shadow-inner">
-            <span title="Relógio local; sincronização NTP externa não é medida aqui" className="font-label-mono text-label-mono text-outline uppercase">HORA LOCAL</span>
-            <span className="font-timecode-display text-[24px] text-on-surface tracking-widest font-bold tabular-nums">
+          <div className="flex items-center gap-2 bg-surface-base px-2 2xl:px-3 py-1 rounded-lg border border-border-subtle shadow-inner" title="Hora local desta estação">
+            <span className="hidden 2xl:inline font-label-mono text-label-mono text-outline uppercase">HORA LOCAL</span>
+            <span className="font-timecode-display text-[17px] sm:text-[20px] 2xl:text-[24px] text-on-surface tracking-wider 2xl:tracking-widest font-bold tabular-nums">
               {ntpTime}
             </span>
             <span className="w-2 h-2 rounded-full bg-status-ok shadow-[0_0_6px_#34C759] animate-pulse"></span>
           </div>
 
           {/* Badge de Continuidade e Cache 48h (XMirror) */}
-          <ContinuityCacheBadge className="hidden xl:inline-flex" channelId={channel.id} />
+          <ContinuityCacheBadge className="hidden 2xl:inline-flex" channelId={channel.id} />
         </div>
 
-        {/* Right: Nav & User Profile & Quick Dialogs */}
-        <div className="flex items-center gap-space-md">
-          <nav className="flex items-center gap-space-xs bg-surface-panel p-space-xs rounded border border-border-subtle" aria-label={`Telas do perfil ${profileInfo.label}`}>
+        {/* Navegação: segunda linha em telas estreitas, rolável */}
+          <nav className="order-4 lg:order-3 w-full lg:w-auto lg:ml-auto flex items-center gap-space-xs bg-surface-panel p-space-xs rounded border border-border-subtle overflow-x-auto" aria-label={`Telas do perfil ${profileInfo.label}`}>
             {navWorkspaces(profile, activeWorkspace).map(id => (
               <button
                 key={id}
                 onClick={() => onNavigate(id)}
                 aria-current={activeWorkspace === id ? 'page' : undefined}
-                className={`px-space-md py-1 uppercase transition-colors rounded font-body-sm text-body-sm ${
+                className={`shrink-0 px-2 2xl:px-space-md py-1.5 lg:py-1 uppercase transition-colors rounded font-body-sm text-body-sm ${
                   activeWorkspace === id
                     ? 'bg-primary-container text-on-primary-container font-bold border border-border-strong'
                     : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
@@ -178,7 +189,9 @@ export function BroadcastHeader({
             ))}
           </nav>
 
-          <div className="h-6 w-px bg-border-subtle"></div>
+        {/* Right: User Profile & Quick Dialogs */}
+        <div className="order-3 lg:order-4 flex items-center gap-2 2xl:gap-space-md">
+
 
           {/* Sino de Alertas / Notificações */}
           {onOpenAlerts && (
@@ -209,28 +222,30 @@ export function BroadcastHeader({
             <span className="material-symbols-outlined text-[18px]">settings</span>
           </button>}
 
-          {/* Operador Master */}
-          <div className="flex items-center gap-space-sm pl-space-xs">
-            <div className="text-right hidden sm:block">
+          {/* Operador e perfil: em telas largas o perfil fica à vista; nas demais,
+              no menu do avatar (o cabeçalho não corta a navegação). */}
+          <div className="relative flex items-center gap-space-sm pl-space-xs">
+            <div className="hidden 2xl:block text-right">
               <div className="font-body-sm text-body-sm font-semibold text-on-surface leading-none">
                 {sessionRole || 'Operador Master'}
               </div>
               <div className="flex items-center justify-end gap-space-xs mt-0.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-status-ok" title={authRequired ? 'Sessão autenticada' : 'Acesso local (sem login)'}></span>
-                <select
-                  aria-label="Perfil de navegação desta estação"
-                  title="Perfil: escolhe quais telas aparecem no menu desta estação. Não altera permissões."
-                  value={profile}
-                  onChange={event => setProfile(event.target.value as ProfileId)}
-                  className="w-auto bg-transparent font-label-caps text-[11px] text-outline uppercase border-0 p-0 pr-1 cursor-pointer hover:text-on-surface focus:outline-none"
-                >
-                  {PROFILES.map(entry => <option key={entry.id} value={entry.id} title={entry.description}>{entry.label}</option>)}
-                </select>
+                {profileSelect}
               </div>
             </div>
-            <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shadow-sm">
+            <button type="button" onClick={() => setProfileMenuOpen(value => !value)} aria-expanded={profileMenuOpen}
+              className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shadow-sm" title={`${sessionRole || 'Operador'} · perfil ${profileInfo.label}`}>
               <span className="material-symbols-outlined text-on-primary text-[18px]">person</span>
-            </div>
+            </button>
+            {profileMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 w-60 z-50 rounded-lg border border-border-strong bg-surface-card p-3 shadow-2xl grid gap-2 text-[12px]">
+                <div className="font-semibold text-on-surface">{sessionRole || 'Operador'}</div>
+                <div className="text-outline">{authRequired ? 'Sessão autenticada' : 'Acesso local (sem login)'}</div>
+                <label className="grid gap-1 text-outline">Perfil desta estação{profileSelect}</label>
+                <p className="text-[11px] text-outline">Escolhe as telas do menu; não altera permissões.</p>
+              </div>
+            )}
           </div>
         </div>
       </div>

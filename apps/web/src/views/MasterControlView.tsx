@@ -188,6 +188,7 @@ export function MasterControlView({
   const [transitionMode, setTransitionMode] = useState<'CUT' | 'MIX' | 'WIPE'>('CUT')
   const [adjustingLive, setAdjustingLive] = useState(false)
   const liveAdjustmentLock=useRef(false)
+  const [liveAdjustOpen, setLiveAdjustOpen] = useState(false)
   const [pendingLiveAdjustment,setPendingLiveAdjustment]=useState<{channelId:string;body:Parameters<typeof api.adjustLiveDuration>[1]}|null>(null)
   const submitLiveAdjustment=async(operation:{channelId:string;body:Parameters<typeof api.adjustLiveDuration>[1]})=>{
     try{
@@ -538,7 +539,7 @@ export function MasterControlView({
   }, [cueItem, view.items])
 
   // Biblioteca recolhível ao lado da grade (U1); a escolha fica nesta estação.
-  const [mamPanel, setMamPanel] = useStoredChoice<'open' | 'closed'>('rplayout.master.mam', ['open', 'closed'], 'open')
+  const [mamPanel, setMamPanel] = useStoredChoice<'open' | 'closed'>('rplayout.master.mam', ['open', 'closed'], typeof window !== 'undefined' && window.innerWidth < 1536 ? 'closed' : 'open')
   const mamOpen = mamPanel === 'open'
 
   // Seleção direta de preview (via MAM ou grade)
@@ -875,7 +876,7 @@ export function MasterControlView({
         onOpenLiveInput={onOpenLiveInput}
       />
 
-      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-hidden">
+      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto xl:overflow-hidden">
         {publicationRequired && <div role="alert" className="px-margin py-3 bg-amber-500/10 text-amber-400">A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.</div>}
         {/* 1.1 FAIXA DE STATUS DE ALTURA FIXA (U5): sonda + itens interrompidos */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0 flex flex-col gap-1">
@@ -884,16 +885,16 @@ export function MasterControlView({
         </div>
 
         {/* 2. MASTER EM 3 FAIXAS (U1): esquerda = faixa do ar + grade alta; direita = PGM/PVW + ferramentas */}
-        <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_500px] gap-space-md px-margin pb-2">
+        <div className="xl:flex-1 xl:min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] 2xl:grid-cols-[minmax(0,1fr)_500px] gap-space-md px-margin pb-2">
           <div className="min-h-0 min-w-0 flex flex-col gap-space-sm">
             {/* 2a. FAIXA DO AR: NO AR · TAKE/CUE · PRÓXIMO */}
-            <section className="shrink-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-space-sm items-stretch">
+            <section className="shrink-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-space-sm items-stretch">
               <div className="flex flex-col min-w-0">
                 <div className="bg-surface-panel/80 border border-border-subtle p-space-md rounded-xl flex flex-col justify-between shadow-md relative overflow-hidden backdrop-blur-sm h-full">
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center justify-between flex-wrap gap-1.5 pb-1 border-b border-border-subtle/50">
                       <div className="flex items-center gap-1.5">
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[11px] font-bold tracking-wider">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-on-air-crimson/20 border border-on-air-crimson/40 text-on-air-crimson font-label-caps text-[11px] font-bold tracking-wider whitespace-nowrap">
                           <span className={`w-1.5 h-1.5 rounded-full ${live?.transport.onAir && live.transport.playing ? 'bg-on-air-crimson animate-pulse' : 'bg-outline'}`}></span> {live?.transport.onAir ? live.transport.playing ? 'NO AR' : 'PGM PAUSADO' : 'SEM ITEM NO PGM'}
                         </span>
                         <span className="font-label-mono text-[12px] text-outline">
@@ -916,9 +917,13 @@ export function MasterControlView({
                     <div className="font-label-mono text-label-mono text-outline mt-1">
                       TC {onAirItem ? dur(elapsedFrames, rate) : '00:00:00:00'}
                     </div>
-                    {onAirItem?.item.type === 'LIVE' && <div className="mt-2 border-t border-border-subtle pt-2">
-                      <div className="text-[11px] text-outline mb-1">AJUSTAR ESTIMATIVA DO AO VIVO</div>
-                      <div className="flex flex-wrap justify-center gap-1">
+                    {onAirItem?.item.type === 'LIVE' && <div className="mt-2 border-t border-border-subtle pt-1.5">
+                      {/* Recolhido por padrão: a faixa do ar não cresce e a grade não encolhe. */}
+                      <button type="button" onClick={() => setLiveAdjustOpen(value => !value)} aria-expanded={liveAdjustOpen || Boolean(pendingLiveAdjustment)} className="w-full flex items-center justify-center gap-1 text-[11px] text-outline hover:text-on-surface">
+                        AJUSTAR ESTIMATIVA · {onAirItem.item.liveConfig?.autoFollowOnEnd ?? onAirItem.item.liveAutoFollowOnEnd ? 'saída automática' : 'saída manual'} <span className="material-symbols-outlined text-[14px]">{liveAdjustOpen || pendingLiveAdjustment ? 'expand_less' : 'expand_more'}</span>
+                      </button>
+                      {(liveAdjustOpen || Boolean(pendingLiveAdjustment) || Boolean(liveTimingMessage)) && <>
+                      <div className="flex flex-wrap justify-center gap-1 mt-1">
                         {[-60, -30, -5, 5, 30, 60].map(seconds => <button key={seconds} disabled={adjustingLive||Boolean(pendingLiveAdjustment)} className="px-2 py-1 rounded border border-border-subtle text-[11px] hover:border-primary disabled:opacity-40" onClick={() => {
                           if(liveAdjustmentLock.current)return
                           liveAdjustmentLock.current=true
@@ -937,6 +942,7 @@ export function MasterControlView({
                       <div className="text-[11px] text-outline mt-1">{onAirItem.item.liveConfig?.autoFollowOnEnd ?? onAirItem.item.liveAutoFollowOnEnd ? 'Saída automática ao fim da duração configurada.' : 'Saída manual: a estimativa não dispara TAKE.'}</div>
                       {liveTimingMessage && <div role="status" className="text-[11px] text-primary mt-1">{liveTimingMessage}</div>}
                       <LiveReplacementControl channelId={channel.id} info={live.liveReplacement??null} sources={sourceListReview?.sources??[]} />
+                      </>}
                     </div>}
                   </div>
                   <div>
@@ -1102,9 +1108,9 @@ export function MasterControlView({
             </section>
 
             {/* 2b. GRADE ALTA + BIBLIOTECA (recolhível) */}
-            <section className="flex-1 min-h-0 flex gap-space-sm">
+            <section className="h-[75vh] min-h-[420px] xl:h-auto xl:min-h-0 xl:flex-1 flex gap-space-sm">
               {mamOpen && (
-                <div className="w-[340px] shrink-0 bg-surface-card border border-border-subtle p-space-md rounded-xl flex flex-col gap-space-sm shadow-sm min-h-0">
+                <div className="hidden md:flex w-[260px] 2xl:w-[340px] shrink-0 bg-surface-card border border-border-subtle p-space-md rounded-xl flex-col gap-space-sm shadow-sm min-h-0">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="material-symbols-outlined text-primary text-[20px]">folder</span>
@@ -1298,33 +1304,36 @@ export function MasterControlView({
                         <span className="material-symbols-outlined text-[16px]">
                           {followOnAir ? 'lock' : 'lock_open'}
                         </span>
-                        <span>{followOnAir ? 'TRAVADO NO AR' : 'ROLAGEM LIVRE'}</span>
+                        <span className="hidden 2xl:inline">{followOnAir ? 'TRAVADO NO AR' : 'ROLAGEM LIVRE'}</span>
                       </button>
 
                       <button
+                        title="Adicionar linha na grade"
                         onClick={handleOpenAddLine}
                         className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
                       >
-                        <span className="material-symbols-outlined text-[16px]">add</span> Linha
+                        <span className="material-symbols-outlined text-[16px]">add</span> <span className="hidden 2xl:inline">Linha</span>
                       </button>
                       <button
+                        title="EPG / Auto-Fill"
                         onClick={onAutoFill}
                         className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
                       >
-                        <span className="material-symbols-outlined text-[16px]">sync</span> EPG / Autofill
+                        <span className="material-symbols-outlined text-[16px]">sync</span> <span className="hidden 2xl:inline">EPG / Autofill</span>
                       </button>
                       <button
                         onClick={() => setIsConflictDrawerOpen(true)}
                         className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-armed-amber font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
                         title="Verificar Conflitos da Grade (Conflict Drawer)"
                       >
-                        <span className="material-symbols-outlined text-[16px]">rule</span> Conflitos
+                        <span className="material-symbols-outlined text-[16px]">rule</span> <span className="hidden 2xl:inline">Conflitos</span>
                       </button>
                       <button
+                        title="Exportar grade (CSV)"
                         onClick={onExportCsv}
                         className="px-3 py-1.5 rounded-lg bg-surface-panel hover:bg-surface-container border border-border-subtle text-on-surface font-body-sm text-body-sm flex items-center gap-1.5 transition-colors cursor-pointer"
                       >
-                        <span className="material-symbols-outlined text-[16px]">file_download</span> Exportar
+                        <span className="material-symbols-outlined text-[16px]">file_download</span> <span className="hidden 2xl:inline">Exportar</span>
                       </button>
                     </div>
                   </div>
@@ -1375,13 +1384,13 @@ export function MasterControlView({
                     >
                       <thead className="bg-surface-panel/95 backdrop-blur-md sticky top-0 z-20 text-outline font-label-caps text-label-caps uppercase border-b border-border-subtle">
                         <tr className="h-11">
-                          <th className="px-4 w-12 text-center font-timecode-table">#</th>
+                          <th className="px-2 w-10 text-center font-timecode-table">#</th>
                           <th className="px-4 w-32 font-timecode-table">STATUS</th>
-                          <th className="px-4 w-36 font-timecode-table">INÍCIO</th>
-                          <th className="px-4 w-36 font-timecode-table">DURAÇÃO</th>
-                          <th className="px-4 font-timecode-table">TÍTULO DO EVENTO</th>
-                          <th className="px-4 w-32 text-right font-timecode-table">TIPO</th>
-                          <th className="px-4 w-28 text-right font-timecode-table">AÇÕES</th>
+                          <th className="px-3 w-28 font-timecode-table">INÍCIO</th>
+                          <th className="px-3 w-24 font-timecode-table">DURAÇÃO</th>
+                          <th className="px-3 font-timecode-table">TÍTULO</th>
+                          <th className="hidden 2xl:table-cell px-4 w-32 text-right font-timecode-table">TIPO</th>
+                          <th className="px-3 w-24 text-right font-timecode-table">AÇÕES</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border-subtle/30 font-timecode-table text-timecode-table text-[14px]">
@@ -1460,7 +1469,7 @@ export function MasterControlView({
                                   {index + 1}
                                 </td>
 
-                                <td className="py-1.5 px-3">
+                                <td className="py-1.5 px-3 whitespace-nowrap">
                                   {isItemOnAir ? (
                                     <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-on-air-crimson text-surface-base font-label-caps text-[11px] font-bold">
                                       <span className="w-1.5 h-1.5 rounded-full bg-surface-base animate-ping"></span> NO AR
@@ -1470,7 +1479,7 @@ export function MasterControlView({
                                       CUED
                                     </span>
                                   ) : unavailable ? (
-                                    <span className="px-2 py-0.5 rounded text-[11px] text-on-air-crimson bg-on-air-crimson/10" title={item.asset?.probeError ?? 'Mídia indisponível ou não aprovada no QC'}>BLOQUEADO</span>
+                                    <button type="button" onClick={(event) => { event.stopPropagation(); onNavigate('qc') }} className="px-2 py-0.5 rounded text-[11px] whitespace-nowrap text-on-air-crimson bg-on-air-crimson/10 hover:bg-on-air-crimson/25" title={`${!item.asset ? 'Arquivo não encontrado no acervo' : item.asset.probeError ? `Arquivo com problema: ${item.asset.probeError}` : item.asset.ignored ? 'Arquivo ignorado no QC' : 'Arquivo ainda não aprovado no QC'}. Clique para abrir o QC.`}>{!item.asset || item.asset.probeError ? 'SEM ARQUIVO' : item.asset.ignored ? 'IGNORADO' : 'QC PENDENTE'}</button>
                                   ) : isItemPrepared ? (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-ok/20 text-status-ok-bright font-label-caps text-[11px] font-bold">
                                       PRÓXIMO
@@ -1500,7 +1509,7 @@ export function MasterControlView({
                                   {dur(durationFrames, rate)}
                                 </td>
 
-                                <td className="py-1 px-3 font-body-sm text-[12px]">
+                                <td className="py-1 px-3 font-body-sm text-[13px] max-w-0 w-full">
                                   <div className="flex items-center gap-1.5 min-w-0">
                                     {/* Badges de Tipo de Evento (Fase A) */}
                                     {eventType === 'HARD_TIME' && (
@@ -1542,7 +1551,7 @@ export function MasterControlView({
 
                                     {/* Título textual com truncamento */}
                                     <span
-                                      className={`truncate text-[12px] flex-1 min-w-0 ${
+                                      className={`truncate text-[13px] flex-1 min-w-0 ${
                                         isItemOnAir
                                           ? 'text-on-surface font-bold'
                                           : isItemCued
@@ -1587,7 +1596,7 @@ export function MasterControlView({
                                   </div>
                                 </td>
 
-                                <td className="py-1 px-3 text-right">
+                                <td className="hidden 2xl:table-cell py-1 px-3 text-right">
                                   <div className="flex flex-col items-end justify-center leading-tight">
                                     <span className={`font-label-caps text-label-caps font-bold ${
                                       item.item.sourceRef

@@ -278,7 +278,7 @@ export function DocsView({
         onOpenSettings={onOpenSettings || (() => onNavigate('settings'))}
       />
 
-      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-hidden">
+      <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto lg:overflow-hidden">
         {/* 2. BARRA DE TÍTULO TÁTICA */}
         <div className="w-full bg-surface-card border-b border-border-subtle px-margin py-3 flex flex-wrap items-center justify-between gap-gutter shadow-sm shrink-0">
           <div className="flex items-center gap-space-md">
@@ -347,9 +347,9 @@ export function DocsView({
         </div>
 
         {/* 4. CORPO PRINCIPAL COM SIDEBAR DE CAPÍTULOS E CONTEÚDO */}
-        <div className="px-margin py-space-md flex-1 min-h-0 flex flex-col lg:flex-row gap-gutter overflow-hidden">
+        <div className="px-margin py-space-md lg:flex-1 lg:min-h-0 flex flex-col lg:flex-row gap-gutter lg:overflow-hidden">
           {/* Sidebar de Capítulos */}
-          <aside className="w-full lg:w-80 flex flex-col gap-1.5 shrink-0 overflow-y-auto broadcast-scroll pr-1">
+          <aside className="w-full lg:w-80 flex flex-col gap-1.5 shrink-0 max-h-[50vh] lg:max-h-none overflow-y-auto broadcast-scroll pr-1">
             <span className="font-label-caps text-[11px] text-outline uppercase font-bold px-1 mb-1">
               Índice de Capítulos
             </span>
@@ -421,7 +421,7 @@ export function DocsView({
           </aside>
 
           {/* Painel de Conteúdo do Capítulo Ativo */}
-          <section className="flex-1 flex flex-col gap-gutter min-w-0 overflow-y-auto broadcast-scroll pr-2">
+          <section className="lg:flex-1 flex flex-col gap-gutter min-w-0 lg:overflow-y-auto broadcast-scroll pr-2">
             {activeChapter ? (
               <div className="flex flex-col gap-gutter">
                 {/* Header do Capítulo */}
