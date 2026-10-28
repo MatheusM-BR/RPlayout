@@ -13,6 +13,7 @@ import { CollaborativeEditError } from './collaborative-edit.js'
 import { EngineTransport } from './engine.js'
 import { assertOperationalCadence } from './operational-cadence.js'
 import {isRecoveryRehearsal} from './recovery-rehearsal.js'
+import { isMirrorLocked } from './channel-programming.js'
 
 export interface ContinuityPolicy {
   channelId:string;version:number;state:'ENABLED'|'DISABLED'|'SUSPENDED';mode:'PUBLISHED_ONLY';maxLateMinutes:number
@@ -42,9 +43,12 @@ export function selectPublishedSuccessor(db:Db,channelId:string,sourceId:string,
   const frameMs=1000*channel.rate.den/channel.rate.num
   const start=base+(from.schedule.items[0]?.start??from.rundown.plannedStart)*frameMs,end=base+from.schedule.endsAt*frameMs
   if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start)throw new Error('A grade de origem não tem intervalo publicado válido.')
+  // Canal travado no espelho: a passagem automática só considera grades espelhadas.
+  const mirrorLocked=isMirrorLocked(db,channelId)
   const entries=db.select({row:operationalPlaylistRevisions}).from(operationalPlaylistRevisions).innerJoin(rundowns,eq(rundowns.id,operationalPlaylistRevisions.rundownId))
     .where(and(eq(operationalPlaylistRevisions.active,true),eq(rundowns.channelId,channelId))).all().flatMap(({row})=>{
     if(row.id===sourceId)return []
+    if(mirrorLocked&&!row.rundownId.startsWith('espelho-'))return []
     const payload=readOperationalPayload(row.payload),midnight=rundownMidnight(payload.rundown.date)
     if(payload.rundown.channelId!==channelId)throw new Error('Publicação vinculada a outro canal; confira a integridade da grade.')
     if(midnight===null)throw new Error('Há grade publicada com data inválida. Corrija antes de habilitar continuidade.')

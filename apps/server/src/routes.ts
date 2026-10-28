@@ -120,7 +120,7 @@ import {HaError} from './domain/ha-replication.js'
 import {HaRecoveryError} from './domain/ha-recovery.js'
 import { createEditorialRundown, EditorialRundownError } from './domain/editorial-rundown.js'
 import { diagnosticValue, sanitizeDiagnostic } from './domain/sanitize-diagnostic.js'
-import { ChannelProgrammingError, copyRundownToChannel, isActiveMirrorRundown, mirrorOf, mirrorsFrom, recordMirrorSync, setMirror, syncMirrorRundown } from './domain/channel-programming.js'
+import { ChannelProgrammingError, copyRundownToChannel, isActiveMirrorRundown, isMirrorLocked, isMirrorRundownOf, MIRROR_LOCK_MESSAGE, setMirrorUnlock, mirrorOf, mirrorsFrom, recordMirrorSync, setMirror, syncMirrorRundown } from './domain/channel-programming.js'
 import { canShareAcrossChannels } from './domain/permissions.js'
 import {databaseStorageStatus} from './db/process-database.js'
 import {HaBindingError,haBindingRequest,type HaBindingInventory} from './domain/ha-bindings.js'
@@ -345,7 +345,10 @@ async function runtimeForRundown(app: App, rundownId: string): Promise<Editorial
   const runtime = await runtimeFor(app, rundown.channelId)
   if (!runtime) throw Object.assign(new Error('A grade existe, mas o runtime do canal está indisponível ou protegido. Confira distribuição, posse e recuperação no Monitor; nenhum comando foi executado.'),{statusCode:409,code:'CHANNEL_RUNTIME_UNAVAILABLE'})
   // Preserve the first-load compatibility of an idle, uninitialized channel.
-  if (!runtime.view) return initialRuntimeForRundown(app, rundownId)
+  if (!runtime.view) {
+    if (isMirrorLocked(app.db, rundown.channelId) && !isMirrorRundownOf(app.db, rundownId, rundown.channelId)) throw Object.assign(new Error(MIRROR_LOCK_MESSAGE),{statusCode:409,code:'MIRROR_LOCKED'})
+    return initialRuntimeForRundown(app, rundownId)
+  }
   if (runtime.view.rundown.id === rundownId) return runtime
   let cues: ReturnType<ChannelRuntime['cuesOf']> = []
   const context: EditorialContext = {
@@ -1876,6 +1879,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
     const target = await getRundown(app.db, body.data.rundownId)
     if (!target || target.channelId !== id) return reply.code(404).send({ error: 'Grade não encontrada neste canal.' })
+    if (isMirrorLocked(app.db, id) && !isMirrorRundownOf(app.db, target.id, id)) return reply.code(409).send({ error: MIRROR_LOCK_MESSAGE, code: 'MIRROR_LOCKED' })
     let loadedView
     try { loadedView = await runtime.activateRundown(body.data.rundownId) }
     catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'A grade não pôde ser ativada.' }) }
@@ -2317,6 +2321,32 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
     onChange()
     return {mirror:mirror?mirrorOf(app.db,id):null,initial}
+  })
+  /** Destrave de emergência do canal espelhado: qualquer papel que opera o
+   * transporte deste canal. Motivo obrigatório, registrado na auditoria. */
+  server.post('/api/channels/:id/mirror/unlock', async (request, reply) => {
+    const {id}=request.params as {id:string}
+    if(!(await allowed(request,'TRANSPORT')))return reply.code(403).send({error:'Seu papel não opera o transporte deste canal.'})
+    const body=z.object({reason:z.string().trim().min(3).max(300)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe o motivo do destrave (mínimo 3 letras).'})
+    const actor=access.identity(request)?.username??null
+    let mirror
+    try{mirror=setMirrorUnlock(app.db,id,{by:actor,reason:body.data.reason})}catch(error){return programmingError(reply,error)}
+    await logDecision(app,'@mirror',null,'MIRROR_UNLOCK',{channelId:id,reason:body.data.reason,sourceChannelId:mirror.sourceChannelId},actor)
+    onChange()
+    return {mirror}
+  })
+  server.post('/api/channels/:id/mirror/lock', async (request, reply) => {
+    const {id}=request.params as {id:string}
+    if(!(await allowed(request,'TRANSPORT')))return reply.code(403).send({error:'Seu papel não opera o transporte deste canal.'})
+    const actor=access.identity(request)?.username??null
+    let mirror
+    try{mirror=setMirrorUnlock(app.db,id,null)}catch(error){return programmingError(reply,error)}
+    await logDecision(app,'@mirror',null,'MIRROR_LOCK',{channelId:id,sourceChannelId:mirror.sourceChannelId},actor)
+    onChange()
+    const runtime=await runtimeFor(app,id)
+    const onMirror=Boolean(runtime?.executionView&&isMirrorRundownOf(app.db,runtime.executionView.rundown.id,id))
+    return {mirror,onMirror}
   })
   server.post('/api/rundowns/:id/operational-publish', async (request, reply) => {
     const { id } = request.params as { id: string }

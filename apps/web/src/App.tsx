@@ -587,13 +587,36 @@ export function App() {
     return transportQueue.current.enqueue(action)
   }, [])
 
+  // Proteção contra TAKE duplo (toque duplo no Espaço ou no botão): com o
+  // próximo item já armado, o segundo TAKE pularia uma peça no ar. Ignora um
+  // TAKE enquanto o anterior não voltou ou nos 700 ms seguintes.
+  const lastTake = useRef<{ at: number; inFlight: boolean }>({ at: 0, inFlight: false })
+  const takeAllowed = useCallback((): boolean => {
+    const now = Date.now()
+    if (lastTake.current.inFlight || now - lastTake.current.at < 700) {
+      say('TAKE duplo ignorado: o anterior ainda está sendo confirmado.')
+      return false
+    }
+    lastTake.current = { at: now, inFlight: true }
+    return true
+  }, [say])
+  const takeDone = useCallback(() => { lastTake.current = { at: Date.now(), inFlight: false } }, [])
+
+  // Título da aba com o estado do PGM: com vários canais/janelas abertos, o
+  // operador vê na barra de abas qual está no ar sem trazer a janela à frente.
+  const onAirTitle = live?.transport.onAir ? (live.transport.playing ? '● NO AR' : 'Ⅱ PAUSADO') : '■ PARADO'
+  useEffect(() => {
+    document.title = view ? `${onAirTitle} · ${view.channel.name} — RPlayout` : 'RPlayout'
+  }, [onAirTitle, view?.channel.name])
+
   const command = useCallback(
     (action: 'take' | 'cue' | 'stop' | 'park' | 'seek', body?: { itemId?: string; assetId?: string; sourceRef?: string; sourceTitle?: string; bus?: 'pgm' | 'pvw'; frames?: number }) =>
+      action === 'take' && !takeAllowed() ? Promise.resolve() :
       enqueueTransportCommand(() => guard(async () => {
         if (!view || view.channel.id !== channelRef.current) return
         absorb(await api.transport(view.channel.id, action, body))
-      })),
-    [view, guard, absorb, enqueueTransportCommand],
+      })).finally(() => { if (action === 'take') takeDone() }),
+    [view, guard, absorb, enqueueTransportCommand, takeAllowed, takeDone],
   )
 
   // A live opened in PVW from the library is not a grade line, and the server
@@ -601,6 +624,7 @@ export function App() {
   // after the item on air and takes it, instead of refusing the operator.
   const takeLiveFromPreview = useCallback(
     (sourceRef: string, title: string) =>
+      !takeAllowed() ? Promise.resolve() :
       enqueueTransportCommand(async () => {
         if (!view || view.channel.id !== channelRef.current) return
         // Errors here are shown and logged explicitly: the generic guard drops
@@ -636,8 +660,8 @@ export function App() {
           console.error('[RPlayout] TAKE de ao vivo fora da grade:', texto)
           setError(texto); anotar('SERVIDOR', texto)
         }
-      }),
-    [view, live, absorb, enqueueTransportCommand, say, anotar],
+      }).finally(takeDone),
+    [view, live, absorb, enqueueTransportCommand, say, anotar, takeAllowed, takeDone],
   )
 
   const undo = useCallback(

@@ -1,7 +1,9 @@
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
+import { finalCount, gradeEndWarning, mmss } from '../domain/broadcast-cues.js'
+import { MirrorStatus } from '../components/MirrorStatus.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
-import { wallClock, localDateKey } from '../domain/wall-clock.js'
+import { wallClock, localDateKey, gradeInstant } from '../domain/wall-clock.js'
 import {itemDisplayTitle} from '../domain/item-title.js'
 import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags,LiveSourceReview,RootCatalogReview,RootAddReview } from '@rplayout/protocol'
 import { qcApproved,programDurationFrames,durationIn } from '@rplayout/protocol'
@@ -709,6 +711,13 @@ export function MasterControlView({
   // Passou da duração prevista (live com saída manual, duração estimada curta):
   // contar para cima em âmbar em vez de ficar parado em 00:00.
   const overrunFrames = onAirItem && onAirDurationFrames > 0 ? Math.max(0, elapsedFrames - onAirDurationFrames) : 0
+  // Contagem final (convenção de master control): âmbar nos últimos 10 s e
+  // piscando nos últimos 5 s do item no ar (itens de 30 s ou mais).
+  const finalCountState = onAirItem ? finalCount(remainingFrames, fps, Boolean(live?.transport.playing), overrunFrames, onAirDurationFrames) : null
+  // Fim da grade sem loop: aviso nos últimos 15 min (depois disso o canal só
+  // segue se houver próxima grade publicada com passagem automática).
+  const gradeEndMs = !view.rundown.loop && view.schedule && Number.isFinite(view.schedule.endsAt) ? gradeInstant(view.schedule.endsAt, rate, view.rundown.date).getTime() : null
+  const gradeEnd = onAirItem ? gradeEndWarning(gradeEndMs, Date.now()) : null
   const progressPercent =
     onAirDurationFrames > 0 ? Math.min(100, Math.round((elapsedFrames / onAirDurationFrames) * 100)) : 0
 
@@ -913,11 +922,12 @@ export function MasterControlView({
                     </div>
                   </div>
                   <div className="my-1 text-center">
-                    <div className={`font-label-caps text-label-caps uppercase tracking-wider mb-0.5 ${overrunFrames > 0 ? 'text-armed-amber' : 'text-outline'}`}>{overrunFrames > 0 ? 'EXCEDIDO' : 'TEMPO RESTANTE'}</div>
-                    <div className={`font-timecode-display text-[26px] font-bold tabular-nums leading-none tracking-wider ${overrunFrames > 0 ? 'text-armed-amber' : 'text-on-air-crimson drop-shadow-[0_0_8px_rgba(255,59,48,0.45)]'}`} id="onair-countdown">
+                    <div className={`font-label-caps text-label-caps uppercase tracking-wider mb-0.5 ${overrunFrames > 0 || finalCountState ? 'text-armed-amber' : 'text-outline'}`}>{overrunFrames > 0 ? 'EXCEDIDO' : finalCountState ? 'CORTE EM' : 'TEMPO RESTANTE'}</div>
+                    <div className={`font-timecode-display text-[26px] font-bold tabular-nums leading-none tracking-wider ${overrunFrames > 0 || finalCountState === 'last10' ? 'text-armed-amber' : finalCountState === 'last5' ? 'inline-block rounded px-1.5 bg-on-air-crimson text-white animate-pulse motion-reduce:animate-none' : 'text-on-air-crimson drop-shadow-[0_0_8px_rgba(255,59,48,0.45)]'}`} id="onair-countdown">
                       {onAirItem ? (overrunFrames > 0 ? `+${dur(overrunFrames, rate)}` : dur(remainingFrames, rate)) : '00:00:00:00'}
                     </div>
                     {overrunFrames > 0 && <div className="text-[11px] text-armed-amber mt-0.5">previsto {dur(onAirDurationFrames, rate)}</div>}
+                    {gradeEnd && <div role="status" title="A grade não está em loop. Depois do último item o canal só segue se houver próxima grade publicada com passagem automática." className={`mt-1 inline-block rounded border px-1.5 py-0.5 font-label-caps text-[11px] font-bold ${gradeEnd.level === 'urgent' ? 'border-on-air-crimson bg-on-air-crimson/15 text-on-air-crimson animate-pulse motion-reduce:animate-none' : 'border-armed-amber/60 bg-armed-amber/10 text-armed-amber'}`}>FIM DA GRADE ÀS {wallClock(view.schedule!.endsAt, rate, view.rundown.date)} · EM {mmss(gradeEnd.leftMs)}</div>}
                     <div className="font-label-mono text-label-mono text-outline mt-1">
                       TC {onAirItem ? dur(elapsedFrames, rate) : '00:00:00:00'}
                     </div>
@@ -1276,7 +1286,7 @@ export function MasterControlView({
                         <span className="font-headline-md text-headline-md uppercase text-on-surface font-semibold tracking-wide whitespace-nowrap">
                           Grade de Exibição
                         </span>
-                        {mirror && <span className="max-w-[16rem] truncate whitespace-nowrap px-1.5 py-0.5 rounded border border-accent-ice/50 bg-accent-ice/10 text-accent-ice-bright font-label-caps text-[11px] font-bold" title={`Espelho de ${channels.find(entry => entry.id === mirror.sourceChannelId)?.name ?? 'outro canal'}: este canal roda o que a origem publicar.${mirror.lastSyncError ? ` Pendente: ${mirror.lastSyncError}` : ''}`}>{mirror.lastSyncError ? 'ESPELHO PENDENTE ← ' : 'ESPELHO ← '}{(channels.find(entry => entry.id === mirror.sourceChannelId)?.name ?? 'outro canal').toUpperCase()}</span>}
+                        {mirror && <MirrorStatus channel={channel} mirror={mirror} channels={channels} compact />}
                         <span className="font-label-mono text-[12px] text-outline" title="Grade carregada no canal">
                           {view.rundown.name} · {view.rundown.date ? view.rundown.date.split('-').reverse().slice(0, 2).join('/') : 'sem data'}{view.rundown.loop ? ' · loop' : ''}
                         </span>

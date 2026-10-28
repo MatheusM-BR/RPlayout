@@ -192,7 +192,7 @@ export interface ManualExternalRun {
   acknowledgement?: string
 }
 
-export interface ChannelMirror { targetChannelId: string; sourceChannelId: string; createdBy: string | null; createdAt: string; lastSyncAt: string | null; lastSyncError: string | null }
+export interface ChannelMirror { targetChannelId: string; sourceChannelId: string; createdBy: string | null; createdAt: string; lastSyncAt: string | null; lastSyncError: string | null; unlockedBy?: string | null; unlockedAt?: string | null; unlockReason?: string | null }
 export interface MirrorResult { channelId: string; ok: boolean; loaded?: boolean; rundownId?: string; items?: number; skippedGraphics?: number; unboundLive?: number; error?: string }
 
 export interface HostMetricSample {
@@ -361,6 +361,8 @@ export const api = {
   restartChannel: (id: string) => post<{ ok: true }>(`/api/channels/${id}/restart`, {}),
   channelProgramming:(id:string)=>send<{mirror:ChannelMirror|null;mirrorsFrom:ChannelMirror[];canShare:boolean}>(`/api/channels/${encodeURIComponent(id)}/programming`),
   copyRundownToChannel:(id:string,body:{copyFromRundownId:string;date?:string;name?:string})=>post<{rundownId:string;items:number;skippedGraphics:number;liveItems:number;unboundLive:number}>(`/api/channels/${encodeURIComponent(id)}/copy-rundown`,body),
+  unlockChannelMirror:(id:string,reason:string)=>send<{mirror:ChannelMirror}>(`/api/channels/${encodeURIComponent(id)}/mirror/unlock`,{method:'POST',body:JSON.stringify({reason})}),
+  lockChannelMirror:(id:string)=>send<{mirror:ChannelMirror;onMirror:boolean}>(`/api/channels/${encodeURIComponent(id)}/mirror/lock`,{method:'POST',body:'{}'}),
   setChannelMirror:(id:string,sourceChannelId:string|null)=>send<{mirror:ChannelMirror|null;initial:MirrorResult|null}>(`/api/channels/${encodeURIComponent(id)}/mirror`,{method:'PUT',body:JSON.stringify({sourceChannelId})}),
   warmContinuityCache: (channelId?: string) => post<{ ok: boolean; cached48h: number; missing48h: number }>(`/api/v1/continuity/cache/warm${channelId ? '?channelId=' + encodeURIComponent(channelId) : ''}`, {}),
   continuityCacheStatus: (channelId?: string) => send<import('@rplayout/protocol').ContinuityCacheStatus>(`/api/v1/continuity/cache/status${channelId ? '?channelId=' + encodeURIComponent(channelId) : ''}`),

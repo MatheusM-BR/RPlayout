@@ -39,7 +39,7 @@ import type {StorageMaintenance} from '../domain/storage-maintenance.js'
 import {openProcessDatabase} from './process-database.js'
 import {assertSchemaCompatibility} from './schema-compatibility.js'
 import {migrateUpgradeBackupRequests} from './upgrade-backup-requests.js'
-import {migrateChannelMirrors} from './channel-mirrors.js'
+import {migrateChannelMirrors,migrateMirrorUnlock} from './channel-mirrors.js'
 import {assertNoUncertainUpgradeProfile} from '../domain/upgrade-profile-adoption.js'
 import {assertNoUnboundReturnCandidate} from './return-candidate-admission.js'
 
@@ -617,6 +617,7 @@ export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.D
     migrateGraphicCommandPending(sqlite)
     migrateUpgradeBackupRequests(sqlite)
     migrateChannelMirrors(sqlite)
+    migrateMirrorUnlock(sqlite)
     assertSchemaCompatibility(sqlite,true)
     assertNoUncertainUpgradeProfile(sqlite)
     options.onOpened?.(sqlite)

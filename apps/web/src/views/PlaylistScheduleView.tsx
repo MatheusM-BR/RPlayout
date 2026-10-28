@@ -1,4 +1,5 @@
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
+import { MirrorStatus } from '../components/MirrorStatus.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { wallClock, nowHms, parseHms, formatHms, anchorWall, anchorFramesFor, resolveWallInstant, type DayChoice } from '../domain/wall-clock.js'
@@ -1244,7 +1245,7 @@ export function PlaylistScheduleView({
         {/* SUB-HEADER TÁTICO: Programação & Automação Linear */}
         <div className="bg-surface-container px-margin py-2 border-b border-border-subtle flex flex-wrap items-center justify-between gap-2 shadow-sm">
           <div className="flex flex-wrap items-center gap-space-sm">
-            {mirror && <span className="max-w-full truncate px-2 py-0.5 rounded border border-accent-ice/50 bg-accent-ice/10 text-accent-ice-bright font-label-caps text-[11px] font-bold" title="Este canal roda o que o canal de origem publicar. A grade espelhada não é editada aqui.">ESPELHO DE {(channels.find(entry => entry.id === mirror.sourceChannelId)?.name ?? 'outro canal').toUpperCase()}{mirror.lastSyncError ? ' · PENDENTE' : mirror.lastSyncAt ? '' : ' · AGUARDANDO 1ª PUBLICAÇÃO'}</span>}
+            {mirror && <MirrorStatus channel={channel} mirror={mirror} channels={channels} onMessage={setFeedbackMessage} />}
             <div className="flex items-center gap-1.5">
               <span className="material-symbols-outlined text-accent-ice text-[18px]">splitscreen_left</span>
               <h1 className="font-headline-md text-headline-md text-on-surface uppercase tracking-wide">
