@@ -20,7 +20,7 @@ import type {
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { api } from '../api.js'
 import {commandRequestId} from '../domain/request-id.js'
-import { canonicalLiveSourceRef, liveProtocolLabel, sameLiveSource } from '../liveSource.js'
+import { canonicalLiveSourceRef, liveDefaultFrames, liveProtocolLabel, sameLiveSource } from '../liveSource.js'
 import { LiveReplacementControl } from '../components/LiveReplacementControl.js'
 import { Whep } from '../components/Whep.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
@@ -171,7 +171,7 @@ export function MasterControlView({
   const publicationRequired=Boolean(view.rundown.publicationRequired)
   // MAM filter & search states
   const [mamSearch, setMamSearch] = useState('')
-  const [selectedTag, setSelectedTag] = useState<'TODOS' | 'VT' | 'JORNAL' | 'AO VIVO'>('TODOS')
+  const [selectedTag, setSelectedTag] = useState<'TODOS' | 'VT' | 'AO VIVO'>('TODOS')
   const [transitionMode, setTransitionMode] = useState<'CUT' | 'MIX' | 'WIPE'>('CUT')
   const [adjustingLive, setAdjustingLive] = useState(false)
   const liveAdjustmentLock=useRef(false)
@@ -315,7 +315,7 @@ export function MasterControlView({
     if(!sourceMounted.current||sourceChannel.current!==id||run!==sourceGeneration.current)return
     setSourceListReview(review)
     const sources=review.sources
-    const defaultDuration = Math.round(15 * 60 * (rate.num / rate.den))
+    const defaultDuration = liveDefaultFrames(rate)
     setCustomSources(sources.filter((source) => source.enabled).map((source: ManagedLiveSource) => ({
       id: source.id,
       title: source.name,
@@ -566,6 +566,16 @@ export function MasterControlView({
     : cueItem
     ? getItemDuration(cueItem)
     : 0
+  // Cartão PRÓXIMO: sem CUE, mostra o item que o automático vai preparar
+  // (antes ficava "Duração 00:00" e "Formato N/D" com o próximo já conhecido).
+  const nextCardItem = selectedPreviewAsset ? null : cueItem ?? (directPreview ? null : armedItem)
+  const nextCardAsset = activePreviewAsset ?? nextCardItem?.asset ?? null
+  const nextCardDuration = activePreviewDuration || (nextCardItem ? getItemDuration(nextCardItem) : 0)
+  const nextCardFormat = nextCardAsset?.probe?.height && nextCardAsset.probe.rate
+    ? formatStandardRate(nextCardAsset.probe.rate, nextCardAsset.probe.interlaceMode === 'interleaved' ? 'INTERLACED' : 'PROGRESSIVE', nextCardAsset.probe.height)
+    : nextCardItem?.item.type === 'LIVE' || directPreview
+    ? 'FORMATO: CONFERIDO NO CUE'
+    : nextCardAsset ? 'FORMATO: ARQUIVO SEM ANÁLISE' : 'FORMATO: —'
 
   const handleRowClick = (e: React.MouseEvent, item: ItemView, index: number) => {
     const itemId = item.item.id
@@ -629,8 +639,22 @@ export function MasterControlView({
     onPreviewAsset(asset)
   }
 
+  // Latência medida de verdade: clique no TAKE até o servidor confirmar outro
+  // item no ar (o que o operador espera). Não é latência da saída/codec.
+  const takeClickRef = useRef<{ at: number; from: string | null } | null>(null)
+  const [lastTake, setLastTake] = useState<{ ms: number; at: Date } | null>(null)
+  const onAirKey = live.transport.onAir ? `${live.transport.onAir.itemId}:${live.transport.onAir.startedAt}` : null
+  useEffect(() => {
+    const click = takeClickRef.current
+    if (!click || onAirKey === click.from) return
+    const ms = performance.now() - click.at
+    takeClickRef.current = null
+    if (ms < 15_000) setLastTake({ ms: Math.round(ms), at: new Date() })
+  }, [onAirKey])
+
   const handleTake = () => {
     if (publicationRequired || !live.transport.preview) return
+    takeClickRef.current = { at: performance.now(), from: onAirKey }
     const outside = onTakeLive ? liveOutsideGrade(live.transport.preview, view.items.map((entry) => entry.item.sourceRef).filter((ref): ref is string => Boolean(ref))) : null
     if (outside) onTakeLive!(outside.source, outside.title)
     else onTake()
@@ -640,6 +664,8 @@ export function MasterControlView({
   const scheduleMap = useMemo(() => {
     return new Map(view.schedule?.items?.map((it) => [it.id, it]) ?? [])
   }, [view.schedule])
+  const nextCardSchedule = nextCardItem ? scheduleMap.get(nextCardItem.item.id) : undefined
+  const nextCardFrames = nextCardDuration || (nextCardSchedule?.start != null && nextCardSchedule.end != null ? Math.max(0, nextCardSchedule.end - nextCardSchedule.start) : 0)
 
   // Cálculo de temporizações e quadros
   const rate = channel.rate
@@ -717,10 +743,8 @@ export function MasterControlView({
       const isLive = 'isLiveSource' in asset && asset.isLiveSource
       if (selectedTag === 'TODOS') return true
       if (selectedTag === 'VT') return !isLive && asset.kind === 'VIDEO'
-      if (selectedTag === 'JORNAL')
-        return asset.title.toLowerCase().includes('jornal') || asset.path.toLowerCase().includes('jornal')
-      if (selectedTag === 'AO VIVO')
-        return isLive || asset.title.toLowerCase().includes('live') || asset.path.toLowerCase().includes('ao vivo')
+      // JORNAL saiu: era só "jornal" no nome, não uma categoria do acervo.
+      if (selectedTag === 'AO VIVO') return Boolean(isLive)
       return true
     })
   }, [allAssetsWithLive, mamSearch, selectedTag])
@@ -1052,10 +1076,12 @@ export function MasterControlView({
                 </div>
 
                 <div className="flex items-center justify-between font-label-mono text-[10px] text-outline pt-0.5 border-t border-border-subtle/40">
-                  <span className="inline-flex items-center gap-1 text-on-surface-variant">
-                    SINCRONISMO EXTERNO: N/D
+                  <span className="inline-flex items-center gap-1 text-on-surface-variant" title="Sem placa SDI/genlock: o engine marca o tempo pelo relógio do Windows. Com DeckLink, a referência passa a ser a da placa.">
+                    REFERÊNCIA: RELÓGIO DO SISTEMA
                   </span>
-                  <span>LATÊNCIA: NÃO MEDIDA</span>
+                  <span title="Do clique no TAKE até o servidor confirmar o novo item no ar. Não inclui a latência da saída (RTMP/SRT/NDI).">
+                    {lastTake ? `ÚLTIMO TAKE: ${lastTake.ms} ms · ${lastTake.at.toLocaleTimeString('pt-BR')}` : 'ÚLTIMO TAKE: —'}
+                  </span>
                 </div>
               </div>
 
@@ -1083,7 +1109,7 @@ export function MasterControlView({
                     <div className="flex items-baseline gap-2">
                       <span className="font-label-caps text-label-caps text-outline uppercase tracking-wider">Duração</span>
                       <span className="font-timecode-display text-[24px] text-armed-amber font-bold tabular-nums leading-none tracking-wider">
-                        {dur(activePreviewDuration, rate)}
+                        {dur(nextCardFrames, rate)}
                       </span>
                     </div>
                     <div className="text-right">
@@ -1101,9 +1127,7 @@ export function MasterControlView({
 
                 <div className="flex items-center justify-between text-on-surface-variant font-label-mono text-label-mono pt-1.5 border-t border-border-subtle/50">
                   <span className="text-outline">
-                    {activePreviewAsset?.probe?.height && activePreviewAsset.probe.rate
-                      ? formatStandardRate(activePreviewAsset.probe.rate, activePreviewAsset.probe.interlaceMode === 'interleaved' ? 'INTERLACED' : 'PROGRESSIVE', activePreviewAsset.probe.height)
-                      : 'FORMATO DA FONTE: N/D'}
+                    {nextCardFormat}
                   </span>
                   <span className="text-armed-amber font-semibold">
                     {overrunFrames > 0 ? `ATRASADO +${dur(overrunFrames, rate)}` : `DISPARO EM ${dur(remainingFrames, rate)}`}
@@ -1173,7 +1197,7 @@ export function MasterControlView({
 
               {/* Filtros em Pílulas */}
               <div className="flex gap-1.5 pb-1">
-                {(['TODOS', 'VT', 'JORNAL', 'AO VIVO'] as const).map((tag) => (
+                {(['TODOS', 'VT', 'AO VIVO'] as const).map((tag) => (
                   <button
                     key={tag}
                     onClick={() => setSelectedTag(tag)}

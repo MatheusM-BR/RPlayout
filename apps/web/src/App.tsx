@@ -1,4 +1,5 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { liveDefaultFrames } from './liveSource.js'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { setAirState } from './domain/air-state.js'
 import { wallClock, setCurrentGradeDate, anchorFramesFor } from './domain/wall-clock.js'
 import type { ReactNode } from 'react'
@@ -607,11 +608,10 @@ export function App() {
           const rundownId = view.rundown.id, channelId = view.channel.id
           const onAirId = live?.transport.onAir?.itemId
           const index = view.items.findIndex((entry) => entry.item.id === onAirId)
-          const fps = view.channel.rate.num / view.channel.rate.den
           const existing = new Set(view.items.map((entry) => entry.item.id))
           const inserted = await api.addItem(rundownId, {
             sourceRef, type: 'LIVE', title,
-            durationOverride: Math.round(15 * 60 * fps),
+            durationOverride: liveDefaultFrames(view.channel.rate),
             anchor: { kind: 'FLOW' },
             atIndex: index >= 0 ? index + 1 : undefined,
           }, view.editorialRevision)

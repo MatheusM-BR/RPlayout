@@ -28,6 +28,8 @@ export interface MultiviewSourceItem {
 
 interface OperationalMultiviewProps {
   sources?: MultiviewSourceItem[]
+  /** Primeira leitura ainda não chegou: não dizer que não há entradas. */
+  loading?: boolean
   initialLayout?: MultiviewLayout
   /** Controlled by the shared editor; local selection alone never writes. */
   selectedLayout?:MultiviewLayout
@@ -43,16 +45,16 @@ interface OperationalMultiviewProps {
  * ações pertencem exclusivamente ao Master/Playlist, onde há confirmação do
  * operador e estado do motor.
  */
-export function OperationalMultiview({ sources = [], initialLayout = 'GRID_2X2', selectedLayout,onLayoutChange,layoutDisabled=false,onWatchingPreview,onWatchingBus }: OperationalMultiviewProps) {
+export function OperationalMultiview({ sources = [], loading = false, initialLayout = 'GRID_2X2', selectedLayout,onLayoutChange,layoutDisabled=false,onWatchingPreview,onWatchingBus }: OperationalMultiviewProps) {
   const [localLayout, setLayout] = useState<MultiviewLayout>(initialLayout)
   const layout=selectedLayout??localLayout
   return (
     <section className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface-card shadow-sm">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border-subtle bg-surface-panel px-4 py-2.5">
-        <div className="flex items-center gap-2.5"><div className="flex h-7 w-7 items-center justify-center rounded border border-primary/30 bg-primary/10 text-primary"><span className="material-symbols-outlined text-[18px]">visibility</span></div><div><div className="flex items-center gap-2"><h3 className="font-headline-md text-[14px] font-bold tracking-wide text-on-surface">MULTIVIEW DE ENTRADAS</h3><span className="rounded border border-border-subtle px-1.5 py-0.5 font-label-mono text-[10px] text-outline">{sources.length} CONFIGURADA{sources.length === 1 ? '' : 'S'}</span></div><p className="font-label-mono text-[10px] text-outline">Somente visualização e telemetria do processo de ingest.</p></div></div>
+        <div className="flex items-center gap-2.5"><div className="flex h-7 w-7 items-center justify-center rounded border border-primary/30 bg-primary/10 text-primary"><span className="material-symbols-outlined text-[18px]">visibility</span></div><div><div className="flex items-center gap-2"><h3 className="font-headline-md text-[14px] font-bold tracking-wide text-on-surface">MULTIVIEW DE ENTRADAS</h3><span className="rounded border border-border-subtle px-1.5 py-0.5 font-label-mono text-[10px] text-outline">{loading ? '…' : `${sources.length} CONFIGURADA${sources.length === 1 ? '' : 'S'}`}</span></div><p className="font-label-mono text-[10px] text-outline">Somente visualização e telemetria do processo de ingest.</p></div></div>
         <div className="flex gap-1 rounded-lg border border-border-subtle bg-surface-base p-1">{([['GRID_2X2', 'GRID 2×2', 'grid_4x4'], ['GRID_1_PLUS_3', 'GRID 1+3', 'splitscreen'], ['COMPACT_LIST', 'LISTA TÉCNICA', 'view_list']] as const).map(([value, label, icon]) => <button key={value} disabled={layoutDisabled} onClick={() => {if(onLayoutChange)onLayoutChange(value);else setLayout(value)}} className={`flex items-center gap-1 px-2.5 py-1 rounded font-label-caps text-[10px] ${layout === value ? 'bg-primary-container font-bold text-on-primary-container' : 'text-outline hover:bg-surface-panel hover:text-on-surface'}`}><span className="material-symbols-outlined text-[15px]">{icon}</span>{label}</button>)}</div>
       </header>
-      <div className="min-h-0 flex-1 overflow-auto p-3.5">{sources.length === 0 ? <EmptyState /> : layout === 'COMPACT_LIST' ? <TechnicalList sources={sources} /> : <div className={layout === 'GRID_1_PLUS_3' ? 'grid grid-cols-1 gap-3.5 lg:grid-cols-12' : 'grid grid-cols-1 gap-3.5 md:grid-cols-2'}>{sources.map((source, index) => <SourceCard key={source.id} source={source} hero={layout === 'GRID_1_PLUS_3' && index === 0} onWatchingPreview={()=>{if(onWatchingBus)onWatchingBus(source.monitorBus ?? 'pvw');else if(source.monitorBus!=='mon')onWatchingPreview?.()}} />)}</div>}</div>
+      <div className="min-h-0 flex-1 overflow-auto p-3.5">{sources.length === 0 ? (loading ? <div className="flex h-full min-h-48 items-center justify-center font-label-mono text-[11px] text-outline">Consultando entradas…</div> : <EmptyState />) : layout === 'COMPACT_LIST' ? <TechnicalList sources={sources} /> : <div className={layout === 'GRID_1_PLUS_3' ? 'grid grid-cols-1 gap-3.5 lg:grid-cols-12' : 'grid grid-cols-1 gap-3.5 md:grid-cols-2'}>{sources.map((source, index) => <SourceCard key={source.id} source={source} hero={layout === 'GRID_1_PLUS_3' && index === 0} onWatchingPreview={()=>{if(onWatchingBus)onWatchingBus(source.monitorBus ?? 'pvw');else if(source.monitorBus!=='mon')onWatchingPreview?.()}} />)}</div>}</div>
     </section>
   )
 }

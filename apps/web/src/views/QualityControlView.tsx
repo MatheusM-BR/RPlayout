@@ -1038,6 +1038,10 @@ function QualityControlSession({
   const pendingCount = assets.filter((a) => ['PENDING', 'ANALYSIS'].includes(a.qcStatus) && !a.ignored).length
   const alertCount = assets.filter((a) => (!!a.probeError || a.qcStatus === 'FAILED') && !a.ignored).length
   const ignoredCount = assets.filter((a) => a.kind === 'VIDEO' && !!a.ignored).length
+  // Sem medição o nivelamento automático do PGM não tem referência. Antes
+  // cada linha dizia "LUFS N/D" e nada indicava que bastava medir.
+  const withAudio = assets.filter((a) => !a.ignored && a.probe?.hasAudio !== false)
+  const unmeasuredCount = withAudio.filter((a) => typeof a.loudnessFile?.integratedLufs !== 'number').length
 
   const filteredAssets = useMemo(() => {
     return assets.filter((original) => {
@@ -1110,6 +1114,12 @@ function QualityControlSession({
                 <span className="text-armed-amber font-bold">{libraryLoaded ? alertCount : 'N/D'} ALERTAS</span>
                 <span>•</span>
                 <span className="text-outline">{libraryLoaded ? ignoredCount : 'N/D'} IGNORADOS</span>
+                {libraryLoaded && unmeasuredCount > 0 && (<>
+                  <span>•</span>
+                  <button type="button" onClick={() => onScan(true)} className="text-armed-amber font-bold underline decoration-dotted cursor-pointer" title="Sem loudness medida o nivelamento automático não tem referência. Clique para medir (EBU R128); arquivos já medidos são pulados. Usa CPU: prefira fora de horário crítico.">
+                    {unmeasuredCount} SEM LOUDNESS
+                  </button>
+                </>)}
               </div>
             </div>
           </div>
@@ -1373,11 +1383,11 @@ function QualityControlSession({
                           <span>•</span>
                           <span>{asset.kind}</span>
                           <span>•</span>
-                          <span>
-                            {typeof asset.loudnessFile?.integratedLufs === 'number'
-                              ? `${asset.loudnessFile.integratedLufs.toFixed(1)} LUFS`
-                              : 'LUFS N/D'}
-                          </span>
+                          {typeof asset.loudnessFile?.integratedLufs === 'number'
+                            ? <span>{asset.loudnessFile.integratedLufs.toFixed(1)} LUFS</span>
+                            : asset.probe?.hasAudio === false
+                            ? <span>SEM ÁUDIO</span>
+                            : <span className="text-armed-amber" title="Loudness não medida. Use MEDIR LOUDNESS.">LUFS não medido</span>}
                         </div>
                       </div>
 

@@ -30,3 +30,10 @@ export function liveProtocolLabel(ref: string | null | undefined): string {
   const known: Record<string, string> = { ndi: 'NDI', omt: 'OMT', srt: 'SRT', rtmp: 'RTMP', rtmps: 'RTMPS', rtsp: 'RTSP', sdi: 'SDI', decklink: 'SDI', http: 'HLS', https: 'HLS', whip: 'WHIP', udp: 'UDP' }
   return known[scheme] ?? 'AO VIVO'
 }
+
+/** Duração estimada de uma live nova na grade (Master e Playlist usavam 15 min
+ * e 60 min). Arredonda para cima para não exibir 59:59 em 29,97. */
+export const LIVE_DEFAULT_MINUTES = 60
+export function liveDefaultFrames(rate: { num: number; den: number }): number {
+  return Math.ceil(LIVE_DEFAULT_MINUTES * 60 * rate.num / rate.den)
+}

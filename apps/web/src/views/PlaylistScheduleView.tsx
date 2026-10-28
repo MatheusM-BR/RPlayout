@@ -14,7 +14,7 @@ import {operationalReviewReady} from '../domain/operational-review.js'
 import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 import {publicationSnapshot} from '../domain/publication-snapshot.js'
 import {OperationalRollbackDialog} from '../components/OperationalRollbackDialog.js'
-import { canonicalLiveSourceRef, liveProtocolLabel } from '../liveSource.js'
+import { canonicalLiveSourceRef, liveDefaultFrames, liveProtocolLabel } from '../liveSource.js'
 import { collapsedRows, findRepeatRuns } from '../domain/repeat-runs.js'
 import { ProtectedTimingZonesDialog } from '../components/ProtectedTimingZonesDialog.js'
 import { editorialContext, editorialSelection } from '../domain/editorial-context.js'
@@ -301,7 +301,7 @@ export function PlaylistScheduleView({
       path: canonicalLiveSourceRef(source),
       contentHash: source.id,
       fileName: source.name,
-      durationFrames: Math.round(60 * 60 * (rate.num / rate.den)),
+      durationFrames: liveDefaultFrames(rate),
       durationNs: null,
       probe: null,
       probeError: null,

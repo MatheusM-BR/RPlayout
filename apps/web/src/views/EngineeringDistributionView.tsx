@@ -56,6 +56,8 @@ export function EngineeringDistributionView({
   const [liveSources, setLiveSources] = useState<ManagedLiveSource[]>([])
   const [srtTelemetry, setSrtTelemetry] = useState<Record<string, SrtTelemetry>>({})
   const [monitorLoadError, setMonitorLoadError] = useState<string | null>(null)
+  // Até a 1ª leitura, não afirmar "nenhuma entrada" / "engine não iniciado".
+  const [monitorLoaded, setMonitorLoaded] = useState(false)
   const [hostMetrics, setHostMetrics] = useState<HostMetrics | null>(null)
   const [processes, setProcesses] = useState<ProcessSnapshot>([])
   const [outputs, setOutputs] = useState<OutputSnapshot>([])
@@ -75,6 +77,7 @@ export function EngineeringDistributionView({
         setProcesses(processSnapshot.processes)
         setOutputs(outputSnapshot.outputs)
         setMonitorLoadError(null)
+        setMonitorLoaded(true)
       } catch (error) {
         if (active) setMonitorLoadError(error instanceof Error ? error.message : 'Não foi possível ler as fontes de entrada.')
       }
@@ -284,14 +287,14 @@ export function EngineeringDistributionView({
                     ENGINE &amp; PROCESSO
                   </span>
                   <span className={`font-label-caps text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok animate-pulse'}`}></span>{engineAlert ? 'ALERTA' : engineSimulated ? 'SIMULADO' : engineProcess?.state === 'running' ? 'ATIVO' : 'SEM ALERTA'}
+                    <span className={`w-1.5 h-1.5 rounded-full ${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok animate-pulse'}`}></span>{engineAlert ? 'ALERTA' : engineSimulated ? 'SIMULADO' : engineProcess?.state === 'running' ? 'ATIVO' : monitorLoaded ? 'SEM ALERTA' : '—'}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mb-1">
                   <div className="font-timecode-display text-[20px] font-bold text-status-ok tracking-tight leading-none">
                     {engineProcess?.pid ? `PID ${engineProcess.pid}` : '—'}
                   </div>
-                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{engineSimulated ? 'Transporte simulado • sem saída física' : engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : 'Engine não iniciado'}</span>
+                  <span className="font-label-mono text-[10px] text-on-surface-variant font-medium">{engineSimulated ? 'Transporte simulado • sem saída física' : engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : monitorLoaded ? 'Engine não iniciado' : 'Consultando…'}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className={`${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok'} h-full rounded-full`} style={{ width: engineProcess?.state === 'running' ? '100%' : engineProcess ? '45%' : '0%' }}></div>
@@ -391,6 +394,7 @@ export function EngineeringDistributionView({
               <div className="flex-1 min-h-0">
                 <OperationalMultiview
                   sources={multiviewSources}
+                  loading={!monitorLoaded}
                   initialLayout="COMPACT_LIST"
                   onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
                 />
@@ -406,6 +410,7 @@ export function EngineeringDistributionView({
               <SharedMultiview key={channel.id}
                 channelId={channel.id}
                 sources={multiviewSources}
+                  loading={!monitorLoaded}
                 onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
               />
             </div>

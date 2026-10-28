@@ -246,7 +246,7 @@ const CHAPTERS: DocChapter[] = [
         content:
           'Gere relatórios oficiais em formato CSV compatível com os padrões de fiscalização da ANCINE e sistemas de tráfego/comercial:',
         steps: [
-          'Filtre pelo dia da veiculação, categoria (VT, JORNAL, COMERCIAL, PROMO) ou status de encerramento.',
+          'Filtre pelo dia da veiculação, tipo (VT, AO VIVO, COMERCIAL, GFX, SLATE, ENCHIMENTO) ou status de encerramento.',
           'Clique em "EXPORTAR CSV ANCINE" para baixar o arquivo estruturado contendo ID, títulos, timecodes e quadros.',
           'Utilize a opção "Imprimir" para gerar relatórios com formatação executiva para arquivamento regulatório.',
         ],
@@ -367,7 +367,7 @@ const CHAPTERS: DocChapter[] = [
           'Rastreabilidade legal de cada segundo exibido para comprovação comercial e conformidade regulatória.',
         steps: [
           '1. Consulta Histórica: Na aba AIRED, filtre pela data de transmissão e visualize o log As-Run com horários exatos de início e término NTP.',
-          '2. Filtros Analíticos: Segregue eventos por categoria (COMERCIAL, VT, JORNALISMO) e motivo de encerramento (EOF, TAKE, STOP).',
+          '2. Filtros Analíticos: Segregue eventos por tipo (VT, AO VIVO, COMERCIAL, GFX, SLATE, ENCHIMENTO) e motivo de encerramento (EOF, TAKE, STOP).',
           '3. Auditoria de Desvios: Verifique o delta entre duração planejada e duração real executada no ar.',
           '4. Exportação Regulamentar: Clique em "EXPORTAR CSV ANCINE" para emitir a planilha oficial compatível com os órgãos de fiscalização de radiodifusão.',
         ],

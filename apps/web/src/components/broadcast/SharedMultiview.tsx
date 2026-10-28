@@ -4,7 +4,7 @@ import {api} from '../../api.js'
 import {OperationalMultiview,type MultiviewSourceItem} from './OperationalMultiview.js'
 
 /** Mounted by channel. Monitoring refresh NEVER renews an opened edit proof. */
-export function SharedMultiview({channelId,sources,onWatchingBus}:{channelId:string;sources:MultiviewSourceItem[];onWatchingBus:(bus:'pvw'|'mon')=>void}){
+export function SharedMultiview({channelId,sources,loading=false,onWatchingBus}:{channelId:string;sources:MultiviewSourceItem[];loading?:boolean;onWatchingBus:(bus:'pvw'|'mon')=>void}){
   const [review,setReview]=useState<MultiviewReview|null>(null),[layout,setLayout]=useState<MultiviewLayout>('GRID_2X2')
   const [message,setMessage]=useState('Conferindo layout salvo…'),[blocked,setBlocked]=useState(false),[busy,setBusy]=useState(false)
   const pending=useRef(false),mounted=useRef(true),generation=useRef(0),dirty=useRef(false)
@@ -51,6 +51,6 @@ export function SharedMultiview({channelId,sources,onWatchingBus}:{channelId:str
       <div className="flex items-center gap-2"><button type="button" disabled={busy||blocked||!review} onClick={()=>void save()} className="btn">Salvar layout no canal</button><button type="button" disabled={busy} onClick={()=>void reopen()} className="btn">Reabrir conferência</button><span className="text-[10px] text-outline">Tally e sinal vêm do engine, não da configuração salva.</span></div>
       <p role={blocked?'alert':'status'} className="mt-1 text-[11px] text-outline">{message}</p>
     </div>
-    <div className="min-h-0 flex-1"><OperationalMultiview sources={sources} selectedLayout={layout} layoutDisabled={busy||!review} onLayoutChange={value=>{if(!pending.current&&review){dirty.current=true;setLayout(value)}}} onWatchingBus={onWatchingBus}/></div>
+    <div className="min-h-0 flex-1"><OperationalMultiview sources={sources} loading={loading} selectedLayout={layout} layoutDisabled={busy||!review} onLayoutChange={value=>{if(!pending.current&&review){dirty.current=true;setLayout(value)}}} onWatchingBus={onWatchingBus}/></div>
   </div>
 }

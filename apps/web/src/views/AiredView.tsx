@@ -151,7 +151,8 @@ export function AiredView({
       // Filtro de categoria
       if (selectedCategory !== 'TODOS') {
         const type = entry.type?.toUpperCase()
-        const typeMatch = selectedCategory === 'AO VIVO' ? ['LIVE', 'AO VIVO'].includes(type) : selectedCategory === 'COMERCIAL' ? ['COMERCIAL', 'COMMERCIAL', 'SPOT', 'PUB'].includes(type) : type === selectedCategory.toUpperCase()
+        // Tipos reais do item (VT/LIVE/GFX/SLATE/COMMERCIAL/FILLER); antes havia JORNAL/PROMO, que nunca casavam.
+        const typeMatch = selectedCategory === 'AO VIVO' ? ['LIVE', 'AO VIVO'].includes(type) : selectedCategory === 'COMERCIAL' ? ['COMERCIAL', 'COMMERCIAL', 'SPOT', 'PUB'].includes(type) : selectedCategory === 'ENCHIMENTO' ? type === 'FILLER' : type === selectedCategory.toUpperCase()
         if (!typeMatch) return false
       }
       // Filtro de status/motivo
@@ -499,7 +500,7 @@ export function AiredView({
             {/* Pílulas de Categoria */}
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-label-caps text-[10px] text-outline uppercase font-bold mr-1">Categoria:</span>
-              {(['TODOS', 'VT', 'JORNAL', 'COMERCIAL', 'PROMO', 'AO VIVO'] as const).map((cat) => (
+              {(['TODOS', 'VT', 'AO VIVO', 'COMERCIAL', 'GFX', 'SLATE', 'ENCHIMENTO'] as const).map((cat) => (
                 <button
                   key={cat}
                   onClick={() => setSelectedCategory(cat)}
