@@ -23,7 +23,10 @@ export interface GtImport {
 }
 export interface GtObject { n: number; x: number; y: number; w: number; h: number; ax: number; ay: number }
 export interface GtStep { n: number; kind: string; delayMs: number; durationMs: number; direction: string; easing: string }
-export interface GtAnimation { width: number; height: number; objects: GtObject[]; enter: GtStep[]; exit: GtStep[] }
+/** Animação contínua (rolagem de Ticker): `fieldKey` diz qual campo dá o
+ * texto; o servidor calcula a largura do conteúdo ao pôr no ar. */
+export interface GtContinuous { n: number; kind: 'Scroll'; pxPerSec: number; width: number; fieldKey: string; charWidth: number }
+export interface GtAnimation { width: number; height: number; objects: GtObject[]; enter: GtStep[]; exit: GtStep[]; continuous?: GtContinuous[] }
 export type InflateRaw = (data: Uint8Array) => Promise<Uint8Array>
 
 // ---------------------------------------------------------------- zip
@@ -174,6 +177,7 @@ interface Context {
   prefix: string
   objects: GtObject[]
   numbers: Map<string, number>
+  continuous: GtContinuous[]
 }
 
 const SHAPES = new Set(['Rectangle', 'Ellipse', 'Triangle', 'RightTriangle', 'Image', 'TextBlock', 'Ticker', 'Layer', 'QRCode'])
@@ -261,7 +265,7 @@ function text(node: XmlNode, ctx: Context, w: number, h: number): string {
   const name = node.attrs.Name ?? 'Texto'
   const key = fieldKey(name, ctx.usedKeys)
   ctx.fields.push({ key, label: `${name}.Text`, defaultValue: node.attrs.Text ?? '' })
-  if (node.tag === 'Ticker') ctx.report.add('Ticker importado como texto fixo; a rolagem fica para o engine (G2).')
+  if (node.tag === 'Ticker') ctx.report.add('Ticker rola da direita para a esquerda no RPlayout (velocidade do vMix aproximada).')
   if (/\{0:[^}]+\}/.test(node.attrs.Text ?? '')) ctx.report.add(`"${name}" usa formato de relógio/dado do vMix; ficou como campo de texto.`)
   if (node.attrs.TextWordWrapping === 'Wrap') ctx.report.add(`"${name}" quebra linha no vMix; aqui fica em uma linha.`)
   const weight = node.attrs.FontWeight ? ` font-weight="${node.attrs.FontWeight.toLowerCase() === 'bold' ? 'bold' : esc(node.attrs.FontWeight.toLowerCase())}"` : ''
@@ -336,6 +340,18 @@ function shape(node: XmlNode, ctx: Context, parent: [number, number] = [0, 0]): 
     }
   }
   if (!body) return ''
+  if (node.tag === 'Ticker' && marker) {
+    // Rolagem: o grupo animado (data-a) anda dentro de um recorte fixo do tamanho
+    // da faixa; o recorte fica no pai para não andar junto.
+    const n = ctx.numbers.get(name!)!
+    const key = ctx.fields[ctx.fields.length - 1]!.key
+    const size = Number(/font-size="([\d.]+)"/.exec(body)?.[1] ?? h * 0.78)
+    ctx.continuous.push({ n, kind: 'Scroll', pxPerSec: Math.round(num(node.attrs.Speed, 4) * 60), width: round(w), fieldKey: key, charWidth: round(size * 0.55) })
+    const clipId = `${ctx.prefix}t${ctx.ids++}`
+    ctx.defs.push(`<clipPath id="${clipId}"><rect width="${round(w)}" height="${round(h)}"/></clipPath>`)
+    const left = body.replace(/text-anchor="(middle|end)"/, 'text-anchor="start"').replace(/<text x="[^"]*"/, '<text x="0"')
+    return `<g transform="translate(${round(x)} ${round(y)})${transform}"${opacity}${filter} clip-path="url(#${clipId})"><g${marker} transform="translate(0 0)" data-gt="${esc(name!)}">${left}</g></g>`
+  }
   const all = `translate(${round(x)} ${round(y)})${transform}`
   const inner = opacity || clip || filter ? `<g${opacity}${clip}${filter}>${body}</g>` : body
   return `<g${marker} transform="${all}"${name ? ` data-gt="${esc(name)}"` : ''}>${inner}</g>`
@@ -366,7 +382,7 @@ export function convertGtDocument(documentXml: string, name: string, images: (so
   if (!composition) throw new Error('Título GT sem <Composition>.')
   const width = num(composition.attrs.Width, 1920), height = num(composition.attrs.Height, 1080)
   const prefix = `gt${hash(documentXml)}_`
-  const ctx: Context = { defs: [], fields: [], usedKeys: new Set(), report: new Set(), images, masks: new Set(), byName: new Map(), ids: 1, prefix, objects: [], numbers: new Map() }
+  const ctx: Context = { defs: [], fields: [], usedKeys: new Set(), report: new Set(), images, masks: new Set(), byName: new Map(), ids: 1, prefix, objects: [], numbers: new Map(), continuous: [] }
   walk(composition, node => {
     if (node.attrs.Name && SHAPES.has(node.tag)) ctx.byName.set(node.attrs.Name, node)
     if (node.tag === 'Mask' && node.attrs.Object) ctx.masks.add(node.attrs.Object)
@@ -387,7 +403,7 @@ export function convertGtDocument(documentXml: string, name: string, images: (so
       const n = ctx.numbers.get(step.attrs.Object ?? '')
       return n ? [{ n, kind: step.tag, delayMs: Math.round(num(step.attrs.Delay, 0) * 1000), durationMs: Math.round(num(step.attrs.Duration, 0.5) * 1000), direction: step.attrs.Direction ?? '', easing: step.attrs.Interpolation ?? '' }] : []
     })
-  const animation: GtAnimation = { width, height, objects: ctx.objects, enter: steps('in'), exit: steps('out') }
+  const animation: GtAnimation = { width, height, objects: ctx.objects, enter: steps('in'), exit: steps('out'), ...(ctx.continuous.length ? { continuous: ctx.continuous } : {}) }
   const metadata = `<metadata id="rplayout-gt">${esc(JSON.stringify(animation))}</metadata>`
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${round(width)} ${round(height)}">${metadata}${ctx.defs.length ? `<defs>${ctx.defs.join('')}</defs>` : ''}${body}</svg>`
   if (svg.length > 1_000_000) throw new Error('Título grande demais para arte (imagens somam mais de 1 MB). Reduza as imagens no GT Designer.')

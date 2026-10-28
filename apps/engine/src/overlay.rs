@@ -41,6 +41,19 @@ pub struct Step {
 }
 fn default_duration() -> f64 { 500.0 }
 
+/// Rolagem contínua (Ticker): anda enquanto o overlay está no ar.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Continuous {
+    pub n: u32,
+    #[serde(default = "default_speed")]
+    pub px_per_sec: f64,
+    pub width: f64,
+    #[serde(default)]
+    pub content_width: f64,
+}
+fn default_speed() -> f64 { 240.0 }
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Animation {
@@ -52,6 +65,8 @@ pub struct Animation {
     pub enter: Vec<Step>,
     #[serde(default)]
     pub exit: Vec<Step>,
+    #[serde(default)]
+    pub continuous: Vec<Continuous>,
 }
 
 impl Animation {
@@ -79,6 +94,8 @@ pub struct Slot {
     pub phase: Phase,
     /// Último estado desenhado; evita re-render quando nada anda.
     pub settled: bool,
+    /// Tempo desde a entrada, para rolagens contínuas.
+    pub clock_ms: f64,
 }
 
 /// Fade simples para título sem animação (arte SVG comum).
@@ -100,7 +117,7 @@ impl Overlays {
             Action::In | Action::Cut => {
                 let svg = svg.ok_or_else(|| anyhow::anyhow!("Overlay {slot}: título vazio."))?;
                 let phase = if matches!(action, Action::Cut) { Phase::Shown } else { Phase::Enter(0.0) };
-                *entry = Some(Slot { svg, anim, phase, settled: false });
+                *entry = Some(Slot { svg, anim, phase, settled: false, clock_ms: 0.0 });
             }
             Action::Out => match entry {
                 Some(current) => {
@@ -130,7 +147,7 @@ impl Overlays {
     }
 
     pub fn animating(&self) -> bool {
-        self.slots.iter().flatten().any(|s| !matches!(s.phase, Phase::Shown)) || self.dirty
+        self.slots.iter().flatten().any(|s| !matches!(s.phase, Phase::Shown) || s.continuous()) || self.dirty
     }
 
     /// Anda o relógio. Devolve se é preciso redesenhar.
@@ -138,6 +155,8 @@ impl Overlays {
         let mut changed = std::mem::take(&mut self.dirty);
         for entry in self.slots.iter_mut() {
             let Some(slot) = entry else { continue };
+            slot.clock_ms += elapsed_ms;
+            if slot.continuous() { changed = true; }
             match slot.phase {
                 Phase::Enter(t) => {
                     let total = slot.anim.as_ref().map_or(PLAIN_FADE_MS, |a| a.enter_ms());
@@ -168,6 +187,18 @@ impl Overlays {
         }
         out
     }
+}
+
+impl Slot {
+    fn continuous(&self) -> bool { self.anim.as_ref().is_some_and(|a| !a.continuous.is_empty()) }
+}
+
+/// Deslocamento da rolagem: entra pela direita da faixa e sai pela esquerda,
+/// recomeçando quando o texto inteiro passou.
+pub fn scroll_offset(c: &Continuous, clock_ms: f64) -> f64 {
+    let travel = c.width + c.content_width.max(1.0);
+    let moved = (clock_ms / 1000.0 * c.px_per_sec.max(1.0)) % travel;
+    c.width - moved
 }
 
 fn ease(kind: &str, p: f64) -> f64 {
@@ -327,7 +358,20 @@ fn render_slot(number: usize, slot: &Slot) -> String {
     let mut svg = slot.svg.clone();
     let mut defs = String::new();
     if let Some(anim) = &slot.anim {
-        for (n, look) in looks(anim, slot.phase) {
+        let mut all = looks(anim, slot.phase);
+        for c in &anim.continuous {
+            let dx = scroll_offset(c, slot.clock_ms);
+            match all.iter_mut().find(|(n, _)| *n == c.n) {
+                Some((_, look)) => look.dx += dx,
+                None => {
+                    let b = anim.objects.iter().find(|o| o.n == c.n).cloned().unwrap_or_default();
+                    let mut look = Look::identity(&b);
+                    look.dx = dx;
+                    all.push((c.n, look));
+                }
+            }
+        }
+        for (n, look) in all {
             let marker = format!("data-a=\"{n}\" transform=\"");
             let Some(at) = svg.find(&marker) else { continue };
             let mut extra = String::new();
@@ -361,6 +405,7 @@ mod tests {
             objects: vec![ObjectBox { n: 1, x: 100.0, y: 800.0, w: 400.0, h: 100.0, ax: 100.0, ay: 800.0 }],
             enter: vec![Step { n: 1, kind: "Fly".into(), delay_ms: 0.0, duration_ms: 1000.0, direction: "Left".into(), easing: String::new() }],
             exit: vec![Step { n: 1, kind: "Fade".into(), delay_ms: 0.0, duration_ms: 500.0, direction: String::new(), easing: String::new() }],
+            continuous: vec![],
         }
     }
     const SVG: &str = "<svg viewBox=\"0 0 1920 1080\"><g data-a=\"1\" transform=\"translate(100 800)\"><rect/></g></svg>";
@@ -425,6 +470,22 @@ mod tests {
         assert!(frame.contains("data-overlay=\"8\" opacity=\"0.500\""));
         assert_eq!(o.active(), vec![2, 8]);
         assert!(o.command(9, Action::Off, None, None).is_err());
+    }
+
+    #[test]
+    fn ticker_scrolls_continuously_and_keeps_redrawing() {
+        let mut a = anim();
+        a.enter.clear(); a.exit.clear();
+        a.continuous = vec![Continuous { n: 1, px_per_sec: 100.0, width: 400.0, content_width: 600.0 }];
+        assert_eq!(scroll_offset(&a.continuous[0], 0.0), 400.0);
+        assert_eq!(scroll_offset(&a.continuous[0], 3000.0), 100.0);
+        assert_eq!(scroll_offset(&a.continuous[0], 10_000.0), 400.0);
+        let mut o = Overlays::default();
+        o.command(1, Action::Cut, Some(SVG.into()), Some(a)).unwrap();
+        o.advance(0.0);
+        assert!(o.advance(2000.0), "rolagem continua redesenhando");
+        assert!(o.animating());
+        assert!(o.render().contains("transform=\"translate(200.00 0.00) translate(100 800)\""), "{}", o.render());
     }
 
     #[test]

@@ -42,7 +42,12 @@ export class OverlayDeck {
         if (!template) throw new OverlayError(400, 'Escolha a arte do overlay.')
         const values = request.values ?? current?.values ?? {}
         const svg = fitGraphicViewport(renderTemplate(template, values))
-        const animation = overlayAnimationOf(template.svg)
+        const parsed = overlayAnimationOf(template.svg)
+        // Largura do texto do ticker vem do valor que vai ao ar.
+        const animation = parsed && parsed.continuous ? { ...parsed, continuous: parsed.continuous.map(entry => {
+          const text = values[entry.fieldKey] ?? template.fields.find(field => field.key === entry.fieldKey)?.defaultValue ?? ''
+          return { ...entry, contentWidth: Math.max(entry.width, Math.round(text.length * entry.charWidth)) }
+        }) } : parsed
         if (!transport.overlay) throw new OverlayError(409, 'Este canal não aceita overlays.')
         await transport.overlay({ slot, action: request.action === 'IN' ? 'in' : 'cut', svg, animation })
         const next: OverlaySlot = { slot, templateId: template.id, name: template.name, values, animated: animation !== null, onAir: true, changedAt: new Date().toISOString(), changedBy: actor }

@@ -165,6 +165,8 @@ export interface OverlayAnimation {
   objects: { n: number; x: number; y: number; w: number; h: number; ax: number; ay: number }[]
   enter: { n: number; kind: string; delayMs: number; durationMs: number; direction: string; easing: string }[]
   exit: { n: number; kind: string; delayMs: number; durationMs: number; direction: string; easing: string }[]
+  /** Rolagem contínua (Ticker). `contentWidth` é preenchido pelo servidor ao pôr no ar. */
+  continuous?: { n: number; kind: 'Scroll'; pxPerSec: number; width: number; fieldKey: string; charWidth: number; contentWidth?: number }[]
 }
 export const OVERLAY_SLOTS = 8
 export function overlayAnimationOf(svg: string): OverlayAnimation | null {

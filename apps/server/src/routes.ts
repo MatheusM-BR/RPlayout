@@ -4557,6 +4557,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     try {
       const actor = access.identity(request)?.username ?? null
       const result = await overlayDeckOf(runtime).command(runtime.transport, Number(slot), body.data, template, actor)
+      // Registro operacional do overlay (quem pôs/tirou o quê e quando).
+      try{app.db.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@overlays',itemId:null,kind:`OVERLAY_${body.data.action}`,payload:{channelId:id,slot:Number(slot),templateId:result?.templateId??null,name:result?.name??null,values:result?.values??{}},actorUsername:actor,createdAt:new Date().toISOString()}).run()}catch{/* registro não derruba o comando já confirmado */}
       onChange()
       return { slot: result, slots: overlayDeckOf(runtime).list() }
     } catch (error) {

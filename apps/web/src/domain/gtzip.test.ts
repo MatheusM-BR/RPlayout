@@ -140,3 +140,10 @@ describe('exportação para .gtzip', () => {
     expect(back.svg).toContain('fill="#0b2a4a" fill-opacity="0.8"')
   })
 })
+
+it('Ticker vira rolagem contínua com recorte fixo', () => {
+  const ticker = `<Composition Width="1920" Height="1080"><Ticker Name="Ticker" Dimensions="1920,130,0" Location="0,950,0" FontFamily="Segoe UI" FontSize="48" FontWeight="Bold" VerticalAlign="Center" TextAlign="Center" Speed="4"><Ticker.Fill><Brush Color="#FFFFFFFF" /></Ticker.Fill></Ticker></Composition>`
+  const result = convertGtDocument(ticker, 'Rodapé')
+  expect(result.animation.continuous).toEqual([{ n: 1, kind: 'Scroll', pxPerSec: 240, width: 1920, fieldKey: 'Ticker', charWidth: 26.4 }])
+  expect(result.svg).toMatch(/<g transform="translate\(0 950\)" clip-path="url\(#gt\w+_t\d+\)"><g data-a="1" transform="translate\(0 0\)" data-gt="Ticker"><text x="0" y="[\d.]+" text-anchor="start"/)
+})
