@@ -67,6 +67,8 @@ export interface MediaMtxOptions {
   readonly hostFence?:HostDistributionFence|null
   readonly requireAppliedConfig?:boolean
   readonly assertAdmission?:()=>Promise<void>
+  /** Gravação de confirmação do PGM (o que saiu), rotativa. */
+  readonly record?:{ readonly directory:string; readonly hours:number }|null
 }
 
 /** O que a API do MediaMTX conta sobre um caminho. */
@@ -256,7 +258,7 @@ export class MediaMtx {
       '# Só os caminhos declarados existem. Publicar em qualquer outro é',
       '# recusado, que é o que faz da chave uma chave.',
       'paths:',
-      ...paths.map((path) => `  ${path}:`),
+      ...paths.flatMap((path) => [`  ${path}:`, ...this.recordLines(path, channels)]),
       '',
     ].join('\n')
 
@@ -279,6 +281,20 @@ export class MediaMtx {
     })
     this.configWrite = write.catch(() => {})
     await write
+  }
+
+  /** Só o PGM de cada canal é gravado; segmentos de 15 min apagados depois do prazo. */
+  private recordLines(path:string,channels:readonly ChannelPaths[]):string[]{
+    const record=this.options.record
+    if(!record||!(record.hours>0)||!channels.some(channel=>channel.program===path))return []
+    const base=record.directory.replace(/\\/g,'/').replace(/\/+$/,'')
+    return [
+      '    record: yes',
+      `    recordPath: ${JSON.stringify(`${base}/%path/%Y-%m-%d_%H-%M-%S-%f`)}`,
+      '    recordFormat: fmp4',
+      '    recordSegmentDuration: 15m',
+      `    recordDeleteAfter: ${Math.round(record.hours)}h`,
+    ]
   }
 
   start():Promise<void>{

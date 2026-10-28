@@ -167,14 +167,26 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Sem janela: fechar uma janela de console (ou a sessão do Windows) não
+    // pode tirar o canal do ar. O lançador visível sobe uma cópia de si
+    // mesmo sem console, espera a API e sai; a cópia escreve o log em
+    // `logs\servidor-AAAA-MM-DD.log`. Ativação/quarentena continuam em primeiro
+    // plano porque a ferramenta de atualização lê a saída delas.
+    let filho_oculto = argumentos.iter().any(|arg| arg == BACKGROUND_CHILD);
+    let primeiro_plano = argumentos.iter().any(|arg| arg == "--foreground") || std::env::var_os("RPLAYOUT_FOREGROUND").is_some();
+    if cfg!(windows) && restoration.is_none() && !filho_oculto && !primeiro_plano {
+        return subir_sem_janela(&raiz,&database,&endpoint,&argumentos,somente_servidor,workspace.as_deref());
+    }
+    if filho_oculto { RollingLog::install(&raiz.join("logs"))?; }
+
     let mut servidor = subir_servidor(&mut command)?;
     let _owned_job=match OwnedServerJob::attach(&servidor){Ok(job)=>job,Err(error)=>{let _=servidor.kill();let _=servidor.wait();return Err(error);}};
 
     match esperar_porta(&raiz,&database,&endpoint,&mut servidor) {
         Ok(()) => {
-            if restoration.as_ref().is_some_and(|options| !options.activate) { println!("RPlayout em quarentena para conferência em {}; canais não ativados.",endpoint.url(None)); }
-            else { println!("RPlayout disponível em {}; confira PGM e saídas.",endpoint.url(None)); }
-            if !somente_servidor { abrir_navegador(&endpoint,workspace.as_deref()); }
+            if restoration.as_ref().is_some_and(|options| !options.activate) { registrar(&format!("RPlayout em quarentena para conferência em {}; canais não ativados.",endpoint.url(None))); }
+            else { registrar(&format!("RPlayout disponível em {}; confira PGM e saídas.",endpoint.url(None))); }
+            if !somente_servidor && !filho_oculto { abrir_navegador(&endpoint,workspace.as_deref()); }
         }
         Err(erro) => {
             // Servidor que não sobe deixa o motivo no próprio terminal: matar
@@ -186,7 +198,7 @@ fn main() -> Result<()> {
 
     // Daqui em diante a janela é o log do servidor. Fechá-la derruba o canal,
     // e é por isso que ela diz isso em vez de sumir para a bandeja.
-    println!("Feche esta janela para tirar o RPlayout do ar.");
+    if !filho_oculto { println!("Feche esta janela para tirar o RPlayout do ar."); }
     let saida = match servidor.wait() {
         Ok(status) => status,
         Err(error) => {
@@ -195,7 +207,7 @@ fn main() -> Result<()> {
             return Err(error).context("o servidor encerrou de forma inesperada");
         }
     };
-    println!("O servidor encerrou ({saida}).");
+    registrar(&format!("O servidor encerrou ({saida})."));
     if !saida.success() { return Err(anyhow!("servidor terminou sem sucesso; confira o registro, sem repetir ativação automaticamente")); }
     Ok(())
 }
@@ -336,6 +348,31 @@ fn preparar_servidor(raiz: &Path, restoration: Option<&RestorationOptions>,endpo
     if let Some(options) = restoration.filter(|options| options.adopt) { comando.env("RPLAYOUT_ADOPT_UPGRADE_PROFILE", &options.profile); }
     configurar_perfil_instalacao(&mut comando, raiz, restoration.map(|options| options.profile.as_path()))?;
     configurar_runtime_gstreamer(&mut comando, raiz);
+    // Espelho das cópias do banco fora do disco dos dados (padrão: C:, perfil
+    // local do usuário). Quem quiser outro destino define RPLAYOUT_BACKUP_MIRROR.
+    if std::env::var_os("RPLAYOUT_BACKUP_MIRROR").is_none() && raiz.join("installation-profile.json").exists() {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let espelho = PathBuf::from(local).join("RPlayout").join("backups-banco");
+            let mesmo_disco = espelho.components().next() == raiz.components().next();
+            if !mesmo_disco { comando.env("RPLAYOUT_BACKUP_MIRROR", espelho); }
+        }
+    }
+    // Gravação de confirmação do PGM (24 h rotativas) ao lado da instalação.
+    // RPLAYOUT_PGM_RECORD_DIR vazio desliga; RPLAYOUT_PGM_RECORD_HOURS muda o prazo.
+    if std::env::var_os("RPLAYOUT_PGM_RECORD_DIR").is_none() && raiz.join("installation-profile.json").exists() {
+        if let Some(pai) = raiz.parent() {
+            let gravacao = pai.join("RPlayout Gravacao PGM");
+            if std::fs::create_dir_all(&gravacao).is_ok() { comando.env("RPLAYOUT_PGM_RECORD_DIR", &gravacao); }
+        }
+    }
+    // Cópias de versão de mídia numa pasta fixa ao lado da instalação: a pasta
+    // da instalação é trocada a cada atualização e levava as cópias junto.
+    if std::env::var_os("RPLAYOUT_MEDIA_VERSIONS").is_none() && raiz.join("installation-profile.json").exists() {
+        if let Some(pai) = raiz.parent() {
+            let arquivo = pai.join("RPlayout Arquivo de Midia");
+            if std::fs::create_dir_all(&arquivo).is_ok() { comando.env("RPLAYOUT_MEDIA_VERSIONS", &arquivo); }
+        }
+    }
 
     let bin = raiz.join("apps/engine/target/release");
     let opcionais = [
@@ -364,7 +401,7 @@ fn preparar_servidor(raiz: &Path, restoration: Option<&RestorationOptions>,endpo
     comando
         .arg(servidor)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
     if let Some(options) = restoration {
         caminho_fisico_perfil(&options.manifest)?;
         let info = std::fs::metadata(&options.manifest)?;
@@ -377,12 +414,19 @@ fn preparar_servidor(raiz: &Path, restoration: Option<&RestorationOptions>,endpo
 fn subir_servidor(comando:&mut Command)->Result<Child>{
     let mut filho = comando.spawn().context("não consegui subir o servidor Node portátil")?;
 
-    // O log do servidor vai para esta janela: é onde o operador vê por que uma
-    // saída caiu ou um arquivo não abriu.
+    // O log do servidor vai para esta janela (ou para o arquivo diário, sem
+    // janela): é onde o operador vê por que uma saída caiu ou um arquivo não abriu.
     if let Some(saida) = filho.stdout.take() {
         std::thread::spawn(move || {
             for linha in BufReader::new(saida).lines().map_while(Result::ok) {
-                println!("{linha}");
+                registrar(&linha);
+            }
+        });
+    }
+    if let Some(erros) = filho.stderr.take() {
+        std::thread::spawn(move || {
+            for linha in BufReader::new(erros).lines().map_while(Result::ok) {
+                registrar(&linha);
             }
         });
     }
@@ -518,6 +562,115 @@ fn configurar_runtime_gstreamer(comando: &mut Command, raiz: &Path) {
 }
 
 /// Espera o servidor responder de verdade, não só o processo existir.
+const BACKGROUND_CHILD: &str = "--background-child";
+
+/// Log diário do servidor quando ele roda sem janela: um arquivo por dia em
+/// `logs\`, mantendo os últimos 14. Sem isto o log de dias de operação viraria
+/// um arquivo de gigabytes ou se perderia.
+struct RollingLog { dir: PathBuf, day: String, file: Option<std::fs::File> }
+static ROLLING: std::sync::OnceLock<std::sync::Mutex<RollingLog>> = std::sync::OnceLock::new();
+impl RollingLog {
+    fn install(dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(dir).context("não foi possível criar a pasta de log do servidor")?;
+        let _ = ROLLING.set(std::sync::Mutex::new(RollingLog { dir: dir.to_path_buf(), day: String::new(), file: None }));
+        Ok(())
+    }
+    fn write(&mut self, line: &str) {
+        let today = hoje();
+        if self.file.is_none() || self.day != today {
+            self.day = today.clone();
+            self.file = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join(format!("servidor-{today}.log"))).ok();
+            podar_logs(&self.dir, 14);
+        }
+        if let Some(file) = self.file.as_mut() { let _ = writeln!(file, "{line}"); }
+    }
+}
+fn registrar(line: &str) {
+    match ROLLING.get() {
+        Some(log) => { if let Ok(mut log) = log.lock() { log.write(line) } }
+        None => println!("{line}"),
+    }
+}
+/// Data local AAAA-MM-DD sem dependência de calendário: o Windows dá a hora local.
+fn hoje() -> String {
+    #[cfg(windows)]
+    {
+        let mut time: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
+        unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut time) };
+        return format!("{:04}-{:02}-{:02}", time.wYear, time.wMonth, time.wDay);
+    }
+    #[cfg(not(windows))]
+    {
+        let days = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() / 86400).unwrap_or(0) as i64;
+        let (y, m, d) = civil_from_days(days);
+        format!("{y:04}-{m:02}-{d:02}")
+    }
+}
+#[cfg(not(windows))]
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468; let era = z.div_euclid(146097); let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+fn podar_logs(dir: &Path, manter: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut logs: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("servidor-") && name.ends_with(".log")))
+        .collect();
+    logs.sort();
+    while logs.len() > manter { let old = logs.remove(0); let _ = std::fs::remove_file(old); }
+}
+
+/// Sobe uma cópia deste lançador sem console e espera a API desta instalação.
+fn subir_sem_janela(raiz:&Path,database:&Path,endpoint:&LocalEndpoint,argumentos:&[String],somente_servidor:bool,workspace:Option<&str>)->Result<()>{
+    let exe=std::env::current_exe().context("não achei o próprio lançador")?;
+    let mut args:Vec<String>=argumentos.iter().filter(|arg|arg.as_str()!="--foreground").cloned().collect();
+    args.push(BACKGROUND_CHILD.to_owned());
+    let spawn=|flags:u32|{
+        let mut command=Command::new(&exe);
+        command.args(&args).current_dir(raiz).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        #[cfg(windows)]{ use std::os::windows::process::CommandExt; command.creation_flags(flags); }
+        #[cfg(not(windows))]{ let _=flags; }
+        command.spawn()
+    };
+    const CREATE_NO_WINDOW:u32=0x0800_0000; const CREATE_NEW_PROCESS_GROUP:u32=0x0000_0200; const CREATE_BREAKAWAY_FROM_JOB:u32=0x0100_0000;
+    // Fora do job de quem chamou (janela, PowerShell): fechar quem chamou não leva o servidor junto.
+    let mut child=match spawn(CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP|CREATE_BREAKAWAY_FROM_JOB){Ok(child)=>child,Err(_)=>spawn(CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP).context("não consegui subir o servidor sem janela")?};
+    let logs=raiz.join("logs");
+    let limite=Instant::now()+READY_TIMEOUT+Duration::from_secs(10);
+    while Instant::now()<limite {
+        if let Some(status)=child.try_wait()?{return Err(anyhow!("servidor sem janela encerrou antes da prontidão ({status}); veja {}",logs.display()));}
+        if verify_server(raiz,database,endpoint,None).is_ok(){
+            println!("RPlayout no ar em {} sem janela de console.",endpoint.url(None));
+            println!("Log: {}  ·  Para desligar: desligar-rplayout.ps1 (ou o atalho Desligar).",logs.display());
+            if !somente_servidor { abrir_navegador(endpoint,workspace); }
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    Err(anyhow!("servidor sem janela não confirmou prontidão na porta {}; ele continua tentando. Veja {}",endpoint.port,logs.display()))
+}
+
+#[cfg(test)]
+mod rolling_log_tests {
+    use super::*;
+    #[test]
+    fn prunes_only_server_logs_keeping_newest(){
+        let dir=std::env::temp_dir().join(format!("rplayout-logs-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&dir);std::fs::create_dir_all(&dir).unwrap();
+        for day in 1..=5 { std::fs::write(dir.join(format!("servidor-2026-10-0{day}.log")),"x").unwrap(); }
+        std::fs::write(dir.join("outro.txt"),"x").unwrap();
+        podar_logs(&dir,2);
+        let mut names:Vec<String>=std::fs::read_dir(&dir).unwrap().map(|e|e.unwrap().file_name().to_string_lossy().into_owned()).collect();names.sort();
+        assert_eq!(names,vec!["outro.txt","servidor-2026-10-04.log","servidor-2026-10-05.log"]);
+        let _=std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn today_is_iso_date(){ let d=hoje(); assert_eq!(d.len(),10); assert_eq!(&d[4..5],"-"); }
+}
+
 fn esperar_porta(root:&Path,database:&Path,endpoint:&LocalEndpoint,child:&mut Child) -> Result<()> {
     let limite = Instant::now() + READY_TIMEOUT;
     while Instant::now() < limite {

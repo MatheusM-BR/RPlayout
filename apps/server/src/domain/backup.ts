@@ -1,4 +1,4 @@
-import { mkdir, readdir, unlink, mkdtemp, stat, rm } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, rename, unlink, mkdtemp, stat, rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -179,4 +179,27 @@ export async function backupDue(directory:string,everyHours:number,now=Date.now(
   const newest=(await listBackups(directory))[0]
   if(!newest)return true
   try{return now-(await stat(join(directory,newest))).mtimeMs>=everyHours*3_600_000}catch{return true}
+}
+
+/** Espelho fora do disco dos dados: a cópia mais nova vai também para outra
+ * pasta (outro disco), conferida pelo tamanho e pela validação de restauração,
+ * mantendo o mesmo limite de cópias. Sem espelho, perder o disco D: leva o banco
+ * e todas as cópias juntos. */
+export async function mirrorNewestBackup(directory:string,mirror:string):Promise<{copied:string|null;removed:string[]}>{
+  const newest=(await listBackups(directory))[0]
+  if(!newest)return{copied:null,removed:[]}
+  await mkdir(mirror,{recursive:true})
+  const target=join(mirror,newest)
+  const source=join(directory,newest)
+  const present=await stat(target).then(info=>info.size).catch(()=>-1)
+  if(present===(await stat(source)).size)return{copied:null,removed:[]}
+  const temporary=`${target}.${randomUUID()}.partial`
+  await copyFile(source,temporary)
+  try{
+    if((await stat(temporary)).size!==(await stat(source)).size)throw new Error('Espelho do backup incompleto.')
+    const validation=await validateBackupRestore(temporary)
+    if(!validation)throw new Error('Espelho do backup não validou.')
+    await rename(temporary,target)
+  }catch(error){await unlink(temporary).catch(()=>{});throw error}
+  return{copied:target,removed:await prune(mirror)}
 }

@@ -11,8 +11,18 @@ param(
   [string]$MediaRoot='D:\Videos',
   [string]$Log='D:\IA\Claude\RPlayout',
   [int]$MaxBackupAgeMinutes=60,
-  [string]$DataRoot=''           # pasta de dados nova; padrao "D:\RPlayout dados <Tag>"
+  [string]$DataRoot='',          # pasta de dados nova; padrao "D:\RPlayout dados <Tag>"
+  # Janela de manutencao: a troca tira o canal do ar por ~3 min. Fora da janela
+  # o script recusa, a menos que -ForaDaJanela seja passado de proposito.
+  [string]$JanelaInicio='02:00',
+  [string]$JanelaFim='05:00',
+  [switch]$ForaDaJanela
 )
+function DentroDaJanela([datetime]$agora){
+  $ini=[datetime]::ParseExact($JanelaInicio,'HH:mm',$null).TimeOfDay; $fim=[datetime]::ParseExact($JanelaFim,'HH:mm',$null).TimeOfDay; $t=$agora.TimeOfDay
+  if($ini -le $fim){ return ($t -ge $ini -and $t -lt $fim) } else { return ($t -ge $ini -or $t -lt $fim) }
+}
+if(!$ForaDaJanela -and !(DentroDaJanela (Get-Date))){ throw "Fora da janela de manutencao ($JanelaInicio-$JanelaFim). Use -ForaDaJanela so com o canal liberado." }
 $ErrorActionPreference='Stop'
 $data=if($DataRoot){$DataRoot}else{"D:\RPlayout dados $Tag"}
 $work="D:\RPlayout-builds\migracao-$Tag"+$(if($DataRoot){"-"+(Split-Path $DataRoot -Leaf).Replace(' ','-')}else{''}); $bundle=Join-Path $work 'bundle'

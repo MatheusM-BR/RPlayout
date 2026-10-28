@@ -46,6 +46,8 @@ import {
   MEDIAMTX_BIND,
   DEVICES_BINARY,
   MEDIAMTX_LOGLEVEL,
+  PGM_RECORD_DIR,
+  PGM_RECORD_HOURS,
   BACKUP_DIR,
   MEDIA_ROOT,
   PROBE_BINARY,
@@ -1640,12 +1642,15 @@ export async function createApp(file: string,options:{restoredAdmission?:Restore
   startupTrace('host admission checked')
   const executionOwnership=new ExecutionOwnership(db),distributionOwnership=new DistributionOwnership(db,executionOwnership.identity,undefined,hostFence,haAdmission?()=>haAdmission.assertNativeActivation():admission?()=>admission.assertNativeActivation(sqlite):null)
   const mediaWorkflow = new MediaWorkflow(sqlite, process.env.RPLAYOUT_MEDIA_VERSIONS ?? resolvePath(THUMBNAIL_DIR, '../.media-versions'), PROXY_BINARY)
+  // Pasta de arquivo fixa (fora da instalação): cópias antigas são trazidas em segundo plano.
+  if(process.env.RPLAYOUT_MEDIA_VERSIONS)void mediaWorkflow.relocateArchives().then(result=>{if(result.moved||result.missing||result.failed)console.log(`[mídia] cópias de versão: ${result.moved} trazidas para ${mediaWorkflow.root}, ${result.missing} ausentes, ${result.failed} com falha`)}).catch(()=>{})
   const mediamtx = MEDIAMTX_BINARY && haConfig?.role!=='STANDBY'&&!haAdmission
     ? new MediaMtx({
         binary: MEDIAMTX_BINARY,
         configPath: resolvePath(process.cwd(), 'mediamtx.yml'),
         bind: MEDIAMTX_BIND,
         logLevel: MEDIAMTX_LOGLEVEL,
+        record: PGM_RECORD_DIR ? { directory: PGM_RECORD_DIR, hours: PGM_RECORD_HOURS } : null,
         ownership:distributionOwnership,
         hostFence,
         requireAppliedConfig:true,

@@ -71,6 +71,9 @@ export const MEDIAMTX_BINARY = process.env.RPLAYOUT_MEDIAMTX ?? defaultMediamtx
  * O padrão é a LAN. Abrir para todas as interfaces é decisão consciente, e a
  * interface avisa quando está assim.
  */
+/** Gravação de confirmação do PGM: pasta (vazio desliga) e horas mantidas. */
+export const PGM_RECORD_DIR = process.env.RPLAYOUT_PGM_RECORD_DIR?.trim() || null
+export const PGM_RECORD_HOURS = Number(process.env.RPLAYOUT_PGM_RECORD_HOURS ?? '24')
 export const MEDIAMTX_BIND = process.env.RPLAYOUT_MEDIAMTX_BIND ?? '0.0.0.0'
 
 /** Nível de log do servidor local. `info` mostra por que uma conexão caiu. */
@@ -101,6 +104,8 @@ export const BACKUP_DIR = process.env.RPLAYOUT_BACKUPS ?? resolve(process.cwd(),
  * O padrão é diário: um playout que roda meses sem ninguém olhar precisa de
  * cópia sem depender de alguém lembrar de pedir.
  */
+/** Segunda pasta (outro disco) que recebe a cópia mais nova do banco. */
+export const BACKUP_MIRROR_DIR = process.env.RPLAYOUT_BACKUP_MIRROR?.trim() || null
 export const BACKUP_EVERY_HOURS = Number(process.env.RPLAYOUT_BACKUP_HOURS ?? '24')
 export const HEALTH_RETENTION_DAYS = Number(process.env.RPLAYOUT_HEALTH_RETENTION_DAYS ?? '30')
 /** HTTP mutation audit window (route/actor/status). Operational records are kept. */

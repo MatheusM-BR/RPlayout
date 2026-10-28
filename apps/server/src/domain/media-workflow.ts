@@ -2,8 +2,8 @@ import type Database from 'better-sqlite3'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, rename, rm, stat } from 'node:fs/promises'
-import { join, extname } from 'node:path'
+import { copyFile, mkdir, rename, rm, stat } from 'node:fs/promises'
+import { join, extname, basename, resolve as resolvePath, sep } from 'node:path'
 import { constants, setPriority } from 'node:os'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -58,6 +58,38 @@ export class MediaWorkflow {
   }
   private release():void {
     this.sqlite.prepare("UPDATE media_jobs SET state=CASE WHEN attempts>=3 THEN 'FAILED' ELSE 'PENDING' END,error=CASE WHEN attempts>=3 THEN 'Trabalho interrompido no limite de tentativas. Confira a versão e solicite nova tentativa.' ELSE NULL END,owner_host=NULL,owner_pid=NULL,owner_boot=NULL,updated_at=? WHERE state='RUNNING' AND owner_host=? AND owner_pid=? AND owner_boot=?").run(new Date().toISOString(),this.owner.host,this.owner.pid,this.owner.boot)
+  }
+
+  /** Cópias de versão antigas fora da pasta de arquivo atual (ex.: dentro de
+   * uma instalação que será aposentada) passam para a pasta fixa. A cópia
+   * nova é conferida pelo hash antes de trocar o caminho; a antiga fica onde
+   * está (apagar é decisão do operador). Devolve quantas foram movidas. */
+  async relocateArchives(): Promise<{ moved: number; missing: number; failed: number }> {
+    const result = { moved: 0, missing: 0, failed: 0 }
+    if (this.closed || isRecoveryRehearsal(this.sqlite)) return result
+    const root = resolvePath(this.root)
+    const inside = (path: string) => { const full = resolvePath(path); const a = process.platform === 'win32' ? full.toLowerCase() : full, b = process.platform === 'win32' ? root.toLowerCase() : root; return a.startsWith(b + sep) }
+    const rows = this.sqlite.prepare('SELECT id,content_hash,archive_path FROM media_versions WHERE archive_path IS NOT NULL').all() as { id: string; content_hash: string; archive_path: string }[]
+    for (const row of rows) {
+      if (this.closed) break
+      if (inside(row.archive_path)) continue
+      try {
+        if (!await this.fileVersions.matches(row.archive_path, row.content_hash).catch(() => false)) { result.missing++; continue }
+        await mkdir(root, { recursive: true })
+        const destination = join(root, basename(row.archive_path)), temporary = `${destination}.${randomUUID()}.partial`
+        if (!await this.fileVersions.matches(destination, row.content_hash).catch(() => false)) {
+          await copyFile(row.archive_path, temporary)
+          if (!await this.fileVersions.matches(temporary, row.content_hash)) { await rm(temporary, { force: true }); result.failed++; continue }
+          await rename(temporary, destination)
+        }
+        this.sqlite.transaction(() => {
+          const changed = this.sqlite.prepare('UPDATE media_versions SET archive_path=? WHERE id=? AND archive_path=?').run(destination, row.id, row.archive_path).changes
+          if (changed) this.sqlite.prepare("UPDATE media_jobs SET output_path=? WHERE version_id=? AND kind='ARCHIVE' AND output_path=?").run(destination, row.id, row.archive_path)
+        }).immediate()
+        result.moved++
+      } catch { result.failed++ }
+    }
+    return result
   }
 
   record(assetId: string, metadata: Record<string, unknown>): string | null {

@@ -143,3 +143,18 @@ describe('entregas externas duráveis e isoladas do PGM',() => {
     expect(database.sqlite.prepare("SELECT state,severity FROM health_events WHERE state='queue_failed'").get()).toEqual({state:'queue_failed',severity:'CRITICAL'})
   })
 })
+
+describe('Telegram',()=>{
+  it('destino api.telegram.org recebe texto legível e chat_id no corpo',async()=>{
+    const database=openDatabase(':memory:')
+    await database.db.insert(integrations).values({id:'tg',name:'Telegram',url:'https://api.telegram.org/botTOKEN/sendMessage?chat_id=-100123',events:['alert.critical'],enabled:true,createdAt:'now'})
+    const outbox=new IntegrationOutbox(database.db);owned.push({database,outbox})
+    const send=vi.fn(async()=>new Response('{}',{status:200}));vi.stubGlobal('fetch',send)
+    await emitIntegrationEvent(database.db,'alert.critical',{component:'SIGNAL',state:'silence',message:'Silêncio no PGM'},'ch')
+    await outbox.tick()
+    const [target,init]=send.mock.calls[0] as unknown as [URL,RequestInit]
+    expect(String(target)).toBe('https://api.telegram.org/botTOKEN/sendMessage')
+    expect(JSON.parse(String(init.body))).toMatchObject({chat_id:'-100123',text:expect.stringContaining('Silêncio no PGM')})
+    expect(database.db.select().from(integrationDeliveries).get()?.state).toBe('DELIVERED')
+  })
+})

@@ -7,12 +7,13 @@ import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
 import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation } from './app.js'
 import {EngineTransport} from './domain/engine.js'
-import { BACKUP_EVERY_HOURS, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS, HTTP_AUDIT_RETENTION_DAYS } from './config.js'
+import { BACKUP_EVERY_HOURS, BACKUP_MIRROR_DIR, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS, HTTP_AUDIT_RETENTION_DAYS } from './config.js'
 import { listChannels, listRundowns } from './db/repo.js'
-import { backupDatabase, backupDue } from './domain/backup.js'
+import { backupDatabase, backupDue, mirrorNewestBackup } from './domain/backup.js'
 import { listRoots } from './domain/roots.js'
 import { registerRoutes } from './routes.js'
 import { healthEvents } from './db/schema.js'
+import { AlertNotifier } from './domain/alert-notifier.js'
 import { severityOf } from './domain/health.js'
 import { emitIntegrationEvent } from './domain/integrations.js'
 import {persistPgmSignalIncidents} from './domain/pgm-signal-incidents.js'
@@ -259,9 +260,15 @@ async function main(): Promise<void> {
   // precisa de cópia sem depender de alguém lembrar de pedir.
   let backingUp=false
   const periodicBackup=()=>void background.run('backup',async()=>{
-    if(backingUp||!(await backupDue(app.backupDir,BACKUP_EVERY_HOURS)))return
+    if(backingUp)return
     backingUp=true
-    try{await backupDatabase(app.sqlite,app.backupDir);server.log.info('Cópia de segurança do banco concluída.')}finally{backingUp=false}
+    try{
+      if(await backupDue(app.backupDir,BACKUP_EVERY_HOURS)){await backupDatabase(app.sqlite,app.backupDir);server.log.info('Cópia de segurança do banco concluída.')}
+      if(BACKUP_MIRROR_DIR){
+        try{const mirrored=await mirrorNewestBackup(app.backupDir,BACKUP_MIRROR_DIR);if(mirrored.copied)server.log.info(`Cópia do banco espelhada em ${BACKUP_MIRROR_DIR}.`)}
+        catch(error){server.log.warn(`Espelho da cópia do banco falhou (${BACKUP_MIRROR_DIR}): ${error instanceof Error?error.message:String(error)}`);void app.db.insert(healthEvents).values({id:randomUUID(),channelId:null,component:'BACKUP',state:'mirror_failed',severity:'CRITICAL',message:`Espelho da cópia do banco falhou em ${BACKUP_MIRROR_DIR}: ${error instanceof Error?error.message:String(error)}`,occurredAt:new Date().toISOString()}).run()}
+      }
+    }finally{backingUp=false}
   },()=>!isRecoveryRehearsal(app.sqlite))
   // Checked every 10 min against the newest copy on disk, and once 5 min after
   // start (outside the startup load), so restarts don't postpone it forever.
@@ -476,6 +483,9 @@ async function main(): Promise<void> {
   void background.run('startup-ha',()=>app.ha?.tick(),()=>!isRecoveryRehearsal(app.sqlite))
   app.hostMetrics.start()
   if(primaryTasks())app.integrationOutbox.start()
+  // Alertas críticos/avisos para fora da tela (Telegram/webhook), com lembrete sem ciente.
+  const alertNotifier=new AlertNotifier(app.db)
+  if(primaryTasks())alertNotifier.start()
   server.log.info(`RPlayout · banco em ${DB_FILE}`)
 }
 

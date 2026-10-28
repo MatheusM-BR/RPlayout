@@ -4,6 +4,7 @@ import type { Db } from '../db/client.js'
 import { healthEvents, integrationDeliveries, integrations,operatorDecisions } from '../db/schema.js'
 import {executionHostIdentity} from './execution-host.js'
 import {diagnoseIntegrationOwner} from './integration-diagnostic.js'
+import {alertText} from './alert-notifier.js'
 
 export class IntegrationOutbox {
   private closed = false
@@ -90,8 +91,13 @@ export class IntegrationOutbox {
     try {
       const url = new URL(row.target)
       if (!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error('unsupported destination')
-      const response = await fetch(url,{ method:'POST',redirect:'error',signal:controller.signal,
-        headers:{'content-type':'application/json','user-agent':'RPlayout-Gateway/1','idempotency-key':row.id},body:JSON.stringify(row.payload) })
+      // Telegram: https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<ID>
+      // recebe texto legível no celular em vez do JSON do evento.
+      const telegram = url.hostname === 'api.telegram.org' && /\/sendMessage$/.test(url.pathname) && url.searchParams.get('chat_id')
+      const target = telegram ? new URL(url.origin + url.pathname) : url
+      const body = telegram ? JSON.stringify({ chat_id: url.searchParams.get('chat_id'), text: alertText(row.event, row.payload as Record<string, unknown>, row.channelId), disable_web_page_preview: true }) : JSON.stringify(row.payload)
+      const response = await fetch(target,{ method:'POST',redirect:'error',signal:controller.signal,
+        headers:{'content-type':'application/json','user-agent':'RPlayout-Gateway/1','idempotency-key':row.id},body })
       error = response.ok ? null : `Destino respondeu HTTP ${response.status}.`
       // Do not buffer an arbitrarily large response from the external service.
       await response.body?.cancel()
