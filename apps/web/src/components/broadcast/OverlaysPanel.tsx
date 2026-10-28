@@ -51,7 +51,7 @@ export function OverlaysPanel({ channelId }: Props) {
       </button>
       {open && <div className="px-4 pb-4 grid gap-3">
         {error && <p role="alert" className="text-[12px] text-on-air-crimson">{error}</p>}
-        <div className="grid gap-3 grid-cols-1 md:grid-cols-2 2xl:grid-cols-4">
+        <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
           {Array.from({ length: OVERLAY_SLOTS }, (_, index) => index + 1).map(slot => {
             const state = slots.find(entry => entry.slot === slot)
             const draft = drafts[slot] ?? { templateId: '', values: {} }

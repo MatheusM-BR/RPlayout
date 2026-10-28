@@ -4,6 +4,7 @@ import type { WorkspaceId } from '../WorkspaceShell.js'
 import { formatStandardRate } from '../../format.js'
 import { ContinuityCacheBadge } from './ContinuityCacheBadge.js'
 import { useAirState } from '../../domain/air-state.js'
+import { HeaderHealth } from './HeaderHealth.js'
 
 interface Props {
   activeWorkspace: WorkspaceId
@@ -136,35 +137,8 @@ export function BroadcastHeader({
 
         {/* Center: Stacked SDI/NDI/NVENC/SRT Badge Grid & Master Clock */}
         <div className="flex items-center gap-space-xl">
-          {/* Status Tags Stacked 2x2 Grid */}
-          <div
-            onClick={onOpenLiveInput}
-            className={`hidden xl:grid grid-cols-2 gap-1 bg-surface-panel p-1 rounded-lg border border-border-subtle ${
-              onOpenLiveInput ? 'cursor-pointer hover:border-border-strong transition-colors' : ''
-            }`}
-            title="Abrir configuração de entradas e saídas. Status físico detalhado fica no Monitor."
-          >
-            <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
-              <span className="font-label-caps text-[10px] text-on-surface-variant">SDI:</span>
-              <span className="font-label-caps text-[10px] text-outline font-bold">CONFIG.</span>
-            </div>
-            <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
-              <span className="font-label-caps text-[10px] text-on-surface-variant">NDI:</span>
-              <span className="font-label-caps text-[10px] text-outline font-bold">CONFIG.</span>
-            </div>
-            <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
-              <span className="font-label-caps text-[10px] text-on-surface-variant">NVENC:</span>
-              <span className="font-label-caps text-[10px] text-outline font-bold">MONITOR</span>
-            </div>
-            <div className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-outline"></span>
-              <span className="font-label-caps text-[10px] text-on-surface-variant">SRT:</span>
-              <span className="font-label-caps text-[10px] text-outline font-bold">CONFIG.</span>
-            </div>
-          </div>
+          {/* Saúde real: engine, saídas, disco, alertas */}
+          <HeaderHealth channelId={channel.id} onClick={onOpenLiveInput} />
 
           {/* Repositioned Master Clock */}
           <div className="flex items-center gap-space-sm bg-surface-base px-3 py-1 rounded-lg border border-border-subtle shadow-inner">

@@ -15,6 +15,7 @@ import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 import {publicationSnapshot} from '../domain/publication-snapshot.js'
 import {OperationalRollbackDialog} from '../components/OperationalRollbackDialog.js'
 import { canonicalLiveSourceRef, liveProtocolLabel } from '../liveSource.js'
+import { collapsedRows, findRepeatRuns } from '../domain/repeat-runs.js'
 import { ProtectedTimingZonesDialog } from '../components/ProtectedTimingZonesDialog.js'
 import { editorialContext, editorialSelection } from '../domain/editorial-context.js'
 import { SchedulePublicationPanel } from '../components/broadcast/SchedulePublicationPanel.js'
@@ -1017,6 +1018,11 @@ export function PlaylistScheduleView({
     return new Map(activeView?.schedule?.items?.map((it) => [it.id, it]) ?? [])
   }, [activeView])
 
+  // Grade em loop expandida: recolhe as repetições (1º ciclo + resumo).
+  const [collapseRepeats, setCollapseRepeats] = useState(true)
+  const repeatRuns = useMemo(() => findRepeatRuns(displayItems.map((entry) => `${entry.item.type}:${entry.item.sourceRef ?? entry.asset?.id ?? entry.item.title ?? entry.item.id}`)), [displayItems])
+  const visibleRows = useMemo(() => collapseRepeats && repeatRuns.length ? collapsedRows(displayItems.length, repeatRuns) : displayItems.map((_, index) => ({ index })), [collapseRepeats, repeatRuns, displayItems])
+
   const selectedItemsList = useMemo(() => {
     return displayItems.filter((it) => selectedItemIds.has(it.item.id))
   }, [displayItems, selectedItemIds])
@@ -1246,11 +1252,22 @@ export function PlaylistScheduleView({
                 {dateBadgeStatus}
               </span>
             </div>
+            {/* Qual grade está no ar x qual está sendo editada: sem isto o operador
+                editava 27/10 achando que mexia no que tocava (loop de 20/10). */}
+            <div className={`px-2.5 py-0.5 rounded border text-[11px] font-mono flex items-center gap-1.5 ${isLoadedEditorial ? 'border-border-subtle bg-surface-panel' : 'border-armed-amber bg-armed-amber/10'}`} title={isLoadedEditorial ? 'Esta é a grade carregada no Master.' : 'Você edita outra grade; ela só vai ao ar depois de publicar/carregar no Master.'}>
+              <span className="text-on-air-crimson font-bold">● NO AR:</span>
+              <strong className="text-on-surface">{view.rundown.name}</strong>
+              <span className="text-outline">{view.rundown.date ? view.rundown.date.split('-').reverse().slice(0, 2).join('/') : 'sem data'}{view.rundown.loop ? ' · loop' : ''}</span>
+              {!isLoadedEditorial && <span className="text-armed-amber font-bold">· EDITANDO OUTRA GRADE</span>}
+            </div>
           </div>
           <div className="flex items-center gap-space-md text-label-mono text-[10px]">
             <span className="text-outline">
               GRADE ATUAL: <strong className="text-on-surface font-bold">{displayItems.length} ITENS</strong>
             </span>
+            {repeatRuns.length > 0 && <button type="button" onClick={() => setCollapseRepeats(value => !value)} className="px-2 py-0.5 rounded border border-accent-ice/40 text-accent-ice text-[11px]">
+              {collapseRepeats ? 'Mostrar repetições' : 'Recolher repetições'}
+            </button>}
             <span className="text-outline">•</span>
             <span className="text-outline">
               COBERTURA: <strong className="text-accent-ice-bright font-bold">{dur(totalDurationFrames, rate)}</strong>
@@ -2204,7 +2221,19 @@ export function PlaylistScheduleView({
                     </div>
                   </div>
                 ) : (
-                  displayItems.map((item, idx) => {
+                  visibleRows.map((row) => {
+                    if ('summary' in row) {
+                      const last = displayItems[row.lastIndex]
+                      const lastEnd = last ? scheduleMap.get(last.item.id)?.end : undefined
+                      return (
+                        <button key={`repeat-${row.summary.start}`} type="button" onClick={() => setCollapseRepeats(false)}
+                          className="w-full px-3 py-1.5 text-left text-[12px] bg-accent-ice/10 hover:bg-accent-ice/20 border-y border-accent-ice/30 text-accent-ice font-label-mono">
+                          ↻ Sequência de {row.summary.period} {row.summary.period === 1 ? 'item' : 'itens'} repete mais {row.summary.repeats - 1}× ({row.hidden} linhas){lastEnd != null ? ` até ${wallClock(lastEnd, rate, activeView?.rundown.date)}` : ''} · mostrar tudo
+                        </button>
+                      )
+                    }
+                    const idx = row.index
+                    const item = displayItems[idx]!
                     const isSelected = selectedItemIds.has(item.item.id)
                     const durationFrames = item.trim
                       ? Math.max(0, item.trim.out - item.trim.in)

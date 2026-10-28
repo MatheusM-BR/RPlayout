@@ -828,9 +828,12 @@ export function MasterControlView({
         {/* 1.1 WATCHDOG & SONDA DE PGM / SLATE DE EMERGÊNCIA (FASE C) */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0">
           <PgmProbeBanner channelId={channel.id} />
-          <NextPlaylistPanel channelId={channel.id} />
           <InterruptedItemsBanner channelId={channel.id} rate={channel.rate} />
-          <OperationalInsertionPanel channelId={channel.id} rate={channel.rate} assets={allAssets}/>
+          {/* Lado a lado: cada painel recolhido ocupa uma linha só, e a grade sobe. */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mt-1.5 items-start">
+            <NextPlaylistPanel channelId={channel.id} />
+            <OperationalInsertionPanel channelId={channel.id} rate={channel.rate} assets={allAssets}/>
+          </div>
         </div>
 
         {/* 2. TOP OPERATIONAL STRIP (Compact Switcher & Monitors for Variante 2 - 4 Colunas) */}
@@ -1111,13 +1114,11 @@ export function MasterControlView({
           </div>
         </section>
  
-        {/* 2.1 PAINEL TÁTICO DE CG DINÂMICO (4 CAMADAS) & SCTE-35 CUE OUT (FASE D) */}
-        <div className="w-full px-margin pt-2 pb-1 shrink-0">
+        {/* 2.1 GRAFISMO: camadas fixas + SCTE e overlays 1–8 lado a lado */}
+        <div className="w-full px-margin pt-2 pb-1 shrink-0 grid grid-cols-1 2xl:grid-cols-2 gap-2 items-start">
           <DynamicCgSecondaryBar
             channelId={channel.id}
           />
-        </div>
-        <div className="w-full px-margin pb-1 shrink-0">
           <OverlaysPanel channelId={channel.id} />
         </div>
  
