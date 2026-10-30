@@ -50,7 +50,7 @@ export function QualityControlPanel({ folders, scan, onAccept, onIgnore, onScan 
         <td className="mono">{asset.probe ? `${asset.probe.width}×${asset.probe.height}` : '—'}</td>
         <td><span className={`pill ${asset.probe?.hasAudio === false ? 'bad' : 'ok'}`}>{asset.probe?.hasAudio === false ? 'SEM ÁUDIO' : 'OK'}</span></td>
         <td><span className={`pill ${result.verdict === 'APROVADO' ? 'ok' : result.verdict === 'ATENÇÃO' ? 'warn' : 'bad'}`}>{result.verdict}</span><div className="qc-reasons">{result.reasons.join(' · ')}</div></td>
-        <td><div className="actions">{asset.ignored ? <button className="btn small" onClick={() => onAccept(asset.id)}>ACEITAR</button> : <button className="btn small" onClick={() => onIgnore(asset.id)}>IGNORAR</button>}</div></td>
+        <td><div className="actions">{asset.ignored ? <button className="btn small" onClick={() => onAccept(asset.id)}>APROVAR</button> : <button className="btn small" onClick={() => onIgnore(asset.id)}>REJEITAR</button>}</div></td>
       </tr>)}
       {visible.length === 0 && <tr><td colSpan={6} className="dim">Nenhuma mídia corresponde ao filtro.</td></tr>}
     </tbody></table></div>

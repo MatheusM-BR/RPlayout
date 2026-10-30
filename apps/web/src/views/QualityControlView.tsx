@@ -1112,15 +1112,17 @@ function QualityControlSession({
                 </span>
               </div>
               <div className="flex items-center gap-3 font-label-mono text-[12px] text-outline">
-                <span>Total: <strong className="text-on-surface">{libraryLoaded ? assets.length : 'N/D'}</strong></span>
+                {!libraryLoaded ? <span role="status" className="text-outline animate-pulse motion-reduce:animate-none">Carregando acervo…</span> : <>
+                <span>Total: <strong className="text-on-surface">{assets.length}</strong></span>
                 <span>•</span>
-                <span className="text-status-ok-bright font-bold">{libraryLoaded ? okCount : 'N/D'} OK</span>
+                <span className="text-status-ok-bright font-bold">{okCount} OK</span>
                 <span>•</span>
-                <span className="text-primary font-bold">{libraryLoaded ? pendingCount : 'N/D'} PENDENTES</span>
+                <span className="text-primary font-bold">{pendingCount} PENDENTES</span>
                 <span>•</span>
-                <span className="text-armed-amber font-bold">{libraryLoaded ? alertCount : 'N/D'} ALERTAS</span>
+                <span className="text-armed-amber font-bold">{alertCount} ALERTAS</span>
                 <span>•</span>
-                <span className="text-outline">{libraryLoaded ? ignoredCount : 'N/D'} IGNORADOS</span>
+                <span className="text-outline">{ignoredCount} IGNORADOS</span>
+                </>}
                 {libraryLoaded && unmeasuredCount > 0 && (<>
                   <span>•</span>
                   <button type="button" onClick={() => onScan(true)} className="text-armed-amber font-bold underline decoration-dotted cursor-pointer" title="Sem loudness medida o nivelamento automático não tem referência. Clique para medir (EBU R128); arquivos já medidos são pulados. Usa CPU: prefira fora de horário crítico.">
@@ -1307,7 +1309,7 @@ function QualityControlSession({
               {filteredAssets.length === 0 ? (
                 <div className="flex flex-col items-center justify-center p-8 text-outline gap-2 my-auto">
                   <span className="material-symbols-outlined text-[36px] opacity-40">inventory_2</span>
-                  <span className="font-body-sm text-[12px]">{libraryLoaded ? 'Nenhum arquivo encontrado no filtro' : 'Acervo ainda não conferido; isso não confirma acervo vazio.'}</span>
+                  <span className="font-body-sm text-[12px]">{libraryLoaded ? 'Nenhum arquivo encontrado no filtro' : 'Carregando acervo… (isso ainda não confirma acervo vazio)'}</span>
                 </div>
               ) : (
                 filteredAssets.map((asset) => {
@@ -1399,13 +1401,13 @@ function QualityControlSession({
                       </div>
 
                       {/* Ações Rápidas por linha */}
-                      <div className="flex items-center gap-1 flex-shrink-0">
+                      <div className="flex items-center gap-2 flex-shrink-0">
                         {!isApproved && <button
                           onClick={(e) => {
                             e.stopPropagation()
                             void handleApprove(asset.id)
                           }}
-                          className="px-2 py-1 rounded bg-status-ok/15 hover:bg-status-ok text-status-ok-bright hover:text-surface-base font-label-caps text-[11px] font-bold transition-colors cursor-pointer border border-status-ok/30"
+                          className="px-3 hit-btn rounded bg-status-ok/15 hover:bg-status-ok text-status-ok-bright hover:text-surface-base font-label-caps t-label font-bold transition-colors cursor-pointer border border-status-ok/30"
                           title="Aprovar no QC e liberar para a grade"
                           disabled={qcDecisionBusy}
                         >
@@ -1416,11 +1418,11 @@ function QualityControlSession({
                             e.stopPropagation()
                             void handleReject(asset.id)
                           }}
-                          className="px-2 py-1 rounded bg-surface-container hover:bg-on-air-crimson/20 text-outline hover:text-on-air-crimson font-label-caps text-[11px] transition-colors cursor-pointer border border-border-subtle"
-                          title="Mover para quarentena / ignorar"
+                          className="px-3 hit-btn rounded bg-surface-container hover:bg-on-air-crimson/20 text-outline hover:text-on-air-crimson font-label-caps t-label font-bold transition-colors cursor-pointer border border-border-subtle"
+                          title="Rejeitar: reprova o arquivo para todos os canais e o manda para a quarentena (pede confirmação)"
                           disabled={qcDecisionBusy}
                         >
-                          Ignorar
+                          Rejeitar
                         </button>}
                       </div>
                     </div>
@@ -1431,7 +1433,7 @@ function QualityControlSession({
 
             {/* Rodapé da Coluna com Resumo */}
             <div className="p-2 border-t border-border-subtle bg-surface-panel/30 font-label-mono text-[12px] text-outline flex items-center justify-between shrink-0">
-              <span>{selectedLiveSourceId ? `${liveInputs.length} entradas ao vivo` : libraryLoaded ? `${filteredAssets.length} clipes na fila` : 'Fila de clipes ainda não conferida'}</span>
+              <span>{selectedLiveSourceId ? `${liveInputs.length} entradas ao vivo` : libraryLoaded ? `${filteredAssets.length} clipes na fila` : 'Carregando fila de clipes…'}</span>
               <span>{selectedLiveSourceId ? 'Clique na fonte para abrir no decodificador do QC (não usa o PVW do Master)' : 'Clique no clipe para inspecionar'}</span>
             </div>
           </div>
@@ -1705,7 +1707,7 @@ function QualityControlSession({
                   <button
                     onClick={() => void handleApprove()}
                     disabled={!qcDecisionReady||qcDecisionBusy}
-                    className="flex items-center gap-1 px-3 py-1 rounded bg-status-ok text-surface-base font-label-caps text-[11px] font-bold hover:bg-status-ok-bright transition-colors shadow-sm cursor-pointer disabled:opacity-40 ml-1"
+                    className="flex items-center gap-1 px-4 hit-btn rounded bg-status-ok text-surface-base font-label-caps t-label font-bold hover:bg-status-ok-bright transition-colors shadow-sm cursor-pointer disabled:opacity-40 ml-3 mr-3"
                     title="Aprovar clipe e liberar para o Master Playout"
                   >
                     <span className="material-symbols-outlined text-[14px]">check_circle</span>
@@ -1714,7 +1716,7 @@ function QualityControlSession({
                   <button
                     onClick={() => void handleReject()}
                     disabled={!qcDecisionReady||qcDecisionBusy}
-                    className="flex items-center gap-1 px-3 py-1 rounded bg-on-air-crimson text-white font-label-caps text-[11px] font-bold hover:bg-on-air-crimson transition-colors shadow-sm cursor-pointer disabled:opacity-40"
+                    className="flex items-center gap-1 px-4 hit-btn rounded bg-on-air-crimson text-white font-label-caps t-label font-bold hover:bg-on-air-crimson transition-colors shadow-sm cursor-pointer disabled:opacity-40"
                     title="Mover clipe para os rejeitados / quarentena"
                   >
                     <span className="material-symbols-outlined text-[14px]">cancel</span>

@@ -2011,3 +2011,22 @@ button.status-card { color: var(--text); text-align: left; cursor: pointer; }
   outline: 2px solid #5b9bff;
   outline-offset: 2px;
 }
+
+/*
+ * Texto mínimo de operação: dado (horário, duração, título) >= 12px; rótulo e
+ * status >= 11px. Sobrepõe os text-[7..11px] antigos nos elementos operacionais.
+ */
+:root {
+  --fs-data: 13px;
+  --fs-time: 14px;
+  --fs-label: 11px;
+}
+.t-data { font-size: var(--fs-data); line-height: 1.25; }
+.t-time { font-size: var(--fs-time); line-height: 1.25; font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 0; }
+.t-label { font-size: var(--fs-label); line-height: 1.2; }
+.t-status { font-size: var(--fs-label); line-height: 1.2; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* Alvos de clique de operação (nunca abaixo disto fora de acervo/engenharia). */
+.hit-row { min-height: 36px; }
+.hit-btn { min-height: 32px; min-width: 32px; }
+.hit-icon { min-height: 32px; min-width: 32px; display: inline-flex; align-items: center; justify-content: center; }

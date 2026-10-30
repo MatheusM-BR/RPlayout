@@ -144,7 +144,7 @@ const CHAPTERS: DocChapter[] = [
         tag: 'DECISÃO',
         content: 'O perfil técnico define o que precisa estar identificado (codec, geometria, cadência, varredura, duração, áudio). Material reprovado ou bloqueado não vai ao PGM.',
         steps: [
-          'Aprovar aparece só em itens pendentes ou com alerta; Ignorar tira o arquivo da lista sem apagar.',
+          'Aprovar libera o arquivo para a grade (só aparece em itens pendentes ou com alerta). Rejeitar reprova o arquivo para todos os canais, com confirmação, e o manda para a quarentena sem apagar. Ignorar apenas oculta o arquivo de uma lista, sem julgar a qualidade, e pode ser desfeito.',
           'Os scopes usam quadros de navegação: são inspeção visual aproximada, não medição de engenharia.',
         ],
       },

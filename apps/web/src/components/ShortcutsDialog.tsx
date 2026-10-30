@@ -1,15 +1,25 @@
 import { useEffect, useRef } from 'react'
 
 const keys: Array<[string, string]> = [
-  ['Espaço', 'TAKE: leva ao ar o que está no PVW (ou a linha selecionada). Toque duplo é ignorado.'],
+  ['Espaço', 'TAKE sempre: vai ao ar o vídeo em foco, a linha selecionada na grade. Toque duplo é descartado.'],
   ['F2', 'CUE: abre no PVW a linha selecionada ou a próxima'],
   ['↑ / ↓', 'Anda pela grade armando linha a linha'],
   ['Delete', 'Tira da grade a linha selecionada (Backspace não apaga)'],
   ['Ctrl+Z / Ctrl+Y', 'Desfazer / refazer edição da grade'],
   ['I', 'Ajustar entrada e saída (trim) do item selecionado'],
   ['N', 'Áudio do item selecionado'],
-  ['Esc', 'Fecha a janela aberta'],
+  ['Esc', 'Desarma o ABORT; com uma janela aberta, fecha a janela'],
   ['F1', 'Este cartão'],
+]
+
+/** Glossário curto: um termo, um significado. */
+export const glossary: Array<[string, string]> = [
+  ['TAKE', 'Leva ao ar (PGM) o que está armado.'],
+  ['CUE', 'Arma uma linha: carrega no PVW, sem ir ao ar.'],
+  ['PGM', 'Programa: o que está saindo no ar.'],
+  ['PVW', 'Preview: o que está armado e ainda não saiu.'],
+  ['ALINHAR', 'Ajusta a grade (preenche a sobra ou corta o atraso) para o item em FOCO entrar no horário marcado.'],
+  ['FOCO', 'Item marcado (botão direito na linha) para contar quando entra e se a grade chega a tempo. Não é a linha selecionada.'],
 ]
 
 /** Cartão de atalhos (F1). Também serve de guia para botoeiras (Stream Deck,
@@ -39,6 +49,15 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             ))}
           </tbody>
         </table>
+        <h3 className="mt-4 mb-1 font-label-caps text-[12px] uppercase tracking-wider text-outline">Glossário</h3>
+        <dl data-testid="shortcuts-glossary" className="grid grid-cols-[6rem_1fr] gap-x-3 gap-y-1 text-[13px]">
+          {glossary.map(([term, meaning]) => (
+            <div key={term} className="contents">
+              <dt className="font-label-mono text-on-surface">{term}</dt>
+              <dd className="text-on-surface-variant">{meaning}</dd>
+            </div>
+          ))}
+        </dl>
         <p className="mt-3 text-[12px] text-outline">As teclas não agem enquanto você digita num campo, com uma janela aberta ou com o painel bloqueado. Botoeiras (Stream Deck, X-keys): configure cada botão para enviar a tecla acima, com a janela do RPlayout em foco.</p>
       </div>
     </div>

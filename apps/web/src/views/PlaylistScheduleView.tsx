@@ -1525,7 +1525,7 @@ export function PlaylistScheduleView({
                       }`}
                       onClick={() => void toggleMamIgnored(mamContextMenu.asset)}
                     >
-                      {mamContextMenu.asset.ignored ? '✓ Reativar Vídeo no MAM' : '🚫 Ignorar Vídeo (Ocultar)'}
+                      {mamContextMenu.asset.ignored ? '✓ Reativar Vídeo no MAM' : '🚫 Ignorar (só ocultar da lista)'}
                     </button>
                     </>:<>
                       <div className="px-2 py-1 text-[11px] font-label-caps text-outline">ENTRADA AO VIVO — NÃO É ARQUIVO DO ACERVO</div>
@@ -2164,8 +2164,8 @@ export function PlaylistScheduleView({
                 <div className="col-span-2">Regra / Tipo</div>
                 <div className="col-span-2">Horário previsto</div>
                 <div className="col-span-2">Duração</div>
-                <div className="col-span-4">MAM ID &amp; Título da Mídia</div>
-                <div className="col-span-1 text-right">Status / QC</div>
+                <div className="col-span-3">MAM ID &amp; Título da Mídia</div>
+                <div className="col-span-2 text-right">Status / QC</div>
               </div>
 
               <div className="flex-1 divide-y divide-border-subtle/50 overflow-y-auto broadcast-scroll">
@@ -2259,7 +2259,7 @@ export function PlaylistScheduleView({
                         id={`row-${item.item.id}`}
                         onClick={(e) => handleRowClick(e, item, idx)}
                         onDoubleClick={() => openEditScheduleTime(item)}
-                        className={`grid grid-cols-12 px-2.5 py-1 items-center text-[11px] transition-colors group cursor-pointer select-none leading-tight ${
+                        className={`grid grid-cols-12 px-2.5 py-1 items-center t-data transition-colors group cursor-pointer select-none leading-tight ${
                           isSelected
                             ? 'bg-primary-container/25 border-l-4 border-primary font-medium text-white shadow-inner'
                             : 'bg-surface-card hover:bg-surface-panel'
@@ -2275,7 +2275,7 @@ export function PlaylistScheduleView({
                           <span className="text-outline">{idx + 1}</span>
                         </div>
                         <div className="col-span-2 flex items-center gap-1 flex-wrap">
-                          <span className="px-1 py-0.2 rounded font-label-caps text-[11px] bg-surface-container font-semibold text-primary">
+                          <span className="px-1 py-0.2 rounded font-label-caps t-label bg-surface-container font-semibold text-primary">
                             {item.asset?.kind ?? item.item.type ?? 'VT'}
                           </span>
                           {item.asset?.categoryId && (() => {
@@ -2297,19 +2297,19 @@ export function PlaylistScheduleView({
                             )
                           })()}
                         </div>
-                        <div className="col-span-2 font-label-mono text-[14px] tabular-nums text-on-surface">
+                        <div className="col-span-2 font-label-mono t-time text-on-surface">
                           {scheduleMap.get(item.item.id)?.start != null
                             ? wallClock(scheduleMap.get(item.item.id)!.start, rate, activeView?.rundown.date)
                             : '--:--:--:--'}
                         </div>
-                        <div className="col-span-2 font-label-mono text-[14px] tabular-nums text-outline">
+                        <div className="col-span-2 font-label-mono t-time text-outline">
                           {dur(durationFrames, rate)}
                         </div>
-                        <div className="col-span-4 font-body-sm text-[13px] truncate text-on-surface">
+                        <div className="col-span-3 font-body-sm t-data truncate text-on-surface">
                           {item.asset?.title || item.item.title || item.item.id}
                         </div>
-                        <div className="col-span-1 text-right">
-                          <span title={item.asset?.probeError ?? item.asset?.qcNotes ?? (item.asset ? 'Estado de QC do arquivo' : 'O cadastro não comprova sinal da fonte')} className={`font-label-mono text-[12px] font-bold ${item.asset?.probeError || item.asset?.qcStatus === 'REJECTED' || item.asset?.ignored ? 'text-error' : qcApproved(item.asset?.qcStatus) ? 'text-status-ok-bright' : 'text-armed-amber'}`}>
+                        <div className="col-span-2 min-w-0 text-right">
+                          <span title={item.asset?.probeError ?? item.asset?.qcNotes ?? (item.asset ? 'Estado de QC do arquivo' : 'O cadastro não comprova sinal da fonte')} className={`font-label-mono t-status block ${item.asset?.probeError || item.asset?.qcStatus === 'REJECTED' || item.asset?.ignored ? 'text-error' : qcApproved(item.asset?.qcStatus) ? 'text-status-ok-bright' : 'text-armed-amber'}`}>
                             {item.asset?.probeError || item.asset?.ignored ? 'INDISPONÍVEL' : !item.asset ? (item.item.type === 'LIVE' ? 'AO VIVO' : 'SEM ARQUIVO') : item.asset.qcStatus === 'APPROVED_WITH_NOTES' ? 'QC RESSALVA' : qcApproved(item.asset.qcStatus) ? 'QC OK' : item.asset.qcStatus === 'REJECTED' ? 'REJEITADO' : item.asset.qcStatus === 'BLOCKED' ? 'BLOQUEADO' : item.asset.qcStatus === 'ANALYSIS' ? 'EM ANÁLISE' : 'QC PEND.'}
                           </span>
                         </div>

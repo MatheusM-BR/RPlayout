@@ -329,10 +329,10 @@ export function AiredView({
               Duração registrada / estimada
             </span>
             <div className="font-timecode-display text-[26px] text-primary font-bold tabular-nums leading-tight mt-1">
-              {entries === null ? '—' : formattedTotalTime}
+              {entries === null ? (loadError ? '—' : 'Carregando…') : formattedTotalTime}
             </div>
             <span className="font-label-mono text-[12px] text-outline mt-0.5">
-              {entries === null ? 'Consultando o registro…' : `${totalFrames.toLocaleString()} quadros no log · inclui registros legados`}
+              {entries === null ? (loadError ? 'Consulta indisponível' : 'Consultando o registro…') : `${totalFrames.toLocaleString()} quadros no log · inclui registros legados`}
             </span>
           </div>
 
@@ -341,10 +341,10 @@ export function AiredView({
               Ocorrências registradas
             </span>
             <div className="font-timecode-display text-[26px] text-on-surface font-bold tabular-nums leading-tight mt-1">
-              {entries === null ? '—' : filteredEntries.length}
+              {entries === null ? (loadError ? '—' : 'Carregando…') : filteredEntries.length}
             </div>
             <span className="font-label-mono text-[12px] text-status-ok-bright mt-0.5">
-              {eofCount} fins de arquivo • {takeCount} cortes (TAKE/live)
+              {entries === null ? 'Aguardando a primeira resposta…' : `${eofCount} fins de arquivo • ${takeCount} cortes (TAKE/live)`}
             </span>
           </div>
 
@@ -353,10 +353,10 @@ export function AiredView({
               Paradas registradas
             </span>
             <div className="font-timecode-display text-[26px] text-status-ok-bright font-bold tabular-nums leading-tight mt-1">
-              {entries === null ? '—' : stopCount}
+              {entries === null ? (loadError ? '—' : 'Carregando…') : stopCount}
             </div>
             <span className="font-label-mono text-[12px] text-outline mt-0.5">
-              {summary.missingDurations} durações N/D · {summary.estimates} estimadas
+              {entries === null ? 'Aguardando a primeira resposta…' : `${summary.missingDurations} durações N/D · ${summary.estimates} estimadas`}
             </span>
           </div>
 
@@ -375,7 +375,9 @@ export function AiredView({
 
         {/* 3.1 RESUMO DE COMPLIANCE ANCINE (FASE C: TETO 25% E COTAS NACIONAIS) */}
         <div className="px-margin pt-space-md shrink-0">
-          <AncineComplianceCard entries={filteredEntries} />
+          {entries === null
+            ? <div role="status" className="bg-surface-card rounded-xl border border-border-subtle p-3.5 t-data text-outline animate-pulse motion-reduce:animate-none">{loadError ? 'Conferência indisponível: a consulta do registro falhou.' : 'Carregando a conferência regulatória…'}</div>
+            : <AncineComplianceCard entries={filteredEntries} />}
         </div>
 
         {/* 4. BARRA DE FILTROS AVANÇADA (DATA, CATEGORIA, STATUS, BUSCA) */}

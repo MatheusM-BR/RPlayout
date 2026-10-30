@@ -977,7 +977,14 @@ export function MasterControlView({
       />
 
       <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto xl:overflow-hidden">
-        {publicationRequired && <div role="alert" className="px-margin py-3 bg-armed-amber/10 text-armed-amber">A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.</div>}
+        {/* Faixa de altura FIXA reservada sempre: o aviso entra e sai sem empurrar a grade nem TAKE/ABORT. */}
+        <div data-testid="cadence-notice-slot" className="w-full px-margin shrink-0 h-9 flex items-center">
+          {publicationRequired && <div role="alert" className="w-full h-8 flex items-center gap-2 px-3 rounded bg-armed-amber/10 border border-armed-amber/40 text-armed-amber t-data overflow-hidden" title="A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.">
+            <span className="material-symbols-outlined text-[16px] shrink-0">lock</span>
+            <span className="truncate min-w-0">A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.</span>
+            <button type="button" className="ml-auto shrink-0 px-2 h-6 rounded border border-armed-amber/60 t-label font-bold hover:bg-armed-amber/20" onClick={() => onNavigate('playlist')}>REVISAR EM PLAYLIST</button>
+          </div>}
+        </div>
         {/* 1.1 FAIXA DE STATUS DE ALTURA FIXA (U5): sonda + itens interrompidos */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0 flex flex-col gap-1">
           <PgmProbeBanner channelId={channel.id} showContingency={false} />
@@ -1231,19 +1238,19 @@ export function MasterControlView({
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <button type="button" onClick={() => setMamPanel('closed')} className="px-1 py-0.5 rounded text-outline hover:text-on-surface" title="Recolher a biblioteca (a grade ganha largura)">
-                        <span className="material-symbols-outlined text-[16px]">left_panel_close</span>
+                      <button type="button" onClick={() => setMamPanel('closed')} className="hit-icon rounded text-outline hover:text-on-surface hover:bg-surface-container" title="Recolher a biblioteca (a grade ganha largura)" aria-label="Recolher a biblioteca">
+                        <span className="material-symbols-outlined text-[22px]">left_panel_close</span>
                       </button>
                       <button
                         onClick={() => setFolderModalOpen(true)}
-                        className="px-2 py-0.5 rounded bg-primary/15 hover:bg-primary/30 text-primary border border-primary/40 font-label-caps text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                        className="px-2 hit-btn rounded bg-primary/15 hover:bg-primary/30 text-primary border border-primary/40 font-label-caps t-label font-bold flex items-center gap-1 cursor-pointer transition-colors"
                         title="Adicionar pastas locais ou em rede ao acervo MAM"
                       >
                         <span className="material-symbols-outlined text-[15px]">create_new_folder</span>
                       </button>
                       <button
                         onClick={() => { resetLiveInput(); setLiveInputModalOpen(true) }}
-                        className="px-2 py-0.5 rounded bg-accent-ice/15 hover:bg-accent-ice/30 text-accent-ice-bright border border-accent-ice/40 font-label-caps text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                        className="px-2 hit-btn rounded bg-accent-ice/15 hover:bg-accent-ice/30 text-accent-ice-bright border border-accent-ice/40 font-label-caps t-label font-bold flex items-center gap-1 cursor-pointer transition-colors"
                         title="Adicionar fonte externa (DeckLink SDI, NDI, WebRTC, SRT) à biblioteca"
                       >
                         <span className="material-symbols-outlined text-[15px]">settings_input_antenna</span>
@@ -1300,7 +1307,7 @@ export function MasterControlView({
                             draggable
                             onDragStart={(e) => handleDragStart(e, asset)}
                             onClick={() => handleMamPreview(asset)}
-                            className={`px-2 h-7 rounded border cursor-grab active:cursor-grabbing flex items-center justify-between gap-2 transition-colors group relative ${
+                            className={`px-2 hit-row rounded border cursor-grab active:cursor-grabbing flex items-center justify-between gap-2 transition-colors group relative ${
                               selectedPreviewAsset?.id === asset.id
                                 ? 'bg-armed-amber/15 border-armed-amber/50 shadow-sm'
                                 : isLive
@@ -1358,10 +1365,10 @@ export function MasterControlView({
                                     onInsertAsset(asset.id)
                                   }
                                 }}
-                                className="p-0.5 rounded bg-primary-container/20 hover:bg-primary-container text-primary hover:text-white border border-primary/30 cursor-pointer"
-                                title="Adicionar à grade"
+                                className="hit-icon rounded bg-primary-container/20 hover:bg-primary-container text-primary hover:text-white border border-primary/30 cursor-pointer"
+                                title="Adicionar à grade" aria-label="Adicionar à grade"
                               >
-                                <span className="material-symbols-outlined text-[13px]">add</span>
+                                <span className="material-symbols-outlined text-[18px]">add</span>
                               </button>
                             </div>
                           </div>
@@ -1498,12 +1505,12 @@ export function MasterControlView({
                       <thead className="bg-surface-panel/95 backdrop-blur-md sticky top-0 z-20 text-outline font-label-caps text-label-caps uppercase border-b border-border-subtle">
                         <tr className="h-11">
                           <th className="px-2 w-10 text-center font-timecode-table">#</th>
-                          <th className="px-4 w-32 font-timecode-table">STATUS</th>
+                          <th className="px-3 w-36 font-timecode-table">STATUS</th>
                           <th className="px-3 w-28 font-timecode-table">INÍCIO</th>
                           <th className="px-3 w-24 font-timecode-table">DURAÇÃO</th>
                           <th className="px-3 font-timecode-table">TÍTULO</th>
                           <th className="hidden 2xl:table-cell px-4 w-32 text-right font-timecode-table">TIPO</th>
-                          <th className="px-3 w-24 text-right font-timecode-table">AÇÕES</th>
+                          <th className="px-3 w-48 text-right font-timecode-table">AÇÕES</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border-subtle/30 font-timecode-table text-timecode-table text-[14px]">
@@ -1578,38 +1585,38 @@ export function MasterControlView({
                                 title="Clique para armar (CUE) no PVW • Ctrl/Shift para multiseleção • Botão direito: focar contagem"
                               >
                                 <td className={`py-1.5 px-3 text-center font-label-mono text-label-mono ${
-                                  isItemOnAir ? 'text-on-air-crimson font-bold text-[13px]' : isItemCued ? 'text-armed-amber font-bold text-[13px]' : 'text-outline text-xs'
+                                  isItemOnAir ? 'text-on-air-crimson font-bold text-[13px]' : isItemCued ? 'text-armed-amber font-bold text-[13px]' : 'text-outline t-data'
                                 }`}>
                                   {focus?.itemId === item.item.id ? <span className="text-primary font-bold" title="Item em foco">◎</span> : index + 1}
                                 </td>
 
                                 <td className="py-1.5 px-3 whitespace-nowrap">
                                   {isItemOnAir ? (
-                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-on-air-crimson text-surface-base font-label-caps text-[11px] font-bold">
+                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-on-air-crimson text-surface-base font-label-caps t-status">
                                       <span className="w-1.5 h-1.5 rounded-full bg-surface-base animate-ping"></span> NO AR
                                     </span>
                                   ) : isItemCued ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-armed-amber text-surface-base font-label-caps text-[11px] font-bold">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-armed-amber text-surface-base font-label-caps t-status">
                                       CUED
                                     </span>
                                   ) : unavailable ? (
-                                    <button type="button" onClick={(event) => { event.stopPropagation(); onNavigate('qc') }} className="px-2 py-0.5 rounded text-[11px] whitespace-nowrap text-on-air-crimson bg-on-air-crimson/10 hover:bg-on-air-crimson/25" title={`${!item.asset ? 'Arquivo não encontrado no acervo' : item.asset.probeError ? `Arquivo com problema: ${item.asset.probeError}` : item.asset.ignored ? 'Arquivo ignorado no QC' : 'Arquivo ainda não aprovado no QC'}. Clique para abrir o QC.`}>{!item.asset || item.asset.probeError ? 'SEM ARQUIVO' : item.asset.ignored ? 'IGNORADO' : 'QC PENDENTE'}</button>
+                                    <button type="button" onClick={(event) => { event.stopPropagation(); onNavigate('qc') }} className="px-2 py-0.5 rounded t-status text-on-air-crimson bg-on-air-crimson/10 hover:bg-on-air-crimson/25" title={`${!item.asset ? 'Arquivo não encontrado no acervo' : item.asset.probeError ? `Arquivo com problema: ${item.asset.probeError}` : item.asset.ignored ? 'Arquivo ignorado no QC' : 'Arquivo ainda não aprovado no QC'}. Clique para abrir o QC.`}>{!item.asset || item.asset.probeError ? 'SEM ARQUIVO' : item.asset.ignored ? 'IGNORADO' : 'QC PENDENTE'}</button>
                                   ) : isItemPrepared ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-ok/20 text-status-ok-bright font-label-caps text-[11px] font-bold">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-ok/20 text-status-ok-bright font-label-caps t-status">
                                       PRÓXIMO
                                     </span>
                                   ) : isAired ? (
-                                    <span className="px-2 py-0.5 rounded font-label-caps text-[11px] text-outline bg-surface-container">
+                                    <span className="px-2 py-0.5 rounded font-label-caps t-status text-outline bg-surface-container">
                                       EXIBIDO
                                     </span>
                                   ) : (
-                                    <span className="px-2 py-0.5 rounded font-label-caps text-[11px] text-status-ok-bright bg-surface-container font-semibold">
+                                    <span className="px-2 py-0.5 rounded font-label-caps t-status text-status-ok-bright bg-surface-container">
                                       AGENDADO
                                     </span>
                                   )}
                                 </td>
 
-                                <td className={`py-1.5 px-3 tabular-nums text-[14px] ${
+                                <td className={`py-1.5 px-3 t-time ${
                                   isItemOnAir ? 'text-on-surface font-bold' : isItemCued ? 'text-armed-amber font-bold' : 'text-on-surface-variant'
                                 }`}>
                                   {scheduleMap.get(item.item.id)?.start != null
@@ -1617,7 +1624,7 @@ export function MasterControlView({
                                     : '--:--:--:--'}
                                 </td>
 
-                                <td className={`py-1.5 px-3 tabular-nums text-[14px] ${
+                                <td className={`py-1.5 px-3 t-time ${
                                   isItemOnAir ? 'text-on-air-crimson font-bold' : isItemCued ? 'text-on-surface' : 'text-on-surface-variant'
                                 }`}>
                                   {dur(durationFrames, rate)}
@@ -1742,13 +1749,13 @@ export function MasterControlView({
                                 </td>
 
                                 <td className="py-1 px-4 text-right">
-                                  <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation()
                                         handleOpenEditLine(item)
                                       }}
-                                      className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
+                                      className="hit-icon rounded hover:bg-surface-container text-outline hover:text-on-surface"
                                       title="Editar horário e compensação do item"
                                     >
                                       <span className="material-symbols-outlined text-[15px]">tune</span>
@@ -1758,7 +1765,7 @@ export function MasterControlView({
                                         e.stopPropagation()
                                         onOpenTrim(item)
                                       }}
-                                      className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
+                                      className="hit-icon rounded hover:bg-surface-container text-outline hover:text-on-surface"
                                       title="Ajustar Trim (IN / OUT)"
                                     >
                                       <span className="material-symbols-outlined text-[15px]">content_cut</span>
@@ -1768,7 +1775,7 @@ export function MasterControlView({
                                         e.stopPropagation()
                                         onOpenAudio(item)
                                       }}
-                                      className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
+                                      className="hit-icon rounded hover:bg-surface-container text-outline hover:text-on-surface"
                                       title="Ajustar Canais de Áudio"
                                     >
                                       <span className="material-symbols-outlined text-[15px]">volume_up</span>
@@ -1778,7 +1785,7 @@ export function MasterControlView({
                                         e.stopPropagation()
                                         onOpenGraphics(item)
                                       }}
-                                      className="p-1 rounded hover:bg-surface-container text-outline hover:text-on-surface"
+                                      className="hit-icon rounded hover:bg-surface-container text-outline hover:text-on-surface"
                                       title="GCs e Vinhetas"
                                     >
                                       <span className="material-symbols-outlined text-[15px]">layers</span>
@@ -1788,7 +1795,7 @@ export function MasterControlView({
                                         e.stopPropagation()
                                         onRemoveItem(item.item.id)
                                       }}
-                                      className="p-1 rounded hover:bg-error-container text-outline hover:text-on-error-container"
+                                      className="hit-icon rounded hover:bg-error-container text-outline hover:text-on-error-container"
                                       title="Remover linha"
                                     >
                                       <span className="material-symbols-outlined text-[15px]">delete</span>

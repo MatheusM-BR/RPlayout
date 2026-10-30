@@ -221,7 +221,7 @@ export function EngineeringDistributionView({
                     UTILIZAÇÃO DA GPU
                   </span>
                   <span className="font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
-                    {percent(hostMetrics?.gpu.utilizationPercent ?? null)}
+                    {hostMetrics ? percent(hostMetrics.gpu.utilizationPercent) : 'Carregando…'}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mb-1">
@@ -247,7 +247,7 @@ export function EngineeringDistributionView({
                     HOST CPU
                   </span>
                   <span className="font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
-                    {percent(hostMetrics?.cpu.percent ?? null)}
+                    {hostMetrics ? percent(hostMetrics.cpu.percent) : 'Carregando…'}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mb-1">
@@ -269,7 +269,7 @@ export function EngineeringDistributionView({
                     MEMÓRIA RAM
                   </span>
                   <span className="font-label-mono text-[12px] text-accent-ice font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
-                    {percent(hostMetrics?.memory.percent ?? null)}
+                    {hostMetrics ? percent(hostMetrics.memory.percent) : 'Carregando…'}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between mb-1">
@@ -384,7 +384,7 @@ export function EngineeringDistributionView({
               {monitorLoadError && <div role="alert" className="shrink-0 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 font-label-mono text-[12px] text-on-air-crimson">Monitor sem dados: {monitorLoadError}</div>}
               {/* A visão integrada cabe integralmente no viewport operacional.
                   Detalhes extensos seguem nas abas SRT e Redundância. */}
-              <OutputsSummary sample={hostMetrics} channelId={channel.id} profiles={outputs} />
+              {monitorLoaded ? <OutputsSummary sample={hostMetrics} channelId={channel.id} profiles={outputs} /> : <div role="status" className="t-data text-outline animate-pulse motion-reduce:animate-none">Carregando saídas…</div>}
               <div className="flex-1 min-h-0">
                 <OperationalMultiview
                   sources={multiviewSources}
@@ -449,11 +449,13 @@ export function EngineeringDistributionView({
                   </h2>
                 </div>
                 <span className="font-label-mono text-[12px] text-status-ok bg-status-ok/10 border border-status-ok/30 px-2 py-0.5 rounded font-bold">
-                  {outputs.filter((output) => output.enabled).length} SAÍDAS CONFIGURADAS
+                  {monitorLoaded ? `${outputs.filter((output) => output.enabled).length} SAÍDAS CONFIGURADAS` : 'Carregando saídas…'}
                 </span>
               </div>
 
-              {outputs.length === 0 ? (
+              {!monitorLoaded ? (
+                <p role="status" className="font-label-mono text-[12px] text-outline animate-pulse motion-reduce:animate-none">{monitorLoadError ? 'Saídas indisponíveis: a consulta falhou.' : 'Carregando saídas…'}</p>
+              ) : outputs.length === 0 ? (
                 <p className="font-label-mono text-[12px] text-outline">Nenhuma saída cadastrada para este canal. Configure em Configurações → Saídas.</p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">

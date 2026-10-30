@@ -397,7 +397,7 @@ export function Explorer({
                 <div className="ignored-row" key={asset.id}>
                   <span className="name">{asset.title}</span>
                   <span className="sub">{asset.probe?.hasAudio === false ? 'mudo' : asset.probe ? `${asset.probe.width}×${asset.probe.height}` : 'sem imagem'}</span>
-                  <button className="btn small" onClick={() => { void Promise.resolve(onAccept(asset.id)).catch(() => {}) }} title="Aceitar este arquivo no acervo ativo">ACEITAR</button>
+                  <button className="btn small" onClick={() => { void Promise.resolve(onAccept(asset.id)).catch(() => {}) }} title="Aprovar este arquivo no QC e devolvê-lo ao acervo ativo">APROVAR</button>
                 </div>
               ))}
             </div>
