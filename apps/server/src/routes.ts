@@ -617,6 +617,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   sharedReads.add('/api/channels/archived')
   sharedReads.add('/api/categories/:id/review')
   sharedReads.add('/api/scheduler/status') // Its collection is filtered per authorized channel.
+  sharedReads.add('/api/clock') // Estado do relógio do servidor; sem dados de canal.
   sharedReads.add('/api/health-events') // Visibility is enforced before the query limit.
   sharedReads.add('/api/health-events.csv')
   sharedReads.add('/api/distribution/execution-ownership') // Generic status only, no paths/process IDs.
@@ -966,6 +967,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     mediamtx: app.mediamtx ? (app.mediamtx.running ? 'running' : 'stopped') : 'disabled',
     checkedAt: new Date().toISOString(),
   }))
+  server.get('/api/clock', async (_request, reply) => {
+    reply.header('Cache-Control', 'private, no-store')
+    return app.clockMonitor.status()
+  })
   server.get('/api/n1/status', async () => probeN1Peer(N1_PEER_URL || null, EXTERNAL_CONTROL_TOKEN))
   server.get('/api/ha/status',async(request,reply)=>{
     if(!(await allowed(request,'OUTPUT_CONTROL')))return reply.code(403).send({error:'Sem permissão para consultar redundância.'})

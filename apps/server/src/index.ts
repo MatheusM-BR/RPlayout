@@ -269,6 +269,15 @@ async function main(): Promise<void> {
       }
     }catch(error){server.log.warn(`Selagem da auditoria falhou: ${error instanceof Error?error.message:String(error)}`)}
   },()=>!isRecoveryRehearsal(app.sqlite))
+  // Relógio do servidor contra NTP: primeira rodada ~20 s após o início e depois
+  // a cada 10 min; o salto do relógio local é conferido a cada poucos segundos
+  // (sem rede). Tudo em segundo plano, nunca no caminho do PGM.
+  const clockSettings=app.clockMonitor.settings
+  const clockRound=()=>void background.run('clock-monitor',()=>app.clockMonitor.round(),()=>!isRecoveryRehearsal(app.sqlite))
+  const clockJump=()=>void background.run('clock-jump',()=>{app.clockMonitor.checkJump()},()=>!isRecoveryRehearsal(app.sqlite))
+  const clockTimer=setInterval(clockRound,clockSettings.intervalMs)
+  const clockStartTimer=setTimeout(clockRound,clockSettings.initialDelayMs)
+  const clockJumpTimer=setInterval(clockJump,clockSettings.jumpCheckMs)
   const sealTimer=setInterval(sealAndCheck,10*60*1000)
   const sealStartTimer=setTimeout(sealAndCheck,30*1000)
 
@@ -465,6 +474,7 @@ async function main(): Promise<void> {
     clearInterval(distributionTimer)
     if (backupTimer) clearInterval(backupTimer)
     clearInterval(sealTimer);clearTimeout(sealStartTimer)
+    clearInterval(clockTimer);clearTimeout(clockStartTimer);clearInterval(clockJumpTimer);app.clockMonitor.close()
     if (backupStartTimer) clearTimeout(backupStartTimer)
     clearInterval(retentionTimer)
     clearInterval(sessionExpiryTimer)

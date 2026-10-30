@@ -198,6 +198,16 @@ export interface AlignmentReview { reviewToken: string; sourceRevisionId: string
 export interface ChannelMirror { targetChannelId: string; sourceChannelId: string; createdBy: string | null; createdAt: string; lastSyncAt: string | null; lastSyncError: string | null; unlockedBy?: string | null; unlockedAt?: string | null; unlockReason?: string | null; unlockExpiresAt?: string | null }
 export interface MirrorResult { channelId: string; ok: boolean; loaded?: boolean; rundownId?: string; items?: number; skippedGraphics?: number; unboundLive?: number; error?: string }
 
+export interface ClockStatusView {
+  checkedAt: string | null
+  state: 'OK' | 'WARN' | 'CRITICAL' | 'UNVERIFIED'
+  offsetMs: number | null
+  rttMs: number | null
+  servers: Array<{ host: string; offsetMs: number | null; rttMs: number | null; stratum: number | null; ok: boolean }>
+  platform: { platform: string; source: string | null; lastSuccessfulSync: string | null; serviceRunning: boolean | null; synchronized: boolean | null; error: string | null } | null
+  thresholds: { warnMs: number; criticalMs: number; unverifiedRounds: number; jumpMs: number }
+  reason: string
+}
 export interface HostMetricSample {
   operations?:OperationalMetricFrame
   generatedAt: string
@@ -547,6 +557,7 @@ export const api = {
     }>('/api/processes',{signal}),
   storageStatus: () => send<{mode:'PROCESS'|'INLINE';connected:boolean;backendPid:number;storagePid:number;automaticReconnect:false;automaticReplay:false;latency:{calls:number;lastMs:number;maxMs:number;meanMs:number}|null;validation:'PENDING'}>('/api/engineering/storage'),
   hostMetrics:(signal?:AbortSignal)=>send<HostMetricSample>('/api/host-metrics',{signal}),
+  clock:(signal?:AbortSignal)=>send<ClockStatusView>('/api/clock',{signal}),
   hostMetricHistory:(hours=1,limit=120,page?:{until:string;before:string},signal?:AbortSignal)=>send<HostMetricHistory>(`/api/host-metrics/history?hours=${hours}&limit=${limit}${page?`&until=${encodeURIComponent(page.until)}&before=${encodeURIComponent(page.before)}`:''}`,{signal}),
   operationalMetricHistory:(channelId:string,hours=1,limit=120,page?:{until:string;before:string},signal?:AbortSignal)=>send<OperationalMetricHistory>(`/api/channels/${encodeURIComponent(channelId)}/operational-metrics/history?hours=${hours}&limit=${limit}${page?`&until=${encodeURIComponent(page.until)}&before=${encodeURIComponent(page.before)}`:''}`,{signal}),
   externalAutomationAudit: () => send<{

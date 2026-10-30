@@ -1,3 +1,4 @@
+import { ClockMonitor, clockConfigFromEnv } from './domain/clock-monitor.js'
 import { and, eq } from 'drizzle-orm'
 import { randomUUID,createHash } from 'node:crypto'
 import {captureGraphicDisplay} from './domain/graphic-composition.js'
@@ -1606,6 +1607,8 @@ export interface App {
   readonly publishedContinuity:PublishedContinuity
   readonly schedulePublication:SchedulePublication
   readonly hostMetrics: HostMetrics
+  /** Relógio do servidor contra NTP (SNTP); só mede e avisa. */
+  readonly clockMonitor: ClockMonitor
   readonly integrationOutbox: IntegrationOutbox
   /** Fecha o que precisa de escrita antes de o processo sair. */
   flush(): Promise<void>
@@ -1688,6 +1691,7 @@ export async function createApp(file: string,options:{restoredAdmission?:Restore
     publishedContinuity:new PublishedContinuity({db,runtimes}),
     schedulePublication:new SchedulePublication(db,schedulePlannerBinary(),(id,hash,path)=>mediaWorkflow.inspectionOriginal(id,hash,path)),
     hostMetrics: new HostMetrics(sqlite, MEDIA_ROOT),
+    clockMonitor: new ClockMonitor(db, clockConfigFromEnv(), { log: message => console.warn(message) }),
     integrationOutbox: new IntegrationOutbox(db),
     sources: new Sources(db, DEVICES_BINARY),
     mediaRoot: MEDIA_ROOT,
@@ -1766,6 +1770,7 @@ export async function createApp(file: string,options:{restoredAdmission?:Restore
       collect(()=>app.schedulePublication.close())
       collect(()=>app.audioMixAnalysis.close())
       collect(()=>app.hostMetrics.close())
+      collect(()=>app.clockMonitor.close())
       collect(()=>app.integrationOutbox.close())
       collect(()=>app.integrationOutbox.settled())
       collect(()=>app.ingest.close())

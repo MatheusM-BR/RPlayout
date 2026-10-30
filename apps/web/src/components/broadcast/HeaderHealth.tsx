@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type HostMetricSample } from '../../api.js'
+import { api, type ClockStatusView, type HostMetricSample } from '../../api.js'
 
 type Level = 'ok' | 'warn' | 'bad' | 'unknown'
 interface Tag { label: string; value: string; level: Level; title: string }
@@ -9,6 +9,19 @@ const text: Record<Level, string> = { ok: 'text-status-ok-bright', warn: 'text-a
 
 /** Saúde real no cabeçalho (antes eram selos fixos "CONFIG."): engine, saídas,
  * disco e alertas pendentes, lidos do servidor a cada 10 s. */
+/** Relógio do servidor contra NTP (SNTP). Não verificado é atenção, não falha:
+ * a rede de ar pode bloquear UDP 123. */
+export function clockTag(clock: ClockStatusView | null | undefined): Tag {
+  if (!clock) return { label: 'RELÓGIO', value: 'N/D', level: 'unknown', title: 'Sem leitura do relógio do servidor.' }
+  const when = clock.checkedAt ? new Date(clock.checkedAt).toLocaleTimeString() : 'nunca'
+  const offset = clock.offsetMs == null ? 'sem medida' : `${clock.offsetMs > 0 ? '+' : ''}${clock.offsetMs} ms`
+  const title = `Desvio do servidor: ${offset} · última checagem: ${when}\n${clock.reason}`
+  if (clock.state === 'OK') return { label: 'RELÓGIO', value: 'OK', level: 'ok', title }
+  if (clock.state === 'CRITICAL') return { label: 'RELÓGIO', value: 'CRÍTICO', level: 'bad', title }
+  if (clock.state === 'WARN') return { label: 'RELÓGIO', value: 'AVISO', level: 'warn', title }
+  return { label: 'RELÓGIO', value: clock.checkedAt ? 'N/VERIF.' : 'AGUARDE', level: clock.checkedAt ? 'warn' : 'unknown', title }
+}
+
 export function headerHealthTags(sample: HostMetricSample | null, channelId: string, pending: { critical: number; warn: number } | null): Tag[] {
   const channel = sample?.operations?.channels.find(entry => entry.channelId === channelId)
   const engine: Tag = !channel ? { label: 'ENGINE', value: 'N/D', level: 'unknown', title: 'Sem leitura do engine.' }
@@ -30,17 +43,19 @@ export function headerHealthTags(sample: HostMetricSample | null, channelId: str
 export function HeaderHealth({ channelId, onClick }: { channelId: string; onClick?: () => void }) {
   const [sample, setSample] = useState<HostMetricSample | null>(null)
   const [pending, setPending] = useState<{ critical: number; warn: number } | null>(null)
+  const [clock, setClock] = useState<ClockStatusView | null>(null)
   useEffect(() => {
     let alive = true
     const read = () => {
       void api.hostMetrics().then(value => { if (alive) setSample(value) }).catch(() => { if (alive) setSample(null) })
+      void api.clock().then(value => { if (alive) setClock(value) }).catch(() => { if (alive) setClock(null) })
       void api.healthEvents(channelId, { acknowledgement: 'PENDING' }).then(value => { if (alive) setPending(value.pending) }).catch(() => { if (alive) setPending(null) })
     }
     read()
     const timer = window.setInterval(read, 10_000)
     return () => { alive = false; window.clearInterval(timer) }
   }, [channelId])
-  const tags = headerHealthTags(sample, channelId, pending)
+  const tags = [...headerHealthTags(sample, channelId, pending), clockTag(clock)]
   const rank: Record<Level, number> = { ok: 0, unknown: 1, warn: 2, bad: 3 }
   const worst = tags.reduce<Level>((level, tag) => rank[tag.level] > rank[level] ? tag.level : level, 'ok')
   const worstLabel = worst === 'ok' ? 'OK' : worst === 'bad' ? 'FALHA' : worst === 'warn' ? 'ATENÇÃO' : 'N/D'

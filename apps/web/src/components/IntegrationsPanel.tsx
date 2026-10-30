@@ -156,6 +156,8 @@ const EVENT_GROUPS: Array<{ title: string; events: Array<{ id: string; label: st
     { id: 'output.retrying', label: 'Saída reconectando', common: true },
     { id: 'host.degraded', label: 'Servidor degradado' },
     { id: 'host.running', label: 'Servidor voltou' },
+    { id: 'clock.drift', label: 'Relógio do servidor fora do NTP / não verificado / saltou', common: true },
+    { id: 'clock.recovered', label: 'Relógio do servidor normalizado' },
   ] },
   { title: 'Fontes ao vivo', events: [
     { id: 'source.lost', label: 'Fonte perdida', common: true },
