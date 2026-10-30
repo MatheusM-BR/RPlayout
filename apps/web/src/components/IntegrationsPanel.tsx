@@ -140,6 +140,7 @@ const EVENT_GROUPS: Array<{ title: string; events: Array<{ id: string; label: st
   { title: 'Alertas', events: [
     { id: 'alert.critical', label: 'Incidente crítico novo', common: true },
     { id: 'alert.reminder', label: 'Lembrete: crítico sem ciente (2 em 2 min)', common: true },
+    { id: 'alert.escalated', label: 'Escalado: PGM sem ciente sobe para supervisor/gestor', common: true },
     { id: 'alert.warning', label: 'Aviso (inclui CPU alta em builds; ruidoso)' },
   ] },
   { title: 'Sinal do PGM', events: [
