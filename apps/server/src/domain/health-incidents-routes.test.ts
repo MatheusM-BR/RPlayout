@@ -57,6 +57,8 @@ it('pendências: sem sessão 401, canal negado 403, canal permitido lista com n�
   const old = new Date(Date.now() - 3 * 60_000).toISOString()
   for (const [id, channelId] of [['pgm-signal:a1:active', 'a'], ['pgm-signal:b1:active', 'b']] as const)
     app.db.insert(healthEvents).values({ id, channelId, component: 'SIGNAL', state: 'black', severity: 'CRITICAL', occurredAt: old }).run()
+  // Incidente de execução anterior (observação encerrada por reinício): fica no painel, não na caixa de escalonamento.
+  app.db.insert(healthEvents).values({ id: 'pgm-signal:a0:active', channelId: 'a', component: 'SIGNAL', state: 'silence', severity: 'CRITICAL', occurredAt: old, observationEndedAt: old }).run()
   expect((await server.inject({ url: '/api/notifications' })).statusCode).toBe(401)
   expect((await server.inject({ url: '/api/notifications?channelId=b', headers })).statusCode).toBe(403)
   for (const url of ['/api/notifications?channelId=a', '/api/notifications']) {

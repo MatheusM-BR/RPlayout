@@ -9,14 +9,16 @@ export interface OpenNotification {
   occurredAt: string; minutesOpen: number; tier: EscalationTier; forMe: boolean
 }
 
-/** Quedas de sinal do PGM ainda abertas (sem ciente e sem recuperação), com o
+/** Quedas de sinal do PGM ainda abertas (sem ciente e sem recuperação) e ainda
+ * sob observação (um incidente de execução anterior, com a observação encerrada
+ * por reinício, fica no painel de incidentes e não escala), com o
  * nível de escalonamento atual. O escopo de canal é aplicado antes do limite. */
 export function readOpenNotifications(db: Db, channelIds: string[] | null, channelId: string | undefined, role: AccessRole, nowMs = Date.now(), limit = 50): OpenNotification[] {
   if (channelId && channelIds !== null && !channelIds.includes(channelId)) throw new IncidentError(403, 'Sem acesso aos incidentes deste canal.')
   if (channelIds?.length === 0) return []
   const scope = channelId ? eq(healthEvents.channelId, channelId) : channelIds !== null ? inArray(healthEvents.channelId, channelIds) : undefined
   const rows = db.select().from(healthEvents).where(and(scope, eq(healthEvents.component, 'SIGNAL'), eq(healthEvents.severity, 'CRITICAL'),
-    inArray(healthEvents.state, ['black', 'freeze', 'silence']), isNull(healthEvents.acknowledgedAt), isNull(healthEvents.resolvedAt)))
+    inArray(healthEvents.state, ['black', 'freeze', 'silence']), isNull(healthEvents.acknowledgedAt), isNull(healthEvents.resolvedAt), isNull(healthEvents.observationEndedAt)))
     .orderBy(desc(healthEvents.occurredAt), desc(healthEvents.id)).limit(Math.min(100, Math.max(1, limit))).all()
   const out: OpenNotification[] = []
   for (const row of rows) {

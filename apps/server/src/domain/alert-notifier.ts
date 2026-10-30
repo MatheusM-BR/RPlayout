@@ -51,7 +51,7 @@ export class AlertNotifier {
   private async seed(): Promise<void> {
     try {
       const open = await this.db.select().from(healthEvents)
-        .where(and(eq(healthEvents.severity, 'CRITICAL'), eq(healthEvents.component, 'SIGNAL'), isNull(healthEvents.acknowledgedAt), isNull(healthEvents.resolvedAt)))
+        .where(and(eq(healthEvents.severity, 'CRITICAL'), eq(healthEvents.component, 'SIGNAL'), isNull(healthEvents.acknowledgedAt), isNull(healthEvents.resolvedAt), isNull(healthEvents.observationEndedAt)))
         .orderBy(desc(healthEvents.occurredAt)).limit(SEED_LIMIT)
       for (const row of open) {
         const tier = escalationTier(row.component, row.state, row.severity, Date.parse(row.occurredAt), this.now())
@@ -103,7 +103,7 @@ export class AlertNotifier {
     if (!this.escalations.size) return 0
     const ids = [...new Set([...this.escalations.values()].map(entry => entry.id))]
     const open = await this.db.select().from(healthEvents)
-      .where(and(inArray(healthEvents.id, ids), isNull(healthEvents.acknowledgedAt), isNull(healthEvents.resolvedAt)))
+      .where(and(inArray(healthEvents.id, ids), isNull(healthEvents.acknowledgedAt), isNull(healthEvents.resolvedAt), isNull(healthEvents.observationEndedAt)))
     const live = new Set(open.map(keyOf))
     for (const key of [...this.escalations.keys()]) if (!live.has(key)) this.escalations.delete(key)
     let sent = 0
