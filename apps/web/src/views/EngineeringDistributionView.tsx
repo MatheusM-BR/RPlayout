@@ -93,6 +93,14 @@ export function EngineeringDistributionView({
   const engineProcess = processes.find((process) => process.kind === 'ENGINE' && process.channelId === channel.id)
   const engineSimulated = engineProcess?.details?.transport === 'SIMULATED'
   const engineAlert = Boolean(live?.alerts.some((alert) => alert.kind === 'ENGINE')) || engineProcess?.state === 'error'
+  // Legendas dos cartões de métrica: texto único para exibir e para o tooltip,
+  // porque em 1366px o cartão é estreito e a legenda é truncada com reticências.
+  const gpuCaption = gpu?.memoryUsedMiB !== null && gpu?.memoryUsedMiB !== undefined && gpu?.memoryTotalMiB !== null && gpu?.memoryTotalMiB !== undefined
+    ? `VRAM ${gpu.memoryUsedMiB}/${gpu.memoryTotalMiB} MiB${gpu.temperatureC === null ? '' : ` • ${gpu.temperatureC}°C`}`
+    : gpu?.error ?? 'Aguardando coleta'
+  const cpuCaption = hostMetrics ? `${hostMetrics.cpu.cores} núcleos • coleta a cada ${hostMetrics.sampleIntervalSeconds} s` : 'Aguardando coleta'
+  const ramCaption = hostMetrics ? `${gib(hostMetrics.memory.freeBytes)} livre / ${gib(hostMetrics.memory.totalBytes)}` : 'Aguardando coleta'
+  const engineCaption = engineSimulated ? 'Transporte simulado • sem saída física' : engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : monitorLoaded ? 'Engine não iniciado' : 'Consultando…'
 
   const multiviewSources: MultiviewSourceItem[] = liveSources.map(source=>liveSourceMonitor(source,live,monitors,source.kind==='SRT'?srtTelemetry[source.id]:undefined,Date.now(),channel.qcProfile?.liveSignalPolicy))
   const srtLinks: SrtLinkItem[] = liveSources
@@ -214,25 +222,21 @@ export function EngineeringDistributionView({
             {/* 4 Cards de Métricas Principais */}
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2.5 flex-1 min-w-0">
               {/* Card 1: GPU NVENC */}
-              <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-accent-ice text-[15px]">memory</span>
-                    UTILIZAÇÃO DA GPU
+              <div className="min-w-0 bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
+                <div className="flex items-center justify-between gap-2 mb-1 min-w-0">
+                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5 min-w-0">
+                    <span className="shrink-0 material-symbols-outlined text-accent-ice text-[15px]">memory</span>
+                    <span className="min-w-0 leading-tight" title="UTILIZAÇÃO DA GPU">UTILIZAÇÃO DA GPU</span>
                   </span>
-                  <span className="font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
+                  <span className="shrink-0 whitespace-nowrap font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
                     {hostMetrics ? percent(hostMetrics.gpu.utilizationPercent) : 'Carregando…'}
                   </span>
                 </div>
-                <div className="flex items-baseline justify-between mb-1">
-                  <div className="font-timecode-display text-[20px] font-bold text-accent-ice-bright tracking-tight leading-none">
+                <div className="flex items-baseline justify-between gap-2 mb-1 min-w-0">
+                  <div className="shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold text-accent-ice-bright tracking-tight leading-none">
                     {hostMetrics?.gpu.utilizationPercent === null || !hostMetrics ? '—' : percent(hostMetrics.gpu.utilizationPercent)}
                   </div>
-                  <span className="font-label-mono text-[12px] text-on-surface-variant font-medium">
-                    {gpu?.memoryUsedMiB !== null && gpu?.memoryUsedMiB !== undefined && gpu?.memoryTotalMiB !== null && gpu?.memoryTotalMiB !== undefined
-                      ? `VRAM ${gpu.memoryUsedMiB}/${gpu.memoryTotalMiB} MiB${gpu.temperatureC === null ? '' : ` • ${gpu.temperatureC}°C`}`
-                      : gpu?.error ?? 'Aguardando coleta'}
-                  </span>
+                  <span title={gpuCaption} className="min-w-0 truncate text-right font-label-mono text-[12px] text-on-surface-variant font-medium">{gpuCaption}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className="bg-accent-ice h-full rounded-full" style={{ width: `${hostMetrics?.gpu.utilizationPercent ?? 0}%` }}></div>
@@ -240,21 +244,21 @@ export function EngineeringDistributionView({
               </div>
 
               {/* Card 2: HOST CPU */}
-              <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-status-ok text-[15px]">developer_board</span>
-                    HOST CPU
+              <div className="min-w-0 bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
+                <div className="flex items-center justify-between gap-2 mb-1 min-w-0">
+                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5 min-w-0">
+                    <span className="shrink-0 material-symbols-outlined text-status-ok text-[15px]">developer_board</span>
+                    <span className="min-w-0 leading-tight" title="HOST CPU">HOST CPU</span>
                   </span>
-                  <span className="font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
+                  <span className="shrink-0 whitespace-nowrap font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
                     {hostMetrics ? percent(hostMetrics.cpu.percent) : 'Carregando…'}
                   </span>
                 </div>
-                <div className="flex items-baseline justify-between mb-1">
-                  <div className="font-timecode-display text-[20px] font-bold text-status-ok-bright tracking-tight leading-none">
+                <div className="flex items-baseline justify-between gap-2 mb-1 min-w-0">
+                  <div className="shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold text-status-ok-bright tracking-tight leading-none">
                     {hostMetrics?.cpu.percent === null || !hostMetrics ? '—' : percent(hostMetrics.cpu.percent)}
                   </div>
-                  <span className="font-label-mono text-[12px] text-on-surface-variant font-medium">{hostMetrics ? `${hostMetrics.cpu.cores} núcleos • coleta a cada ${hostMetrics.sampleIntervalSeconds} s` : 'Aguardando coleta'}</span>
+                  <span title={cpuCaption} className="min-w-0 truncate text-right font-label-mono text-[12px] text-on-surface-variant font-medium">{cpuCaption}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className="bg-status-ok h-full rounded-full" style={{ width: `${hostMetrics?.cpu.percent ?? 0}%` }}></div>
@@ -262,21 +266,21 @@ export function EngineeringDistributionView({
               </div>
 
               {/* Card 3: MEMÓRIA RAM */}
-              <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-armed-amber text-[15px]">storage</span>
-                    MEMÓRIA RAM
+              <div className="min-w-0 bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
+                <div className="flex items-center justify-between gap-2 mb-1 min-w-0">
+                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5 min-w-0">
+                    <span className="shrink-0 material-symbols-outlined text-armed-amber text-[15px]">storage</span>
+                    <span className="min-w-0 leading-tight" title="MEMÓRIA RAM">MEMÓRIA RAM</span>
                   </span>
-                  <span className="font-label-mono text-[12px] text-accent-ice font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
+                  <span className="shrink-0 whitespace-nowrap font-label-mono text-[12px] text-accent-ice font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
                     {hostMetrics ? percent(hostMetrics.memory.percent) : 'Carregando…'}
                   </span>
                 </div>
-                <div className="flex items-baseline justify-between mb-1">
-                  <div className="font-timecode-display text-[20px] font-bold text-on-surface tracking-tight leading-none">
+                <div className="flex items-baseline justify-between gap-2 mb-1 min-w-0">
+                  <div className="shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold text-on-surface tracking-tight leading-none">
                     {hostMetrics ? gib(hostMetrics.memory.usedBytes) : '—'}
                   </div>
-                  <span className="font-label-mono text-[12px] text-on-surface-variant font-medium">{hostMetrics ? `${gib(hostMetrics.memory.freeBytes)} livre / ${gib(hostMetrics.memory.totalBytes)}` : 'Aguardando coleta'}</span>
+                  <span title={ramCaption} className="min-w-0 truncate text-right font-label-mono text-[12px] text-on-surface-variant font-medium">{ramCaption}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className="bg-armed-amber h-full rounded-full" style={{ width: `${hostMetrics?.memory.percent ?? 0}%` }}></div>
@@ -284,21 +288,21 @@ export function EngineeringDistributionView({
               </div>
 
               {/* Card 4: processo do engine. Jitter pertence à telemetria do link, não ao PID. */}
-              <div className="bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-status-ok-bright text-[15px]">speed</span>
-                    ENGINE &amp; PROCESSO
+              <div className="min-w-0 bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
+                <div className="flex items-center justify-between gap-2 mb-1 min-w-0">
+                  <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5 min-w-0">
+                    <span className="shrink-0 material-symbols-outlined text-status-ok-bright text-[15px]">speed</span>
+                    <span className="min-w-0 leading-tight" title="ENGINE & PROCESSO">ENGINE &amp; PROCESSO</span>
                   </span>
-                  <span className={`font-label-caps text-[11px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
+                  <span className={`shrink-0 whitespace-nowrap font-label-caps text-[11px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok animate-pulse'}`}></span>{engineAlert ? 'ALERTA' : engineSimulated ? 'SIMULADO' : engineProcess?.state === 'running' ? 'ATIVO' : monitorLoaded ? 'SEM ALERTA' : '—'}
                   </span>
                 </div>
-                <div className="flex items-baseline justify-between mb-1">
-                  <div className="font-timecode-display text-[20px] font-bold text-status-ok tracking-tight leading-none">
+                <div className="flex items-baseline justify-between gap-2 mb-1 min-w-0">
+                  <div className="shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold text-status-ok tracking-tight leading-none">
                     {engineProcess?.pid ? `PID ${engineProcess.pid}` : '—'}
                   </div>
-                  <span className="font-label-mono text-[12px] text-on-surface-variant font-medium">{engineSimulated ? 'Transporte simulado • sem saída física' : engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : monitorLoaded ? 'Engine não iniciado' : 'Consultando…'}</span>
+                  <span title={engineCaption} className="min-w-0 truncate text-right font-label-mono text-[12px] text-on-surface-variant font-medium">{engineCaption}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
                   <div className={`${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok'} h-full rounded-full`} style={{ width: engineProcess?.state === 'running' ? '100%' : engineProcess ? '45%' : '0%' }}></div>

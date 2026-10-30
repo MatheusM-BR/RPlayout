@@ -2030,3 +2030,6 @@ button.status-card { color: var(--text); text-align: left; cursor: pointer; }
 .hit-row { min-height: 36px; }
 .hit-btn { min-height: 32px; min-width: 32px; }
 .hit-icon { min-height: 32px; min-width: 32px; display: inline-flex; align-items: center; justify-content: center; }
+
+/* Chip de filtro: quebra de linha em vez de estouro (viewport 1366x768); o texto nunca parte em duas linhas. */
+.hit-chip { min-height: 24px; display: inline-flex; align-items: center; white-space: nowrap; }

@@ -1202,8 +1202,8 @@ function QualityControlSession({
               </div>
 
               {/* Botões de Filtro de Status */}
-              <div className="flex items-center justify-between gap-1">
-                <div className="flex items-center gap-1 font-label-caps text-[11px]">
+              <div className="flex flex-wrap items-center justify-between gap-1">
+                <div className="flex flex-wrap items-center gap-1 font-label-caps text-[11px]">
                   {(['ALL', 'OK', 'PENDING', 'ALERT', 'IGNORED'] as const).map((filter) => (
                     <button
                       key={filter}
@@ -1211,7 +1211,7 @@ function QualityControlSession({
                         setSelectedLiveSourceId(null)
                         setStatusFilter(filter)
                       }}
-                      className={`px-2 py-0.5 rounded cursor-pointer transition-colors border ${
+                      className={`px-2 py-0.5 hit-chip whitespace-nowrap rounded cursor-pointer transition-colors border ${
                         statusFilter === filter
                           ? 'bg-primary text-on-primary font-bold border-primary'
                           : 'bg-surface-base text-outline border-border-subtle hover:text-on-surface'
@@ -1232,7 +1232,7 @@ function QualityControlSession({
                           setQcStatusFeedback('Nenhuma entrada ao vivo cadastrada neste canal.')
                         }
                     }}
-                    className={`px-2 py-0.5 rounded cursor-pointer transition-colors border ${
+                    className={`px-2 py-0.5 hit-chip whitespace-nowrap rounded cursor-pointer transition-colors border ${
                       selectedLiveSourceId
                         ? 'bg-accent-ice text-surface-base font-bold border-accent-ice'
                         : 'bg-surface-base text-outline border-border-subtle hover:text-on-surface'
@@ -1243,7 +1243,7 @@ function QualityControlSession({
                   </button>
                 </div>
 
-                <div className="flex items-center gap-1 font-label-caps text-[11px]">
+                <div className="flex flex-wrap items-center gap-1 font-label-caps text-[11px]">
                   {(['ALL', 'VIDEO', 'AUDIO'] as const).map((cat) => (
                     <button
                       key={cat}
@@ -1251,7 +1251,7 @@ function QualityControlSession({
                         setSelectedLiveSourceId(null)
                         setCategoryFilter(cat)
                       }}
-                      className={`px-2 py-0.5 rounded cursor-pointer transition-colors border ${
+                      className={`px-2 py-0.5 hit-chip whitespace-nowrap rounded cursor-pointer transition-colors border ${
                         categoryFilter === cat
                           ? 'bg-accent-ice text-surface-base font-bold border-accent-ice'
                           : 'bg-surface-base text-outline border-border-subtle hover:text-on-surface'
