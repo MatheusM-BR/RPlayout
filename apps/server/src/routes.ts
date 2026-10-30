@@ -25,6 +25,7 @@ import {Checkpoints,stoppedCheckpoint} from './domain/checkpoints.js'
 import type {ConfigurationLease} from './domain/configuration-changes.js'
 import {applyCollaborativeEdit,CollaborativeEditError} from './domain/collaborative-edit.js'
 import {readAudit} from './domain/audit.js'
+import {sealAudit,verifyAudit} from './domain/audit-seal.js'
 import {acknowledgeHealthIncident,readHealthIncidents,readHealthIncidentPage,type IncidentPageQuery,IncidentError} from './domain/health-incidents.js'
 import { resolveTakeTarget, TakeTargetError } from './domain/take-target.js'
 import { and, asc, desc, eq, inArray, isNotNull,or,sql } from 'drizzle-orm'
@@ -814,6 +815,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return { entries,nextBefore:entries.length>=limit&&oldest?`${oldest.createdAt}|${oldest.id}`:null }
   })
   // A exportação em CSV é feita no navegador; este registro deixa rastro de quem exportou.
+  // Conferência da cadeia de selos (somente Administrador). Sela o que falta e verifica tudo.
+  server.get('/api/audit/integrity', async (request, reply) => {
+    reply.header('Cache-Control','private, no-store')
+    if (!(await allowed(request, 'USER_MANAGE'))) return reply.code(403).send({ error: 'Somente administradores conferem a integridade da auditoria.' })
+    sealAudit(app.sqlite)
+    return verifyAudit(app.sqlite)
+  })
   server.post('/api/audit/exported', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar auditoria.' })
     const body=(request.body??{}) as {rows?:unknown}

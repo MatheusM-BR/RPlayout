@@ -731,11 +731,17 @@ export function App() {
       if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return
 
       if (event.code === 'Space') {
-        // Com o foco num botão/link/select, Espaço é do controle: não vira TAKE.
-        if (focusOwnsKey(element)) return
+        // Espaço é sempre o TAKE: o foco do operador está no vídeo, não no botão.
+        // Se um botão ficou com o foco, ele solta (blur) e a tecla não o aciona.
         event.preventDefault()
-        // Space is the TAKE button: what is armed in PVW goes on air. Before,
-        // it took the selected/next grade line even with a live CUEd in PVW.
+        if (element?.closest('button, a, select, [role="button"]')) (element as HTMLElement).blur()
+        // O TAKE vai para o vídeo em foco (linha selecionada). Sem seleção, vale o
+        // que está armado no PVW, como antes.
+        const previewItemId = live?.transport.previewFrame?.itemId ?? live?.transport.preparedItemId ?? null
+        if (selectedId && selectedId !== previewItemId) {
+          void command('take', { itemId: selectedId })
+          return
+        }
         const preview = live?.transport.preview
         if (preview) {
           const outside = operatingView ? liveOutsideGrade(preview, operatingView.items.map((entry) => entry.item.sourceRef).filter((ref): ref is string => Boolean(ref))) : null

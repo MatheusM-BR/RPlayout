@@ -26,6 +26,9 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [reload, setReload] = useState(0)
+  // Conferência da cadeia de selos: só administradores; os demais não veem o aviso.
+  const [integrity, setIntegrity] = useState<{ ok: boolean; sealedRows: number; unsealedRows: number; problem: string | null } | null>(null)
+  useEffect(() => { void api.auditIntegrity().then(setIntegrity).catch(() => setIntegrity(null)) }, [reload])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -74,6 +77,9 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
               <p className="font-label-mono text-label-mono text-outline">
                 Solicitações e decisões registradas, conforme suas permissões de canal. Solicitação não comprova execução física.
               </p>
+              {integrity && (integrity.ok
+                ? <p role="status" className="font-label-mono text-label-mono text-status-ok">Trilha de segurança íntegra · {integrity.sealedRows} eventos selados{integrity.unsealedRows ? ` (+${integrity.unsealedRows} aguardando selo)` : ''}</p>
+                : <p role="alert" className="font-label-mono text-label-mono font-bold text-on-air-crimson">TRILHA DE SEGURANÇA ADULTERADA: {integrity.problem}</p>)}
             </div>
           </div>
           <button

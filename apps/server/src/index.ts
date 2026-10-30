@@ -7,6 +7,7 @@ import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
 import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation } from './app.js'
 import {EngineTransport} from './domain/engine.js'
+import { sealAudit, verifyAudit } from './domain/audit-seal.js'
 import { BACKUP_EVERY_HOURS, BACKUP_MIRROR_DIR, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS, HTTP_AUDIT_RETENTION_DAYS } from './config.js'
 import { listChannels, listRundowns } from './db/repo.js'
 import { backupDatabase, backupDue, mirrorNewestBackup } from './domain/backup.js'
@@ -256,6 +257,21 @@ async function main(): Promise<void> {
   }),()=>!isRecoveryRehearsal(app.sqlite)),250):null
   void background.run('startup-library',updateLibrary)
 
+  // Selagem da auditoria de segurança: cadeia de hashes que denuncia adulteração.
+  const sealAndCheck=()=>void background.run('audit-seal',()=>{
+    try{
+      sealAudit(app.sqlite)
+      const integrity=verifyAudit(app.sqlite)
+      if(!integrity.ok){
+        server.log.error(`Auditoria de segurança ADULTERADA: ${integrity.problem} (selo ${integrity.firstBrokenSeal}).`)
+        const open=app.sqlite.prepare("SELECT 1 FROM health_events WHERE component='AUDIT' AND state='tampered' AND resolved_at IS NULL LIMIT 1").get()
+        if(!open)void app.db.insert(healthEvents).values({id:randomUUID(),channelId:null,component:'AUDIT',state:'tampered',severity:'CRITICAL',message:`Auditoria de segurança adulterada: ${integrity.problem}`,occurredAt:new Date().toISOString()}).run()
+      }
+    }catch(error){server.log.warn(`Selagem da auditoria falhou: ${error instanceof Error?error.message:String(error)}`)}
+  },()=>!isRecoveryRehearsal(app.sqlite))
+  const sealTimer=setInterval(sealAndCheck,10*60*1000)
+  const sealStartTimer=setTimeout(sealAndCheck,30*1000)
+
   // Cópia de segurança periódica. Um playout que roda meses sem ninguém olhar
   // precisa de cópia sem depender de alguém lembrar de pedir.
   let backingUp=false
@@ -448,6 +464,7 @@ async function main(): Promise<void> {
     clearInterval(timer)
     clearInterval(distributionTimer)
     if (backupTimer) clearInterval(backupTimer)
+    clearInterval(sealTimer);clearTimeout(sealStartTimer)
     if (backupStartTimer) clearTimeout(backupStartTimer)
     clearInterval(retentionTimer)
     clearInterval(sessionExpiryTimer)

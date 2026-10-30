@@ -4,11 +4,14 @@ import { describe, expect, it } from 'vitest'
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
 describe('ligação das teclas (r88-32)', () => {
-  it('Espaço só vira TAKE se o foco não é de um controle', () => {
+  it('Espaço é sempre TAKE (solta o foco do botão) e vai ao vídeo em foco', () => {
     const app = read('../App.tsx')
     const space = app.indexOf("event.code === 'Space'")
     expect(space).toBeGreaterThan(0)
-    expect(app.slice(space, space + 200)).toContain('focusOwnsKey(element)')
+    const block = app.slice(space, space + 1200)
+    expect(block).not.toContain('focusOwnsKey')
+    expect(block).toContain('.blur()')
+    expect(block).toContain("command('take', { itemId: selectedId })")
   })
   it('Delete do Master usa a mesma guarda e ABORT desarma com Esc', () => {
     const master = read('../views/MasterControlView.tsx')
