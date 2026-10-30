@@ -16,7 +16,7 @@ Ver CORRECOES-R88-24-2026-10-27.md, CORRECOES-R88-23-2026-10-27.md e CORRECOES-R
 | D6 | Banco separado: falha, concorrência, migração | Concluído em teste (processo morto, 503, ingestão, duas conexões) |
 | D7 | Autorização das rotas | Concluído (matriz > 100 rotas) |
 | D8 | Mídia: jobs duráveis, proxy, faixas | Concluído em teste; não ensaiado no ar (derrubaria o canal) |
-| D9 | Recuperação: backup, watchdog, soak | Restauração real em quarentena OK; cópia periódica corrigida (r88-24); vigia pronto (U7); soak 24 h r88-29 analisado em 30/10: 0 alertas, 0 erros, sem queda, 52,6 GB de gravação rotativa estável; backups em disco e espelho verificados (2 cópias, íntegras); PENDENTE medidor de áudio (−90/−70 constante) e `/api/engineering/storage` — sem homologação |
+| D9 | Recuperação: backup, watchdog, soak | Restauração real em quarentena OK; cópia periódica corrigida (r88-24); vigia pronto (U7); soak 24 h r88-29 analisado em 30/10: 0 alertas, 0 erros, sem queda, 52,6 GB de gravação rotativa estável; backups em disco e espelho verificados (2 cópias, íntegras); áudio −90/−70 explicado (fonte vMix Output 1 sem áudio, U2): medidor e detecção de silêncio não exercitados; PENDENTE novo soak com áudio/vídeo reais e `/api/engineering/storage` — sem homologação |
 
 ### Achados
 
