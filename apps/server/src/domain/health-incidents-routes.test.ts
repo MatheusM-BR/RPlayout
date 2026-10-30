@@ -53,3 +53,17 @@ it('cursor malformado e filtro desconhecido respondem 400 sem expor diagnóstico
     const response=await server.inject({url:'/api/health-events?'+query,headers});expect(response.statusCode,response.body).toBe(400);expect(response.body).not.toContain('SQLITE')
   }
 })
+it('pendências: sem sessão 401, canal negado 403, canal permitido lista com nível e forMe', async () => {
+  const old = new Date(Date.now() - 3 * 60_000).toISOString()
+  for (const [id, channelId] of [['pgm-signal:a1:active', 'a'], ['pgm-signal:b1:active', 'b']] as const)
+    app.db.insert(healthEvents).values({ id, channelId, component: 'SIGNAL', state: 'black', severity: 'CRITICAL', occurredAt: old }).run()
+  expect((await server.inject({ url: '/api/notifications' })).statusCode).toBe(401)
+  expect((await server.inject({ url: '/api/notifications?channelId=b', headers })).statusCode).toBe(403)
+  for (const url of ['/api/notifications?channelId=a', '/api/notifications']) {
+    const response = await server.inject({ url, headers }); expect(response.statusCode, response.body).toBe(200)
+    expect(response.headers['cache-control']).toBe('private, no-store')
+    const { notifications } = response.json() as { notifications: Array<{ id: string; tier: string; forMe: boolean; minutesOpen: number }> }
+    expect(notifications.map(row => row.id)).toEqual(['pgm-signal:a1:active'])
+    expect(notifications[0]).toMatchObject({ tier: 'SUPERVISOR', forMe: true, minutesOpen: 3 })
+  }
+})

@@ -66,6 +66,7 @@ import { DocsView } from './views/DocsView.js'
 import { SettingsView } from './views/SettingsView.js'
 import { SessionAlertsDialog } from './components/broadcast/SessionAlertsDialog.js'
 import {AssetRemovalDialog} from './components/AssetRemovalDialog.js'
+import {EscalationInbox} from './components/EscalationInbox.js'
 
 type Dialog =
   | {kind:'asset-removal';assetId:string|null}
@@ -1208,6 +1209,7 @@ export function App() {
       </aside>}
       {scanRequest!==null&&<div role="dialog" aria-modal="true" aria-label="Varredura do acervo" className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center"><ScanCommandDialog measure={scanRequest} onClose={()=>setScanRequest(null)} onRegistered={()=>{}}/></div>}
       <ConfirmHost />
+      <EscalationInbox />
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
       {panelLock === 'on' && <>
         <div aria-hidden="true" className="fixed inset-0 z-[110] cursor-not-allowed bg-black/10" />

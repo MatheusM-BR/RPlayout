@@ -26,6 +26,7 @@ import type {ConfigurationLease} from './domain/configuration-changes.js'
 import {applyCollaborativeEdit,CollaborativeEditError} from './domain/collaborative-edit.js'
 import {readAudit} from './domain/audit.js'
 import {sealAudit,verifyAudit} from './domain/audit-seal.js'
+import {readOpenNotifications} from './domain/notifications.js'
 import {acknowledgeHealthIncident,readHealthIncidents,readHealthIncidentPage,type IncidentPageQuery,IncidentError} from './domain/health-incidents.js'
 import { resolveTakeTarget, TakeTargetError } from './domain/take-target.js'
 import { and, asc, desc, eq, inArray, isNotNull,or,sql } from 'drizzle-orm'
@@ -658,6 +659,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   channelParameterRoutes.add('/api/sources')
   channelParameterRoutes.add('/api/integrations/review')
   channelParameterRoutes.add('/api/audit')
+  channelParameterRoutes.add('/api/notifications')
+  sharedReads.add('/api/notifications') // Filtered by authorized channels in the query itself.
   channelParameterRoutes.add('/api/integration-deliveries')
   channelParameterRoutes.add('/api/graphics')
   channelParameterRoutes.add('/api/graphics/review')
@@ -845,6 +848,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     void reply.header('content-type', 'text/csv; charset=utf-8')
     void reply.header('content-disposition', 'attachment; filename="rplayout-saude.csv"')
     return csv
+  })
+  server.get('/api/notifications', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar pendências.' })
+    const query = request.query as { channelId?: string }
+    try { return reply.header('Cache-Control','private, no-store').send({ notifications: readOpenNotifications(app.db, access.identity(request)?.channelIds ?? null, typeof query.channelId === 'string' ? query.channelId : undefined, access.role(request)) }) }
+    catch (error) { if (error instanceof IncidentError) return reply.code(error.status).send({ error: error.message }); throw error }
   })
   server.post('/api/health-events/:id/ack', async (request, reply) => {
     if (!(await allowed(request, 'CHANNEL_STOP'))) return reply.code(403).send({ error: 'Supervisor precisa reconhecer alertas.' })

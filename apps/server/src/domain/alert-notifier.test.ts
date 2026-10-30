@@ -19,7 +19,7 @@ it('envia crítico e aviso novos, lembra sem ciente e para quando há ciente', a
   const events = () => db.db.select().from(integrationDeliveries).all().map(row => row.event)
   expect(events().sort()).toEqual(['alert.critical', 'alert.warning'])
   clock += 60_000; expect(await notifier.tick()).toBe(0)
-  clock += 61_000; expect(await notifier.tick()).toBe(1)
+  clock += 61_000; expect(await notifier.tick()).toBe(2) // lembrete + escalada ao passar de 2 min
   expect(events().filter(event => event === 'alert.reminder')).toHaveLength(1)
   db.db.update(healthEvents).set({ acknowledgedAt: new Date(clock).toISOString() }).where(eq(healthEvents.id, 'c1')).run()
   clock += 200_000; expect(await notifier.tick()).toBe(0)
@@ -29,4 +29,82 @@ it('envia crítico e aviso novos, lembra sem ciente e para quando há ciente', a
 it('texto do Telegram é curto e legível', () => {
   const text = alertText('alert.reminder', { id: 'x', payload: { component: 'SIGNAL', state: 'silence', message: 'Silêncio no PGM', minutesOpen: 4 } }, 'ab1023d0-8291')
   expect(text).toBe('⏰ RPlayout sem ciente há 4 min\nSIGNAL · silence\nSilêncio no PGM\ncanal ab1023d0')
+})
+
+function escalationFixture() {
+  const db = openDatabase(':memory:')
+  const state = { clock: Date.parse('2026-10-30T10:00:00Z') }
+  db.db.insert(integrations).values({ id: 'tg', name: 'Telegram', url: 'https://api.telegram.org/botX/sendMessage?chat_id=1', events: ['alert.critical', 'alert.reminder', 'alert.escalated'], enabled: true, createdAt: 'now' }).run()
+  const make = () => new AlertNotifier(db.db, { now: () => state.clock, reminderMs: 120_000, maxReminders: 1 })
+  const escalated = () => db.db.select().from(integrationDeliveries).where(eq(integrationDeliveries.event, 'alert.escalated')).all().map(row => (row.payload as unknown as { payload: { tier: string; minutesOpen: number } }).payload)
+  const insert = (id: string, occurredAt: number, extra: Partial<typeof healthEvents.$inferInsert> = {}) =>
+    db.db.insert(healthEvents).values({ id, channelId: 'ch', component: 'SIGNAL', state: 'black', severity: 'CRITICAL', message: 'PGM black', occurredAt: new Date(occurredAt).toISOString(), ...extra }).run()
+  return { db, state, make, escalated, insert }
+}
+
+it('escala uma vez aos 2 min e outra aos 7, independente do teto de lembretes', async () => {
+  const { db, state, make, escalated, insert } = escalationFixture()
+  const notifier = make()
+  insert('pgm-signal:a:active', state.clock + 1000)
+  state.clock += 1000
+  await notifier.tick()
+  state.clock += 119_000; await notifier.tick()
+  expect(escalated()).toEqual([])
+  state.clock += 1000; await notifier.tick()
+  expect(escalated().map(row => row.tier)).toEqual(['SUPERVISOR'])
+  state.clock += 60_000; await notifier.tick(); await notifier.tick()
+  expect(escalated()).toHaveLength(1)
+  state.clock += 5 * 60_000 - 60_000 - 1000; await notifier.tick()
+  expect(escalated()).toHaveLength(1)
+  state.clock += 1000; await notifier.tick()
+  expect(escalated().map(row => row.tier)).toEqual(['SUPERVISOR', 'ADMIN'])
+  expect(escalated()[1]!.minutesOpen).toBe(7)
+  state.clock += 600_000; await notifier.tick()
+  expect(escalated()).toHaveLength(2)
+  db.sqlite.close()
+})
+
+it('não escala depois de ciente nem de resolvido, nem incidentes que não são sinal do PGM', async () => {
+  const { db, state, make, escalated, insert } = escalationFixture()
+  const notifier = make()
+  insert('pgm-signal:ack:active', state.clock + 1000)
+  insert('pgm-signal:res:active', state.clock + 1000)
+  insert('eng', state.clock + 1000, { component: 'ENGINE', state: 'FAILED' })
+  state.clock += 1000; await notifier.tick()
+  state.clock += 60_000
+  db.db.update(healthEvents).set({ acknowledgedAt: new Date(state.clock).toISOString() }).where(eq(healthEvents.id, 'pgm-signal:ack:active')).run()
+  db.db.update(healthEvents).set({ resolvedAt: new Date(state.clock).toISOString() }).where(eq(healthEvents.id, 'pgm-signal:res:active')).run()
+  state.clock += 600_000; await notifier.tick()
+  expect(escalated()).toEqual([])
+  db.sqlite.close()
+})
+
+it('instância nova reconstrói do banco e não repete nível já enviado', async () => {
+  const { db, state, make, escalated, insert } = escalationFixture()
+  insert('pgm-signal:old:active', state.clock - 3 * 60_000)
+  const first = make(); first.start(); await first.tick()
+  expect(escalated()).toEqual([])
+  state.clock += 5 * 60_000; await first.tick()
+  expect(escalated().map(row => row.tier)).toEqual(['ADMIN'])
+  first.close()
+  const second = make(); second.start(); await second.tick(); await second.tick()
+  expect(escalated()).toHaveLength(1)
+  second.close()
+  db.sqlite.close()
+})
+
+it('reaproveitar o id com novo occurredAt reinicia a escalada', async () => {
+  const { db, state, make, escalated, insert } = escalationFixture()
+  const notifier = make()
+  insert('pgm-signal:x:active', state.clock + 1000)
+  state.clock += 1000; await notifier.tick()
+  state.clock += 130_000; await notifier.tick()
+  expect(escalated()).toHaveLength(1)
+  db.db.update(healthEvents).set({ resolvedAt: new Date(state.clock).toISOString() }).where(eq(healthEvents.id, 'pgm-signal:x:active')).run()
+  await notifier.tick()
+  db.db.update(healthEvents).set({ resolvedAt: null, occurredAt: new Date(state.clock + 1000).toISOString() }).where(eq(healthEvents.id, 'pgm-signal:x:active')).run()
+  state.clock += 1000; await notifier.tick()
+  state.clock += 125_000; await notifier.tick()
+  expect(escalated()).toHaveLength(2)
+  db.sqlite.close()
 })
