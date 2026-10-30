@@ -54,16 +54,28 @@ class HeldRestoredAdmission {
   private transferred=false
   private registered:ServerInstanceRegistration|null=null
   private activationId:string|null=null
+  private verifiedInTransaction:Database.Database|null=null
   constructor(readonly maintenance:StorageMaintenance,readonly hostFence:HostDistributionFence,private readonly fingerprint:string,private readonly requestId:string,readonly pausedPreparation=false){admissions.add(this)}
   assertBeforeOpen(sqlite:Database.Database):void{
     assertRestoredAdmission(this)
     if(this.transferred||this.registered)throw new Error('Admissão restaurada já usada.')
     this.maintenance.assertHeldOn(sqlite);this.hostFence.assertOwned()
     if(stateFingerprint(sqlite)!==this.fingerprint)throw new Error('Banco mudou antes da admissão; preparação recusada.')
+    // Only the check made inside the opening transaction counts for register().
+    if(sqlite.inTransaction)this.verifiedInTransaction=sqlite
   }
   register(sqlite:Database.Database):ServerInstanceRegistration{
     if(!sqlite.inTransaction)throw new Error('Admissão deve ocorrer na transação de abertura.')
-    this.assertBeforeOpen(sqlite)
+    // register() runs after the schema migrations of the same opening
+    // transaction, so the reviewed fingerprint can no longer match. The
+    // fingerprint was verified on this very connection, inside this very
+    // transaction, before any migration; only host/storage ownership is
+    // re-checked here. Without that earlier check, the full check applies.
+    if(this.verifiedInTransaction===sqlite){
+      assertRestoredAdmission(this)
+      if(this.transferred||this.registered)throw new Error('Admissão restaurada já usada.')
+      this.maintenance.assertHeldOn(sqlite);this.hostFence.assertOwned()
+    }else this.assertBeforeOpen(sqlite)
     const instance=new ServerInstanceRegistration(sqlite,this.maintenance),id=randomUUID(),createdAt=new Date().toISOString()
     const payload={version:1,requestId:this.requestId,instanceId:instance.id,phase:'BACKEND_ADMITTED_QUARANTINED',activationPerformed:false,physicalOutputValidated:false}
     sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(id,'@restore','RESTORED_BACKEND_ADMITTED',installationVault(false).encrypt(JSON.stringify(payload),'operator_decisions.payload'),'@restore',createdAt)

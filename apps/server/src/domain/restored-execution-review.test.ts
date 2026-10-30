@@ -81,6 +81,23 @@ it('mudança de banco durante leitura assíncrona recusa snapshot misturado',asy
   vi.spyOn(FileVersionVerifier.prototype,'matches').mockImplementation(async function(this:InstanceType<typeof FileVersionVerifier>,path,hash){db.db.update(channels).set({name:'changed-during-review'}).where(eq(channels.id,'ch')).run();return verify.call(this,path,hash)})
   await expect(reviewRestoredExecution(db.db,manifest,fence)).rejects.toThrow('Banco mudou')
 })
+it('admite banco restaurado com migração pendente: o registro roda após as migrações da própria abertura',async()=>{
+  const {db,manifest,fence}=await setup(true),file=db.sqlite.name
+  // Simula quarentena criada por edição anterior: sem a migração 55 (auditoria imutável).
+  const objects=db.sqlite.prepare("SELECT type,name FROM sqlite_master WHERE name LIKE 'audit\\_%' ESCAPE '\\' OR name LIKE 'idx_audit\\_%' ESCAPE '\\'").all() as {type:string;name:string}[]
+  for(const o of objects.filter(o=>o.type==='trigger'))db.sqlite.exec(`DROP TRIGGER "${o.name}"`)
+  for(const o of objects.filter(o=>o.type==='index'))db.sqlite.exec(`DROP INDEX "${o.name}"`)
+  for(const o of objects.filter(o=>o.type==='table'))db.sqlite.exec(`DROP TABLE "${o.name}"`)
+  db.sqlite.prepare('DELETE FROM schema_migrations WHERE version=55').run()
+  expect(db.sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=55').get()).toBeUndefined()
+  let app:App|undefined
+  try{
+    await reviewRestoredExecution(db.db,manifest,fence,{handoff:async admission=>{app=await createApp(file,{restoredAdmission:admission})}})
+    expect(app!.sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=55').get()).toBeTruthy()
+    expect(app!.sqlite.prepare("SELECT count(*) n FROM operator_decisions WHERE kind='RESTORED_BACKEND_ADMITTED'").get()).toEqual({n:1})
+    db.sqlite.close()
+  }finally{if(app)await app.close()}
+})
 it('handoff retém reserva/fence, registra e audita atomicamente; peer recusado e shutdown libera sem promover',async()=>{
   const {db,manifest,fence}=await setup(true),file=db.sqlite.name
   let app:App|undefined
