@@ -20,6 +20,8 @@ describe('auditoria por canal e privilégios',()=>{
     await entry('own-null','rd-a',{})
     await entry('global-null','@security',{})
     // SQL NULL is forbidden, but an older encrypted JSON value may be null.
+    // Simula dado legado, anterior à imutabilidade (migração 55): sem o gatilho.
+    value.sqlite.exec('DROP TRIGGER audit_immutable_update')
     value.sqlite.prepare('UPDATE operator_decisions SET payload=? WHERE id IN (?,?)').run(installationVault().encrypt('null','operator_decisions.payload'),'own-null','global-null')
     expect((await readAudit(value.db,{channelIds:['a'],globalAdmin:false},100)).map(row=>row.id)).toEqual(['own-null'])
   })
