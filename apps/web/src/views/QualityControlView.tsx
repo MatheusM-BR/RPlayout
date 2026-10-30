@@ -10,6 +10,7 @@ import { api } from '../api.js'
 import { canonicalLiveSourceRef, sameLiveSource } from '../liveSource.js'
 import { monitorAudioStatistics } from '../components/broadcast/audio-analysis.js'
 import { QcWorkflowPanel } from '../components/broadcast/QcWorkflowPanel.js'
+import { CutMarksPanel } from '../components/CutMarksPanel.js'
 import { QcInspectionControls } from '../components/broadcast/QcInspectionControls.js'
 import { QcSafeAreaOverlay } from '../components/broadcast/QcSafeAreaOverlay.js'
 import {qcOriginalUrl,qcQualityFrameUrl,qcQualitySelected,qcInspectionUsesFrames,qcMonitorLabels,qcInspectionFrameAtTime,qcInspectionVideoHasPicture,qcQualityFrameFailed} from '../domain/media-preview.js'
@@ -1717,6 +1718,7 @@ function QualityControlSession({
 
                 {/* Scrubber Filmstrip 24 Quadros GStreamer */}
                 {selectedAsset && <QcWorkflowPanel key={JSON.stringify([selectedAsset.id,selectedAsset.contentHash,channel.id])} assetId={selectedAsset.id} contentHash={selectedAsset.contentHash} channel={channel} onChanged={onMediaChanged} onReview={reportQcReview} refreshKey={qcReviewRefresh} externalBusy={qcDecisionBusy} />}
+                {selectedAsset && !selectedLiveSourceId && totalDurationSec > 0 && <CutMarksPanel key={`${selectedAsset.id}:${selectedAsset.contentHash}`} assetId={selectedAsset.id} contentHash={selectedAsset.contentHash} durationMs={Math.round(totalDurationSec * 1000)} channelId={channel.id} currentTimeSec={currentTimeSec} onSeek={seconds => { setCurrentTimeSec(seconds); if (videoRef.current && Number.isFinite(seconds)) videoRef.current.currentTime = seconds }} />}
                 {selectedAsset && (
                   <div className="flex items-center gap-1 overflow-x-auto py-0.5 broadcast-scrollbar">
                     {Array.from({ length: 24 }).map((_, i) => {

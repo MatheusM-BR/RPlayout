@@ -36,6 +36,7 @@ import { InterruptedItemsBanner } from '../components/broadcast/InterruptedItems
 import { MasterToolsPanel } from '../components/broadcast/MasterToolsPanel.js'
 import { useStoredChoice } from '../domain/stored-choice.js'
 import { useEscape } from '../domain/use-escape.js'
+import { AlignmentDialog, FocusCard, computeFocus, useFocusItem } from '../components/FocusAlignment.js'
 import { MultiTrackTimeline } from '../components/broadcast/MultiTrackTimeline.js'
 import { ConflictDrawer } from '../components/broadcast/ConflictDrawer.js'
 import { CanonicalProtocolSelector } from '../components/broadcast/CanonicalProtocolSelector.js'
@@ -735,6 +736,34 @@ export function MasterControlView({
     nowMs,
   ), [view.items, scheduleMap, rate, view.rundown.date, nowMs])
   const nextFixedLate = nextFixed && (!nextFixed.hit || nextFixed.deviationMs >= 1000)
+  // Foco de contagem: item escolhido com o botão direito; mostra quando entra
+  // e se a grade chega no horário, com ALINHAR para preencher ou cortar.
+  const [focus, setFocus] = useFocusItem(channel.id)
+  const focusState = useMemo(() => computeFocus(view, focus, nowMs), [view, focus, nowMs])
+  const focusOnAir = Boolean(focusState && live?.transport.onAir?.itemId === focusState.itemId)
+  const [alignOpen, setAlignOpen] = useState(false)
+  const [rowMenu, setRowMenu] = useState<{ x: number; y: number; itemId: string; title: string } | null>(null)
+  useEscape(Boolean(rowMenu), () => setRowMenu(null))
+  useEffect(() => {
+    if (!rowMenu) return
+    const close = () => setRowMenu(null)
+    window.addEventListener('click', close)
+    window.addEventListener('scroll', close, true)
+    return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true) }
+  }, [rowMenu])
+  // ALINHAR sem nada a calcular: explica em vez de abrir o painel.
+  useEffect(() => {
+    if (!alignOpen || !focusState || focusState.mode === 'FILL' || focusState.mode === 'CUT') return
+    setAlignOpen(false)
+    void notify(focusState.mode === 'OK' ? 'A grade já chega no horário deste item.' : 'Este item não tem horário marcado. Informe um alvo (hh:mm:ss) no cartão FOCO para calcular o alinhamento.', 'Alinhar')
+  }, [alignOpen, focusState])
+  // Foco some quando o item sai da grade ou já passou pelo ar.
+  useEffect(() => {
+    if (!focus) return
+    const index = view.items.findIndex(entry => entry.item.id === focus.itemId)
+    if (index < 0 || (onAirIndex >= 0 && index < onAirIndex)) setFocus(null)
+  }, [focus, view.items, onAirIndex]) // eslint-disable-line react-hooks/exhaustive-deps
+  const focusWhole = focusState && !focusOnAir ? Math.ceil(focusState.leftMs / 1000) : null
   // Esc fecha os modais do Master com a mesma regra do clique fora.
   useEscape(liveInputModalOpen, () => { if (!sourcePending.current) setLiveInputModalOpen(false) })
   useEscape(addLineModalOpen, () => { setAddLineModalOpen(false); setEditingItemView(null) })
@@ -759,6 +788,7 @@ export function MasterControlView({
   useEffect(() => { if (soundOn && fixedWhole !== null && fixedWhole <= 10 && fixedWhole > 0) beep(fixedWhole <= 3 ? 1320 : 990, 90) }, [soundOn, fixedWhole])
   const gradeEndLevel = gradeEnd?.level ?? null
   useEffect(() => { if (soundOn && gradeEndLevel === 'urgent') { beep(520, 250); window.setTimeout(() => beep(520, 250), 350) } }, [soundOn, gradeEndLevel])
+  useEffect(() => { if (soundOn && focusWhole !== null && focusWhole <= 10 && focusWhole > 0) beep(focusWhole <= 3 ? 1480 : 1100, 90) }, [soundOn, focusWhole])
   const progressPercent =
     onAirDurationFrames > 0 ? Math.min(100, Math.round((elapsedFrames / onAirDurationFrames) * 100)) : 0
 
@@ -968,7 +998,7 @@ export function MasterControlView({
                       {onAirItem ? (overrunFrames > 0 ? `+${dur(overrunFrames, rate)}` : dur(remainingFrames, rate)) : '00:00:00:00'}
                     </div>
                     {overrunFrames > 0 && <div className="text-[11px] text-armed-amber mt-0.5">previsto {dur(onAirDurationFrames, rate)}</div>}
-                    {nextFixed && nextFixed.leftMs <= 6 * 3_600_000 && <div role="status" className={`mt-1 rounded border px-1.5 py-0.5 text-left text-[11px] leading-snug ${nextFixedLate ? 'border-on-air-crimson/60 bg-on-air-crimson/10' : nextFixed.leftMs <= 60_000 ? 'border-armed-amber bg-armed-amber/15' : 'border-border-subtle bg-surface-container'}`} title={`${nextFixed.kind === 'HARD_TIME' ? 'Horário de rede (disparo obrigatório)' : 'Horário fixo'} de "${nextFixed.title}"`}>
+                    {nextFixed && nextFixed.leftMs <= 6 * 3_600_000 && nextFixed.itemId !== focusState?.itemId && <div role="status" className={`mt-1 rounded border px-1.5 py-0.5 text-left text-[11px] leading-snug ${nextFixedLate ? 'border-on-air-crimson/60 bg-on-air-crimson/10' : nextFixed.leftMs <= 60_000 ? 'border-armed-amber bg-armed-amber/15' : 'border-border-subtle bg-surface-container'}`} title={`${nextFixed.kind === 'HARD_TIME' ? 'Horário de rede (disparo obrigatório)' : 'Horário fixo'} de "${nextFixed.title}"`}>
                       <div className="flex items-baseline justify-between gap-2 font-label-caps font-bold">
                         <span className={nextFixed.leftMs <= 60_000 ? 'text-armed-amber' : 'text-outline'}>PRÓXIMO {nextFixed.kind === 'HARD_TIME' ? 'REDE' : 'FIXO'} {new Date(nextFixed.atMs).toLocaleTimeString('pt-BR')}</span>
                         <span className={`font-timecode-display tabular-nums ${nextFixed.leftMs <= 60_000 ? 'text-armed-amber' : 'text-on-surface'}`}>{countdownText(nextFixed.leftMs)}</span>
@@ -976,6 +1006,7 @@ export function MasterControlView({
                       <div className="truncate text-on-surface-variant">{nextFixed.title}</div>
                       {nextFixedLate && <div className="font-bold text-on-air-crimson">{nextFixed.hit ? `ENTRA ${countdownText(nextFixed.deviationMs)} ATRASADO` : 'NÃO VAI BATER O HORÁRIO'} · ajuste a grade antes</div>}
                     </div>}
+                    {focusState && <FocusCard status={focusState} targetHms={focus?.targetHms ?? null} onAir={focusOnAir} onTarget={targetHms => focus && setFocus({ ...focus, targetHms })} onClear={() => setFocus(null)} onAlign={() => setAlignOpen(true)} />}
                     {gradeEnd && <div role="status" title="A grade não está em loop. Depois do último item o canal só segue se houver próxima grade publicada com passagem automática." className={`mx-auto mt-1 block w-fit rounded border px-1.5 py-0.5 font-label-caps text-[11px] font-bold ${gradeEnd.level === 'urgent' ? 'border-on-air-crimson bg-on-air-crimson/15 text-on-air-crimson animate-pulse motion-reduce:animate-none' : 'border-armed-amber/60 bg-armed-amber/10 text-armed-amber'}`}>FIM DA GRADE ÀS {wallClock(view.schedule!.endsAt, rate, view.rundown.date)} · EM {mmss(gradeEnd.leftMs)}</div>}
                     <div className="font-label-mono text-label-mono text-outline mt-1">
                       TC {onAirItem ? dur(elapsedFrames, rate) : '00:00:00:00'}
@@ -1526,13 +1557,14 @@ export function MasterControlView({
                                   setDragOverIndex(null)
                                 }}
                                 onClick={(e) => handleRowClick(e, item, index)}
-                                className={`${rowClass} group cursor-pointer`}
-                                title="Clique para armar (CUE) no PVW • Ctrl/Shift para multiseleção"
+                                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setRowMenu({ x: e.clientX, y: e.clientY, itemId: item.item.id, title: item.item.title }) }}
+                                className={`${rowClass} group cursor-pointer ${focus?.itemId === item.item.id ? 'outline outline-2 -outline-offset-2 outline-primary' : ''}`}
+                                title="Clique para armar (CUE) no PVW • Ctrl/Shift para multiseleção • Botão direito: focar contagem"
                               >
                                 <td className={`py-1.5 px-3 text-center font-label-mono text-label-mono ${
                                   isItemOnAir ? 'text-on-air-crimson font-bold text-[13px]' : isItemCued ? 'text-armed-amber font-bold text-[13px]' : 'text-outline text-xs'
                                 }`}>
-                                  {index + 1}
+                                  {focus?.itemId === item.item.id ? <span className="text-primary font-bold" title="Item em foco">◎</span> : index + 1}
                                 </td>
 
                                 <td className="py-1.5 px-3 whitespace-nowrap">
@@ -2438,6 +2470,18 @@ export function MasterControlView({
         </div>
       )}
       {/* MODAL 3: Gerenciamento de Pastas do Acervo MAM */}
+      {rowMenu && (
+        <div role="menu" aria-label={`Ações de ${rowMenu.title}`} className="fixed z-[95] min-w-[220px] rounded-lg border border-border-strong bg-surface-panel py-1 text-[13px] shadow-2xl" style={{ left: Math.min(rowMenu.x, window.innerWidth - 240), top: Math.min(rowMenu.y, window.innerHeight - 140) }} onClick={event => event.stopPropagation()}>
+          <div className="truncate px-3 py-1 text-[11px] text-outline">{rowMenu.title}</div>
+          {focus?.itemId === rowMenu.itemId
+            ? <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left hover:bg-surface-container" onClick={() => { setFocus(null); setRowMenu(null) }}>Tirar foco</button>
+            : <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left hover:bg-surface-container" onClick={() => { setFocus({ itemId: rowMenu.itemId, targetHms: null }); setRowMenu(null) }}>Focar contagem neste item</button>}
+          <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left hover:bg-surface-container" onClick={() => { if (focus?.itemId !== rowMenu.itemId) setFocus({ itemId: rowMenu.itemId, targetHms: null }); setRowMenu(null); setAlignOpen(true) }}>Alinhar até este item…</button>
+        </div>
+      )}
+      {alignOpen && focusState && (focusState.mode === 'FILL' || focusState.mode === 'CUT') && !focusOnAir && (
+        <AlignmentDialog channel={channel} view={view} status={focusState} onAirItemId={live?.transport.onAir?.itemId ?? null} library={folders.flatMap(folder => folder.assets)} categories={categorias} onClose={() => setAlignOpen(false)} onApplied={message => { setAlignOpen(false); void notify(message, 'Alinhamento aplicado') }} />
+      )}
       {folderModalOpen && (
         <div
           role="dialog" aria-modal="true" aria-label="Pastas do acervo"

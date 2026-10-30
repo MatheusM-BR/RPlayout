@@ -26,6 +26,7 @@ export interface OperationalPayload {
   operation?: { kind: 'LIVE_DURATION'; itemId: string; deltaFrames: number; elapsedFrames: number; previousFrames: number; newFrames: number; at: string }
     | {kind:'INSERT';mode:'NEXT'|'NOW';requestId:string;itemId:string;sourceRevisionId:string;at:string}
     | {kind:'COMPENSATION';action:string;itemId:string;deltaFrames:number;sourceRevisionId:string;at:string}
+    | {kind:'ALIGNMENT';focusItemId:string;actions:unknown[];sourceRevisionId:string;at:string}
 }
 
 export function readOperationalPayload(payload: Record<string, unknown>): OperationalPayload {
@@ -98,7 +99,7 @@ export function diffOperationalGraphics(previous: OperationalPayload | null, nex
  * (better-sqlite3 é síncrono: no setImmediate ela já foi confirmada ou
  * desfeita, e quem escuta confere se a revisão existe). Usado pelo espelho
  * multicanal para não depender de cada caminho de publicação lembrar dele. */
-export type RevisionChange = 'PUBLISH' | 'ROLLBACK' | 'LIVE_DURATION' | 'INSERT' | 'COMPENSATION' | 'ADJUST'
+export type RevisionChange = 'PUBLISH' | 'ROLLBACK' | 'LIVE_DURATION' | 'INSERT' | 'COMPENSATION' | 'ALIGNMENT' | 'ADJUST'
 export interface RevisionEvent { rundownId: string; revisionId: string; revision: number; change: RevisionChange; actor: string | null }
 const revisionListeners = new Set<(event: RevisionEvent) => void>()
 export function onOperationalRevision(listener: (event: RevisionEvent) => void): () => void {

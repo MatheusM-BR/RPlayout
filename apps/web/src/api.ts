@@ -192,6 +192,9 @@ export interface ManualExternalRun {
   acknowledgement?: string
 }
 
+export interface CutMark { id: string; assetId: string; contentHash: string; fromMs: number; toMs: number; label: string | null; createdBy: string | null; createdAt: string; kind: 'HEAD' | 'TAIL' | 'MIDDLE'; savesMs: number; current: boolean }
+export type AlignmentAction = { kind: 'INSERT'; mediaId: string } | { kind: 'DROP'; itemId: string } | { kind: 'CUT'; itemId: string; markId: string }
+export interface AlignmentReview { reviewToken: string; sourceRevisionId: string; focusItemId: string; focusTitle: string; beforeStart: number | null; afterStart: number | null; deltaFrames: number; conflicts: number; beforeArrival: number | null; afterArrival: number | null; arrivalDeltaFrames: number; lines: Array<{ kind: AlignmentAction['kind']; title: string; frames: number }> }
 export interface ChannelMirror { targetChannelId: string; sourceChannelId: string; createdBy: string | null; createdAt: string; lastSyncAt: string | null; lastSyncError: string | null; unlockedBy?: string | null; unlockedAt?: string | null; unlockReason?: string | null; unlockExpiresAt?: string | null }
 export interface MirrorResult { channelId: string; ok: boolean; loaded?: boolean; rundownId?: string; items?: number; skippedGraphics?: number; unboundLive?: number; error?: string }
 
@@ -361,6 +364,12 @@ export const api = {
   restartChannel: (id: string) => post<{ ok: true }>(`/api/channels/${id}/restart`, {}),
   channelProgramming:(id:string)=>send<{mirror:ChannelMirror|null;mirrorsFrom:ChannelMirror[];canShare:boolean}>(`/api/channels/${encodeURIComponent(id)}/programming`),
   copyRundownToChannel:(id:string,body:{copyFromRundownId:string;date?:string;name?:string})=>post<{rundownId:string;items:number;skippedGraphics:number;liveItems:number;unboundLive:number}>(`/api/channels/${encodeURIComponent(id)}/copy-rundown`,body),
+  cutMarks:(assetId:string)=>send<{marks:CutMark[]}>(`/api/assets/${encodeURIComponent(assetId)}/cut-marks`),
+  cutMarksFor:(assetIds:readonly string[])=>send<{marks:CutMark[]}>(`/api/cut-marks?assetIds=${assetIds.map(encodeURIComponent).join(',')}`),
+  addCutMark:(assetId:string,body:{channelId:string;contentHash:string;fromMs:number;toMs:number;label?:string|null})=>send<{mark:CutMark}>(`/api/assets/${encodeURIComponent(assetId)}/cut-marks`,{method:'POST',body:JSON.stringify(body)}),
+  removeCutMark:(assetId:string,markId:string,channelId:string)=>send<{ok:true}>(`/api/assets/${encodeURIComponent(assetId)}/cut-marks/${encodeURIComponent(markId)}`,{method:'DELETE',body:JSON.stringify({channelId})}),
+  alignmentReview:(channelId:string,input:{focusItemId:string;actions:AlignmentAction[]})=>send<AlignmentReview>(`/api/channels/${encodeURIComponent(channelId)}/alignment-review`,{method:'POST',body:JSON.stringify(input)}),
+  applyAlignment:(channelId:string,input:{focusItemId:string;actions:AlignmentAction[]},requestId:string,reviewToken:string)=>send<{revision:number;deduplicated:boolean;deltaFrames:number;applied:boolean;refreshError:string|null}>(`/api/channels/${encodeURIComponent(channelId)}/alignment`,{method:'POST',body:JSON.stringify({input,requestId,reviewToken})}),
   unlockChannelMirror:(id:string,reason:string,duration:'1h'|'4h'|'manual'='4h')=>send<{mirror:ChannelMirror}>(`/api/channels/${encodeURIComponent(id)}/mirror/unlock`,{method:'POST',body:JSON.stringify({reason,duration})}),
   lockChannelMirror:(id:string)=>send<{mirror:ChannelMirror;onMirror:boolean}>(`/api/channels/${encodeURIComponent(id)}/mirror/lock`,{method:'POST',body:'{}'}),
   setChannelMirror:(id:string,sourceChannelId:string|null)=>send<{mirror:ChannelMirror|null;initial:MirrorResult|null}>(`/api/channels/${encodeURIComponent(id)}/mirror`,{method:'PUT',body:JSON.stringify({sourceChannelId})}),

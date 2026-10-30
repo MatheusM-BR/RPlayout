@@ -40,6 +40,7 @@ import {openProcessDatabase} from './process-database.js'
 import {assertSchemaCompatibility} from './schema-compatibility.js'
 import {migrateUpgradeBackupRequests} from './upgrade-backup-requests.js'
 import {migrateChannelMirrors,migrateMirrorUnlock,migrateMirrorUnlockExpiry} from './channel-mirrors.js'
+import {migrateAssetCutMarks} from './asset-cut-marks.js'
 import {assertNoUncertainUpgradeProfile} from '../domain/upgrade-profile-adoption.js'
 import {assertNoUnboundReturnCandidate} from './return-candidate-admission.js'
 
@@ -619,6 +620,7 @@ export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.D
     migrateChannelMirrors(sqlite)
     migrateMirrorUnlock(sqlite)
     migrateMirrorUnlockExpiry(sqlite)
+    migrateAssetCutMarks(sqlite)
     assertSchemaCompatibility(sqlite,true)
     assertNoUncertainUpgradeProfile(sqlite)
     options.onOpened?.(sqlite)

@@ -20,6 +20,7 @@ import {Interruptions,type InterruptedItem} from './domain/interruptions.js'
 import {inspectInsertion,requireInsertionReview,OperationalInsertions,type InsertionInput} from './domain/operational-insertion.js'
 import {installationVault} from './domain/secret-vault.js'
 import {inspectCompensation,commitCompensation,compensationReceipt} from './domain/operational-compensation.js'
+import {inspectAlignment,commitAlignment} from './domain/operational-alignment.js'
 import {Checkpoints,stoppedCheckpoint} from './domain/checkpoints.js'
 import type {ConfigurationLease} from './domain/configuration-changes.js'
 import {applyCollaborativeEdit,CollaborativeEditError} from './domain/collaborative-edit.js'
@@ -120,6 +121,7 @@ import {HaError} from './domain/ha-replication.js'
 import {HaRecoveryError} from './domain/ha-recovery.js'
 import { createEditorialRundown, EditorialRundownError } from './domain/editorial-rundown.js'
 import { diagnosticValue, sanitizeDiagnostic } from './domain/sanitize-diagnostic.js'
+import { addCutMark, CutMarkError, listCutMarks, removeCutMark } from './domain/cut-marks.js'
 import { ChannelProgrammingError, copyRundownToChannel, isActiveMirrorRundown, isMirrorLocked, isMirrorRundownOf, MIRROR_LOCK_MESSAGE, setMirrorUnlock, mirrorOf, mirrorsFrom, recordMirrorSync, setMirror, syncMirrorRundown } from './domain/channel-programming.js'
 import { canShareAcrossChannels } from './domain/permissions.js'
 import {databaseStorageStatus} from './db/process-database.js'
@@ -659,6 +661,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   channelParameterRoutes.add('/api/graphics')
   channelParameterRoutes.add('/api/graphics/review')
   sharedReads.add('/api/graphics/review') // Only global templates without a channel parameter.
+  sharedReads.add('/api/cut-marks') // Marcações são do arquivo (acervo global), não do canal.
   channelParameterRoutes.add('/api/v1/engineering/pgm-probe/contingency-loop')
   for (const route of ['/api/v1/graphics/layers','/api/v1/graphics/layers/:layer/trigger','/api/v1/scte/splice-insert']) channelParameterRoutes.add(route)
   server.addHook('preHandler', async (request, reply) => {
@@ -668,7 +671,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const channelIds = new Set<string>()
     for (const value of [query?.channelId, body?.channelId]) if (typeof value === 'string') channelIds.add(value)
     const route = request.routeOptions.url ?? ''
-    const scopedRoute = channelParameterRoutes.has(path) || channelParameterRoutes.has(route) || route === '/api/assets/:id/qc' || /^\/api\/(?:v1\/)?(channels\/:id|rules\/:id|rundowns\/:id|items\/:id|sources\/live\/:id|outputs\/:id|health-events\/:id|integrations\/:id|integration-deliveries\/:id|item-graphics\/:id|graphics\/:id|guests\/:id|destinations\/:id|blocks\/:blockId|timeline\/:rundownId|tenants\/:tenantId\/channels\/:channelId)(?:\/|$)/.test(route)
+    const scopedRoute = channelParameterRoutes.has(path) || channelParameterRoutes.has(route) || route === '/api/assets/:id/qc' || route === '/api/assets/:id/cut-marks' || route === '/api/assets/:id/cut-marks/:markId' || /^\/api\/(?:v1\/)?(channels\/:id|rules\/:id|rundowns\/:id|items\/:id|sources\/live\/:id|outputs\/:id|health-events\/:id|integrations\/:id|integration-deliveries\/:id|item-graphics\/:id|graphics\/:id|guests\/:id|destinations\/:id|blocks\/:blockId|timeline\/:rundownId|tenants\/:tenantId\/channels\/:channelId)(?:\/|$)/.test(route)
     if (/^\/api\/(?:v1\/)?channels\/:id(?:\/|$)/.test(route) && params?.id) channelIds.add(params.id)
     const lookup = (sql: string, id: unknown) => {
       if (typeof id !== 'string') return
@@ -721,7 +724,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (scopedRoute && channelIds.size && [...channelIds].every(id => identity.channelIds!.includes(id)) && (scopedTransaction || !['ALL_RUNDOWNS', 'ASSET_DEFAULT'].includes(String(body?.scope)))) return
     // Parameterized read-only entries must match the registered route too.
     // Global writes and channel-bound reads keep the earlier scope checks.
-    if (!channelIds.size && (request.method === 'GET' || request.method === 'HEAD') && (path==='/api/audit' || path==='/api/graphics' || sharedReads.has(path) || sharedReads.has(route) || /^\/api\/assets\/[^/]+\/(thumbnail\.svg|file|media|workflow|frame\/|metadata-review$)/.test(path))) return
+    if (!channelIds.size && (request.method === 'GET' || request.method === 'HEAD') && (path==='/api/audit' || path==='/api/graphics' || sharedReads.has(path) || sharedReads.has(route) || /^\/api\/assets\/[^/]+\/(cut-marks$|thumbnail\.svg|file|media|workflow|frame\/|metadata-review$)/.test(path))) return
     if (path === '/api/auth/logout' || path === '/api/auth/login' || path === '/ws') return
     return reply.code(403).send({ error: 'Sua conta não pode acessar este canal ou alterar configurações compartilhadas. Peça ao administrador para revisar os canais permitidos.' })
   })
@@ -2296,7 +2299,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * editável, então o espelho fica PENDENTE com o motivo e segue na última
    * publicação completa. A publicação manual já propaga na própria rota. */
   const explicitMirrorRevisions=new Set<string>()
-  const changeLabel:Record<string,string>={ROLLBACK:'um rollback',LIVE_DURATION:'um ajuste de duração de live',INSERT:'uma inserção no ar',COMPENSATION:'uma compensação de horário',ADJUST:'um ajuste no ar'}
+  const changeLabel:Record<string,string>={ROLLBACK:'um rollback',LIVE_DURATION:'um ajuste de duração de live',INSERT:'uma inserção no ar',COMPENSATION:'uma compensação de horário',ALIGNMENT:'um alinhamento de horário',ADJUST:'um ajuste no ar'}
   const reactToSourceRevision=async(event:RevisionEvent)=>{
     if(explicitMirrorRevisions.delete(event.revisionId)||event.rundownId.startsWith('espelho-'))return
     const active=app.db.select({active:operationalPlaylistRevisions.active}).from(operationalPlaylistRevisions).where(eq(operationalPlaylistRevisions.id,event.revisionId)).get()
@@ -2477,6 +2480,34 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         try{onChange()}catch{refreshError??='Compensação gravada; atualização da tela não confirmada.'}
         return {...result,applied:true,refreshError}
       }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Compensação recusada.'})}
+    })
+  })
+  // ---- Alinhamento de horário até um item em foco (plano publicado) ----
+  const alignmentInput=z.object({focusItemId:z.string().min(1),actions:z.array(z.discriminatedUnion('kind',[
+    z.object({kind:z.literal('INSERT'),mediaId:z.string().min(1)}).strict(),
+    z.object({kind:z.literal('DROP'),itemId:z.string().min(1)}).strict(),
+    z.object({kind:z.literal('CUT'),itemId:z.string().min(1),markId:z.string().min(1)}).strict(),
+  ])).min(1).max(12)}).strict()
+  server.post('/api/channels/:id/alignment-review',async(request,reply)=>{
+    const {id}=request.params as {id:string},body=alignmentInput.safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe o item em foco e de 1 a 12 ajustes.'})
+    const runtime=await runtimeFor(app,id);if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    try{assertEditorialAccess(request,id);assertTransportOwnership(id);return reply.header('cache-control','private, no-store').send(inspectAlignment(app.db,compensationContext(runtime),body.data,await usernameOf(request)).review)}
+    catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Alinhamento recusado.'})}
+  })
+  server.post('/api/channels/:id/alignment',async(request,reply)=>{
+    const {id}=request.params as {id:string},body=z.object({input:alignmentInput,requestId:z.string().uuid(),reviewToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Confira o alinhamento antes de aplicar.'})
+    const runtime=await runtimeFor(app,id);if(!runtime)return reply.code(404).send({error:'Canal não encontrado.'})
+    return mutatePlaylist(runtime,reply,async()=>{
+      try{
+        const actor=await usernameOf(request)
+        const result=commitAlignment(app.db,compensationContext(runtime),body.data.input,body.data.requestId,body.data.reviewToken,actor,()=>{assertEditorialAccess(request,id);assertTransportOwnership(id)})
+        let refreshError:string|null=null
+        try{await runtime.refresh();runtime.checkpoint(true)}catch{refreshError='Alinhamento gravado; atualização da execução não confirmada. Confira o canal.'}
+        try{onChange()}catch{refreshError??='Alinhamento gravado; atualização da tela não confirmada.'}
+        return {...result,applied:true,refreshError}
+      }catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);return reply.code(409).send({error:error instanceof Error?error.message:'Alinhamento recusado.'})}
     })
   })
   const inspectLiveDuration=(runtime:ChannelRuntime,input:z.infer<typeof durationInput>,actor:string|null)=>{
@@ -2816,6 +2847,36 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     let refreshError:string|null=null
     try{for(const runtime of app.runtimes.values())await runtime.refresh();onChange()}catch{refreshError='QC gravado; falha ao atualizar a visão. Consulte a conferência novamente.'}
     return {ok:true,...saved,refreshError}
+  })
+
+  // ---- Marcações de corte (QC): trechos que podem sair para alinhar horário ----
+  const cutMarkError=(reply:{code:(status:number)=>{send:(body:unknown)=>unknown}},error:unknown)=>error instanceof CutMarkError?reply.code(error.status).send({error:error.message}):reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:String(error))})
+  server.get('/api/assets/:id/cut-marks',async(request)=>({marks:listCutMarks(app.db,[(request.params as {id:string}).id],(request.query as {stale?:string}).stale==='1')}))
+  server.get('/api/cut-marks',async(request,reply)=>{
+    const ids=String((request.query as {assetIds?:string}).assetIds??'').split(',').map(id=>id.trim()).filter(Boolean)
+    if(ids.length>200)return reply.code(400).send({error:'No máximo 200 arquivos por consulta.'})
+    return {marks:listCutMarks(app.db,ids)}
+  })
+  server.post('/api/assets/:id/cut-marks',async(request,reply)=>{
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode marcar cortes.'})
+    const body=z.object({channelId:z.string().min(1),contentHash:z.string().min(1),fromMs:z.number().int().min(0),toMs:z.number().int().min(1),label:z.string().max(80).nullable().optional()}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe o canal, a versão do arquivo e o trecho (início e fim).'})
+    const id=(request.params as {id:string}).id,actor=access.identity(request)?.username??null
+    let mark
+    try{mark=addCutMark(app.db,{assetId:id,contentHash:body.data.contentHash,fromMs:body.data.fromMs,toMs:body.data.toMs,label:body.data.label??null},actor)}catch(error){return cutMarkError(reply,error)}
+    await logDecision(app,'@qc',null,'CUT_MARK_ADDED',{channelId:body.data.channelId,assetId:id,contentHash:body.data.contentHash,fromMs:mark.fromMs,toMs:mark.toMs,kind:mark.kind},actor)
+    onChange()
+    return reply.code(201).send({mark})
+  })
+  server.delete('/api/assets/:id/cut-marks/:markId',async(request,reply)=>{
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode remover marcações.'})
+    const body=z.object({channelId:z.string().min(1)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe o canal em que a marcação foi revista.'})
+    const {id,markId}=request.params as {id:string;markId:string},actor=access.identity(request)?.username??null
+    try{removeCutMark(app.db,id,markId)}catch(error){return cutMarkError(reply,error)}
+    await logDecision(app,'@qc',null,'CUT_MARK_REMOVED',{channelId:body.data.channelId,assetId:id,markId},actor)
+    onChange()
+    return {ok:true}
   })
 
   const assetPatch = z.object({
