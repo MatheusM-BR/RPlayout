@@ -13,10 +13,10 @@ export function publicAuditValue(value:unknown):unknown {
 
 /** Visibility precedes the limit. Keyset pagination cannot starve a channel
  * just because unrelated administration events occupy the newest rows. */
-export async function readAudit(db:Db,scope:{channelIds:string[]|null;channelId?:string;globalAdmin:boolean},limit:number) {
+export async function readAudit(db:Db,scope:{channelIds:string[]|null;channelId?:string;globalAdmin:boolean;kind?:string;actor?:string;before?:{createdAt:string;id:string}},limit:number) {
   const ownership=new Map((await db.select({id:rundowns.id,channelId:rundowns.channelId}).from(rundowns)).map(row=>[row.id,row.channelId]))
   const result:Array<typeof operatorDecisions.$inferSelect>=[]
-  let cursor:{createdAt:string;id:string}|undefined
+  let cursor:{createdAt:string;id:string}|undefined=scope.before
   while(result.length<limit){
     const rows=await db.select().from(operatorDecisions)
       .where(cursor ? or(lt(operatorDecisions.createdAt,cursor.createdAt),and(eq(operatorDecisions.createdAt,cursor.createdAt),lt(operatorDecisions.id,cursor.id))) : undefined)
@@ -28,6 +28,8 @@ export async function readAudit(db:Db,scope:{channelIds:string[]|null;channelId?
       const payload=row.payload && typeof row.payload==='object' && !Array.isArray(row.payload) ? row.payload : {}
       if(typeof payload.channelId==='string')ids.add(payload.channelId)
       if(Array.isArray(payload.channelIds))for(const id of payload.channelIds)if(typeof id==='string')ids.add(id)
+      if(scope.kind&&row.kind!==scope.kind)continue
+      if(scope.actor&&(row.actorUsername??'').toLowerCase()!==scope.actor.toLowerCase())continue
       const visible=ids.size>0 ?
         (!scope.channelId || ids.has(scope.channelId)) && [...ids].every(id=>scope.channelIds===null || scope.channelIds.includes(id)) :
         scope.globalAdmin && scope.channelIds===null && !scope.channelId

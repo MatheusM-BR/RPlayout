@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
+import { confirmAction } from '../domain/confirm.js'
 import { durationIn, qcApproved, type Channel, type ManagedLiveSource } from '@rplayout/protocol'
 import type { LibraryFolder, LibraryAsset, ScanStatus, Live } from '../types.js'
 import type { Monitors as MonitorFeeds } from '../types.js'
@@ -1033,7 +1034,12 @@ function QualityControlSession({
     }finally{qcActionPending.current=false;setQcDecisionBusy(false)}
   }
   const handleApprove = (id?: string) => decide('APPROVED', id)
-  const handleReject = (id?: string) => decide('IGNORED', id)
+  const handleReject = async (id?: string) => {
+    const target = assets.find((a) => a.id === (id ?? selectedAssetId))
+    const nome = target?.title ?? target?.path ?? 'este arquivo'
+    const ok = await confirmAction({ title: 'Rejeitar clipe', message: `Rejeitar "${nome}"? Vale para todos os canais: o arquivo vai para ignorados/quarentena e sai das grades.`, confirmLabel: 'Rejeitar', tone: 'danger' })
+    if (ok) await decide('IGNORED', id)
+  }
 
   const okCount = assets.filter((a) => qcApproved(a.qcStatus) && !a.probeError && !a.ignored).length
   const pendingCount = assets.filter((a) => ['PENDING', 'ANALYSIS'].includes(a.qcStatus) && !a.ignored).length

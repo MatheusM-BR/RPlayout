@@ -803,11 +803,23 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/audit', async (request, reply) => {
     reply.header('Cache-Control','private, no-store')
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar auditoria.' })
-    const query = request.query as { limit?: string;channelId?:string }
+    const query = request.query as { limit?: string;channelId?:string;kind?:string;actor?:string;before?:string }
+    // Cursor opaco 'createdAt|id' da página anterior (a mais antiga já lida).
+    const [beforeAt,beforeId]=(query.before??'').split('|')
+    const before=beforeAt&&beforeId?{createdAt:beforeAt,id:beforeId}:undefined
     const limit = Math.min(1000, Math.max(1, Math.trunc(Number(query.limit ?? 200) || 200)))
     const identity=access.identity(request)
-    const entries=await readAudit(app.db,{channelId:query.channelId,channelIds:identity?.channelIds ?? null,globalAdmin:access.role(request)==='ADMIN'},limit)
-    return { entries }
+    const entries=await readAudit(app.db,{channelId:query.channelId,channelIds:identity?.channelIds ?? null,globalAdmin:access.role(request)==='ADMIN',kind:query.kind||undefined,actor:query.actor||undefined,before},limit)
+    const oldest=entries[0]
+    return { entries,nextBefore:entries.length>=limit&&oldest?`${oldest.createdAt}|${oldest.id}`:null }
+  })
+  // A exportação em CSV é feita no navegador; este registro deixa rastro de quem exportou.
+  server.post('/api/audit/exported', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar auditoria.' })
+    const body=(request.body??{}) as {rows?:unknown}
+    const rows=typeof body.rows==='number'&&Number.isFinite(body.rows)?Math.trunc(body.rows):null
+    await securityAudit('AUDIT_EXPORTED',access.identity(request)?.username??null,{rows,station:request.ip})
+    return reply.code(204).send()
   })
   server.get('/api/health-events', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar saúde.' })

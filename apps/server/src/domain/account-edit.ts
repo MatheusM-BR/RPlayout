@@ -97,7 +97,7 @@ export function updateAccount(db: Db,id: string,input: z.infer<typeof updateAcco
     if(input.password!==undefined&&!passwordHash)throw new Error('Hash preparado ausente; nenhuma alteração aplicada.')
     tx.update(users).set({...(input.role?{role:input.role}:{}),...(input.enabled===undefined?{}:{enabled:input.enabled}),...(passwordHash?{passwordHash}:{})}).where(eq(users.id,id)).run()
     const revoked=tx.delete(sessions).where(eq(sessions.userId,id)).run().changes
-    audit(tx,'USER_UPDATED_SESSIONS_REVOKED',actor?.username??null,{userId:id,role:input.role,enabled:input.enabled,passwordChanged:input.password!==undefined,revokedCount:revoked,station:authority.request.ip,reviewedRevision:before.revision,reviewedAccountRevision:target!.revision})
+    audit(tx,'USER_UPDATED_SESSIONS_REVOKED',actor?.username??null,{userId:id,role:input.role,roleFrom:target!.role,roleTo:nextRole,enabled:input.enabled,enabledFrom:target!.enabled,enabledTo:nextEnabled,passwordChanged:input.password!==undefined,revokedCount:revoked,station:authority.request.ip,reviewedRevision:before.revision,reviewedAccountRevision:target!.revision})
     return {...response(db,actor?.id!==id),ok:true,requiresLogin:actor?.id===id}
   },{behavior:'immediate'})
 }

@@ -1,3 +1,4 @@
+import { focusOwnsKey } from './domain/key-guards'
 import { useEscape } from './domain/use-escape.js'
 import { ConfirmHost } from './components/ConfirmHost.js'
 import { confirmOpen } from './domain/confirm.js'
@@ -136,6 +137,9 @@ export function App() {
   // Painel bloqueado: nenhuma tecla ou clique de operação nesta estação até
   // desbloquear no aviso do topo. Para transmissões longas e mesa compartilhada.
   const [panelLock, setPanelLock] = useStoredChoice('rplayout:panel-lock', ['on', 'off'] as const, 'off')
+  useEffect(() => {
+    document.documentElement.dataset.panelLock = panelLock
+  }, [panelLock])
   const addingItem=useRef(false)
   const [isAddingItem,setIsAddingItem]=useState(false)
   /** Uma lista .m3u está sendo arrastada por cima da janela. */
@@ -727,6 +731,8 @@ export function App() {
       if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return
 
       if (event.code === 'Space') {
+        // Com o foco num botão/link/select, Espaço é do controle: não vira TAKE.
+        if (focusOwnsKey(element)) return
         event.preventDefault()
         // Space is the TAKE button: what is armed in PVW goes on air. Before,
         // it took the selected/next grade line even with a live CUEd in PVW.
@@ -750,7 +756,7 @@ export function App() {
         return
       }
 
-      if (element?.closest('button, a, [role="button"]')) return
+      if (focusOwnsKey(element)) return
       // Delete tira da grade. Backspace não: num teclado de notebook ele fica
       // ao lado do Enter e a chance de errar não vale a comodidade.
       if (event.key === 'Delete') {

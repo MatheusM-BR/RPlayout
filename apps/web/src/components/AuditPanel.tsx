@@ -191,6 +191,7 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
             </button>
             {!loading && !error && <a
               download="rplayout-auditoria.csv"
+              onClick={() => { void api.auditExported(filtered.length) }}
               href={`data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`}
               className="px-space-lg py-2 rounded bg-accent-ice text-surface-base hover:brightness-110 font-label-caps text-label-caps uppercase font-bold transition-all shadow-sm flex items-center gap-1.5"
             >

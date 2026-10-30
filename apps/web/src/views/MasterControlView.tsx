@@ -1,3 +1,4 @@
+import { masterDeleteAllowed } from '../domain/key-guards'
 import { confirmAction, notify } from '../domain/confirm.js'
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
 import { finalCount, gradeEndWarning, mmss, nextFixedCommitment, countdownText } from '../domain/broadcast-cues.js'
@@ -519,6 +520,19 @@ export function MasterControlView({
     }
   }, [])
 
+  // Esc desarma o ABORT sem parar o canal.
+  useEffect(() => {
+    if (!abortArmed) return
+    const onEsc = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      if (abortTimerRef.current) window.clearInterval(abortTimerRef.current)
+      setAbortArmed(false)
+      setAbortCountdown(3)
+    }
+    window.addEventListener('keydown', onEsc)
+    return () => window.removeEventListener('keydown', onEsc)
+  }, [abortArmed])
+
   // Item no ar e próximo item preparado. "Próximo" é pré-roll automático;
   // CUE é a escolha explícita do operador para o PVW.
   const onAirIndex = useMemo(() => {
@@ -649,8 +663,10 @@ export function MasterControlView({
       const element = e.target as HTMLElement | null
       const typing = element?.matches('input, select, textarea') || element?.isContentEditable
       if (typing) return
+      const dialogOpen = Boolean(document.querySelector('[role="dialog"], [aria-modal="true"]'))
+      const panelLocked = document.documentElement.dataset.panelLock === 'on'
 
-      if (e.key === 'Delete' && selectedItemIds.size > 0) {
+      if (e.key === 'Delete' && selectedItemIds.size > 0 && masterDeleteAllowed(e, element, panelLocked, dialogOpen)) {
         e.preventDefault()
         handleBulkDelete()
       }
@@ -1135,7 +1151,7 @@ export function MasterControlView({
                     >
                       <span className="material-symbols-outlined text-[15px]">stop</span>
                       <span className="font-label-mono text-[12px] uppercase font-bold">
-                        {abortArmed ? `${abortCountdown}s` : 'ABORT'}
+                        {abortArmed ? `CONFIRMAR ${abortCountdown}s · Esc cancela` : 'ABORT'}
                       </span>
                     </button>
                   </div>

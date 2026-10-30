@@ -5517,3 +5517,7 @@ com evidência e conservar o histórico na matriz. Por pedido do operador:
 implementar o grupo inteiro, depois validar em uma rodada de fechamento.
 Status/documentação não disparam testes. Em falha real, reparar e reexecutar o
 escopo afetado; não repetir grupos aprovados sem alteração que os invalide.
+
+## r88-32 (30/10/2026)
+
+Teclado seguro e auditoria do administrador feitos (ver CORRECOES-R88-32). Perguntas abertas ao dono: Espaço com foco em controle (inerte, como feito) ou sempre TAKE; quem é alertado no destrave sem prazo de madrugada; retenção/imutabilidade exigida da auditoria (decide o hash encadeado). Totais: 6 itens feitos, 10 adiados, 4 rejeitados.

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { trapTab } from '../domain/focus-trap.js'
 import { framesToMs, msToFrames, qcApproved, resolveTrim, type Channel, type Rate } from '@rplayout/protocol'
 import { api, type AlignmentAction, type CutMark } from '../api.js'
 import type { Categoria, LibraryAsset, RundownView } from '../types.js'
@@ -104,6 +105,8 @@ export function AlignmentDialog({ channel, view, status, onAirItemId, library, c
   const [chosen, setChosen] = useState<string[]>([])
   const [marks, setMarks] = useState<CutMark[]>([])
   useEscape(!busy, onClose)
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => { dialogRef.current?.querySelector<HTMLElement>('[data-initial-focus]')?.focus() }, [])
   const fill = status.mode === 'FILL', needMs = Math.abs(status.diffMs ?? 0)
 
   // Itens entre o que está no ar e o foco: onde dá para retirar/cortar.
@@ -192,8 +195,8 @@ export function AlignmentDialog({ channel, view, status, onAirItemId, library, c
 
   const visible = candidates.filter(entry => !search.trim() || entry.title.toLowerCase().includes(search.trim().toLowerCase())).slice(0, 60)
   return (
-    <div role="dialog" aria-modal="true" aria-label="Alinhar horário" className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4" onClick={() => { if (!busy) onClose() }}>
-      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-border-strong bg-surface-panel shadow-2xl" onClick={event => event.stopPropagation()}>
+    <div role="dialog" aria-modal="true" aria-label="Alinhar horário" className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4" onClick={() => { if (!busy && actions().length === 0) onClose() }}>
+      <div ref={dialogRef} onKeyDown={event => { trapTab(event, dialogRef.current) }} className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-border-strong bg-surface-panel shadow-2xl" onClick={event => event.stopPropagation()}>
         <header className="border-b border-border-subtle p-4">
           <h2 className="font-headline-md text-[16px] font-bold uppercase tracking-wide text-on-surface">Alinhar até “{status.title}”</h2>
           <p className="mt-1 text-[13px] text-on-surface-variant">
@@ -253,7 +256,7 @@ export function AlignmentDialog({ channel, view, status, onAirItemId, library, c
             {fill ? `Escolhido ${durationText(chosenMs)} · ${restMs >= 0 ? `sobra ${durationText(restMs)}` : `passa ${durationText(-restMs)}`}` : `Recupera ${durationText(chosenMs)} · ${restMs > 0 ? `ainda faltam ${durationText(restMs)}` : `sobra ${durationText(-restMs)}`}`}
           </span>
           <div className="flex gap-2">
-            <button type="button" className="btn" disabled={busy} onClick={onClose}>CANCELAR</button>
+            <button type="button" data-initial-focus className="btn" disabled={busy} onClick={onClose}>CANCELAR</button>
             <button type="button" className="btn primary" disabled={busy || !chosen.length || (fill && restMs < -ALIGN_TOLERANCE_MS)} onClick={() => void apply()}>{busy ? 'APLICANDO…' : 'APLICAR NO AR'}</button>
           </div>
           {error && <p role="alert" className="w-full text-[12px] text-on-air-crimson">{error}</p>}
