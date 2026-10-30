@@ -10,7 +10,7 @@ const minutesAgo = (m: number) => new Date(NOW - m * 60_000 - 500).toISOString()
 function fixture() {
   const db = openDatabase(':memory:')
   const insert = (id: string, minutes: number) => db.db.insert(healthEvents).values({ id, channelId: 'ch', component: 'SIGNAL', state: 'black', severity: 'CRITICAL', message: 'PGM black', occurredAt: minutesAgo(minutes) }).run()
-  const read = (role: Parameters<typeof readOpenNotifications>[4]) => readOpenNotifications(db.db, null, undefined, role, NOW)
+  const read = (role: Parameters<typeof readOpenNotifications>[3]) => readOpenNotifications(db.db, null, undefined, role, NOW)
   return { db, insert, read }
 }
 
