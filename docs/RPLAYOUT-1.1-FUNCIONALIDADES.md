@@ -217,7 +217,7 @@ O servidor do RPlayout pode permanecer ligado sem interface com `RPlayout-Server
 ### Usuários e acesso
 
 - Configuração acessível em `Configurações > Usuários e acesso`.
-- Papéis: Operador, Programador, Supervisor e Administrador; configuração de canais/saídas exige Supervisor ou Administrador.
+- Papéis (do menor ao maior): Operador, Programador, Supervisor, Gestor e Administrador; configuração de canais/saídas exige Supervisor ou superior. O Gestor faz tudo do Supervisor e cria/edita/desativa contas de papéis abaixo dele (nunca Gestor ou Administrador); segurança, cofre, integrações e rede continuam só do Administrador. Queda de sinal do PGM sem ciente escala: Operador (<2 min), Supervisor (2 a <7), Gestor (7 a <15), Administrador (>=15); o ciente de qualquer papel autorizado encerra o escalonamento.
 - Ações de risco exigem permissão e entram na auditoria.
 - Retirar um canal agora significa arquivá-lo: pare o PGM e limpe o CUE antes. Grade, publicações e ocorrências permanecem disponíveis no histórico. Reativar exige Supervisor/Administrador e não inicia engine nem faz TAKE; reaplica a distribuição previamente configurada.
 - Aired permite consultar canais arquivados autorizados sem selecioná-los para operação. Contas sem canal ativo autorizado também podem abrir Histórico e Auditoria.

@@ -1,16 +1,21 @@
 import { confirmAction } from '../domain/confirm.js'
 import {useEffect,useRef,useState} from 'react'
-import type {AccountCatalogReview,AccountSessionsReview,ReviewedAccount} from '@rplayout/protocol'
+import {canManageRole,type AccountCatalogReview,type AccountSessionsReview,type ReviewedAccount} from '@rplayout/protocol'
+import {useAccessRole} from '../domain/permissions.js'
 import {api} from '../api.js'
 import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 
-const roles:Record<string,string>={OPERATOR:'Operador',PROGRAMMER:'Programador',SUPERVISOR:'Supervisor',ADMIN:'Administrador'}
+const roles:Record<string,string>={OPERATOR:'Operador',PROGRAMMER:'Programador',SUPERVISOR:'Supervisor',GESTOR:'Gestor',ADMIN:'Administrador'}
 const roleName=(role:string)=>Object.hasOwn(roles,role)?roles[role]:`Papel inválido: ${role}`
 type Editor={kind:'PROFILE'|'ACCESS';review:AccountCatalogReview;user:ReviewedAccount}
 const inputClass='bg-surface-panel border border-border-subtle p-2 rounded text-on-surface'
 const buttonClass='px-3 py-2 border border-border-subtle rounded disabled:opacity-50'
 
 export function UsersPanel({onMessage}:{onMessage:(text:string)=>void}) {
+  // Espelho da regra do servidor (que decide): Gestor só vê papéis abaixo de Gestor para atribuir e só edita contas abaixo dele.
+  const actorRole=useAccessRole()
+  const manageable=(target:string)=>actorRole===null||canManageRole(actorRole,target as never)
+  const assignable=Object.entries(roles).filter(([key])=>manageable(key))
   const [view,setView]=useState<AccountCatalogReview|null>(null),[createReview,setCreateReview]=useState<AccountCatalogReview|null>(null)
   const [username,setUsername]=useState(''),[password,setPassword]=useState(''),[role,setRole]=useState('OPERATOR')
   const [editor,setEditor]=useState<Editor|null>(null),[sessionReview,setSessionReview]=useState<AccountSessionsReview|null>(null)
@@ -109,12 +114,12 @@ export function UsersPanel({onMessage}:{onMessage:(text:string)=>void}) {
     {view&&<>
       <p>{view.users.length} conta(s) na conferência.</p>
       {view.users.length===0&&<p>{view.bootstrapAllowed?'Nenhuma conta cadastrada nesta conferência. A primeira conta será Administrador.':'Primeira conta indisponível nesta estação. Abra a página local do servidor ou entre com o administrador configurado.'}</p>}
-      <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr><th>Usuário</th><th>Papel / situação</th><th>Acesso</th><th>Ações</th></tr></thead><tbody>{view.users.map(user=><tr key={user.id} className="border-t border-border-subtle"><td className="py-3">{user.username}</td><td>{roleName(user.role)} · {user.enabled?'Ativo':'Inativo'}</td><td>{user.channelIds===null?'Todos os canais':`${user.channelIds.length} canal(is)`} · {user.stationIps===null?'Todas as estações':`${user.stationIps.length} estação(ões)`}</td><td className="flex flex-wrap gap-1 py-2"><button className={buttonClass} disabled={disabled||Boolean(editor||sessionReview)} onClick={()=>edit(user,'PROFILE')}>Editar conta</button><button className={buttonClass} disabled={disabled||Boolean(editor||sessionReview)} onClick={()=>edit(user,'ACCESS')}>Canais / estações</button><button className={buttonClass} disabled={disabled||Boolean(editor||sessionReview)} onClick={()=>void inspectSessions(user)}>Conferir sessões</button></td></tr>)}</tbody></table></div>
+      <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr><th>Usuário</th><th>Papel / situação</th><th>Acesso</th><th>Ações</th></tr></thead><tbody>{view.users.map(user=><tr key={user.id} className="border-t border-border-subtle"><td className="py-3">{user.username}</td><td>{roleName(user.role)} · {user.enabled?'Ativo':'Inativo'}</td><td>{user.channelIds===null?'Todos os canais':`${user.channelIds.length} canal(is)`} · {user.stationIps===null?'Todas as estações':`${user.stationIps.length} estação(ões)`}</td><td className="flex flex-wrap gap-1 py-2"><button className={buttonClass} disabled={disabled||Boolean(editor||sessionReview)||!manageable(user.role)} title={manageable(user.role)?undefined:'Somente Administrador altera contas Gestor ou Administrador.'} onClick={()=>edit(user,'PROFILE')}>Editar conta</button><button className={buttonClass} disabled={disabled||Boolean(editor||sessionReview)||!manageable(user.role)} title={manageable(user.role)?undefined:'Somente Administrador altera contas Gestor ou Administrador.'} onClick={()=>edit(user,'ACCESS')}>Canais / estações</button><button className={buttonClass} disabled={disabled||Boolean(editor||sessionReview)||!manageable(user.role)} title={manageable(user.role)?undefined:'Somente Administrador altera contas Gestor ou Administrador.'} onClick={()=>void inspectSessions(user)}>Conferir sessões</button></td></tr>)}</tbody></table></div>
     </>}
     <fieldset disabled={disabled||Boolean(editor||sessionReview)} className="flex flex-col gap-2 border border-border-subtle rounded p-3"><legend>Nova conta</legend>
       <label className="flex flex-col">Nome de acesso<input className={inputClass} autoComplete="off" value={username} onChange={event=>setUsername(event.target.value)}/></label>
       <label className="flex flex-col">Senha provisória<input className={inputClass} type="password" autoComplete="new-password" value={password} onChange={event=>setPassword(event.target.value)}/></label>
-      <label className="flex flex-col">Papel<select className={inputClass} value={createReview?.bootstrapAllowed?'ADMIN':role} disabled={createReview?.bootstrapAllowed} onChange={event=>setRole(event.target.value)}>{Object.entries(roles).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+      <label className="flex flex-col">Papel<select className={inputClass} value={createReview?.bootstrapAllowed?'ADMIN':role} disabled={createReview?.bootstrapAllowed} onChange={event=>setRole(event.target.value)}>{assignable.map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
       {createStale&&<p role="alert">As contas mudaram após o início deste rascunho. Campos preservados; reabra a conferência para criar.</p>}
       <button className={buttonClass} disabled={!createReview?.canCreate||createStale||!username.trim()||password.length<8} onClick={()=>void add()}>Criar conta conferida</button>
     </fieldset>
@@ -122,7 +127,7 @@ export function UsersPanel({onMessage}:{onMessage:(text:string)=>void}) {
       <h3 className="font-bold">{editor.kind==='PROFILE'?'Conta':'Acesso'} de {editor.user.username}</h3>
       <fieldset disabled={disabled} className="flex flex-col gap-3">
         {editor.kind==='PROFILE'?<>
-          <label>Papel <select className={inputClass} value={editRole} onChange={event=>setEditRole(event.target.value)}>{!Object.hasOwn(roles,editRole)&&<option value={editRole}>Papel inválido — selecione explicitamente</option>}{Object.entries(roles).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+          <label>Papel <select className={inputClass} value={editRole} onChange={event=>setEditRole(event.target.value)}>{!Object.hasOwn(roles,editRole)&&<option value={editRole}>Papel inválido — selecione explicitamente</option>}{assignable.map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
           <label><input type="checkbox" checked={enabled} onChange={event=>setEnabled(event.target.checked)}/> Conta ativa</label>
           <label className="flex flex-col">Nova senha (deixe vazio para preservar)<input className={inputClass} type="password" autoComplete="new-password" value={newPassword} onChange={event=>setNewPassword(event.target.value)}/></label>
         </>:<>

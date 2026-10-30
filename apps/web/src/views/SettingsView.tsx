@@ -60,10 +60,10 @@ export function SettingsView({
   onOpenGraphics,
   onOpenAudit,
 }: Props) {
-  const canManageUsers = useCan('USER_MANAGE')
+  const canManageUsers = useCan('USER_MANAGE_LOWER')
   const canConfigure = useCan('OUTPUT_CONTROL')
   const [activeTab, setActiveTab] = useState<SettingsTab>('canais')
-  const canRestoreProject = sessionRole === 'Supervisor' || sessionRole === 'Administrador'
+  const canRestoreProject = sessionRole === 'Supervisor' || sessionRole === 'Gestor' || sessionRole === 'Administrador'
   const [engineProcess, setEngineProcess] = useState<Awaited<ReturnType<typeof api.processes>>['processes'][number]>()
   const [processError, setProcessError] = useState(false)
   useEffect(() => {
@@ -744,7 +744,7 @@ export function SettingsView({
                     <span className="material-symbols-outlined text-primary text-[20px]">inventory_2</span>
                     Projetos do Canal: {currentEditingChannel.name}
                   </h3>
-                  <p className="font-body-sm text-[11.5px] text-outline mt-1">Salva grade, fontes ao vivo, saídas, regras, multiview e gráficos deste canal. Restaurar exige Supervisor/Administrador, PGM parado e CUE limpo; reinicia o engine para aplicar a configuração. Publicações existentes são preservadas: revise e publique a grade restaurada. Não altera os demais canais nem o acervo MAM.</p>
+                  <p className="font-body-sm text-[11.5px] text-outline mt-1">Salva grade, fontes ao vivo, saídas, regras, multiview e gráficos deste canal. Restaurar exige Supervisor/Gestor/Administrador, PGM parado e CUE limpo; reinicia o engine para aplicar a configuração. Publicações existentes são preservadas: revise e publique a grade restaurada. Não altera os demais canais nem o acervo MAM.</p>
                 </div>
                 <ProjectRestorePanel key={currentEditingChannel.id} channelId={currentEditingChannel.id} canRestore={canRestoreProject} externalBusy={isSaving} onMessage={onMessage} onChanged={onChanged}/>
               </div>

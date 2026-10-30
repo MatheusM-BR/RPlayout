@@ -42,7 +42,7 @@ function escalationFixture() {
   return { db, state, make, escalated, insert }
 }
 
-it('escala uma vez aos 2 min e outra aos 7, independente do teto de lembretes', async () => {
+it('escala uma vez por nível (SUPERVISOR 2 min, GESTOR 7, ADMIN 15), independente do teto de lembretes', async () => {
   const { db, state, make, escalated, insert } = escalationFixture()
   const notifier = make()
   insert('pgm-signal:a:active', state.clock + 1000)
@@ -57,10 +57,15 @@ it('escala uma vez aos 2 min e outra aos 7, independente do teto de lembretes', 
   state.clock += 5 * 60_000 - 60_000 - 1000; await notifier.tick()
   expect(escalated()).toHaveLength(1)
   state.clock += 1000; await notifier.tick()
-  expect(escalated().map(row => row.tier)).toEqual(['SUPERVISOR', 'ADMIN'])
+  expect(escalated().map(row => row.tier)).toEqual(['SUPERVISOR', 'GESTOR'])
   expect(escalated()[1]!.minutesOpen).toBe(7)
-  state.clock += 600_000; await notifier.tick()
+  state.clock += 7 * 60_000 + 59_000; await notifier.tick()
   expect(escalated()).toHaveLength(2)
+  state.clock += 1000; await notifier.tick()
+  expect(escalated().map(row => row.tier)).toEqual(['SUPERVISOR', 'GESTOR', 'ADMIN'])
+  expect(escalated()[2]!.minutesOpen).toBe(15)
+  state.clock += 600_000; await notifier.tick()
+  expect(escalated()).toHaveLength(3)
   db.sqlite.close()
 })
 
@@ -85,12 +90,16 @@ it('instância nova reconstrói do banco e não repete nível já enviado', asyn
   const first = make(); first.start(); await first.tick()
   expect(escalated()).toEqual([])
   state.clock += 5 * 60_000; await first.tick()
-  expect(escalated().map(row => row.tier)).toEqual(['ADMIN'])
+  expect(escalated().map(row => row.tier)).toEqual(['GESTOR'])
   first.close()
   const second = make(); second.start(); await second.tick(); await second.tick()
   expect(escalated()).toHaveLength(1)
   second.close()
   db.sqlite.close()
+})
+
+it('o texto do alerta diz "escalado para GESTOR"', () => {
+  expect(alertText('alert.escalated', { id: 'x', payload: { component: 'SIGNAL', state: 'black', message: 'PGM black', tier: 'GESTOR', minutesOpen: 7 } }, 'ab1023d0-8291')).toContain('escalado para GESTOR · sem ciente há 7 min')
 })
 
 it('reaproveitar o id com novo occurredAt reinicia a escalada', async () => {

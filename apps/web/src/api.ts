@@ -254,7 +254,7 @@ export interface LiveReplacementView {
 }
 const liveReplacementPath=(channelId:string,suffix='')=>`/api/channels/${encodeURIComponent(channelId)}/live-replacement${suffix}`
 export const api = {
-  notifications:(signal?:AbortSignal)=>send<{notifications:Array<{id:string;channelId:string|null;component:string;state:string;severity:'CRITICAL';occurredAt:string;minutesOpen:number;tier:'OPERATOR'|'SUPERVISOR'|'ADMIN';forMe:boolean}>}>('/api/notifications',{signal}),
+  notifications:(signal?:AbortSignal)=>send<{notifications:Array<{id:string;channelId:string|null;component:string;state:string;severity:'CRITICAL';occurredAt:string;minutesOpen:number;tier:'OPERATOR'|'SUPERVISOR'|'GESTOR'|'ADMIN';forMe:boolean}>}>('/api/notifications',{signal}),
   /** PREPARE: 409 bodies are returned (not thrown) so the screen can show outcome flags. */
   liveReplacementPrepare:(channelId:string,targetSourceId:string,idempotencyKey:string)=>requestResult<LiveReplacementView>(liveReplacementPath(channelId),{method:'POST',headers:{'idempotency-key':idempotencyKey},body:JSON.stringify({targetSourceId})},{acceptedStatuses:[409]}),
   liveReplacementCommand:(channelId:string,transactionId:string,operation:'commit'|'cancel'|'status')=>requestResult<LiveReplacementView>(liveReplacementPath(channelId,`/${encodeURIComponent(transactionId)}/${operation}`),{method:'POST',body:JSON.stringify(operation==='status'?{}:{confirm:true})},{acceptedStatuses:[409]}),

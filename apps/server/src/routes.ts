@@ -856,7 +856,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     catch (error) { if (error instanceof IncidentError) return reply.code(error.status).send({ error: error.message }); throw error }
   })
   server.post('/api/health-events/:id/ack', async (request, reply) => {
-    if (!(await allowed(request, 'CHANNEL_STOP'))) return reply.code(403).send({ error: 'Supervisor precisa reconhecer alertas.' })
+    if (!(await allowed(request, 'CHANNEL_STOP'))) return reply.code(403).send({ error: 'Supervisor, Gestor ou Administrador precisa reconhecer alertas.' })
     const { id } = request.params as { id: string }
     try{
       const result=acknowledgeHealthIncident(app.db,id,()=>({actor:access.identity(request)?.username??null,channelIds:access.identity(request)?.channelIds??null,canAcknowledge:can(access.role(request),'CHANNEL_STOP')}))

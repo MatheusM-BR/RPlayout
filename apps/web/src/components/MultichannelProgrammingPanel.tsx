@@ -8,7 +8,7 @@ const sameRate = (a: Channel, b: Channel) => a.rate.num * b.rate.den === b.rate.
 
 /** Programação multicanal do canal em foco: espelho vinculado (este canal roda
  * o que outro publicar) e cópia independente de uma grade de outro canal.
- * Só Supervisor/Administrador com acesso aos dois canais (o servidor confere). */
+ * Só Supervisor/Gestor/Administrador com acesso aos dois canais (o servidor confere). */
 export function MultichannelProgrammingPanel({ channel, channels, onMessage, onChanged }: { channel: Channel; channels: Channel[]; onMessage: (text: string) => void; onChanged: () => void }) {
   const [state, setState] = useState<{ mirror: ChannelMirror | null; mirrorsFrom: ChannelMirror[]; canShare: boolean } | null>(null)
   const [rundowns, setRundowns] = useState<Rundown[]>([])
@@ -43,7 +43,7 @@ export function MultichannelProgrammingPanel({ channel, channels, onMessage, onC
     <section className="bg-surface-card border border-border-subtle rounded-xl p-space-lg grid gap-4" aria-label="Programação multicanal">
       <div>
         <h3 className="font-headline-md text-[15px] font-bold flex items-center gap-2"><span className="material-symbols-outlined text-primary text-[20px]">hub</span>Programação multicanal // {channel.name}</h3>
-        <p className="text-[12px] text-outline">Cada canal é independente. Supervisor ou Administrador com acesso aos dois canais pode espelhar ou copiar a programação. Só entre canais com a mesma cadência.</p>
+        <p className="text-[12px] text-outline">Cada canal é independente. Supervisor, Gestor ou Administrador com acesso aos dois canais pode espelhar ou copiar a programação. Só entre canais com a mesma cadência.</p>
       </div>
       {error && <p role="alert" className="text-[12px] text-on-air-crimson">{error}</p>}
       {!state && !error && <p className="text-[12px] text-outline">Consultando…</p>}

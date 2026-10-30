@@ -63,7 +63,7 @@ export function readHealthIncidents(db:Db,channelIds:string[]|null,channelId:str
 export function acknowledgeHealthIncident(db:Db,id:string,authority:()=>IncidentAuthority){
   return db.transaction(tx=>{
     const access=authority()
-    if(!access.canAcknowledge)throw new IncidentError(403,'Supervisor precisa reconhecer alertas.')
+    if(!access.canAcknowledge)throw new IncidentError(403,'Supervisor, Gestor ou Administrador precisa reconhecer alertas.')
     const event=tx.select().from(healthEvents).where(eq(healthEvents.id,id)).get()
     if(!event)throw new IncidentError(404,'Alerta não encontrado.')
     if(access.channelIds!==null&&(event.channelId===null||!access.channelIds.includes(event.channelId)))throw new IncidentError(403,'Sem acesso a este alerta.')

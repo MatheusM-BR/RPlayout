@@ -37,7 +37,7 @@ function InsertionContent({channelId,rate,assets,defaultOpen=false}:{channelId:s
         if(mounted.current){
           if(status.run.phase==='CONFIRMED'){
             setReview(null);setMessage(status.run.nativeProgramConfirmed?'O registro confirma a inserção no PGM pelo engine. Não repita TAKE; confira o destino.':'O registro confirma a inserção como próximo, sem TAKE. PGM/CUE preservados; Auto Next do item atual continua valendo.')
-          }else setMessage(status.configurationOperation.state!=='IDLE'?'Inserção em andamento ou inconclusiva; não repita TAKE. Pare o PGM, limpe CUE e abra Distribuição para reconciliação por Supervisor/Administrador. '+(status.configurationOperation.reason??status.run.message??''):status.run.message??'Confira o resultado persistido antes de uma nova decisão.')
+          }else setMessage(status.configurationOperation.state!=='IDLE'?'Inserção em andamento ou inconclusiva; não repita TAKE. Pare o PGM, limpe CUE e abra Distribuição para reconciliação por Supervisor/Gestor/Administrador. '+(status.configurationOperation.reason??status.run.message??''):status.run.message??'Confira o resultado persistido antes de uma nova decisão.')
         }
       }catch{/* Original error remains; never retry mutation or fabricate success. */}}
     }

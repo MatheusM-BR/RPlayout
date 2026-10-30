@@ -6,7 +6,7 @@ import { useNotifications } from '../domain/use-notifications.js'
 import { useCan } from '../domain/permissions.js'
 
 const stateName: Record<string, string> = { black: 'BLACK', freeze: 'CONGELAMENTO', silence: 'SILÊNCIO' }
-const tierName = { OPERATOR: 'Operador', SUPERVISOR: 'Supervisor', ADMIN: 'Administrador' } as const
+const tierName = { OPERATOR: 'Operador', SUPERVISOR: 'Supervisor', GESTOR: 'Gestor', ADMIN: 'Administrador' } as const
 
 /** Faixa discreta "Pendências": quedas de sinal do PGM ainda sem ciente, por nível.
  * "Visto" só silencia o som nesta estação; "Ciente" grava no servidor. */

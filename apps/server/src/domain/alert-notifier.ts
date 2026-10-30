@@ -12,12 +12,12 @@ import { sanitizeDiagnostic } from './sanitize-diagnostic.js'
  * a fila de integrações (persistida, com novas tentativas). Integrações e
  * reenvios de entrega não geram alerta, para não haver laço.
  * Queda de sinal do PGM sem ciente também sobe de nível: `alert.escalated`
- * uma única vez por nível (SUPERVISOR aos 2 min, ADMIN aos 7), calculado de
+ * uma única vez por nível (SUPERVISOR aos 2 min, GESTOR aos 7, ADMIN aos 15), calculado de
  * `occurredAt`. O teto de lembretes não limita a escalada. */
 export interface AlertNotifierOptions { reminderMs?: number; maxReminders?: number; now?: () => number }
 
 const QUIET = ['INTEGRATION']
-const LEVEL: Record<EscalationTier, number> = { OPERATOR: 0, SUPERVISOR: 1, ADMIN: 2 }
+const LEVEL: Record<EscalationTier, number> = { OPERATOR: 0, SUPERVISOR: 1, GESTOR: 2, ADMIN: 3 }
 const SEED_LIMIT = 50
 const keyOf = (row: { id: string; occurredAt: string }) => `${row.id}|${row.occurredAt}`
 

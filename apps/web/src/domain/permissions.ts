@@ -24,4 +24,4 @@ export function useCanShareAcrossChannels(): boolean {
   return role !== null && canShareAcrossChannels(role)
 }
 /** Texto padrão para botões bloqueados pelo papel. */
-export const deniedReason = (what: string): string => `Seu papel não permite ${what}. Peça a um Supervisor ou Administrador.`
+export const deniedReason = (what: string): string => `Seu papel não permite ${what}. Peça a um Supervisor, Gestor ou Administrador.`

@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { AUTH_USER, AUTH_PASSWORD, DEFAULT_ROLE } from '../config.js'
-import { parseRole, type Role, type AccessRole } from './permissions.js'
+import { parseRole, ROLE_ORDER, type Role, type AccessRole } from './permissions.js'
 export {trustedHttpOrigin as trustedOrigin} from './http-origin-policy.js'
 
 export interface AccessRequest { headers: Record<string, string | string[] | undefined>; ip?: string }
@@ -60,7 +60,7 @@ export class AccessControl {
     if (this.required()) return 'DENIED'
     const base = parseRole(DEFAULT_ROLE), requested = parseRole(request.headers['x-rplayout-role'] ?? base)
     if (base === 'DENIED' || requested === 'DENIED') return 'DENIED'
-    const order: Role[] = ['OPERATOR', 'PROGRAMMER', 'SUPERVISOR', 'ADMIN']
+    const order = ROLE_ORDER
     // A caller can voluntarily restrict its local role, never raise it.
     return order.indexOf(requested) < order.indexOf(base) ? requested : base
   }

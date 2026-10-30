@@ -7,7 +7,7 @@ import type {Db} from '../db/client.js'
 import {accountRevision} from '../db/account-revisions.js'
 import {operatorDecisions,sessions,users} from '../db/schema.js'
 import {AccessControl,normalizedIp,sessionDigest,sessionToken,type AccessRequest} from './access.js'
-import {can} from './permissions.js'
+import {can,canManageRole,parseRole} from './permissions.js'
 import {CollaborativeEditError} from './collaborative-edit.js'
 import {AUTH_USER,AUTH_PASSWORD} from '../config.js'
 
@@ -15,16 +15,22 @@ type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
 export interface AccountAuthority {request: AccessRequest; ownerId: string | null}
 const reject = (status: number,error: string): never => {throw new CollaborativeEditError(status,{error})}
 const local = (ip?: string) => ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(ip ?? '')
-export const createAccountBody = z.object({username:z.string().trim().min(1).max(80),password:z.string().min(8).max(1024),role:z.enum(['OPERATOR','PROGRAMMER','SUPERVISOR','ADMIN'])}).strict()
-export const updateAccountBody = z.object({password:z.string().min(8).max(1024).optional(),role:z.enum(['OPERATOR','PROGRAMMER','SUPERVISOR','ADMIN']).optional(),enabled:z.boolean().optional()}).strict().refine(value=>Object.keys(value).length>0)
+export const createAccountBody = z.object({username:z.string().trim().min(1).max(80),password:z.string().min(8).max(1024),role:z.enum(['OPERATOR','PROGRAMMER','SUPERVISOR','GESTOR','ADMIN'])}).strict()
+export const updateAccountBody = z.object({password:z.string().min(8).max(1024).optional(),role:z.enum(['OPERATOR','PROGRAMMER','SUPERVISOR','GESTOR','ADMIN']).optional(),enabled:z.boolean().optional()}).strict().refine(value=>Object.keys(value).length>0)
 const accessBody = z.object({channelIds:z.array(z.string().min(1)).max(128).nullable(),stationIps:z.array(z.string().refine(value=>isIP(value)>0)).max(128).nullable()}).strict()
 export function captureAccountAuthority(db: Db,request: AccessRequest): AccountAuthority {
   return {request,ownerId:new AccessControl(db.$client).identity(request)?.id ?? null}
 }
 function authorize(db: Db,authority: AccountAuthority): ReturnType<AccessControl['identity']> {
   const access = new AccessControl(db.$client),identity = access.identity(authority.request)
-  if ((identity?.id ?? null)!==authority.ownerId || access.required()&&!identity || !can(access.role(authority.request),'USER_MANAGE') || identity?.channelIds!==undefined&&identity.channelIds!==null) reject(403,'A sessão ou permissão de administrador mudou. Confira o acesso; nada foi alterado.')
+  if ((identity?.id ?? null)!==authority.ownerId || access.required()&&!identity || !can(access.role(authority.request),'USER_MANAGE_LOWER') || identity?.channelIds!==undefined&&identity.channelIds!==null) reject(403,'A sessão ou permissão de gestão de contas mudou. Confira o acesso; nada foi alterado.')
   return identity
+}
+/** O servidor é a fonte da regra: GESTOR só mexe em contas de papéis abaixo de GESTOR
+ * (e só pode atribuir esses papéis); ADMIN mexe em todas. */
+function requireManageable(db: Db,authority: AccountAuthority,...targets: Array<string|undefined>): void {
+  const actor=new AccessControl(db.$client).role(authority.request)
+  for(const target of targets)if(target!==undefined&&!canManageRole(actor,parseRole(target)))reject(403,'Seu papel não permite criar, editar ou promover contas Gestor ou Administrador. Peça a um Administrador; nada foi alterado.')
 }
 function catalog(db: Db): AccountCatalogReview {
   const rows = db.$client.prepare('SELECT id,username,role,enabled,created_at AS createdAt FROM users ORDER BY username,id').all() as Array<Omit<ReviewedAccount,'channelIds'|'stationIps'|'revision'|'enabled'>&{enabled:number}>
@@ -43,13 +49,14 @@ function catalogFor(db: Db,authority: AccountAuthority): AccountCatalogReview {
 export function readAccountCatalog(db: Db,authority: AccountAuthority): AccountCatalogReview {
   return db.transaction(()=>catalogFor(db,authority))
 }
-function sessionReview(db: Db,id: string): AccountSessionsReview {
-  const user=db.$client.prepare('SELECT username FROM users WHERE id=?').get(id) as {username:string} | undefined
+function sessionReview(db: Db,id: string,authority?: AccountAuthority): AccountSessionsReview {
+  const user=db.$client.prepare('SELECT username,role FROM users WHERE id=?').get(id) as {username:string;role:string} | undefined
   if(!user)reject(404,'Conta não encontrada.')
+  if(authority)requireManageable(db,authority,user!.role)
   return {userId:id,username:user!.username,accountRevision:accountRevision(db.$client,'U:'+id),revision:accountRevision(db.$client,'S:'+id),sessions:db.$client.prepare('SELECT created_at AS createdAt,expires_at AS expiresAt FROM sessions WHERE user_id=? ORDER BY created_at,expires_at,token').all(id) as AccountSessionsReview['sessions']}
 }
 export function readAccountSessions(db: Db,id: string,authority: AccountAuthority): AccountSessionsReview {
-  return db.transaction(()=>{authorize(db,authority);return sessionReview(db,id)})
+  return db.transaction(()=>{authorize(db,authority);return sessionReview(db,id,authority)})
 }
 function requireProof(header: unknown,expected: string,kind:'catalog'|'user'|'sessions',id?:string): void {
   if(header===undefined)reject(428,'Confira as contas/sessões antes de alterar. Revisão original obrigatória.')
@@ -76,6 +83,7 @@ export function createAccount(db: Db,input: z.infer<typeof createAccountBody>,pa
   return db.transaction(tx=>{
     const actor=authorize(db,authority),before=catalog(db)
     requireProof(header,accountCatalogETag(before),'catalog')
+    requireManageable(db,authority,input.role)
     const bootstrap=!new AccessControl(db.$client).required()
     if(bootstrap&&(!local(authority.request.ip)||input.role!=='ADMIN'||before.users.length!==0))reject(403,'A primeira conta precisa ser Administrador, criada pela página local do servidor.')
     if(db.$client.prepare('SELECT 1 FROM users WHERE username=?').get(input.username))reject(409,'Esse usuário já existe; nada foi alterado.')
@@ -89,6 +97,7 @@ export function updateAccount(db: Db,id: string,input: z.infer<typeof updateAcco
   return db.transaction(tx=>{
     const actor=authorize(db,authority),before=catalog(db),target=before.users.find(user=>user.id===id)
     if(!target)reject(404,'Conta não encontrada.')
+    requireManageable(db,authority,target!.role,input.role)
     requireProof(header,accountETag(before,id),'user',id)
     const nextRole=input.role??target!.role,nextEnabled=input.enabled??target!.enabled
     const policy=new AccessControl(db.$client).policy(id)
@@ -107,6 +116,7 @@ export function changeAccountAccess(db: Db,id: string,body: unknown,header: unkn
   return db.transaction(tx=>{
     const actor=authorize(db,authority),before=catalog(db),target=before.users.find(user=>user.id===id)
     if(!target)reject(404,'Conta não encontrada.')
+    requireManageable(db,authority,target!.role)
     requireProof(header,accountETag(before,id),'user',id)
     const channelIds=input.channelIds===null?null:[...new Set(input.channelIds)],stationIps=input.stationIps===null?null:[...new Set(input.stationIps.map(normalizedIp))]
     if(target!.role==='ADMIN'&&channelIds!==null)reject(409,'Administradores precisam conservar acesso a todos os canais.')
@@ -121,7 +131,7 @@ export function changeAccountAccess(db: Db,id: string,body: unknown,header: unkn
 }
 export function revokeAccountSessions(db: Db,id: string,header: unknown,authority: AccountAuthority) {
   return db.transaction(tx=>{
-    const actor=authorize(db,authority),before=sessionReview(db,id)
+    const actor=authorize(db,authority),before=sessionReview(db,id,authority)
     requireProof(header,accountSessionsETag(before),'sessions',id)
     const revoked=tx.delete(sessions).where(eq(sessions.userId,id)).run().changes
     // Empty revocation must consume its proof too; otherwise a failed client

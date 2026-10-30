@@ -65,7 +65,7 @@ const CHAPTERS: DocChapter[] = [
           'Acervo: QC e Playlist.',
           'Engenharia: Master, Monitor, Aired e Configurações.',
           'Registro: Aired.',
-          'Completo: todas as telas. Padrão para Supervisor e Administrador.',
+          'Completo: todas as telas. Padrão para Supervisor, Gestor e Administrador.',
         ],
       },
     ],

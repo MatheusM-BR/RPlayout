@@ -1161,7 +1161,7 @@ export function App() {
             o histórico dos canais arquivados. Sem canal ativo autorizado, não há operação de PGM.
           </p>
           <div className="row"><button type="button" className="btn" onClick={()=>navigateWorkspace('aired')}>Consultar histórico</button><button type="button" className="btn" onClick={()=>navigateWorkspace('audit')}>Auditoria</button></div>
-          {['Supervisor','Administrador'].includes(sessionRole ?? '') && <div className="row">
+          {['Supervisor','Gestor','Administrador'].includes(sessionRole ?? '') && <div className="row">
             <input
               type="text"
               autoFocus
@@ -1174,7 +1174,7 @@ export function App() {
               criar canal
             </button>
           </div>}
-          {['Supervisor','Administrador'].includes(sessionRole ?? '') && <p className="hint">
+          {['Supervisor','Gestor','Administrador'].includes(sessionRole ?? '') && <p className="hint">
             O canal nasce no padrão broadcast 1080i59.94 (ou 1080p59.94), com uma grade vazia. Depois aponte
             <code>RPLAYOUT_MEDIA</code> para a sua pasta de vídeos e use <b>LER PASTA</b>: o
             acervo é lido do disco, com duração, loudness e miniatura de cada arquivo.
