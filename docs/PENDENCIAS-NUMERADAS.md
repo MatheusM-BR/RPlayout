@@ -16,7 +16,7 @@ Ver CORRECOES-R88-24-2026-10-27.md, CORRECOES-R88-23-2026-10-27.md e CORRECOES-R
 | D6 | Banco separado: falha, concorrência, migração | Concluído em teste (processo morto, 503, ingestão, duas conexões) |
 | D7 | Autorização das rotas | Concluído (matriz > 100 rotas) |
 | D8 | Mídia: jobs duráveis, proxy, faixas | Concluído em teste; não ensaiado no ar (derrubaria o canal) |
-| D9 | Recuperação: backup, watchdog, soak | Restauração real em quarentena OK; cópia periódica corrigida (r88-24); vigia pronto (U7); soak 24 h em curso |
+| D9 | Recuperação: backup, watchdog, soak | Restauração real em quarentena OK; cópia periódica corrigida (r88-24); vigia pronto (U7); soak 24 h r88-29 analisado em 30/10: 0 alertas, 0 erros, sem queda, 52,6 GB de gravação rotativa estável; PENDENTE verificar backups em disco, medidor de áudio (−90/−70 constante) e `/api/engineering/storage` — sem homologação |
 
 ### Achados
 
@@ -55,7 +55,7 @@ Ver CORRECOES-R88-24-2026-10-27.md, CORRECOES-R88-23-2026-10-27.md e CORRECOES-R
 | U7 | Instalar o vigia: `powershell -ExecutionPolicy Bypass -File D:\RPlayout\scripts\instalar-vigia-rplayout.ps1` (cria tarefa no logon) |
 
 Fora desta versão: publicação externa (10.5) e grupo 8 (v3).
-Totais: 9 grupos D (8 concluídos, 1 em andamento — soak); 7 achados (todos fechados); 7 dependências externas.
+Totais: 9 grupos D (8 concluídos, 1 em andamento — soak analisado, falta verificação de backups/medidor); 7 achados (todos fechados); 7 dependências externas.
 
 ## Anterior — r88-17 (instalação do operador atualizada e testada)
 
