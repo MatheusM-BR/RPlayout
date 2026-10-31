@@ -10,6 +10,8 @@ import {requireChannelConfiguration} from './domain/channel-configuration-guard.
 import {configurationRevision} from './db/channel-configuration.js'
 import {qcRevision} from './db/qc-revisions.js'
 import {editLiveSource,readLiveSourceReview} from './domain/live-source-edit.js'
+import {compositeETag,effectiveComposition,readComposite,saveComposite} from './domain/multiview-composite.js'
+import {MULTIVIEW_LAYOUTS,MULTIVIEW_QUALITIES} from '@rplayout/protocol'
 import {editMultiview,readMultiviewReview} from './domain/multiview-edit.js'
 import {editScheduleRule,readScheduleRuleReview} from './domain/schedule-rule-edit.js'
 import {editGraphicTemplate,editSlate,readGraphicsReview} from './domain/graphics-edit.js'
@@ -4203,6 +4205,55 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.put('/api/v1/multiview/config', handlePutMultiview)
   server.put('/api/multiview/config', handlePutMultiview)
 
+  // Multiview composto (R88-36): um mosaico por canal, composto e codificado
+  // uma vez no engine. Ler: quem acessa o canal. Salvar layout/células:
+  // PLAYLIST_EDIT (como o layout das fontes individuais). Trocar o nível:
+  // OUTPUT_CONTROL, porque muda o custo de codificação na máquina do ar.
+  server.get('/api/channels/:id/multiview/composite', async (request, reply) => {
+    const {id}=request.params as {id:string}
+    if(access.required()&&!access.identity(request))return reply.code(401).send({error:'Entre para ver o multiview.'})
+    if(!access.channelAllowed(request,id))return reply.code(403).send({error:'Sem acesso a este canal.'})
+    const channel=app.db.select().from(channels).where(eq(channels.id,id)).get()
+    if(!channel)return reply.code(404).send({error:'Canal não encontrado.'})
+    const saved=readComposite(app.db,id)
+    const sources=await listLiveSources(app.db,id,false)
+    const runtime=app.runtimes.get(id)
+    const path=app.paths.find(entry=>entry.channelId===id)
+    const role=await roleOf(request)
+    const available=Boolean(runtime?.hasMultiview()&&app.mediamtx?.running&&path?.multiview)
+    reply.header('cache-control','private, no-store').header('etag',compositeETag(id,saved.revision))
+    return {
+      saved,eTag:compositeETag(id,saved.revision),
+      composition:effectiveComposition(saved,sources),
+      sources:sources.map(source=>({id:source.id,name:source.name,kind:source.kind,role:source.role,enabled:source.enabled})),
+      layouts:MULTIVIEW_LAYOUTS,qualities:MULTIVIEW_QUALITIES,
+      engine:runtime?.multiviewEngineState()??null,
+      whep:available&&path?.multiview?{port:PORTS.webrtc,path:path.multiview}:null,
+      available,
+      reason:available?null:!app.mediamtx?'Esta instalação não tem servidor de mídia local (mediamtx): o mosaico composto não tem para onde sair. Use "fontes individuais".':!runtime?'Canal sem engine em execução.':'Engine sem multiview composto neste canal.',
+      canSave:can(role,'PLAYLIST_EDIT'),canChangeQuality:can(role,'OUTPUT_CONTROL'),
+    }
+  })
+  server.put('/api/channels/:id/multiview/composite', async (request, reply) => {
+    const {id}=request.params as {id:string}
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode alterar o layout do multiview.'})
+    if(!access.channelAllowed(request,id))return reply.code(403).send({error:'Sem acesso a este canal.'})
+    const ownerId=access.identity(request)?.id??null
+    try{
+      const saved=saveComposite(app.db,id,request.body,request.headers['if-match'],{
+        authorize:()=>{
+          const current=access.identity(request)
+          if(access.required()&&!current||(current?.id??null)!==ownerId||!access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:'A sessão ou o acesso ao canal mudou. Confira novamente.'})
+        },
+        canChangeQuality:can(await roleOf(request),'OUTPUT_CONTROL'),
+        actor:await usernameOf(request),
+      })
+      app.runtimes.get(id)?.syncMultiview(true)
+      reply.header('cache-control','private, no-store').header('etag',compositeETag(id,saved.revision))
+      return {saved,eTag:compositeETag(id,saved.revision)}
+    }catch(error){return automationError(reply,error)}
+  })
+
   // Gerenciamento de Fontes ao Vivo (Live Sources CRUD)
   const sourceEditHooks=(request:FastifyRequest)=>{
     const ownerId=access.identity(request)?.id??null
@@ -5039,7 +5090,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.post('/api/channels/:id/watching', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = z.object({ bus: z.enum(['pvw', 'mon']), watching: z.boolean().optional() }).safeParse(request.body)
+    const body = z.object({ bus: z.enum(['pvw', 'mon', 'mv']), watching: z.boolean().optional() }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Barramento inválido.' })
 
     const runtime = await runtimeFor(app, id)

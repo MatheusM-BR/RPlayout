@@ -120,7 +120,7 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean): void
+  setMonitor(bus: 'pvw' | 'mon' | 'mv', on: boolean): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   graphicConfirmed?(svg: string | null, fadeMs: number, authorize?:()=>void): Promise<void>
@@ -137,7 +137,7 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean): void
+  setMonitor(bus: 'pvw' | 'mon' | 'mv', on: boolean): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */

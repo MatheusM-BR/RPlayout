@@ -54,6 +54,8 @@ export interface ChannelPaths {
    * grandes decodificando ao mesmo tempo na mesma máquina.
    */
   readonly monitor: string
+  /** Multiview composto do canal: uma imagem, uma codificação, um WHEP. */
+  readonly multiview?: string
 }
 
 export interface MediaMtxOptions {
@@ -120,6 +122,7 @@ export function channelPaths(
       preview: `${app}/pvw`,
       inspection: `${app}/qc`,
       monitor: `${app}/mon`,
+      multiview: `${app}/mv`,
     }
   })
 }
@@ -216,6 +219,7 @@ export class MediaMtx {
         channel.preview,
         ...(channel.inspection ? [channel.inspection] : []),
         channel.monitor,
+        ...(channel.multiview ? [channel.multiview] : []),
       ]),
       ...guests.map((guest) => `guest/${guest.streamKey}`),
     ])]

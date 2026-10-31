@@ -39,6 +39,7 @@ import {
   type OnAirState,
   type PreviewTarget,
 } from '@rplayout/protocol'
+import type {MultiviewComposition,MultiviewEngineState} from '@rplayout/protocol'
 import { MediaMtx } from './mediamtx.js'
 import type { MeterReading } from './meters.js'
 import { SILENCE } from './meters.js'
@@ -134,6 +135,7 @@ type EngineEvent =
   | ({ event:'videoProbe' } & ProgramVideoProbe)
   | { event: 'output'; frames: number }
   | ({ event: 'publisher'; outputId?: string } & PublisherState)
+  | ({ event: 'multiviewState' } & MultiviewEngineState)
   | { event: 'error'; message: string }
   | { event: 'warning'; message: string }
 
@@ -158,6 +160,8 @@ export interface EngineOptions {
   /** Saída do barramento de preview. Nulo deixa o canal sem preview de vídeo. */
   readonly preview: string | null
   readonly qcPreview?: string | null
+  /** Destino do multiview composto (SRT local do servidor de mídia). */
+  readonly multiview?: string | null
   readonly bitrateKbps: number
   /** Stable published revision identity, independent of periodic view rebuilds. */
   readonly executionIdentity?: () => string | null
@@ -438,7 +442,10 @@ export class EngineTransport implements Transport {
     programHold?: {expected:ProgramHoldExpected;receipt?:ProgramHoldReceipt}
     programHoldRestore?:{expected:ProgramHoldRestoreExpected;receipt?:ProgramHoldReceipt}
   }>()
-  private readonly desiredMonitors = new Map<'pvw' | 'mon', boolean>()
+  private readonly desiredMonitors = new Map<'pvw' | 'mon' | 'mv', boolean>()
+  private desiredMultiview: MultiviewComposition | null = null
+  private multiviewEngineState: MultiviewEngineState | null = null
+  private multiviewEngineStateAt = 0
   private recoveryCursor: { itemId: string; frames: Frames;programTrim?:ProgramTrim;programHold?:'HELD'|'UNCONFIRMED';liveProgramBinding?:LiveProgramBinding } | null = null
   private programEndReason = 'STOP'
   private pendingProgramExit: {itemId:string;frames:number;reason:string;targetItemId:string} | null = null
@@ -777,7 +784,7 @@ export class EngineTransport implements Transport {
       // registration still observes the termination of our own child.
       this.options.onProcessStarted?.(child.pid??null,spawnToken)
       this.options.assertExecutionOwned?.()
-      child.stdin?.write(JSON.stringify({ outputs: this.committedOutputs, preview: this.options.preview,...(this.options.qcPreview?{qcPreview:this.options.qcPreview}:{}),...(this.fenceOwner?{fenceOwner:this.fenceOwner}:{}),...(this.options.holdProgramOutputs?{holdProgramOutputs:true}:{}) }) + '\n')
+      child.stdin?.write(JSON.stringify({ outputs: this.committedOutputs, preview: this.options.preview,...(this.options.qcPreview?{qcPreview:this.options.qcPreview}:{}),...(this.options.multiview?{multiview:this.options.multiview}:{}),...(this.fenceOwner?{fenceOwner:this.fenceOwner}:{}),...(this.options.holdProgramOutputs?{holdProgramOutputs:true}:{}) }) + '\n')
     }catch(error){child.kill('SIGKILL');throw error}
     this.alive = true
     this.ready = false
@@ -1031,6 +1038,11 @@ export class EngineTransport implements Transport {
         this.pgmVideoProbe = { luma: event.luma, black: event.black, freeze: event.freeze,freezeDurationMs:event.freezeDurationMs,sampleAgeMs:event.sampleAgeMs }
         this.pgmVideoProbeAt=Date.now()
         break
+      case 'multiviewState': {
+        const {event:_,...state}=event
+        this.multiviewEngineState=state;this.multiviewEngineStateAt=Date.now()
+        break
+      }
       case 'publisher':
         this.publisherStates.set(event.outputId ?? event.url, {
           ...(event.outputId?{outputId:event.outputId}:{}),
@@ -1265,6 +1277,7 @@ export class EngineTransport implements Transport {
   private restore(): void {
     const binding=this.recoveryCursor?.liveProgramBinding,canRecoverBound=Boolean(binding&&this.replacementWire?.canRecoverBinding(binding.receipt))
     if(this.nativeReportedSelectionUncertain||this.stopAwaitingDurable||this.nativeSelectionUncertain&&!canRecoverBound||this.replacementWire?.health().selectionUncertain&&!canRecoverBound){this.fail('PGM nativo inconclusivo preservado; não retomar silenciosamente a fonte anterior. Confirme STOP antes de outro corte.');return}
+    if (this.desiredMultiview && this.options.multiview) this.send({ cmd: 'multiview', composition: this.desiredMultiview })
     for (const [bus, on] of this.desiredMonitors) this.send({ cmd: 'monitor', bus, on })
     if (this.desiredGraphic) this.send({ cmd: 'graphic', ...this.desiredGraphic })
     for (const [slot, overlay] of this.desiredOverlays) this.send({ cmd: 'overlay', slot, action: 'cut', svg: overlay.svg, animation: overlay.animation })
@@ -2676,10 +2689,22 @@ export class EngineTransport implements Transport {
   }
 
   /** Liga ou desliga um monitor. O engine faz isso sem tocar no programa. */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean): void {
+  setMonitor(bus: 'pvw' | 'mon' | 'mv', on: boolean): void {
     this.desiredMonitors.set(bus, on)
     this.send({ cmd: 'monitor', bus, on })
   }
+  /** Layout/células/nível do multiview composto. Só o pipeline do multiview muda. */
+  configureMultiview(composition: MultiviewComposition): void {
+    if (!this.options.multiview) return
+    if (JSON.stringify(composition) === JSON.stringify(this.desiredMultiview)) return
+    this.desiredMultiview = composition
+    this.send({ cmd: 'multiview', composition })
+  }
+  /** Último estado do multiview informado pelo engine (nulo se velho). */
+  multiviewState(maxAgeMs = 5000): MultiviewEngineState | null {
+    return this.multiviewEngineState && Date.now() - this.multiviewEngineStateAt <= maxAgeMs ? this.multiviewEngineState : null
+  }
+  hasMultiview(): boolean { return Boolean(this.options.multiview) }
   setMonitorConfirmed(bus:'pvw'|'mon',on:boolean,authorize:()=>Promise<void>):Promise<void>{
     return this.enqueue(async()=>{
       const child=this.child,binding=this.fenceBinding()
