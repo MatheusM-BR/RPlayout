@@ -28,6 +28,9 @@ pub struct SourceSignalReport {
     pub sampled_content_unchanged_ms:Option<u64>,
     pub content_sample_age_ms:Option<u64>,
     pub content_sample_frames:u64,
+    /// Medições do watchdog de entradas ao vivo, no pad decodificado.
+    #[serde(flatten)]
+    pub quality: crate::input_quality::InputQualityReport,
 }
 
 /// Observed native decoder cursor when admitting the held program outputs.

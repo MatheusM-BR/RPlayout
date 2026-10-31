@@ -42,6 +42,7 @@ import {migrateUpgradeBackupRequests} from './upgrade-backup-requests.js'
 import {migrateChannelMirrors,migrateMirrorUnlock,migrateMirrorUnlockExpiry} from './channel-mirrors.js'
 import {migrateAssetCutMarks} from './asset-cut-marks.js'
 import {migrateAuditImmutable} from './audit-immutable.js'
+import {migrateLiveWatchdogPolicies} from './live-watchdog-policies.js'
 import {assertNoUncertainUpgradeProfile} from '../domain/upgrade-profile-adoption.js'
 import {assertNoUnboundReturnCandidate} from './return-candidate-admission.js'
 
@@ -623,6 +624,7 @@ export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.D
     migrateMirrorUnlockExpiry(sqlite)
     migrateAssetCutMarks(sqlite)
     migrateAuditImmutable(sqlite)
+    migrateLiveWatchdogPolicies(sqlite)
     assertSchemaCompatibility(sqlite,true)
     assertNoUncertainUpgradeProfile(sqlite)
     options.onOpened?.(sqlite)

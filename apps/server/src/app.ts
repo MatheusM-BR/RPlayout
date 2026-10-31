@@ -19,7 +19,7 @@ import {
 import type Database from 'better-sqlite3'
 import { openDatabase, type Db } from './db/client.js'
 import { assetMap, getChannel, getRundown, listChannels, listItems } from './db/repo.js'
-import { channelCadenceConversions, graphicTemplates, itemGraphics, rundownItems, operatorDecisions, secondaryEvents } from './db/schema.js'
+import { channelCadenceConversions, graphicTemplates, itemGraphics, rundownItems, operatorDecisions, secondaryEvents, operationalPlaylistRevisions } from './db/schema.js'
 import { buildView, type RundownView } from './domain/plan.js'
 import {readEditorialState,editorialView} from './domain/editorial-state.js'
 import { rundownClock, rundownFrames } from './domain/rundown-clock.js'
@@ -68,7 +68,7 @@ import {
   toEngineProfile,
 } from './domain/outputs.js'
 import { RelaySupervisor } from './domain/relays.js'
-import { destinations, guestKeys } from './db/schema.js'
+import { destinations, guestKeys, liveSources as liveSourcesTable } from './db/schema.js'
 import { existsSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { ContinuityCache } from './domain/continuity-cache.js'
@@ -97,6 +97,10 @@ import { SecondaryEventLedger,SecondaryEventUncertain } from './domain/secondary
 import {secondaryGraphicWindow} from './domain/secondary-graphic-window.js'
 import { emitIntegrationEvent } from './domain/integrations.js'
 import { configuredContingencyAssets, prepareContingencyPlaylist } from './domain/contingency-playlist.js'
+import { ChannelLiveWatchdog, type RecordedWatchdogEvent, type WatchdogObservedSource } from './domain/live-watchdog.js'
+import { LiveWatchdogRecorder } from './domain/live-watchdog-events.js'
+import { readLiveWatchdogPolicy, type StoredLiveWatchdogPolicy } from './db/live-watchdog-policies.js'
+import type { LiveWatchdogPolicy, WatchdogSample, WatchdogWaitArt } from '@rplayout/protocol'
 import { ScheduledDeviceAutomation } from './domain/device-automation.js'
 import {AudioMixAnalysis} from './domain/audio-mix-analysis.js'
 import {ConfigurationChanges} from './domain/configuration-changes.js'
@@ -981,7 +985,7 @@ export class ChannelRuntime {
     await this.asRun.follow(state.onAir?.itemId ?? null, this.executionView, this.operationalRevision?.id ?? null, state.onAir?.elapsed ?? 0)
   }
   emergencyCommandPending=false
-  async setEmergencySlate(enabled: boolean,command:{key?:unknown;actorId?:string|null;actorName?:string|null;authorize?:()=>void}={}):Promise<import('./domain/graphic-command-ledger.js').GraphicCommandReceipt> {
+  async setEmergencySlate(enabled: boolean,command:{key?:unknown;actorId?:string|null;actorName?:string|null;authorize?:()=>void;templateId?:string|null}={}):Promise<import('./domain/graphic-command-ledger.js').GraphicCommandReceipt> {
     if(this.graphics.commandPending)throw new Error('Grafismo aguarda confirmação; atualize o estado antes de alterar a emergência.')
     if(this.emergencyCommandPending)throw new Error('Emergência aguarda confirmação; nenhum segundo comando foi enviado.')
     this.emergencyCommandPending=true
@@ -993,8 +997,10 @@ export class ChannelRuntime {
     let template:GraphicTemplate|null=null,svg:string|null=null
     if(enabled){
       const current=await getChannel(this.db,this.channel.id)
-      if(!current?.slateTemplateId)throw new Error('Escolha a arte de apresentação técnica do canal antes de acionar o slate.')
-      const row=this.db.select().from(graphicTemplates).where(eq(graphicTemplates.id,current.slateTemplateId)).get()
+      // O watchdog pode pedir outra arte cadastrada; sem pedido vale a apresentação técnica.
+      const templateId=command.templateId??current?.slateTemplateId
+      if(!templateId)throw new Error('Escolha a arte de apresentação técnica do canal antes de acionar o slate.')
+      const row=this.db.select().from(graphicTemplates).where(eq(graphicTemplates.id,templateId)).get()
       if(!row||(row.channelId!=null&&row.channelId!==this.channel.id))throw new Error('Arte de apresentação técnica ausente ou de outro canal.')
       template=row
       svg='<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080"><rect width="1920" height="1080" fill="black"/>'+fitGraphicViewport(renderTemplate(row,{}))+'</svg>'
@@ -1188,13 +1194,14 @@ export class ChannelRuntime {
 
   /** Only one activation/return can prepare at a time. Neither operation loads
    * a mutable editorial rundown before the file is confirmed by the engine. */
-  enterContingency(revisionId: string): Promise<void> {
+  enterContingency(revisionId: string,options:{watchdog?:boolean}={}): Promise<void> {
     if (this.pendingContingency) return this.pendingContingency
     if (this.contingencyState?.active && this.contingencyOrigin?.loopRevisionId === revisionId) return Promise.resolve()
     const work = (async () => {
       if (!(this.transport instanceof EngineTransport)) throw new Error('Contingência não enviada: canal simulado, sem engine real.')
       if (this.contingencyOrigin) throw new Error('Há uma contingência com retorno pendente. Confira o PGM antes de substituir a reserva.')
-      if (this.emergencyOverlay) throw new Error('Retire o slate opaco antes de acionar o loop de contingência.')
+      // A arte de espera do watchdog cobre o PGM até o arquivo da reserva entrar.
+      if (this.emergencyOverlay && !options.watchdog) throw new Error('Retire o slate opaco antes de acionar o loop de contingência.')
       const baseline = this.executionView, revision = this.operationalRevision, prior = this.transport.state().onAir
       if (prior && !revision) throw new Error('Publique a grade em execução para preservar um retorno versionado antes de configurar a contingência.')
       const prepared = await this.prepareContingency(revisionId)
@@ -1205,6 +1212,7 @@ export class ChannelRuntime {
           revisionId: revision?.id ?? null, itemId: previous?.itemId ?? null, elapsed: previous?.frames ?? 0, activatedAt: new Date().toISOString() }
         this.installContingency(prepared)
       }, () => !this.closed && this.executionView?.rundown.id === baseline?.rundown.id && this.operationalRevision?.id === revision?.id && prepared.isCurrent())
+      if (options.watchdog && this.emergencyOverlay) await this.setEmergencySlate(false,{key:'watchdog-hide-'+randomUUID(),actorName:'WATCHDOG'})
     })()
     this.pendingContingency = work
     void work.finally(() => { if (this.pendingContingency === work) this.pendingContingency = null }).catch(() => {})
@@ -1232,6 +1240,97 @@ export class ChannelRuntime {
     this.pendingContingency = work
     void work.finally(() => { if (this.pendingContingency === work) this.pendingContingency = null }).catch(() => {})
     return work
+  }
+
+  /** Watchdog: volta à ENTRADA AO VIVO preservada na origem da contingência.
+   * O TAKE só confirma com quadro real da entrada (mesma regra do TAKE de live). */
+  returnLiveFromContingency(): Promise<void> {
+    if (this.pendingContingency) return Promise.reject(new Error('Aguarde a intervenção pendente antes de retornar à live.'))
+    const work = (async () => {
+      if (!(this.transport instanceof EngineTransport)) throw new Error('Retorno exige engine real.')
+      const origin = this.contingencyOrigin, baseline = this.executionView
+      if (!origin || !this.contingencyState?.active) throw new Error('Não há contingência ativa com retorno preservado.')
+      if (!origin.revisionId || !origin.itemId) throw new Error('A contingência foi acionada sem item anterior; faça CUE/TAKE explícito.')
+      if (this.emergencyOverlay) await this.setEmergencySlate(false,{key:'watchdog-hide-'+randomUUID(),actorName:'WATCHDOG'})
+      const prepared = await this.prepareContingency(origin.revisionId, false)
+      const entry = prepared.view.items.find(candidate => candidate.item.id === origin.itemId)
+      if (!entry || !(entry.item.type === 'LIVE' || entry.item.sourceRef || entry.item.liveEndpoint || entry.item.liveConfig?.sourceEndpoint)) throw new Error('O item preservado não é a entrada ao vivo; use o retorno ao VT.')
+      await this.transport.takeFromPlaylist(prepared.view, origin.itemId, () => {
+        this.installContingency(prepared)
+        this.contingencyOrigin = null
+      }, () => !this.closed && this.executionView?.rundown.id === baseline?.rundown.id && this.contingencyOrigin === origin && prepared.isCurrent(), 0, 'WATCHDOG_LIVE_RETURN')
+    })()
+    this.pendingContingency = work
+    void work.finally(() => { if (this.pendingContingency === work) this.pendingContingency = null }).catch(() => {})
+    return work
+  }
+
+  /** Watchdog das entradas ao vivo deste canal (máquina de estados + executor). */
+  readonly liveWatchdog = new ChannelLiveWatchdog({
+    showWait: (art, key) => this.watchdogShowWait(art, key),
+    hideWait: async () => { if (this.emergencyOverlay) await this.setEmergencySlate(false,{key:'watchdog-hide-'+randomUUID(),actorName:'WATCHDOG'}) },
+    enterContingency: revisionId => this.enterContingency(revisionId,{watchdog:true}),
+    monitorSource: async source => { await this.transport.cue({kind:'SOURCE',source,title:'Watchdog: entrada em observação'}) },
+    returnLive: async () => {
+      // A mesma entrada aberta no PVW pode segurar a porta (SRT listener) ou a
+      // placa (SDI): libera o PVW antes do TAKE da live.
+      const preview=this.transport.state().preview
+      if(preview?.kind==='SOURCE')await this.transport.cue(null)
+      await this.returnLiveFromContingency()
+    },
+    // Reserva no ar de fato: STOP do operador encerra o acompanhamento.
+    contingencyActive: () => Boolean(this.contingencyState?.active && this.transport.state().onAir),
+    canMonitor: () => this.temMonitor('pvw'),
+    contingencyOrigin: () => this.watchdogContingencyOrigin(),
+  })
+  private async watchdogShowWait(art: WatchdogWaitArt, key: string): Promise<void> {
+    if (art.kind === 'HOLD_LAST_FRAME') return
+    if (this.emergencyOverlay) return
+    await this.setEmergencySlate(true,{key,actorName:'WATCHDOG',templateId:art.kind==='GRAPHIC'?art.templateId:null})
+  }
+  /** A origem preservada da reserva no ar é uma entrada ao vivo? (leitura da revisão publicada) */
+  private watchdogContingencyOrigin():WatchdogObservedSource|null{
+    const origin=this.contingencyOrigin
+    if(!origin?.revisionId||!origin.itemId)return null
+    try{
+      const row=this.db.select({payload:operationalPlaylistRevisions.payload}).from(operationalPlaylistRevisions).where(eq(operationalPlaylistRevisions.id,origin.revisionId)).get()
+      const item=row?readOperationalPayload(row.payload as Record<string,unknown>).items.find(candidate=>candidate.id===origin.itemId):undefined
+      const endpoint=item?.liveEndpoint??item?.liveConfig?.sourceEndpoint??item?.sourceRef??null
+      if(!item||!endpoint)return null
+      return {sourceKey:endpoint,sourceId:item.configuredSourceId??null,name:item.title,kind:/^([a-z0-9]+):/i.exec(endpoint)?.[1]?.toUpperCase()??null,itemId:item.id,sample:null}
+    }catch{return null}
+  }
+  private watchdogCatalog: {at:number;rows:Map<string,{name:string;kind:string}>}|null=null
+  private watchdogSource(entry: import('./domain/transport.js').LiveSourceSignal, bus: 'pgm'|'pvw'): WatchdogObservedSource {
+    if(!this.watchdogCatalog||Date.now()-this.watchdogCatalog.at>10_000){
+      const rows=this.db.select({id:liveSourcesTable.id,name:liveSourcesTable.name,kind:liveSourcesTable.kind}).from(liveSourcesTable).where(eq(liveSourcesTable.channelId,this.channel.id)).all()
+      this.watchdogCatalog={at:Date.now(),rows:new Map(rows.map(row=>[row.id,{name:row.name,kind:row.kind}]))}
+    }
+    const itemId=entry.busItemIds?.[bus]??null
+    const item=itemId?this.executionView?.items.find(candidate=>candidate.item.id===itemId)?.item:undefined
+    const sourceId=entry.nativeCatalogBindings?.[bus]??item?.sourceRef??null
+    const catalog=sourceId?this.watchdogCatalog.rows.get(sourceId):undefined
+    const scheme=/^([a-z0-9]+):/i.exec(entry.source)?.[1]?.toUpperCase()??null
+    return {sourceKey:entry.source,sourceId,name:catalog?.name??item?.title??entry.source.split('?')[0]!,kind:catalog?.kind??scheme,itemId,
+      sample:(entry.measurements?.[bus] as WatchdogSample|undefined)??null}
+  }
+  private watchdogPolicyCache:StoredLiveWatchdogPolicy|null=null
+  private watchdogRecorder:LiveWatchdogRecorder|null=null
+  watchdogPolicy():StoredLiveWatchdogPolicy{return this.watchdogPolicyCache??=readLiveWatchdogPolicy(this.db.$client,this.channel.id)}
+  setWatchdogPolicy(stored:StoredLiveWatchdogPolicy):void{this.watchdogPolicyCache=stored}
+  /** Chamado a cada volta do laço do servidor; grava só o que mudou. */
+  runLiveWatchdog(now=Date.now()):void{
+    const events=this.tickLiveWatchdog(this.watchdogPolicy().policy,now)
+    if(events.length)(this.watchdogRecorder??=new LiveWatchdogRecorder(this.db,this.channel.id)).persist(events,{rundownId:this.executionView?.rundown.id??null,itemId:this.transport.state().onAir?.itemId??null})
+  }
+  /** Uma volta do watchdog: lê o transporte, alimenta as máquinas e devolve eventos novos. */
+  tickLiveWatchdog(policy: LiveWatchdogPolicy, now = Date.now()): RecordedWatchdogEvent[] {
+    if(!(this.transport instanceof EngineTransport)||this.closed)return []
+    const state=this.transport.state(),onAir=state.onAir?.itemId
+    const programEntry=onAir?state.liveSources.find(entry=>entry.busItemIds?.pgm===onAir):undefined
+    const preview=state.liveSources.filter(entry=>entry.busItemIds?.pvw).map(entry=>this.watchdogSource(entry,'pvw'))
+    this.liveWatchdog.tick({now,policy,channelFps:this.channel.rate.num/this.channel.rate.den,program:programEntry?this.watchdogSource(programEntry,'pgm'):null,preview})
+    return this.liveWatchdog.drain()
   }
 
   fireDueGraphics(): boolean {

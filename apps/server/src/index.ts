@@ -409,6 +409,10 @@ async function main(): Promise<void> {
       } else pgmProbeFor(app, runtime.channel.id).idle()
       try{persistPgmSignalIncidents(app.db,runtime.channel.id,pgmProbeFor(app,runtime.channel.id))}
       catch(error){server.log.error({err:error},'Incidente PGM não persistido; transição retida para nova tentativa.')}
+      // Watchdog das entradas ao vivo: detecção no sinal decodificado e, se
+      // configurado, arte de espera / contingência / retorno com confirmação.
+      try{runtime.runLiveWatchdog()}
+      catch(error){server.log.error({err:error},'Watchdog das entradas ao vivo: volta não concluída; nova tentativa no próximo ciclo.')}
       if(!storageConnected())return
       // Only the loaded execution can tell us when the channel may end.
       // Editing tomorrow's schedule neither extends today's coverage nor

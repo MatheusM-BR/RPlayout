@@ -16,6 +16,7 @@ import { RedundancyFailoverPanel } from '../components/broadcast/RedundancyFailo
 import {HaReplicationPanel} from '../components/broadcast/HaReplicationPanel.js'
 import { OutputsSummary } from '../components/broadcast/OutputsSummary.js'
 import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
+import { LiveWatchdogStrip } from '../components/broadcast/LiveWatchdogStrip.js'
 import { StudioAutomationPanel } from '../components/broadcast/StudioAutomationPanel.js'
 import { HostResourcesPanel } from '../components/broadcast/HostResourcesPanel.js'
 import {liveSourceMonitor} from '../domain/live-source-monitor.js'
@@ -398,6 +399,8 @@ export function EngineeringDistributionView({
               onMessage(`Watchdog PGM: Slate de Emergência ${active ? 'INJETADO no PGM' : 'DESARMADO'}`)
             }
           />
+          {/* Watchdog das entradas ao vivo: estado por entrada e configuração (Supervisor+). */}
+          <LiveWatchdogStrip channelId={channel.id} />
 
           {/* SEÇÃO 1: VISÃO INTEGRADA MCR (DASHBOARD) */}
           {activeSection === 'DASHBOARD' && (

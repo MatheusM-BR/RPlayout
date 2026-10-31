@@ -34,6 +34,7 @@ import { Whep } from '../components/Whep.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { BroadcastMonitor } from '../components/broadcast/BroadcastMonitor.js'
 import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
+import { LiveWatchdogStrip } from '../components/broadcast/LiveWatchdogStrip.js'
 import { InterruptedItemsBanner } from '../components/broadcast/InterruptedItemsBanner.js'
 import { MasterToolsPanel } from '../components/broadcast/MasterToolsPanel.js'
 import { useStoredChoice } from '../domain/stored-choice.js'
@@ -994,6 +995,7 @@ export function MasterControlView({
         {/* 1.1 FAIXA DE STATUS DE ALTURA FIXA (U5): sonda + itens interrompidos */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0 flex flex-col gap-1">
           <PgmProbeBanner channelId={channel.id} showContingency={false} />
+          <LiveWatchdogStrip channelId={channel.id} compact />
           <InterruptedItemsBanner channelId={channel.id} rate={channel.rate} />
         </div>
 

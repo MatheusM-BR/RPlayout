@@ -18,6 +18,7 @@ mod overlay;
 mod live_replacement;
 mod bootstrap;
 mod fencing;
+mod input_quality;
 
 use anyhow::{anyhow, Context, Result};
 use channel::{Channel, Config, Output, Scan};
@@ -37,6 +38,9 @@ const METER_EVERY: Duration = Duration::from_millis(100);
 /// rede de tentativas.
 const LIVE_RETRY: Duration = Duration::from_secs(2);
 const OUTPUT_EVERY: Duration = Duration::from_secs(1);
+/// Telemetria das entradas ao vivo: o watchdog do servidor decide em
+/// segundos, então meia em meia segundo basta e mantém o protocolo enxuto.
+const LIVE_TELEMETRY_EVERY: Duration = Duration::from_millis(500);
 
 /// A UTF-8 BOM can precede the first line when the parent console is in
 /// code page 65001 (.NET Framework writes it on its first stdin write). It is
@@ -566,6 +570,7 @@ fn main() -> Result<()> {
     let bus = channel.bus();
     let mut last_position = Instant::now();
     let mut last_output = Instant::now();
+    let mut last_live_telemetry = Instant::now();
     let mut last_meter = Instant::now();
     let mut last_graphics = Instant::now();
     let mut live_recovery = LiveRecovery::default();
@@ -712,11 +717,14 @@ fn main() -> Result<()> {
             Event::Publisher { report }.emit();
         }
 
-        if last_output.elapsed() >= OUTPUT_EVERY {
-            last_output = Instant::now();
+        if last_live_telemetry.elapsed() >= LIVE_TELEMETRY_EVERY {
+            last_live_telemetry = Instant::now();
             for (item_id, bus, signal) in channel.live_signal_reports() {
                 Event::SourceTelemetry { item_id, bus, decoder_id:channel.decoder_id(bus), configured_source_id:channel.configured_source_id(bus), signal }.emit();
             }
+        }
+        if last_output.elapsed() >= OUTPUT_EVERY {
+            last_output = Instant::now();
             Event::Output {
                 frames: channel.frames_out(),
             }

@@ -67,6 +67,8 @@ import {
   type EditScope,
 } from '@rplayout/protocol'
 import { networkInterfaces } from 'node:os'
+import { LiveWatchdogPolicySchema } from '@rplayout/protocol'
+import { readLiveWatchdogPolicy, writeLiveWatchdogPolicy } from './db/live-watchdog-policies.js'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
@@ -5913,6 +5915,66 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if (runtime.view) await logDecision(app, runtime.view.rundown.id, null, `CONTINGENCY_${action}_CONFIRMED`, { origin: runtime.contingencyState }, await usernameOf(request))
       return { ok: true, origin: runtime.contingencyState }
     } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
+  })
+
+  // Watchdog das entradas ao vivo (SRT/RTMP/NDI/OMT/SDI): estado, configuração e comandos.
+  server.get('/api/channels/:id/live-watchdog', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar o watchdog.' })
+    const { id } = request.params as { id: string }
+    if (!(await getChannel(app.db, id))) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    const stored = app.runtimes.get(id)?.watchdogPolicy() ?? readLiveWatchdogPolicy(app.sqlite, id)
+    const runtime = app.runtimes.get(id), now = Date.now()
+    return reply.header('cache-control', 'private, no-store').send({ channelId: id, policy: stored.policy, revision: stored.revision, updatedAt: stored.updatedAt, updatedBy: stored.updatedBy,
+      nativeEngine: runtime ? runtime.transport instanceof EngineTransport : false,
+      inputs: runtime ? runtime.liveWatchdog.status(now, stored.policy) : [],
+      events: runtime ? runtime.liveWatchdog.history.slice(-30).reverse().map(event => ({ at: new Date(event.at).toISOString(), sourceName: event.sourceName, kind: event.kind, message: event.message })) : [] })
+  })
+  server.put('/api/channels/:id/live-watchdog', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Configurar o watchdog exige Supervisor ou acima.' })
+    const { id } = request.params as { id: string }
+    const channel = await getChannel(app.db, id)
+    if (!channel) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    const body = z.object({ revision: z.number().int().min(0), policy: LiveWatchdogPolicySchema }).strict().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Configuração do watchdog inválida.', issues: body.error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })) })
+    const policy = body.data.policy
+    const known = new Set(app.db.select({ id: liveSources.id }).from(liveSources).where(eq(liveSources.channelId, id)).all().map(row => row.id))
+    const unknown = Object.keys(policy.overrides).filter(sourceId => !known.has(sourceId))
+    if (unknown.length) return reply.code(400).send({ error: 'Ajuste para entrada que não pertence a este canal.', issues: unknown.map(sourceId => ({ path: `overrides.${sourceId}`, message: 'Entrada desconhecida.' })) })
+    if (policy.waitArt.kind === 'GRAPHIC') {
+      const template = app.db.select({ channelId: graphicTemplates.channelId }).from(graphicTemplates).where(eq(graphicTemplates.id, policy.waitArt.templateId)).get()
+      if (!template || (template.channelId !== null && template.channelId !== id)) return reply.code(400).send({ error: 'Arte de espera inexistente ou de outro canal.', issues: [{ path: 'waitArt.templateId', message: 'Escolha uma arte cadastrada.' }] })
+    }
+    if (policy.mode === 'AUTOMATIC' && policy.waitArt.kind === 'SLATE' && !channel.slateTemplateId) return reply.code(409).send({ error: 'Escolha a arte de apresentação técnica do canal (ou outra arte de espera) antes de ligar o modo automático.' })
+    let prepared: { assets: Map<string, MediaAsset> } | null = null
+    if (policy.contingencyRevisionId) {
+      // Mesma verificação da reserva do Monitor: loop, só vídeos aprovados no QC e cópia local verificada.
+      const runtime = await runtimeFor(app, id)
+      if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+      try { prepared = await runtime.prepareContingency(policy.contingencyRevisionId) }
+      catch (error) { return reply.code(409).send({ error: 'Contingência recusada: ' + (error instanceof Error ? error.message : String(error)) }) }
+    }
+    const actor = await usernameOf(request)
+    let stored
+    try { stored = writeLiveWatchdogPolicy(app.sqlite, id, policy, body.data.revision, actor) }
+    catch (error) { const status = (error as { status?: number }).status; return reply.code(status === 409 ? 409 : 400).send({ error: error instanceof Error ? error.message : String(error) }) }
+    app.continuityCache.replaceProtection(`watchdog:${id}`, prepared ? [...prepared.assets.values()] : [])
+    app.runtimes.get(id)?.setWatchdogPolicy(stored)
+    await logDecision(app, app.runtimes.get(id)?.executionView?.rundown.id ?? '@execution', null, 'LIVE_WATCHDOG_POLICY_CHANGED', { channelId: id, revision: stored.revision, mode: policy.mode, waitMs: policy.waitMs, returnStableMs: policy.returnStableMs, returnMode: policy.returnMode, contingencyRevisionId: policy.contingencyRevisionId }, actor)
+    return { ok: true, channelId: id, policy: stored.policy, revision: stored.revision, updatedAt: stored.updatedAt, updatedBy: stored.updatedBy }
+  })
+  server.post('/api/channels/:id/live-watchdog/command', async (request, reply) => {
+    if (!(await allowed(request, 'TRANSPORT'))) return reply.code(403).send({ error: 'Seu papel não pode comandar o watchdog.' })
+    const { id } = request.params as { id: string }
+    const body = z.object({ action: z.enum(['RETURN_NOW', 'HOLD', 'RELEASE_HOLD']) }).strict().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Comando inválido: use RETURN_NOW, HOLD ou RELEASE_HOLD.' })
+    const runtime = app.runtimes.get(id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal sem execução ativa.' })
+    const actor = await usernameOf(request), policy = runtime.watchdogPolicy().policy
+    try {
+      if (body.data.action === 'RETURN_NOW') runtime.liveWatchdog.operatorReturn(Date.now(), actor, policy)
+      else runtime.liveWatchdog.operatorHold(Date.now(), body.data.action === 'HOLD', actor)
+    } catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) }) }
+    return { ok: true, inputs: runtime.liveWatchdog.status(Date.now(), policy) }
   })
 
   // 4. Disparo Manual / Reset de Slate de Emergência

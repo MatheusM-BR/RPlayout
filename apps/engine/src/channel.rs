@@ -211,6 +211,8 @@ struct SourceStatistics {
     content_since: Option<Instant>,
     last_content_sample: Option<Instant>,
     content_sample_frames: u64,
+    /// Medições baratas para o watchdog de entradas ao vivo (fps, luma, áudio, taxa).
+    quality: crate::input_quality::InputQuality,
 }
 
 impl Item {
@@ -284,7 +286,9 @@ impl SourceStatistics {
         let caps = pad.current_caps();
         if self.video_caps!=caps||self.last_video.is_some_and(|last|now.duration_since(last)>Duration::from_secs(2)){
             self.content_fingerprint=None;self.content_since=None;self.last_content_sample=None;self.content_sample_frames=0;
+            self.quality.reset_video();
         }
+        self.quality.on_video(caps.as_ref(),buffer,now);
         // Bounded sparse sample of decoded raw bytes, at most four times/s.
         // A static scene can match: this is a warning, never TAKE permission.
         if self.last_content_sample.map_or(true,|last|now.duration_since(last)>=Duration::from_millis(250)){
@@ -333,6 +337,7 @@ impl SourceStatistics {
             sampled_content_unchanged_ms:self.content_since.map(|since|since.elapsed().as_millis().min(u128::from(u64::MAX))as u64),
             content_sample_age_ms:self.last_content_sample.map(|last|last.elapsed().as_millis().min(u128::from(u64::MAX))as u64),
             content_sample_frames:self.content_sample_frames,
+            quality:self.quality.report(Instant::now()),
         }
     }
 }
@@ -2843,6 +2848,7 @@ impl Channel {
         let audio_routing=spec.audio_routing.clone();
         let source_statistics = Arc::new(std::sync::Mutex::new(SourceStatistics::default()));
         let statistics_for_pads = Arc::clone(&source_statistics);
+        if spec.is_live() { crate::input_quality::count_network_input(&src.video, Arc::clone(&source_statistics), |statistics, bytes| statistics.quality.on_input_bytes(bytes, Instant::now())); }
         let inspect_live = spec.is_live();
         let ready_for_chain = Arc::clone(&video_ready);
         let video_pad_found = Arc::new(AtomicBool::new(false));
@@ -2927,10 +2933,11 @@ impl Channel {
             };
             if inspect_live {
                 let statistics = Arc::clone(&statistics_for_pads);
-                pad.add_probe(gst::PadProbeType::BUFFER, move |pad, _| {
+                pad.add_probe(gst::PadProbeType::BUFFER, move |pad, data| {
                     if let Ok(mut statistics) = statistics.lock() {
                         statistics.audio_caps = pad.current_caps();
                         statistics.last_audio = Some(Instant::now());
+                        if let Some(buffer)=data.buffer(){let caps=statistics.audio_caps.clone();statistics.quality.on_audio(caps.as_ref(),buffer,Instant::now());}
                     }
                     gst::PadProbeReturn::Ok
                 });
@@ -4216,6 +4223,25 @@ mod source_statistics_tests {
         let moved = stats.report(true);
         assert_eq!(moved.content_sample_frames, 1);
         assert!(moved.sampled_content_unchanged_ms.unwrap() < 100);
+    }
+    #[test]
+    fn watchdog_mede_luma_e_taxa_no_mesmo_pad_decodificado_da_entrada() {
+        gst::init().unwrap();
+        let pad = gst::Pad::builder(gst::PadDirection::Src).build();
+        pad.set_active(true).unwrap();
+        let caps = gst::Caps::builder("video/x-raw").field("format","BGRA").field("width",32i32).field("height",18i32).field("framerate",gst::Fraction::new(25,1)).build();
+        pad.store_sticky_event(&gst::event::StreamStart::new("watchdog")).unwrap();
+        pad.store_sticky_event(&gst::event::Caps::new(&caps)).unwrap();
+        let mut stats = SourceStatistics::default();
+        for index in 0..10u8 { stats.video(&pad, &gst::Buffer::from_mut_slice(vec![index; 32*18*4])); std::thread::sleep(Duration::from_millis(40)); }
+        let report = stats.report(true);
+        assert!(report.quality.arrival_fps.unwrap() >= 4.0, "{:?}", report.quality);
+        assert!(report.quality.luma_mean_percent.unwrap() < 5.0, "{:?}", report.quality);
+        assert!(report.quality.luma_std_percent.unwrap() < 0.5, "{:?}", report.quality);
+        // O contrato JSON achata as medições no relatório da fonte.
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json.get("arrivalFps").is_some() && json.get("lumaMeanPercent").is_some(), "{json}");
+        assert!(json.get("inputKbps").is_some_and(|value| value.is_null()), "sem elemento de rede não há taxa: {json}");
     }
     #[test]
     fn reports_input_caps_not_scaled_preview_and_no_invented_audio() {

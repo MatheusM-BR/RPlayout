@@ -35,6 +35,9 @@ export interface LiveSourceMeasurement {
   videoAgeMs: number | null; audioAgeMs: number | null; videoPresent: boolean; audioPresent: boolean
   receivedFrames: number; arrivalJitterMs: number | null
   sampledContentUnchangedMs?:number|null;contentSampleAgeMs?:number|null;contentSampleFrames?:number
+  /** Watchdog: medições baratas no pad decodificado (engine novo; ausentes no antigo). */
+  arrivalFps?:number|null;distinctFps?:number|null;lumaMeanPercent?:number|null;lumaStdPercent?:number|null;lumaSampleAgeMs?:number|null
+  lumaUnsupportedFormat?:string|null;lumaDeltaPercent?:number|null;lumaStaticMs?:number|null;audioRmsDbfs?:number|null;audioSampleRatio?:number|null;audioStalledMs?:number|null;inputKbps?:number|null
 }
 
 export interface LiveSourceSignal {
