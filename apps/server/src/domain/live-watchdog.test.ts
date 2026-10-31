@@ -271,6 +271,28 @@ describe('watchdog do canal com executor', () => {
     expect(watchdog.status(T0 + 12_000, p)[0]).toMatchObject({ state: 'OK' })
     expect(watchdog.drain()[0]!.message).toMatch(/retomou/)
   })
+  it('"manter contingência" com retorno às cegas já pedido cancela o TAKE pendente e não tenta de novo', async () => {
+    const calls: string[] = []
+    let contingency = true, rejectReturn: ((error: Error) => void) | null = null
+    const origin = { sourceKey: 'srt://cam', sourceId: 'cam', name: 'cam', kind: 'SRT', itemId: 'live', sample: null }
+    const watchdog = new ChannelLiveWatchdog({ showWait: async () => {}, hideWait: async () => {}, enterContingency: async () => {}, monitorSource: async () => {},
+      // Sem PVW: o TAKE da live fica esperando o primeiro quadro.
+      returnLive: () => new Promise<void>((_, reject) => { calls.push('return'); rejectReturn = reject }),
+      cancelReturn: async () => { calls.push('cancel'); rejectReturn?.(new Error('cancelado')); return true },
+      contingencyActive: () => contingency, canMonitor: () => false, contingencyOrigin: () => origin })
+    const p = policy()
+    let now = T0
+    for (; now <= T0 + 8000 && !calls.includes('return'); now += 250) { watchdog.tick({ now, policy: p, channelFps: 29.97, program: null, preview: [] }, () => now); await new Promise(resolve => setImmediate(resolve)) }
+    expect(calls).toEqual(['return'])
+    watchdog.operatorHold(now, true, 'op')
+    for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve))
+    expect(calls).toEqual(['return', 'cancel'])
+    for (; now <= T0 + 60_000; now += 250) { watchdog.tick({ now, policy: p, channelFps: 29.97, program: null, preview: [] }, () => now); await new Promise(resolve => setImmediate(resolve)) }
+    expect(calls).toEqual(['return', 'cancel'])
+    expect(watchdog.status(now, p)[0]).toMatchObject({ contingencyOnAir: true, holdContingency: true })
+    expect(watchdog.drain().some(event => /cancelada para manter a contingência/.test(event.message))).toBe(true)
+    contingency = false
+  })
   it('TAKE manual para outro item encerra o acompanhamento e retira a arte de espera', async () => {
     const calls: string[] = []
     const watchdog = new ChannelLiveWatchdog({ showWait: async () => { calls.push('show') }, hideWait: async () => { calls.push('hide') }, enterContingency: async () => {}, monitorSource: async () => {}, returnLive: async () => {}, contingencyActive: () => false })

@@ -383,6 +383,9 @@ export class WatchdogMachine {
     this.holdContingency = hold
     this.emit({ kind: 'OPERATOR', severity: 'INFO', message: `${this.label}: operador${actor ? ` ${actor}` : ''} ${hold ? 'manteve a contingência (retorno só manual)' : 'liberou o retorno automático'}.` }, now)
   }
+  noteReturnCancelled(now: number) {
+    this.emit({ kind: 'OPERATOR', severity: 'INFO', message: `${this.label}: tentativa de retorno à live cancelada para manter a contingência.` }, now)
+  }
 
   /** Executor externo mudou o PGM (TAKE manual): a intervenção deixa de valer. */
   abandon(now: number, reason: string) {
@@ -432,6 +435,9 @@ export interface WatchdogExecutor {
   contingencyOrigin?(): WatchdogObservedSource | null
   /** Parada que ficou aberta no banco para esta entrada (reinício durante a parada). */
   openOutage?(sourceKey: string): { id: string; startedAt: number; reasons: WatchdogDetection[]; action: LiveOutageAction } | null
+  /** Cancela o TAKE de retorno à live que ainda espera quadro. Devolve false
+   * se não havia o que cancelar (o corte já aconteceu ou não foi pedido). */
+  cancelReturn?(): Promise<boolean>
 }
 
 export interface WatchdogTickInput {
@@ -557,6 +563,15 @@ export class ChannelLiveWatchdog {
     const tracked = this.program
     if (!tracked) throw new Error('Nenhuma entrada ao vivo acompanhada pelo watchdog neste canal.')
     tracked.machine.operatorHold(now, hold, actor)
+    // "Manter contingência" com um retorno às cegas já pedido (sem PVW o TAKE
+    // da live espera o primeiro quadro): o TAKE pendente é cancelado. Antes, a
+    // live entrava 7 s depois do clique, assim que o sinal voltava.
+    if (hold && tracked.machine.pending === 'RETURN_LIVE' && this.executor.cancelReturn) {
+      void this.executor.cancelReturn().then(cancelled => {
+        if (cancelled) tracked.machine.noteReturnCancelled(Date.now())
+        this.collect(tracked.machine, tracked.source, 'pgm')
+      }, () => {})
+    }
     this.collect(tracked.machine, tracked.source, 'pgm')
   }
 

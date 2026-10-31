@@ -2178,6 +2178,19 @@ export class EngineTransport implements Transport {
       }
   }
 
+  /** Cancela o TAKE de playlist de uma fonte ao vivo que ainda espera o
+   * primeiro quadro (retorno do watchdog). Com o corte já confirmado, nada muda. */
+  async cancelPendingSourceTake(reason: string): Promise<boolean> {
+    const pending = this.pendingPlaylistTake
+    if (!pending || pending.confirmed || !pending.spec.source) return false
+    try { await this.request({ cmd: 'cancelTake' }) } catch { /* o desfecho fica para a confirmação do engine */ }
+    // O quadro pode ter chegado antes do cancelamento: aí o corte vale.
+    if (pending.confirmed || this.pendingPlaylistTake !== pending) return false
+    pending.failure ??= new Error(reason)
+    pending.settled?.()
+    return true
+  }
+
   cue(target: PreviewTarget | null): Promise<void> {
     return this.enqueue(()=>this.cueNow(target))
   }

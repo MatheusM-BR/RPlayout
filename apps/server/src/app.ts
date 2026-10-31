@@ -1323,6 +1323,7 @@ export class ChannelRuntime {
       if(preview?.kind==='SOURCE')await this.transport.cue(null)
       await this.returnLiveFromContingency()
     },
+    cancelReturn: async () => this.transport instanceof EngineTransport ? this.transport.cancelPendingSourceTake('Retorno à live cancelado: o operador manteve a contingência.') : false,
     // Reserva no ar de fato: STOP do operador encerra o acompanhamento.
     contingencyActive: () => Boolean(this.contingencyState?.active && this.transport.state().onAir),
     canMonitor: () => this.temMonitor('pvw'),
