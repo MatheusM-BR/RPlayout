@@ -24,6 +24,9 @@ const option = (name, fallback) => { const i = args.indexOf(name); return i >= 0
 const channel = option('--channel')
 const swiftshader = args.includes('--swiftshader')
 const iterations = Number(option('--iterations', '30'))
+// SwiftShader emula a GPU na CPU: 1080p lá leva minutos por quadro. Valida-se
+// a lógica numa resolução menor; os tempos de 1080p são da máquina com GPU.
+const [W, H] = option('--size', swiftshader ? '640x360' : '1920x1080').split('x').map(Number)
 const work = mkdtempSync(join(tmpdir(), 'scopes-bench-'))
 const require = createRequire(import.meta.url)
 let playwright
@@ -40,7 +43,6 @@ writeFileSync(join(work, 'rplayout_scopes.wasm'), readFileSync(join(root, 'apps/
 
 // 2. Mídia: barras EBU 75%/100% (8 barras) e SMPTE HD, codificadas como o PGM.
 function ebuPpm(level, file) {
-  const W = 1920, H = 1080
   const bars = [[1, 1, 1], [level, level, 0], [0, level, level], [0, level, 0], [level, 0, level], [level, 0, 0], [0, 0, level], [0, 0, 0]]
   const body = Buffer.alloc(W * H * 3)
   for (let x = 0; x < W; x++) { const [r, g, b] = bars[Math.floor(x * 8 / W)].map(v => Math.round(v * 255)); for (let y = 0; y < H; y++) body.set([r, g, b], (y * W + x) * 3) }
@@ -54,7 +56,7 @@ function encode(input, name, codec) {
   // Quadro exato do mesmo arquivo codificado (Y'CbCr 4:4:4 BT.709 limitado).
   const raw = join(work, `${name}.yuv`)
   execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '0.5', '-i', out, '-frames:v', '1', '-vf', 'scale=flags=neighbor,format=yuv444p', '-f', 'rawvideo', raw])
-  const header = Buffer.alloc(16); header.write('RPYC', 0, 'latin1'); header[4] = 1; header[5] = 1; header[6] = 0; header[7] = 8; header.writeUInt16LE(1920, 8); header.writeUInt16LE(1080, 10)
+  const header = Buffer.alloc(16); header.write('RPYC', 0, 'latin1'); header[4] = 1; header[5] = 1; header[6] = 0; header[7] = 8; header.writeUInt16LE(W, 8); header.writeUInt16LE(H, 10)
   writeFileSync(join(work, `${name}.ycc`), Buffer.concat([header, readFileSync(raw)]))
   return `/${name}.${codec === 'h264' ? 'mp4' : 'webm'}`
 }
@@ -87,11 +89,12 @@ const quick = args.includes('--quick')
 const allMedia = [
   {name: 'ebu-75', video: encode(['-loop', '1', '-i', join(work, 'ebu75.ppm')], 'ebu-75', codec), ycc: '/ebu-75.ycc', bars: 8},
   {name: 'ebu-100', video: encode(['-loop', '1', '-i', join(work, 'ebu100.ppm')], 'ebu-100', codec), ycc: '/ebu-100.ycc', bars: 8},
-  {name: 'natural-perf', video: encode(['-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=25'], 'natural-perf', codec)},
+  {name: 'natural-perf', video: encode(['-f', 'lavfi', '-i', `testsrc2=size=${W}x${H}:rate=25`], 'natural-perf', codec)},
 ]
 const media = quick ? allMedia.filter(m => m.name !== 'ebu-100') : allMedia
 const results = await page.evaluate(([items, n]) => window.scopesBench.run(items, n), [media, iterations])
 results.codec = codec
+results.size = `${W}x${H}`
 results.mode = swiftshader ? 'swiftshader (sem GPU; tempos só relativos)' : `navegador ${channel ?? 'chromium'} com GPU`
 const text = JSON.stringify(results, null, 2)
 console.log(text)
