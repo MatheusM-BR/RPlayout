@@ -1221,7 +1221,7 @@ export function App() {
         <p>{libraryError??'Acervo ainda não conferido; isso não é confirmação de acervo vazio.'}</p>
         <button className="mt-2 rounded border px-2 py-1" onClick={()=>void refreshLibrary().catch(cause=>{if(!(cause instanceof SupersededContextError))anotar('SERVIDOR',cause instanceof Error?cause.message:'Acervo não consultado.')})}>Reconsultar acervo</button>
       </aside>}
-      {scanRequest!==null&&<div role="dialog" aria-modal="true" aria-label="Varredura do acervo" className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center"><ScanCommandDialog measure={scanRequest} onClose={()=>setScanRequest(null)} onRegistered={()=>{}}/></div>}
+      {scanRequest!==null&&<div role="dialog" aria-modal="true" aria-label="Varredura do acervo" className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center p-4"><ScanCommandDialog measure={scanRequest} onClose={()=>setScanRequest(null)} onRegistered={()=>{}}/></div>}
       <ConfirmHost />
       <EscalationInbox />
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}

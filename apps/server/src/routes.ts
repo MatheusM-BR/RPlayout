@@ -223,6 +223,7 @@ import type {HistoryGuard} from './domain/history.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { extname, resolve as resolvePath } from 'node:path'
+import { QcFrames, QcFrameBusy, qcFramePositionNs, qcLastFrame } from './domain/qc-frames.js'
 import {
   createOutput,
   newOutputProfile,
@@ -466,6 +467,7 @@ function blockCompanions(runtime: Pick<EditorialContext, 'view'>, itemId: string
 }
 
 export function registerRoutes(app: App, server: FastifyInstance, onChange: () => void): void {
+  const qcFrames = new QcFrames(resolvePath(app.thumbnailDir, 'qc-tmp'))
   const globalConcurrencyManager=app.concurrency
   const auditChannels=new WeakMap<object,string[]>()
   const mutatePlaylist = async (runtime: ChannelRuntime, reply: any, work: () => Promise<unknown>, changesExecution = () => true) => {
@@ -2152,6 +2154,52 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const body=z.object({confirmedPreviousStopped:z.boolean().optional()}).strict().safeParse(request.body??{})
     if(!body.success)return reply.code(400).send({error:'Confirmação de retomada inválida.'})
     return app.mediaWorkflow.retry(id,body.data.confirmedPreviousStopped===true,details=>{app.db.insert(operatorDecisions).values({id:randomUUID(),rundownId:'@library',kind:'MEDIA_JOB_RETRY_REQUESTED',payload:{...details,automaticTake:false},actorUsername:access.identity(request)?.username??null,createdAt:new Date().toISOString()}).run()}) ? { ok: true } : reply.code(409).send({ error: 'Somente trabalhos com falha podem ser reexecutados. Se o responsável anterior não foi identificado, confirme primeiro que aquela instância encerrou.' })
+  })
+
+  /**
+   * Quadro EXATO do original para o QC, endereçado pelo índice do quadro na
+   * cadência do próprio arquivo (o TC que o QC mostra).
+   *
+   * `.jpg` é a imagem para olhar: RGB convertido pela matriz BT.709 com faixa
+   * limitada→full (o JPEG antigo guardava os códigos Y'CbCr crus e o navegador
+   * os lia como BT.601 full-range, levantando o preto a 6% e distorcendo a
+   * cor). `.ycc` são as amostras Y'CbCr 4:4:4 de 8 bits sem conversão, para os
+   * scopes medirem o sinal e não a imagem decodificada pelo navegador -- é o
+   * que deixa ver sub-black e super-white (−7…109%). Os dois saem da mesma
+   * decodificação; custo limitado em {@link QcFrames}.
+   */
+  server.get('/api/assets/:id/qc-frame/:name', async (request, reply) => {
+    const { id, name } = request.params as { id: string; name: string }
+    const { hash } = request.query as { hash?: string }
+    const match = /^(\d{1,9})\.(jpg|ycc)$/.exec(name)
+    if (!match) return reply.code(404).send({ error: 'Quadro inválido.' })
+    const asset = (await listAssets(app.db)).find(candidate => candidate.id === id)
+    if (!asset) return reply.code(404).send({ error: 'Arquivo não encontrado.' })
+    if (!hash) return reply.code(428).send({ error: 'Informe a versão conferida para inspecionar quadros em qualidade.' })
+    if (hash !== asset.contentHash) return reply.code(409).send({ error: 'A mídia mudou. Atualize a seleção antes de inspecionar os quadros.' })
+    const rate = asset.probe?.rate
+    if (!rate || !(rate.num > 0) || !(rate.den > 0)) return reply.code(422).send({ error: 'Cadência do original não sondada; reescaneie antes de inspecionar por quadro.' })
+    const last = qcLastFrame(asset.durationNs, rate)
+    const frame = Math.min(Number(match[1]), last ?? Number.MAX_SAFE_INTEGER)
+    const inspectionPath = await app.mediaWorkflow.inspectionOriginal(asset.id, asset.contentHash, asset.path)
+    if (!inspectionPath) return reply.code(409).send({ error: 'Original não corresponde à edição selecionada ou está indisponível. Reescaneie antes de aprovar.' })
+    const largura = Math.max(64, Math.min(asset.probe?.width ?? 1920, 3840)) & ~1
+    const scopeWidth = 960
+    let extracted
+    try {
+      extracted = await qcFrames.get(`${asset.contentHash}:${frame}:${largura}:${scopeWidth}`, prefixo => app.ingest.qcFrame(inspectionPath, qcFramePositionNs(frame, rate), prefixo, largura, scopeWidth))
+    } catch (error) {
+      if (error instanceof QcFrameBusy) return reply.code(503).header('retry-after', '1').send({ error: error.message })
+      throw error
+    }
+    if (!extracted) return reply.code(425).send({ error: 'Não foi possível extrair este quadro do original.' })
+    reply.header('cache-control', 'private, max-age=604800, immutable')
+      .header('x-rplayout-frame-index', String(frame))
+      .header('x-rplayout-frame-pts-ns', extracted.ptsNs === null ? '' : String(extracted.ptsNs))
+    if (match[2] === 'jpg') return reply.type('image/jpeg').header('x-rplayout-rendition', `qc-rgb709-${largura}`).send(extracted.jpg)
+    reply.type('application/octet-stream').header('x-rplayout-rendition', 'qc-ycbcr444-bt709-limited-8bit').header('vary', 'accept-encoding')
+    if (/\bgzip\b/.test(String(request.headers['accept-encoding'] ?? ''))) return reply.header('content-encoding', 'gzip').send(extracted.yccGzip)
+    return reply.send(extracted.ycc)
   })
 
   /**

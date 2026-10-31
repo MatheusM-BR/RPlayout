@@ -675,6 +675,33 @@ export class Ingest {
     return trabalho
   }
 
+  /**
+   * Um quadro exato do original para o QC, numa única decodificação: grava
+   * `<prefixo>.jpg` (RGB BT.709 limitado→full, para exibir) e `<prefixo>.ycc`
+   * (Y'CbCr 4:4:4 cru, para os scopes). Devolve o PTS do quadro ou null.
+   */
+  qcFrame(path:string,positionNs:number,prefixo:string,largura:number,scopeWidth:number):Promise<{ptsNs:number|null}|null>{
+    if(this.closed||!this.available)return Promise.resolve(null)
+    return new Promise(done=>{
+      try{mkdirSync(dirname(prefixo),{recursive:true})}catch{/* a sonda falha abaixo */}
+      const child=spawn(this.probeBinary,[path,'--thumbnail',prefixo,'--qc-at-ns',String(Math.max(0,Math.round(positionNs))),'--largura',String(largura),'--scope-width',String(scopeWidth),'--no-loudness','--parent-pipe'],{windowsHide:true,env:mediaProcessEnvironment(),stdio:['pipe','pipe','pipe']})
+      this.track(child)
+      let settled=false,out=''
+      const finish=(value:{ptsNs:number|null}|null)=>{if(settled)return;settled=true;clearTimeout(timeout);done(value)}
+      const timeout=setTimeout(()=>{finish(null);child.kill()},30_000)
+      child.stderr?.resume()
+      try{if(child.pid)setPriority(child.pid,constants.priority.PRIORITY_LOW)}catch{/* sem prioridade baixa ainda funciona */}
+      child.stdout?.on('data',(chunk:Buffer)=>{out=(out+chunk.toString()).slice(-100_000)})
+      child.on('error',()=>finish(null))
+      child.on('close',()=>{
+        try{
+          const result=JSON.parse(out.trim().split('\n').pop()??'') as {ok?:boolean;frameRecipe?:string;framePtsNs?:number|null}
+          finish(result.ok&&result.frameRecipe==='qc-frame-v4'?{ptsNs:typeof result.framePtsNs==='number'?result.framePtsNs:null}:null)
+        }catch{finish(null)}
+      })
+    })
+  }
+
   /** Roda a sonda e lê a linha de JSON. Falha dela nunca derruba a varredura. */
   private probe(path: string, thumbnail: string): Promise<ProbeResult> {
     if(this.closed)return Promise.resolve({ok:false,reason:'Scanner encerrando.'})

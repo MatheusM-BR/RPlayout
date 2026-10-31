@@ -146,6 +146,13 @@ struct Args {
     /// para encher rápido; a tela de conferência quer quadro grande, para dar
     /// para ver onde cortar.
     largura: i32,
+    /// QC: posição exata (ns) de UM quadro do original. Gera `<prefixo>.jpg`
+    /// (RGB BT.709 faixa limitada→full, para exibir) e `<prefixo>.ycc`
+    /// (amostras Y'CbCr 4:4:4 cruas, códigos de 8 bits BT.709 faixa limitada,
+    /// para os scopes) numa única decodificação.
+    qc_at_ns: Option<u64>,
+    /// Largura das amostras Y'CbCr dos scopes (múltiplo de 4).
+    scope_width: i32,
 }
 
 fn parse_args() -> Result<Args> {
@@ -157,6 +164,8 @@ fn parse_args() -> Result<Args> {
     let mut largura = 320i32;
     let mut fita = None;
     let mut parent_pipe = false;
+    let mut qc_at_ns = None;
+    let mut scope_width = 960i32;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut index = 0;
@@ -173,6 +182,14 @@ fn parse_args() -> Result<Args> {
                         .cloned()
                         .ok_or_else(|| anyhow!("--thumbnail precisa de um caminho"))?,
                 );
+            }
+            "--qc-at-ns" => {
+                index += 1;
+                qc_at_ns = Some(args.get(index).ok_or_else(|| anyhow!("--qc-at-ns precisa de nanossegundos"))?.parse::<u64>().context("--qc-at-ns")?);
+            }
+            "--scope-width" => {
+                index += 1;
+                scope_width = args.get(index).ok_or_else(|| anyhow!("--scope-width precisa de um número"))?.parse().context("--scope-width")?;
             }
             "--no-loudness" => measure = false,
             "--parent-pipe" => parent_pipe = true,
@@ -208,6 +225,7 @@ fn parse_args() -> Result<Args> {
     }
 
     if only_frame.is_some() && fita.is_none(){return Err(anyhow!("--only-frame requer --fita"));}
+    if qc_at_ns.is_some() && (fita.is_some() || at.is_some() || thumbnail.is_none()){return Err(anyhow!("--qc-at-ns exige --thumbnail e não combina com --fita/--at"));}
     Ok(Args {
         parent_pipe,
         path: path.ok_or_else(|| anyhow!("falta o caminho do arquivo"))?,
@@ -219,6 +237,8 @@ fn parse_args() -> Result<Args> {
         // Largura ímpar quebra a subamostragem de croma do JPEG; e uma largura
         // absurda transformaria a sonda num gerador de imagem enorme.
         largura: inspection_width(largura),
+        qc_at_ns,
+        scope_width: scope_raster_width(scope_width),
     })
 }
 
@@ -226,6 +246,12 @@ fn parse_args() -> Result<Args> {
 // 320px; bound width and even chroma dimensions apply to every CLI consumer.
 fn inspection_width(requested: i32) -> i32 {
     requested.clamp(64, 3840) & !1
+}
+
+// Amostras dos scopes: no mínimo 480 pontos por linha (resolução útil de um
+// waveform), no máximo UHD; múltiplo de 4 para o Y444 sair sem preenchimento.
+fn scope_raster_width(requested: i32) -> i32 {
+    requested.clamp(480, 3840) & !3
 }
 
 // Square-pixel JPEGs bounded by UHD in both axes, without baked letterbox or
@@ -253,6 +279,20 @@ mod inspection_width_tests {
         assert_eq!(inspection_width(i32::MAX), 3840);
         assert_eq!(inspection_width(-1), 64);
         assert_eq!(inspection_width(1921), 1920);
+    }
+    #[test]
+    fn scope_samples_keep_useful_resolution_and_y444_alignment() {
+        assert_eq!(super::scope_raster_width(100), 480);
+        assert_eq!(super::scope_raster_width(962), 960);
+        assert_eq!(super::scope_raster_width(99999), 3840);
+    }
+    #[test]
+    fn ycc_header_declares_bt709_limited_444(){
+        let header=super::ycc_header(960,540);
+        assert_eq!(&header[0..4],b"RPYC");
+        assert_eq!(header[4],1);assert_eq!(header[5],1);assert_eq!(header[6],0);assert_eq!(header[7],8);
+        assert_eq!(u16::from_le_bytes([header[8],header[9]]),960);
+        assert_eq!(u16::from_le_bytes([header[10],header[11]]),540);
     }
     #[test]
     fn inspection_picture_geometry_is_bounded_and_square_pixel(){
@@ -335,13 +375,15 @@ fn main() -> Result<()> {
     let thumbnail_done = Arc::new(AtomicU64::new(0));
     // Sem `--at` nem `--fita`, o primeiro quadro serve e a captura já nasce
     // liberada.
-    let liberado = Arc::new(AtomicBool::new(args.at.is_none() && args.fita.is_none()));
+    let liberado = Arc::new(AtomicBool::new(args.at.is_none() && args.fita.is_none() && args.qc_at_ns.is_none()));
     // Para onde o próximo quadro capturado vai. Com `--fita` isso muda a cada
     // salto, então o destino não pode ficar preso dentro da callback.
-    let alvo: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(match args.fita {
-        Some(_) => None,
-        None => args.thumbnail.clone(),
+    let alvo: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(match (args.fita, args.qc_at_ns) {
+        (Some(_), _) | (_, Some(_)) => None,
+        _ => args.thumbnail.clone(),
     }));
+    let scope_done = Arc::new(AtomicU64::new(0));
+    let qc_scope = args.qc_at_ns.map(|_| (args.scope_width, Arc::clone(&scope_done)));
 
     let stage = pipeline.clone();
     let seen_video = Arc::clone(&video_info);
@@ -367,16 +409,23 @@ fn main() -> Result<()> {
             if seen_video.lock().unwrap().is_some() {
                 return;
             }
-            if let Err(error) = attach_video(
-                &stage,
-                pad,
-                &seen_video,
-                &want_thumbnail,
-                &thumb_flag,
-                &thumb_pts,
-                &porteiro_video,
-                largura_thumb,
-            ) {
+            let attached = match &qc_scope {
+                Some((scope_width, scope_flag)) => attach_qc_video(
+                    &stage, pad, &seen_video, &want_thumbnail, &thumb_flag, scope_flag,
+                    &thumb_pts, &porteiro_video, largura_thumb, *scope_width,
+                ),
+                None => attach_video(
+                    &stage,
+                    pad,
+                    &seen_video,
+                    &want_thumbnail,
+                    &thumb_flag,
+                    &thumb_pts,
+                    &porteiro_video,
+                    largura_thumb,
+                ),
+            };
+            if let Err(error) = attached {
                 eprintln!("[probe] vídeo ignorado: {error}");
             } else {
                 count_decoded_buffers(pad, counted_video.clone());
@@ -403,7 +452,7 @@ fn main() -> Result<()> {
         }
     });
 
-    let initial_state=if args.only_frame.is_some(){gst::State::Paused}else{gst::State::Playing};
+    let initial_state=if args.only_frame.is_some()||args.qc_at_ns.is_some(){gst::State::Paused}else{gst::State::Playing};
     if let Err(error) = pipeline.set_state(initial_state) {
         fail(format!("não consegui abrir: {error}"));
     }
@@ -424,6 +473,53 @@ fn main() -> Result<()> {
         }
         let _ = pipeline.state(gst::ClockTime::from_seconds(10));
         liberado.store(true, Ordering::Release);
+    }
+
+    // QC: um quadro exato do original, pedido pela posição (o servidor mira o
+    // meio do quadro, então a busca ACCURATE cai nele e não no vizinho).
+    if let Some(posicao) = args.qc_at_ns {
+        let _ = pipeline.state(gst::ClockTime::from_seconds(15));
+        let total = pipeline.query_duration::<gst::ClockTime>().map(|d| d.nseconds()).unwrap_or(0);
+        if total == 0 {
+            let _ = pipeline.set_state(gst::State::Null);
+            fail("o arquivo não disse quanto dura; sem isso não dá para buscar o quadro".to_string());
+        }
+        let alvo_ns = posicao.min(total.saturating_sub(1));
+        *alvo.lock().unwrap() = args.thumbnail.clone();
+        if pipeline.seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE, gst::ClockTime::from_nseconds(alvo_ns)).is_err() {
+            let _ = pipeline.set_state(gst::State::Null);
+            fail("o arquivo não aceitou busca exata".to_string());
+        }
+        let _ = pipeline.state(gst::ClockTime::from_seconds(15));
+        liberado.store(true, Ordering::Release);
+        pipeline.set_state(gst::State::Playing)?;
+        let limite = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while thumbnail_done.load(Ordering::Acquire) < 2 || scope_done.load(Ordering::Acquire) < 2 {
+            if std::time::Instant::now() > limite { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let ok = thumbnail_done.load(Ordering::Acquire) >= 2 && scope_done.load(Ordering::Acquire) >= 2;
+        liberado.store(false, Ordering::Release);
+        let _ = pipeline.set_state(gst::State::Null);
+        if !ok { fail("o quadro pedido não foi decodificado a tempo".to_string()); }
+        let probe = Probe {
+            ok: true,
+            decoded_video_buffers: decoded_video.load(Ordering::Acquire),
+            decoded_audio_buffers: decoded_audio.load(Ordering::Acquire),
+            video_codec: video_codec.lock().unwrap().clone(),
+            duration_ns: total,
+            video: video_info.lock().unwrap().take(),
+            audio: None,
+            audio_tracks: Vec::new(),
+            thumbnail: Some("1".to_string()),
+        };
+        let mut receipt = serde_json::to_value(&probe)?;
+        receipt["frameRecipe"] = serde_json::json!("qc-frame-v4");
+        receipt["requestedPositionNs"] = serde_json::json!(alvo_ns);
+        let pts = captured_pts.load(Ordering::Acquire);
+        receipt["framePtsNs"] = if pts == u64::MAX { serde_json::Value::Null } else { serde_json::json!(pts) };
+        println!("{}", receipt);
+        return Ok(());
     }
 
     // A fita inteira numa abertura só. O caro aqui é abrir e posicionar o
@@ -728,6 +824,160 @@ fn attach_video(
             .static_pad("sink")
             .ok_or_else(|| anyhow!("videoconvert sem sink"))?,
     )?;
+    Ok(())
+}
+
+/// Cabeçalho do arquivo `.ycc` (16 bytes): `RPYC`, versão 1, matriz 1 =
+/// BT.709, faixa 0 = limitada (16–235/240), 8 bits, largura e altura em u16
+/// LE e 4 bytes reservados. Seguem os planos Y, Cb e Cr completos (4:4:4).
+fn ycc_header(width: u16, height: u16) -> [u8; 16] {
+    let mut header = [0u8; 16];
+    header[0..4].copy_from_slice(b"RPYC");
+    header[4] = 1;
+    header[5] = 1;
+    header[6] = 0;
+    header[7] = 8;
+    header[8..10].copy_from_slice(&width.to_le_bytes());
+    header[10..12].copy_from_slice(&height.to_le_bytes());
+    header
+}
+
+/// Grava uma única amostra de um appsink no destino `<alvo><sufixo>`.
+fn capture_once(
+    sink: &gst::Element,
+    target: &Arc<Mutex<Option<String>>>,
+    flag: &Arc<AtomicU64>,
+    pts: Option<Arc<AtomicU64>>,
+    porteiro: &Arc<AtomicBool>,
+    suffix: &'static str,
+    encode: fn(&gst::Sample) -> Option<Vec<u8>>,
+) -> Result<()> {
+    let target = Arc::clone(target);
+    let flag = Arc::clone(flag);
+    let porteiro = Arc::clone(porteiro);
+    let app_sink = sink.clone().dynamic_cast::<gst_app::AppSink>().map_err(|_| anyhow!("appsink de vídeo não é appsink"))?;
+    app_sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                if !porteiro.load(Ordering::Acquire) { return Ok(gst::FlowSuccess::Ok); }
+                let Some(destino) = target.lock().unwrap().clone() else { return Ok(gst::FlowSuccess::Ok) };
+                if flag.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                    let destino = format!("{destino}{suffix}");
+                    let temporary = format!("{destino}.part-{}", std::process::id());
+                    let bytes = encode(&sample);
+                    let written = bytes.map(|bytes| std::fs::write(&temporary, bytes).and_then(|_| std::fs::rename(&temporary, &destino)).is_ok()).unwrap_or(false);
+                    if written {
+                        if let (Some(pts), Some(buffer)) = (&pts, sample.buffer()) {
+                            pts.store(buffer.pts().map(|t| t.nseconds()).unwrap_or(u64::MAX), Ordering::Release);
+                        }
+                        flag.store(2, Ordering::Release);
+                    } else {
+                        let _ = std::fs::remove_file(&temporary);
+                        flag.store(0, Ordering::Relaxed);
+                    }
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+    Ok(())
+}
+
+fn encoded_bytes(sample: &gst::Sample) -> Option<Vec<u8>> {
+    let buffer = sample.buffer()?;
+    let map = buffer.map_readable().ok()?;
+    Some(map.as_slice().to_vec())
+}
+
+/// Y444 de 8 bits como o videoconvert entrega (passo de linha múltiplo de 4)
+/// para planos contíguos com o cabeçalho `.ycc`.
+fn ycc_bytes(sample: &gst::Sample) -> Option<Vec<u8>> {
+    let caps = sample.caps()?;
+    let structure = caps.structure(0)?;
+    if structure.get::<String>("format").ok()?.as_str() != "Y444" { return None; }
+    let width = structure.get::<i32>("width").ok()? as usize;
+    let height = structure.get::<i32>("height").ok()? as usize;
+    let stride = (width + 3) & !3;
+    let buffer = sample.buffer()?;
+    let map = buffer.map_readable().ok()?;
+    let data = map.as_slice();
+    if width == 0 || height == 0 || width > u16::MAX as usize || height > u16::MAX as usize || data.len() < stride * height * 3 { return None; }
+    let mut out = Vec::with_capacity(16 + width * height * 3);
+    out.extend_from_slice(&ycc_header(width as u16, height as u16));
+    for plane in 0..3 {
+        for row in 0..height {
+            let start = plane * stride * height + row * stride;
+            out.extend_from_slice(&data[start..start + width]);
+        }
+    }
+    Some(out)
+}
+
+/// Ramo de vídeo do QC: um `tee` alimenta (a) o JPEG de exibição convertido
+/// para RGB pela matriz da origem (BT.709 faixa limitada→full) e (b) as
+/// amostras Y'CbCr 4:4:4 cruas para os scopes. As amostras são decimadas por
+/// vizinho mais próximo: todo ponto plotado é uma amostra real do original,
+/// sem o overshoot que um filtro de escala inventaria (falso ilegal).
+#[allow(clippy::too_many_arguments)]
+fn attach_qc_video(
+    pipeline: &gst::Pipeline,
+    pad: &gst::Pad,
+    info: &Arc<Mutex<Option<VideoInfo>>>,
+    target: &Arc<Mutex<Option<String>>>,
+    picture_done: &Arc<AtomicU64>,
+    scope_done: &Arc<AtomicU64>,
+    captured_pts: &Arc<AtomicU64>,
+    liberado: &Arc<AtomicBool>,
+    largura: i32,
+    scope_width: i32,
+) -> Result<()> {
+    let source_caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+    let structure = source_caps.structure(0).ok_or_else(|| anyhow!("pad de vídeo sem caps"))?;
+    let source_width: i32 = structure.get("width").unwrap_or(0);
+    let source_height: i32 = structure.get("height").unwrap_or(0);
+    let par = structure.get::<gst::Fraction>("pixel-aspect-ratio").unwrap_or_else(|_| gst::Fraction::new(1, 1));
+    let (picture_width, picture_height) = inspection_raster(source_width, source_height, par.numer(), par.denom(), largura)?;
+    let (scope_w, scope_h) = inspection_raster(source_width, source_height, par.numer(), par.denom(), scope_width)?;
+    let scope_w = (scope_w & !3).max(4);
+
+    let tee = gst::ElementFactory::make("tee").build()?;
+    let queue_a = gst::ElementFactory::make("queue").build()?;
+    let convert_a = gst::ElementFactory::make("videoconvert").build()?;
+    let scale_a = gst::ElementFactory::make("videoscale").property("add-borders", false).build()?;
+    let caps_a = gst::ElementFactory::make("capsfilter").property("caps", gst::Caps::builder("video/x-raw")
+        .field("format", "RGB").field("width", picture_width).field("height", picture_height)
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1)).build()).build()?;
+    let encoder = gst::ElementFactory::make("jpegenc").property("quality", 92i32).build()?;
+    let sink_a = gst::ElementFactory::make("appsink").property("sync", false).property("max-buffers", 1u32).property("drop", true).build()?;
+
+    let queue_b = gst::ElementFactory::make("queue").build()?;
+    let convert_b = gst::ElementFactory::make("videoconvert").build()?;
+    convert_b.set_property_from_str("dither", "none");
+    let scale_b = gst::ElementFactory::make("videoscale").property("add-borders", false).build()?;
+    scale_b.set_property_from_str("method", "nearest-neighbour");
+    let caps_b = gst::ElementFactory::make("capsfilter").property("caps", gst::Caps::builder("video/x-raw")
+        .field("format", "Y444").field("colorimetry", "bt709").field("width", scope_w).field("height", scope_h)
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1)).build()).build()?;
+    let sink_b = gst::ElementFactory::make("appsink").property("sync", false).property("max-buffers", 1u32).property("drop", true).build()?;
+
+    let elements = [&tee, &queue_a, &convert_a, &scale_a, &caps_a, &encoder, &sink_a, &queue_b, &convert_b, &scale_b, &caps_b, &sink_b];
+    pipeline.add_many(elements)?;
+    gst::Element::link_many([&tee, &queue_a, &convert_a, &scale_a, &caps_a, &encoder, &sink_a])?;
+    gst::Element::link_many([&tee, &queue_b, &convert_b, &scale_b, &caps_b, &sink_b])?;
+    for element in elements { element.sync_state_with_parent()?; }
+
+    let rate = structure.get::<gst::Fraction>("framerate").unwrap_or_else(|_| gst::Fraction::new(25, 1));
+    *info.lock().unwrap() = Some(VideoInfo {
+        width: source_width,
+        height: source_height,
+        rate_num: rate.numer(),
+        rate_den: rate.denom(),
+        interlace_mode: structure.get::<String>("interlace-mode").unwrap_or_else(|_| "progressive".to_string()),
+    });
+    capture_once(&sink_a, target, picture_done, Some(Arc::clone(captured_pts)), liberado, ".jpg", encoded_bytes)?;
+    capture_once(&sink_b, target, scope_done, None, liberado, ".ycc", ycc_bytes)?;
+    pad.link(&tee.static_pad("sink").ok_or_else(|| anyhow!("tee sem sink"))?)?;
     Ok(())
 }
 

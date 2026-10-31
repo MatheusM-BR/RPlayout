@@ -9,7 +9,15 @@ describe('medição de áudio do monitor', () => {
     expect(monitorAudioStatistics(new Float32Array([1, -1]), new Float32Array([1, -1])).phase).toBe(1)
   })
   it('silêncio não inventa fase nem pico audível', () => {
-    expect(monitorAudioStatistics(new Float32Array(4), new Float32Array(4))).toEqual({ peakL: -100, peakR: -100, phase: null, active: true })
+    expect(monitorAudioStatistics(new Float32Array(4), new Float32Array(4))).toMatchObject({ peakL: -Infinity, peakR: -Infinity, phase: null, muted: 'LR', active: true })
     expect(monitorAudioStatistics(new Float32Array(), new Float32Array()).active).toBe(false)
+  })
+  it('com um canal mudo a correlação é indefinida (nunca "+1.00 positiva")', () => {
+    const tone = Float32Array.from({ length: 480 }, (_, index) => 0.1 * Math.sin(index / 5))
+    const result = monitorAudioStatistics(tone, new Float32Array(480))
+    expect(result.phase).toBeNull()
+    expect(result.muted).toBe('R')
+    expect(result.peakR).toBe(-Infinity)
+    expect(result.peakL).toBeCloseTo(-20, 0)
   })
 })
