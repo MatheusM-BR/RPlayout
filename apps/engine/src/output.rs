@@ -621,7 +621,7 @@ impl Publisher {
 
         self.encoder = pipeline.iterate_elements().into_iter().flatten()
             .filter_map(|element| element.factory().map(|f| f.name().to_string()))
-            .find(|name| name.ends_with("h264enc"));
+            .find(|name| ENCODERS.contains(&name.as_str()));
         pipeline
             .set_state(gst::State::Playing)
             .context("a saída não entrou em execução")?;

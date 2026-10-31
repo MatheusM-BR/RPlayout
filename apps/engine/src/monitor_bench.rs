@@ -21,13 +21,52 @@ fn free_port() -> u16 {
 
 /// Canal de mentira: bola em movimento (mostra quadro repetido) e tom.
 fn source(id: &str, w: i32, h: i32, n: i32, d: i32) -> gst::Pipeline {
-    let text = format!(
-        "videotestsrc is-live=true pattern=ball motion=sweep ! video/x-raw,format=I420,width={w},height={h},framerate={n}/{d},pixel-aspect-ratio=1/1 ! intervideosink channel={id}-v \
-         audiotestsrc is-live=true wave=sine freq=1000 volume=0.3 ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! interaudiosink channel={id}-a"
-    );
-    let pipeline = gst::parse::launch(&text).unwrap().downcast::<gst::Pipeline>().unwrap();
+    let pipeline = source_with(id, w, h, n, d);
     pipeline.set_state(gst::State::Playing).unwrap();
     pipeline
+}
+
+/// Fonte com o relógio gravado já na origem (antes do inter): serve para
+/// medir o monitor antigo, que não tinha relógio próprio, do mesmo ponto.
+fn stamped_source(id: &str, w: i32, h: i32, n: i32, d: i32) -> gst::Pipeline {
+    let pipeline = source_with(id, w, h, n, d);
+    let caps = pipeline.by_name("srccaps").unwrap();
+    caps.static_pad("src").unwrap().add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+        if let Some(gst::PadProbeData::Buffer(buffer)) = info.data.as_mut() {
+            if let Ok(mut map) = buffer.make_mut().map_writable() {
+                crate::monitor::stamp_i420(map.as_mut_slice(), w, h, wall_clock_ms());
+            }
+        }
+        gst::PadProbeReturn::Ok
+    });
+    pipeline.set_state(gst::State::Playing).unwrap();
+    pipeline
+}
+
+fn source_with(id: &str, w: i32, h: i32, n: i32, d: i32) -> gst::Pipeline {
+    // BENCH_FILE: imagem real (VT com movimento) no lugar da barra de teste;
+    // o custo de decodificar o arquivo entra na linha de base e é descontado.
+    let video = match std::env::var("BENCH_FILE") {
+        Ok(file) => format!("filesrc location=\"{file}\" ! qtdemux ! h264parse ! avdec_h264 ! videoconvert ! videoscale ! videorate ! queue max-size-buffers=4 ! clocksync"),
+        Err(_) => "videotestsrc is-live=true pattern=ball motion=sweep".to_string(),
+    };
+    let text = format!(
+        "{video} ! capsfilter name=srccaps caps=video/x-raw,format=I420,width={w},height={h},framerate={n}/{d},pixel-aspect-ratio=1/1 ! intervideosink channel={id}-v \
+         audiotestsrc is-live=true wave=sine freq=1000 volume=0.3 ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! interaudiosink channel={id}-a"
+    );
+    gst::parse::launch(&text).unwrap().downcast::<gst::Pipeline>().unwrap()
+}
+
+/// Lê a faixa de uma imagem que foi reduzida depois de gravada.
+fn read_scaled(luma: &[u8], stride: usize, w: i32, h: i32, origin: Option<(i32, i32)>) -> Option<u64> {
+    let Some((sw, sh)) = origin else { return read_luma(luma, stride, w, h) };
+    let block = crate::monitor::clock_block(sw, sh) as f64 * w as f64 / sw as f64;
+    let sample = |index: usize| luma.get((block / 2.0) as usize * stride + (index as f64 * block + block / 2.0) as usize).map(|v| *v > 126);
+    let last = crate::monitor::CLOCK_BLOCKS as usize - 1;
+    if sample(0)? != true || sample(1)? || sample(last - 1)? || sample(last)? != true { return None; }
+    let mut ms = 0u64;
+    for bit in 0..crate::monitor::CLOCK_BITS as usize { ms = (ms << 1) | sample(bit + 2)? as u64; }
+    Some(ms)
 }
 
 #[derive(Default, Debug, Clone)]
@@ -49,8 +88,16 @@ struct Receiver {
 
 impl Receiver {
     fn new(port: u16) -> Self {
+        Self::with(port, None)
+    }
+
+    /// `origin`: raster em que o relógio foi gravado, se não for o recebido.
+    /// A latência SRT do receptor imita o MediaMTX (gosrt: 120 ms), salvo
+    /// `BENCH_SRT_LATENCY`.
+    fn with(port: u16, origin: Option<(i32, i32)>) -> Self {
+        let srt_latency = std::env::var("BENCH_SRT_LATENCY").unwrap_or_else(|_| "120".into());
         let text = format!(
-            "srtsrc uri=srt://127.0.0.1:{port}?mode=listener latency=20 name=src ! tsdemux name=d latency=0 \
+            "srtsrc uri=srt://127.0.0.1:{port}?mode=listener latency={srt_latency} name=src ! tsdemux name=d latency=0 \
              d. ! queue ! h264parse ! avdec_h264 ! videoconvert ! video/x-raw,format=GRAY8 ! appsink name=video sync=false emit-signals=false max-buffers=4 drop=true \
              d. ! queue ! fakesink name=audio sync=false"
         );
@@ -83,7 +130,7 @@ impl Receiver {
             received.frames += 1;
             if let Ok(map) = buffer.map_readable() {
                 let stride = ((w + 3) & !3) as usize;
-                if let Some(stamp) = read_luma(map.as_slice(), stride, w, h) {
+                if let Some(stamp) = read_scaled(map.as_slice(), stride, w, h, origin) {
                     received.latencies_ms.push(now_ms - stamp as i64);
                 }
             }
@@ -249,7 +296,10 @@ fn bench_monitor_niveis() {
     let (fn_, fd) = env("BENCH_FRAME", &format!("{n}/{d}")).split_once('/').map(|(a, b)| (a.parse().unwrap(), b.parse().unwrap())).unwrap();
     let seconds: f64 = env("BENCH_SECONDS", "20").parse().unwrap();
     let id = format!("bench-{}", std::process::id());
-    let _source = source(&id, w, h, n, d);
+    // Antes (BENCH_LEGACY=1): o monitor de sempre, Publisher sem níveis em
+    // 240p/15 fps/450 kbps, GOP 2 s, mux 500 ms, latência de saída 650 ms.
+    let legacy = std::env::var("BENCH_LEGACY").is_ok();
+    let _source = if legacy { stamped_source(&id, w, h, n, d) } else { source(&id, w, h, n, d) };
     std::thread::sleep(Duration::from_secs(2));
     let base_wall = Instant::now();
     let base_cpu = process_cpu_seconds();
@@ -258,45 +308,58 @@ fn bench_monitor_niveis() {
 
     let external = std::env::var("BENCH_URL").ok();
     let port = free_port();
-    let receiver = external.is_none().then(|| Receiver::new(port));
-    let url = external.clone().unwrap_or_else(|| format!("srt://127.0.0.1:{port}?latency=20"));
-    let src = MonitorSource { width: w, height: h, fps_n: n, fps_d: d, frame_n: fn_, frame_d: fd, bitrate_ceiling_kbps: 8000 };
-    let mut spec = spec(&id, src, &[]);
-    spec.url_overrides.insert(tier, url);
-    let mut bus = MonitorBus::new(spec);
-    TEST_CLOCK.store(true, Ordering::Relaxed);
-    bus.set_tier(tier, true, false);
-    pump(&mut bus, 3.0);
+    let receiver = external.is_none().then(|| Receiver::with(port, legacy.then_some((w, h))));
+    let url = external.clone().unwrap_or_else(|| format!("srt://127.0.0.1:{port}"));
+    enum Sut { Bus(MonitorBus), Legacy(crate::output::Publisher) }
+    let mut sut = if legacy {
+        let (lw, lh) = crate::channel::monitor_size(w, h);
+        let mut publisher = crate::output::Publisher::new(crate::output::PublisherSpec {
+            output_id: "legacy".into(), kind: crate::output::Kind::Srt, url, video_channel: format!("{id}-v"), audio_channel: format!("{id}-a"),
+            width: lw, height: lh, fps_n: 15, fps_d: 1, bitrate_kbps: 450, interlaced: false, top_field_first: true,
+            prefer_software: true, role: "mon".into(), on_demand: true, opus: true, monitor: None,
+        });
+        publisher.set_wanted(true);
+        Sut::Legacy(publisher)
+    } else {
+        let src = MonitorSource { width: w, height: h, fps_n: n, fps_d: d, frame_n: fn_, frame_d: fd, bitrate_ceiling_kbps: 8000 };
+        let mut spec = spec(&id, src, &[]);
+        spec.url_overrides.insert(tier, url);
+        let mut bus = MonitorBus::new(spec);
+        TEST_CLOCK.store(true, Ordering::Relaxed);
+        bus.set_tier(tier, true, false);
+        Sut::Bus(bus)
+    };
+    let mut run = |sut: &mut Sut, seconds: f64| {
+        let until = Instant::now() + Duration::from_secs_f64(seconds);
+        while Instant::now() < until {
+            match sut { Sut::Bus(bus) => { bus.service(); } Sut::Legacy(p) => { p.service(); } }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    run(&mut sut, 4.0);
     let receiver_cpu0 = process_cpu_seconds();
     let wall = Instant::now();
     let before = receiver.as_ref().map(Receiver::snapshot).unwrap_or_default();
-    pump(&mut bus, seconds);
+    run(&mut sut, seconds);
     let total_cpu = (process_cpu_seconds() - receiver_cpu0) / wall.elapsed().as_secs_f64();
     let after = receiver.as_ref().map(Receiver::snapshot).unwrap_or_default();
-    let report = bus.tier_reports().into_iter().next();
+    let (profile, encoder, degraded) = match &sut {
+        Sut::Bus(bus) => { let r = bus.tier_reports().into_iter().next(); (r.as_ref().and_then(|r| r.profile).map(|p| serde_json::to_string(&p).unwrap()).unwrap_or("null".into()), r.as_ref().and_then(|r| r.encoder.clone()), r.and_then(|r| r.degraded)) }
+        Sut::Legacy(p) => (format!("\"legacy {}x{} 15fps 450kbps\"", crate::channel::monitor_size(w, h).0, crate::channel::monitor_size(w, h).1), p.report().encoder, None),
+    };
     let lat: Vec<i64> = after.latencies_ms[before.latencies_ms.len().min(after.latencies_ms.len())..].to_vec();
     let intervals: Vec<f64> = after.intervals_ms[before.intervals_ms.len().min(after.intervals_ms.len())..].to_vec();
     let fps = (after.frames - before.frames) as f64 / wall.elapsed().as_secs_f64();
     let kbps = (after.bytes - before.bytes) as f64 * 8.0 / 1000.0 / wall.elapsed().as_secs_f64();
-    let late = intervals.iter().filter(|v| **v > 1.5 * 1000.0 * d as f64 / n as f64).count();
+    let late = intervals.iter().filter(|v| **v > 1.5 * 1000.0 / fps.max(1.0)).count();
     println!(
         "BENCH {{\"tier\":\"{}\",\"source\":\"{w}x{h}@{n}/{d}\",\"profile\":{},\"encoder\":{:?},\"degraded\":{:?},\"cpuSourceCores\":{:.3},\"cpuTotalCores\":{:.3},\"fpsReceived\":{:.2},\"kbps\":{:.0},\"latencyP50\":{},\"latencyP95\":{},\"lateIntervals\":{}}}",
-        tier.name(),
-        serde_json::to_string(&report.as_ref().and_then(|r| r.profile)).unwrap(),
-        report.as_ref().and_then(|r| r.encoder.clone()),
-        report.as_ref().and_then(|r| r.degraded.clone()),
-        source_cpu,
-        total_cpu,
-        fps,
-        kbps,
-        percentile(&lat, 0.5),
-        percentile(&lat, 0.95),
-        late
+        if legacy { "legacy" } else { tier.name() }, profile, encoder, degraded, source_cpu, total_cpu, fps, kbps,
+        percentile(&lat, 0.5), percentile(&lat, 0.95), late
     );
-    if std::env::var("BENCH_HOLD").is_ok() {
-        // Mantém publicando para o navegador medir (WHEP de bancada).
-        pump(&mut bus, std::env::var("BENCH_HOLD").unwrap().parse().unwrap_or(60.0));
+    if let Ok(hold) = std::env::var("BENCH_HOLD") {
+        run(&mut sut, hold.parse().unwrap_or(60.0));
     }
-    bus.shutdown();
+    match &mut sut { Sut::Bus(bus) => bus.shutdown(), Sut::Legacy(p) => p.shutdown() }
     TEST_CLOCK.store(false, Ordering::Relaxed);
 }
