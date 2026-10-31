@@ -5,7 +5,7 @@ import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { AncineComplianceCard } from '../components/broadcast/AncineComplianceCard.js'
 import { api } from '../api.js'
 import { dur } from '../format.js'
-import { asRunCsv, asRunDuration, asRunReport, asRunStatus, asRunXml, summarizeAsRun } from '../domain/asrun-evidence.js'
+import { asRunCsv, asRunDuration, asRunHold, asRunReport, asRunStatus, asRunXml, summarizeAsRun } from '../domain/asrun-evidence.js'
 import type { AsRunEntry } from '../types.js'
 
 interface Props {
@@ -529,7 +529,7 @@ export function AiredView({
                 <option value="EOF">Fim Normal (EOF)</option>
                 <option value="NEXT">Transição Take (NEXT)</option>
                 <option value="STOP">Parada Manual (STOP)</option>
-                <option value="LIVE_PRIORITY">Corte por live prioritária</option>
+                <option value="LIVE_PRIORITY">Corte na hora fixa (ao vivo ou arquivo)</option>
                 <option value="CONTINGENCY_RETURN">Retorno da contingência</option>
                 <option value="RESTART">Reconciliação após reinício</option>
                 <option value="RUNNING">Ocorrência sem encerramento</option>
@@ -616,6 +616,11 @@ export function AiredView({
 
                       <div className="col-span-1 font-label-mono text-[12px] font-bold text-on-surface tabular-nums">
                         {frames !== null && duration.rate ? dur(frames, duration.rate) : duration.seconds !== null ? `≈ ${duration.seconds.toFixed(1)}s` : 'N/D'}
+                        {(() => { const hold = asRunHold(entry); return hold.heldSeconds !== null ? (
+                          <span className="block text-[11px] text-armed-amber font-bold" title={`Entre a entrada e a saída passaram ${hold.wallSeconds!.toFixed(1)} s de relógio; ${hold.heldSeconds.toFixed(1)} s além da posição do engine (quadro congelado aguardando TAKE, ex.: ao vivo sem sinal).`}>
+                            +{hold.heldSeconds.toFixed(1)}s parado
+                          </span>
+                        ) : null })()}
                       </div>
 
                       <div className="col-span-1">

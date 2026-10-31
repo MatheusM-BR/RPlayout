@@ -35,3 +35,14 @@ describe('relógio de parede da grade', () => {
     expect(formatHms(86400 + 5)).toBe('00:00:05')
   })
 })
+
+describe('horário de parede em 29,97 (M1)', () => {
+  it('HORA FIXA 04:10:00 digitada volta como 04:10:00, não 04:09:59', () => {
+    const rate = { num: 30000, den: 1001 }
+    const date = '2026-10-31'
+    const instant = new Date(2026, 9, 31, 4, 10, 0)
+    const frames = anchorFramesFor(instant, rate, date)
+    expect(wallTime(frames, rate, date)).toBe('04:10:00')
+    expect(anchorWall(frames, rate, date, new Date(2026, 9, 31, 3, 0, 0)).seconds).toBe(4 * 3600 + 600)
+  })
+})

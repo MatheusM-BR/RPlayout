@@ -106,8 +106,14 @@ function relayout(work: Work[], from: number, to: number, cursor: Frames): Frame
 
 /**
  * Corte forçado: a âncora fixa manda, e o que estava no ar sai do ar na hora.
- * Volta encurtando de trás para frente até absorver o excesso ou esbarrar no
- * que já foi ao ar — daí não há mais o que fazer e vira conflito.
+ * Volta de trás para frente: o que inteiro cairia depois da hora fixa é
+ * descartado (é a promessa da HORA FIXA: "o que estiver na frente é cortado ou
+ * descartado para caber"); o item que atravessa a hora é cortado nela. Só
+ * esbarra no que já foi ao ar — daí não há mais o que fazer e vira conflito.
+ *
+ * Antes cortava só o item imediatamente anterior, e para 0 s: com dois ou mais
+ * itens estourando, a âncora entrava minutos depois e um item ficava na grade
+ * "com 0 s" que o engine não consegue tocar.
  */
 function forceCutBefore(
   work: Work[],
@@ -118,12 +124,41 @@ function forceCutBefore(
   timestamp?: string,
 ): Frames {
   let deficit = 0
+  const record = (w: Work, prevDuration: Frames, newDuration: Frames, reason: string): void => {
+    if (!actions || !anchored) return
+    actions.push({
+      itemId: w.item.id,
+      itemTitle: w.item.title,
+      actionType: newDuration === 0 ? 'DROP_ITEM' : 'TRIM_TAIL',
+      deltaFrames: prevDuration - newDuration,
+      originalDuration: prevDuration,
+      newDuration,
+      plannedDurationFrames: w.item.duration,
+      effectiveDurationFrames: newDuration,
+      targetAnchorId: anchored.item.id,
+      targetAnchorType: 'FIXED',
+      reason,
+      timestamp: timestamp ?? '1970-01-01T00:00:00.000Z',
+    })
+  }
   for (let i = upTo - 1; i >= 0; i--) {
     const w = work[i]
     if (!w || w.dropped) continue
     if (w.end <= hardStart) break
 
     const floor = Math.max(w.aired, 0)
+    // Inteiro depois da hora fixa e ainda não foi ao ar: sai da grade.
+    if (w.start >= hardStart && floor === 0 && w.mountedDuration === null && w.state !== 'ON_AIR') {
+      const prevDuration = w.duration
+      w.dropped = true
+      w.duration = 0
+      w.end = w.start
+      const reason = 'Descartado: não cabe antes da hora fixa seguinte.'
+      w.adjustments.push({ kind: 'DROPPED', frames: prevDuration, reason })
+      record(w, prevDuration, 0, reason)
+      continue
+    }
+
     const wanted = Math.max(hardStart - w.start, floor)
     const cut = w.duration - wanted
 
@@ -131,27 +166,9 @@ function forceCutBefore(
       const prevDuration = w.duration
       w.duration = wanted
       w.end = w.start + w.duration
-      w.adjustments.push({
-        kind: 'TRIMMED',
-        frames: cut,
-        reason: 'Corte forçado pela âncora fixa seguinte.',
-      })
-      if (actions && anchored) {
-        actions.push({
-          itemId: w.item.id,
-          itemTitle: w.item.title,
-          actionType: 'TRIM_TAIL',
-          deltaFrames: cut,
-          originalDuration: prevDuration,
-          newDuration: wanted,
-          plannedDurationFrames: w.item.duration,
-          effectiveDurationFrames: wanted,
-          targetAnchorId: anchored.item.id,
-          targetAnchorType: 'FIXED',
-          reason: 'Corte forçado pela âncora fixa seguinte.',
-          timestamp: timestamp ?? '1970-01-01T00:00:00.000Z',
-        })
-      }
+      const reason = 'Corte forçado pela âncora fixa seguinte.'
+      w.adjustments.push({ kind: 'TRIMMED', frames: cut, reason })
+      record(w, prevDuration, wanted, reason)
     }
     if (w.end > hardStart) deficit = w.end - hardStart
     break

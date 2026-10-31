@@ -10,6 +10,7 @@ import {
   nominalFps,
   parseTimecode,
   secondsToFrames,
+  wholeSeconds,
 } from './rate.js'
 
 describe('rates', () => {
@@ -103,5 +104,31 @@ describe('formatos da interface', () => {
 
   it('duração negativa mantém o sinal', () => {
     expect(formatDuration(-secondsToFrames(32, rate), rate)).toBe('-00:32')
+  })
+})
+
+describe('durações e horários em 29,97 (tempo real, não timecode)', () => {
+  const rate = RATE['29.97']
+
+  it('arquivos de 30, 25 e 20 s mostram 00:30, 00:25 e 00:20', () => {
+    // durationNs exato vira 899, 749 e 599 quadros (arredondado), não 900/750/600.
+    expect(formatDuration(secondsToFrames(30, rate), rate)).toBe('00:30')
+    expect(formatDuration(secondsToFrames(25, rate), rate)).toBe('00:25')
+    expect(formatDuration(secondsToFrames(20, rate), rate)).toBe('00:20')
+    expect(formatDuration(secondsToFrames(3725, rate), rate)).toBe('1:02:05')
+  })
+
+  it('HORA FIXA 04:10:00 continua 04:10:00 depois de virar quadros', () => {
+    const frames = msToFrames((4 * 3600 + 10 * 60) * 1000, rate)
+    expect(formatClock(frames, rate)).toBe('04:10:00')
+    expect(formatClock(msToFrames((23 * 3600 + 59 * 60 + 59) * 1000, rate), rate)).toBe('23:59:59')
+  })
+
+  it('quadro que ainda não chegou na virada não arredonda para cima', () => {
+    // 29 s + 15 quadros ≈ 29,5 s: segue 00:29.
+    expect(formatDuration(secondsToFrames(29, rate) + 15, rate)).toBe('00:29')
+    expect(wholeSeconds(secondsToFrames(30, rate), rate)).toBe(30)
+    expect(formatDuration(-secondsToFrames(32, rate), rate)).toBe('-00:32')
+    expect(formatDuration(0, rate)).toBe('00:00')
   })
 })

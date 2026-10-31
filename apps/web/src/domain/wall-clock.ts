@@ -1,4 +1,4 @@
-import { framesToMs, msToFrames, type Rate } from '@rplayout/protocol'
+import { framesToMs, msToFrames, wholeSeconds, type Rate } from '@rplayout/protocol'
 
 /** Horários da grade são quadros desde a meia-noite local da data da grade
  * (mesma base do servidor, `rundown-clock.ts`). Uma grade em loop continua
@@ -24,10 +24,18 @@ export function gradeInstant(frames: number, rate: Rate, date: string | null | u
   return new Date(gradeMidnightMs(date) + framesToMs(frames, rate))
 }
 
+/** Instante no segundo inteiro mais próximo (meia-quadro de tolerância), para
+ * exibir HH:MM:SS: a 29,97 a âncora 04:10:00 vira 449550 quadros = 04:09:59,985
+ * e truncar mostrava 04:09:59. */
+function gradeSecond(frames: number, rate: Rate, date: string | null | undefined): Date {
+  const seconds = wholeSeconds(frames, rate) * (frames < 0 ? -1 : 1)
+  return new Date(gradeMidnightMs(date) + seconds * 1000)
+}
+
 /** `HH:MM:SS` do dia; com `DD/MM` na frente quando não é hoje. */
 export function wallClock(frames: number, rate: Rate, date: string | null | undefined = currentGradeDate, now = new Date()): string {
   if (!Number.isFinite(frames)) return '--:--:--'
-  const at = gradeInstant(frames, rate, date)
+  const at = gradeSecond(frames, rate, date)
   const time = `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
   return localDateKey(at) === localDateKey(now) ? time : `${pad(at.getDate())}/${pad(at.getMonth() + 1)} ${time}`
 }
@@ -35,7 +43,7 @@ export function wallClock(frames: number, rate: Rate, date: string | null | unde
 /** Só `HH:MM:SS` do dia (régua, relógio do playhead). */
 export function wallTime(frames: number, rate: Rate, date: string | null | undefined = currentGradeDate): string {
   if (!Number.isFinite(frames)) return '--:--:--'
-  const at = gradeInstant(frames, rate, date)
+  const at = gradeSecond(frames, rate, date)
   return `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
 }
 
@@ -74,7 +82,7 @@ export function anchorFramesFor(instant: Date, rate: Rate, date: string | null |
 
 /** Horário de parede (segundos do dia) e dia relativo de uma âncora salva. */
 export function anchorWall(frames: number, rate: Rate, date: string | null | undefined, now = new Date()): { seconds: number; day: DayChoice | 'past' | 'later' } {
-  const at = gradeInstant(frames, rate, date)
+  const at = gradeSecond(frames, rate, date)
   const seconds = at.getHours() * 3600 + at.getMinutes() * 60 + at.getSeconds()
   const today = localDateKey(now), tomorrow = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1))
   const key = localDateKey(at)

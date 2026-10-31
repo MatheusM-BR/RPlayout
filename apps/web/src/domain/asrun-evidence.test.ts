@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { asRunCsv, asRunDuration, asRunReport, asRunStatus, asRunXml, summarizeAsRun } from './asrun-evidence.js'
+import { asRunCsv, asRunDuration, asRunHold, asRunReport, asRunStatus, asRunXml, summarizeAsRun } from './asrun-evidence.js'
 import type { AsRunEntry } from '../types.js'
 const entry: AsRunEntry = { id: 'id', title: 'VT', type: 'VT', startedAt: '2026-10-01T12:00:00Z', endedAt: '2026-10-01T12:00:30Z', plannedStart: 0, actualStart: 0, plannedFrames: 900, airedFrames: 750, endedBy: 'NEXT', rateNum: 25, rateDen: 1, executionKind: 'NATIVE', durationEvidence: 'ENGINE_POSITION' }
 describe('evidência da ocorrência sem valores regulatórios inventados', () => {
@@ -33,5 +33,16 @@ describe('evidência da ocorrência sem valores regulatórios inventados', () =>
     expect(xml).not.toContain('CONFORME-BR')
     const report = asRunReport([malicious], { id: 'ch', name: 'Canal' }, new Date('2026-10-01T12:00:00Z'))
     expect(report).toContain('Sem assinatura digital'); expect(report).not.toContain('100% VÁLIDO')
+  })
+  it('registra o tempo real no PGM e o congelamento além da duração nominal (A6)', () => {
+    // 40,04 s nominais (1200 quadros a 29,97) entre 07:59:32.9 e 08:00:23.5.
+    const frozen = { ...entry, startedAt: '2026-10-31T07:59:32.900Z', endedAt: '2026-10-31T08:00:23.500Z', airedFrames: 1200, rateNum: 30000, rateDen: 1001 }
+    const hold = asRunHold(frozen)
+    expect(hold.wallSeconds).toBeCloseTo(50.6, 3)
+    expect(hold.heldSeconds).toBe(10.6)
+    expect(asRunCsv([frozen])).toContain('Parado/congelado além da duração (s)')
+    expect(asRunReport([frozen], { id: 'c', name: 'C' }, new Date(0))).toContain('congelado +10.6s')
+    // Diferença de relógio abaixo de 1 s não é congelamento.
+    expect(asRunHold(entry).heldSeconds).toBeNull()
   })
 })

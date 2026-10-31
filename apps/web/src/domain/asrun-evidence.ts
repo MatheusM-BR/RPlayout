@@ -11,20 +11,35 @@ export function asRunDuration(entry: AsRunEntry) {
   const seconds = Number.isFinite(elapsed) && elapsed >= 0 ? elapsed / 1000 : null
   return { frames, rate, seconds, evidence: seconds === null ? 'UNKNOWN' as const : 'CLOCK_ESTIMATE' as const }
 }
+/** Tempo de relógio entre entrada e saída do PGM e quanto dele não aparece na
+ * posição do engine: o quadro congelado enquanto um TAKE espera sinal (ao vivo
+ * sem sinal segura o item anterior por ~10 s) some da duração nominal. */
+export function asRunHold(entry: AsRunEntry): { wallSeconds: number | null; heldSeconds: number | null } {
+  const elapsed = entry.endedAt ? Date.parse(entry.endedAt) - Date.parse(entry.startedAt) : NaN
+  const wallSeconds = Number.isFinite(elapsed) && elapsed >= 0 ? elapsed / 1000 : null
+  const recorded = asRunDuration(entry)
+  if (wallSeconds === null || recorded.frames === null || recorded.seconds === null) return { wallSeconds, heldSeconds: null }
+  const held = wallSeconds - recorded.seconds
+  return { wallSeconds, heldSeconds: held >= 1 ? Math.round(held * 10) / 10 : null }
+}
 export function asRunStatus(entry: AsRunEntry): string {
-  if (!entry.endedAt) return 'EM EXECUÇÃO'
+  if (!entry.endedAt) return entry.type === 'SINAL' ? 'SEM SINAL AGORA' : 'EM EXECUÇÃO'
   const reason = entry.endedBy?.toUpperCase()
   if (reason === 'EOF' || reason === 'EOS') return 'FIM DO ARQUIVO'
   if (reason === 'NEXT' || reason === 'TAKE') return 'CORTE / TAKE'
-  if (reason === 'LIVE_PRIORITY') return 'CORTE PARA AO VIVO'
+  if (reason === 'LIVE_PRIORITY') return 'CORTE NA HORA FIXA'
   if (reason === 'STOP') return 'PARADA MANUAL'
   if (reason === 'RESTART') return 'ENCERRADO NO REINÍCIO'
   if (reason === 'CONTINGENCY_RETURN') return 'RETORNO DE CONTINGÊNCIA'
   if (reason === 'SKIP' || reason === 'DROPPED') return 'DESCARTADO'
+  if (reason === 'SIGNAL_RESTORED') return 'SINAL VOLTOU'
+  if (reason === 'ITEM_ENDED') return 'SEM SINAL ATÉ A SAÍDA'
   if (reason && /FAIL|ERROR|ABORT/.test(reason)) return 'FALHA'
   return 'ENCERRAMENTO NÃO CLASSIFICADO'
 }
-export function summarizeAsRun(entries: AsRunEntry[]) {
+export function summarizeAsRun(all: AsRunEntry[]) {
+  // Linha de perda de sinal sobrepõe o item ao vivo; não soma tempo no ar.
+  const entries = all.filter(entry => entry.type !== 'SINAL')
   const durations = entries.map(asRunDuration)
   const commercial = entries.map((entry, index) => ({ entry, seconds: durations[index]!.seconds })).filter(row => ['COMERCIAL', 'COMMERCIAL', 'SPOT', 'PUB'].includes(row.entry.type.toUpperCase()))
   return {
@@ -42,10 +57,10 @@ export function summarizeAsRun(entries: AsRunEntry[]) {
 }
 const xml = (value: unknown) => String(value ?? '').replace(/[<>&'\"]/g, character => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[character]!)
 export function asRunCsv(entries: AsRunEntry[]) {
-  const headers = ['ID', 'Título', 'Categoria', 'Início UTC (relógio local)', 'Fim UTC', 'Quadros registrados', 'Cadência num', 'Cadência den', 'Segundos registrados/estimados', 'Evidência da duração', 'Transporte', 'Motivo', 'Estado', 'Homologação regulatória']
+  const headers = ['ID', 'Título', 'Categoria', 'Início (UTC)', 'Fim (UTC)', 'Quadros registrados', 'Cadência num', 'Cadência den', 'Segundos registrados/estimados', 'Evidência da duração', 'Tempo real no PGM (s)', 'Parado/congelado além da duração (s)', 'Transporte', 'Motivo', 'Estado', 'Homologação regulatória']
   return csvRows([headers, ...entries.map(entry => {
-    const duration = asRunDuration(entry)
-    return [entry.id, entry.title, entry.type, entry.startedAt, entry.endedAt, duration.frames, duration.rate?.num, duration.rate?.den, duration.seconds, duration.evidence, entry.executionKind ?? 'UNKNOWN', entry.endedBy, asRunStatus(entry), 'NÃO HOMOLOGADA']
+    const duration = asRunDuration(entry), hold = asRunHold(entry)
+    return [entry.id, entry.title, entry.type, entry.startedAt, entry.endedAt, duration.frames, duration.rate?.num, duration.rate?.den, duration.seconds, duration.evidence, hold.wallSeconds, hold.heldSeconds, entry.executionKind ?? 'UNKNOWN', entry.endedBy, asRunStatus(entry), 'NÃO HOMOLOGADA']
   })])
 }
 export function asRunXml(entries: AsRunEntry[], channel: { id: string; name: string }) {
@@ -56,7 +71,7 @@ export function asRunXml(entries: AsRunEntry[], channel: { id: string; name: str
 }
 export function asRunReport(entries: AsRunEntry[], channel: { id: string; name: string }, generatedAt: Date) {
   return `RPLAYOUT — RELATÓRIO OPERACIONAL AS-RUN\nCanal: ${channel.name} (${channel.id})\nGerado em: ${generatedAt.toISOString()}\nRelógio: host local; sincronização NTP não aferida.\nSem assinatura digital, certificação regulatória ou confirmação física de veiculação.\nSIMULATED representa simulação; UNKNOWN identifica registro sem proveniência.\n\n` + entries.map(entry => {
-    const duration = asRunDuration(entry)
-    return `${entry.startedAt} → ${entry.endedAt ?? 'em execução'} | ${entry.executionKind ?? 'UNKNOWN'} | ${asRunStatus(entry)} | duração ${duration.seconds === null ? 'N/D' : duration.seconds.toFixed(3) + 's'} (${duration.evidence}) | ${entry.id} | ${entry.title}`
+    const duration = asRunDuration(entry), hold = asRunHold(entry)
+    return `${entry.startedAt} → ${entry.endedAt ?? 'em execução'} | ${entry.executionKind ?? 'UNKNOWN'} | ${asRunStatus(entry)} | duração ${duration.seconds === null ? 'N/D' : duration.seconds.toFixed(3) + 's'} (${duration.evidence})${hold.heldSeconds !== null ? ` | PGM parado/congelado +${hold.heldSeconds.toFixed(1)}s (tempo real ${hold.wallSeconds!.toFixed(1)}s)` : ''} | ${entry.id} | ${entry.title}`
   }).join('\n')
 }
