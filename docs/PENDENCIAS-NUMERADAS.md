@@ -1,5 +1,9 @@
 # Pendências numeradas — RPlayout
 
+## Estado atual — r88-34 (30/10 23:24, D:\RPlayout Atual, dados r88-34b)
+
+Ver CORRECOES-R88-34-2026-10-30.md. No ar: Gestor, monitor de relógio (OK ~13 ms), vigia instalado e testado (queda religada em 23 s; parada do operador respeitada). Abertos: soak 24 h da r88-34, U1 DeckLink, mídia real, Windows limpo/Linux, MIX/WIPE e corte no VT (decisão), Telegram (decisões), ativação com live salva sem sinal (decisão de produto).
+
 ## Estado atual — r88-24 (27/10 08:26, D:\RPlayout Atual, dados r88-24c)
 
 Ver CORRECOES-R88-24-2026-10-27.md, CORRECOES-R88-23-2026-10-27.md e CORRECOES-R88-22-2026-10-26.md. Totais da matriz inalterados.

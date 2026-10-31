@@ -16,7 +16,11 @@ param(
   # o script recusa, a menos que -ForaDaJanela seja passado de proposito.
   [string]$JanelaInicio='02:00',
   [string]$JanelaFim='05:00',
-  [switch]$ForaDaJanela
+  [switch]$ForaDaJanela,
+  # A ativacao precisa retomar o PGM salvo. Se ele e uma live sem sinal, a
+  # ativacao recusa o TAKE e a troca volta sozinha (ar parado a toa). O
+  # pre-teste abaixo recusa antes de parar qualquer coisa.
+  [switch]$IgnorarLiveSemSinal
 )
 function DentroDaJanela([datetime]$agora){
   $ini=[datetime]::ParseExact($JanelaInicio,'HH:mm',$null).TimeOfDay; $fim=[datetime]::ParseExact($JanelaFim,'HH:mm',$null).TimeOfDay; $t=$agora.TimeOfDay
@@ -24,6 +28,19 @@ function DentroDaJanela([datetime]$agora){
 }
 if(!$ForaDaJanela -and !(DentroDaJanela (Get-Date))){ throw "Fora da janela de manutencao ($JanelaInicio-$JanelaFim). Use -ForaDaJanela so com o canal liberado." }
 $ErrorActionPreference='Stop'
+if(!$IgnorarLiveSemSinal){
+  $pre=Invoke-RestMethod -TimeoutSec 20 'http://127.0.0.1:4000/api/state'
+  foreach($rd in @($pre.rundowns)){
+    $tr=(Invoke-RestMethod -TimeoutSec 20 ("http://127.0.0.1:4000/api/rundowns/"+$rd.id)).live.transport
+    $air=$tr.onAir.itemId
+    if(!$air){ continue }
+    foreach($ls in @($tr.liveSources)){
+      if($ls.itemId -eq $air -and $ls.busSignals.pgm.videoRecent -ne $true){
+        throw "PGM esta na live '$($ls.source)' sem sinal confirmado; a ativacao nao conseguiria retomar o PGM. De TAKE num VT (ou volte o sinal) e repita. Nada foi parado."
+      }
+    }
+  }
+}
 $data=if($DataRoot){$DataRoot}else{"D:\RPlayout dados $Tag"}
 $work="D:\RPlayout-builds\migracao-$Tag"+$(if($DataRoot){"-"+(Split-Path $DataRoot -Leaf).Replace(' ','-')}else{''}); $bundle=Join-Path $work 'bundle'
 $state=[ordered]@{tag=$Tag;stable=$Stable;data=$data;steps=@()}
