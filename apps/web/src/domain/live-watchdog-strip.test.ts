@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WatchdogInputStatus } from '@rplayout/protocol'
-import { watchdogDetail } from '../components/broadcast/LiveWatchdogStrip.js'
+import { WATCHDOG_METRICS_CLASS, watchdogDetail } from '../components/broadcast/LiveWatchdogStrip.js'
 
 const base = (patch: Partial<WatchdogInputStatus>): WatchdogInputStatus => ({
   sourceKey: 'srt://x', sourceId: 'x', name: 'Leilão SRT', kind: 'SRT', bus: 'pgm', itemId: 'i',
@@ -19,5 +19,14 @@ describe('faixa do watchdog sem PVW', () => {
   })
   it('com PVW (entrada medida) continua dizendo que o sinal está estável', () => {
     expect(watchdogDetail(base({ blindReturn: false }))).toContain('Sinal estável')
+  })
+})
+
+describe('faixa do watchdog no celular', () => {
+  it('as métricas podem quebrar linha (não ficam presas numa linha que vaza em 390 px)', () => {
+    expect(WATCHDOG_METRICS_CLASS).not.toContain('shrink-0')
+    expect(WATCHDOG_METRICS_CLASS).not.toContain('whitespace-nowrap')
+    expect(WATCHDOG_METRICS_CLASS).toContain('min-w-0')
+    expect(WATCHDOG_METRICS_CLASS).toContain('break-words')
   })
 })
