@@ -7,6 +7,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { dayCoverage } from '../domain/day-coverage.js'
 import { wallClock, wallTime, nowHms, parseHms, formatHms, anchorWall, anchorFramesFor, resolveWallInstant, type DayChoice } from '../domain/wall-clock.js'
 import {itemDisplayTitle} from '../domain/item-title.js'
+import { playlistImportTarget, type PlaylistImportTarget } from '../domain/playlist-import-target.js'
 import type { Channel, ManagedLiveSource, Rundown, AssetMetadataReview } from '@rplayout/protocol'
 import { durationIn, qcApproved } from '@rplayout/protocol'
 import { clock, dur } from '../format.js'
@@ -71,7 +72,7 @@ interface Props {
   authRequired?: boolean
   onAddItem?: (rundownId?: string, onApplied?: (snapshot: any) => void,revision?:number) => void
   /** Abre a importação de lista (arquivo M3U/M3U8/CSV/TXT) para esta grade. */
-  onOpenImport?: (rundownId: string, onApplied?: (snapshot: any) => void, revision?: number) => void
+  onOpenImport?: (rundownId: string, onApplied?: (snapshot: any) => void, revision?: number, target?: PlaylistImportTarget) => void
   onExportCsv?: (rundownId?: string, format?: 'csv' | 'm3u') => void
   onOpenTrim?: (item: ItemView) => void
   onOpenAudio?: (item: ItemView) => void
@@ -719,7 +720,7 @@ export function PlaylistScheduleView({
         setDateRundownView(snapshot.view)
         void refreshAvailableRundowns()
       }
-    },target.editorialRevision)
+    },target.editorialRevision,playlistImportTarget(target.rundown.date,target.rundown.plannedStart,target.channel.rate))
   }
 
   const handleAddItem = async () => {

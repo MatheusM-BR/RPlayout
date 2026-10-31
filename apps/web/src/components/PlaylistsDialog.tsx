@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
 import type { PlaylistEntryView, PlaylistFile, Snapshot } from '../types.js'
+import { startSeconds, type PlaylistImportTarget } from '../domain/playlist-import-target.js'
+import { localDateKey } from '../domain/wall-clock.js'
 
 interface Props {
   rundownId: string
   revision:number|undefined
+  /** Grade de destino (data e início). Com ela, a data e o início ficam travados nela. */
+  target?: PlaylistImportTarget
   onCancel: () => void
   onLoaded: (snapshot: Snapshot, message: string) => void
   onMessage: (text: string) => void
@@ -18,7 +22,7 @@ interface Props {
  * para dentro do sistema, então editar a lista no programa de sempre e
  * recarregar continua funcionando.
  */
-export function PlaylistsDialog({ rundownId,revision, onCancel, onLoaded, onMessage }: Props) {
+export function PlaylistsDialog({ rundownId,revision,target, onCancel, onLoaded, onMessage }: Props) {
   const [listas, setListas] = useState<PlaylistFile[]>([])
   const [hoje, setHoje] = useState<string | null>(null)
   const [escolhida, setEscolhida] = useState<string | null>(null)
@@ -28,15 +32,15 @@ export function PlaylistsDialog({ rundownId,revision, onCancel, onLoaded, onMess
   const [versoes, setVersoes] = useState<Array<{ id: string; sourceName: string; mode: 'APPEND' | 'PUBLISH_NEXT'; loaded: number; skipped: number; scheduledDate: string | null; publishedAt: string }>>([])
   const [importada, setImportada] = useState<{ name: string; text: string } | null>(null)
   const [importEntries, setImportEntries] = useState<PlaylistEntryView[] | null>(null)
-  const [inicioDia, setInicioDia] = useState('00:00')
+  const [inicioDia, setInicioDia] = useState(target?.start ?? '00:00')
   const [filtroData, setFiltroData] = useState('')
-  const [dataProgramacao, setDataProgramacao] = useState(() => localStorage.getItem('rplayout.programacao.data') ?? new Date().toISOString().slice(0, 10))
+  const [dataProgramacao, setDataProgramacao] = useState(() => target?.date ?? readStoredDate() ?? localDateKey(new Date()))
   const [filtrarHistorico, setFiltrarHistorico] = useState(false)
-  useEffect(() => { localStorage.setItem('rplayout.programacao.data', dataProgramacao) }, [dataProgramacao])
+  useEffect(() => { if (!target) { try { localStorage.setItem('rplayout.programacao.data', dataProgramacao) } catch { /* armazenamento indisponível */ } } }, [dataProgramacao, target])
   const moverData = (dias: number): void => {
     const base = new Date(`${dataProgramacao}T12:00:00`)
     base.setDate(base.getDate() + dias)
-    setDataProgramacao(base.toISOString().slice(0, 10))
+    setDataProgramacao(localDateKey(base))
   }
   const textoRevisado = importEntries?.map((entry) => entry.ref).join('\n') ?? importada?.text ?? ''
 
@@ -104,9 +108,9 @@ export function PlaylistsDialog({ rundownId,revision, onCancel, onLoaded, onMess
   const duracaoLabel = arquivoEntries
     ? `${String(horas).padStart(2, '0')}:${String(minutos).padStart(2, '0')}:${String(segundos).padStart(2, '0')}`
     : '—'
-  const inicioMin = /^([01]\d|2[0-3]):[0-5]\d$/.test(inicioDia) ? Number(inicioDia.slice(0, 2)) * 60 + Number(inicioDia.slice(3)) : 0
+  const inicioSeg = startSeconds(inicioDia)
   const horario = (seconds: number): string => {
-    const total = (inicioMin * 60 + Math.floor(seconds)) % 86400
+    const total = (inicioSeg + Math.floor(seconds)) % 86400
     return `${String(Math.floor(total / 3600)).padStart(2, '0')}:${String(Math.floor((total % 3600) / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
   }
   const agendaCsv = arquivoEntries
@@ -128,7 +132,7 @@ export function PlaylistsDialog({ rundownId,revision, onCancel, onLoaded, onMess
           <div className="field">
               <label>Listas encontradas</label>
             <div className="playlist-date-filter"><label>Filtrar por data</label><input type="date" value={filtroData} onChange={(event) => setFiltroData(event.target.value)} /></div>
-            <div className="playlist-date-filter"><label>Calendário da programação</label><div className="row"><button className="btn small" type="button" onClick={() => moverData(-1)} aria-label="dia anterior">←</button><input type="date" value={dataProgramacao} onChange={(event) => setDataProgramacao(event.target.value)} /><button className="btn small" type="button" onClick={() => moverData(1)} aria-label="próximo dia">→</button><button className="btn small" type="button" onClick={() => setDataProgramacao(new Date().toISOString().slice(0, 10))}>HOJE</button></div><div className="week-days">{Array.from({ length: 7 }, (_, index) => { const day = new Date(`${dataProgramacao}T12:00:00`); day.setDate(day.getDate() - day.getDay() + index); const value = day.toISOString().slice(0, 10); return <button type="button" key={value} className={`btn small ${value === dataProgramacao ? 'take' : ''}`} onClick={() => setDataProgramacao(value)}>{day.toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '')} {day.getDate()}</button> })}</div><span className="pill ok">agenda selecionada</span></div>
+            {target ? <div className="playlist-date-filter"><label>Grade de destino</label><strong data-testid="import-target-date">{dataLabel(target.date)}</strong><span className="pill ok">a lista entra nesta grade · início {target.start}</span></div> : <div className="playlist-date-filter"><label>Calendário da programação</label><div className="row"><button className="btn small" type="button" onClick={() => moverData(-1)} aria-label="dia anterior">←</button><input type="date" value={dataProgramacao} onChange={(event) => setDataProgramacao(event.target.value)} /><button className="btn small" type="button" onClick={() => moverData(1)} aria-label="próximo dia">→</button><button className="btn small" type="button" onClick={() => setDataProgramacao(new Date().toISOString().slice(0, 10))}>HOJE</button></div><div className="week-days">{Array.from({ length: 7 }, (_, index) => { const day = new Date(`${dataProgramacao}T12:00:00`); day.setDate(day.getDate() - day.getDay() + index); const value = day.toISOString().slice(0, 10); return <button type="button" key={value} className={`btn small ${value === dataProgramacao ? 'take' : ''}`} onClick={() => setDataProgramacao(value)}>{day.toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '')} {day.getDate()}</button> })}</div><span className="pill ok">agenda selecionada</span></div>}
             <div className="playlist-import">
               <input id="playlist-file" type="file" accept=".m3u,.m3u8,.csv,.txt" hidden onChange={(event) => {
                 const file = event.target.files?.[0]
@@ -176,7 +180,7 @@ export function PlaylistsDialog({ rundownId,revision, onCancel, onLoaded, onMess
           {arquivoEntries && (
             <div className="field">
               <label>O que a lista tem · {arquivoEntries.length} itens · duração estimada {duracaoLabel}</label>
-              <div className="row"><div className="field"><label>Início da programação</label><input type="time" value={inicioDia} onChange={(event) => setInicioDia(event.target.value)} /></div></div>
+              <div className="row"><div className="field"><label>{target ? 'Início da grade de destino' : 'Início da programação (só prévia)'}</label><input type="time" step={1} value={inicioDia} disabled={Boolean(target)} onChange={(event) => setInicioDia(event.target.value)} /></div></div>
               {/* O que não achou aparece riscado, e não some: sumir esconderia
                   justamente o que precisa de conserto antes do ar. */}
               <ol className="entradas">
@@ -216,7 +220,7 @@ export function PlaylistsDialog({ rundownId,revision, onCancel, onLoaded, onMess
                 playlist operacional publicada nem executa TAKE; revise e publique a nova programação separadamente.
               </div>
               <div className={`publication-review${semArquivo ? ' warn' : ''}`}>
-                <div><span>DATA</span><strong>{new Date(`${dataProgramacao}T12:00:00`).toLocaleDateString('pt-BR')}</strong></div>
+                <div><span>DATA</span><strong>{dataLabel(dataProgramacao)}</strong></div>
                 <div><span>ENTRARÃO</span><strong>{arquivoEntries.length - semArquivo} itens</strong></div>
                 <div><span>SERÃO PULADOS</span><strong>{semArquivo} itens</strong></div>
                 <div><span>DURAÇÃO</span><strong className="mono">{duracaoLabel}</strong></div>
@@ -259,4 +263,12 @@ export function PlaylistsDialog({ rundownId,revision, onCancel, onLoaded, onMess
       </div>
     </div>
   )
+}
+
+function readStoredDate(): string | null {
+  try { const value = localStorage.getItem('rplayout.programacao.data'); return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null } catch { return null }
+}
+
+function dataLabel(date: string): string {
+  return new Date(`${date}T12:00:00`).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' })
 }
