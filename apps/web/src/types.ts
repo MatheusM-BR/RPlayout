@@ -199,6 +199,8 @@ export interface Monitors {
   program: string
   preview: string | null
   inspection?: string | null
+  /** Caminho de cada nível (REF/PADRÃO/LEVE) dos monitores de PGM e PVW. */
+  tiers?: { program: Record<'ref' | 'std' | 'lite', string>; preview: Record<'ref' | 'std' | 'lite', string> }
 }
 
 export interface Snapshot {

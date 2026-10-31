@@ -19,6 +19,7 @@ import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
 import { LiveWatchdogStrip } from '../components/broadcast/LiveWatchdogStrip.js'
 import { StudioAutomationPanel } from '../components/broadcast/StudioAutomationPanel.js'
 import { HostResourcesPanel } from '../components/broadcast/HostResourcesPanel.js'
+import { MonitorEngineeringPanel } from '../components/broadcast/MonitorEngineeringPanel.js'
 import {liveSourceMonitor} from '../domain/live-source-monitor.js'
 
 interface Props {
@@ -409,6 +410,7 @@ export function EngineeringDistributionView({
               {/* A visão integrada cabe integralmente no viewport operacional.
                   Detalhes extensos seguem nas abas SRT e Redundância. */}
               {monitorLoaded ? <OutputsSummary sample={hostMetrics} channelId={channel.id} profiles={outputs} /> : <div role="status" className="t-data text-outline animate-pulse motion-reduce:animate-none">Carregando saídas…</div>}
+              <details className="shrink-0 max-h-[40vh] overflow-auto"><summary className="cursor-pointer font-label-mono text-[12px] uppercase">Monitores do navegador: níveis, encoders, sessões de placa e atraso</summary><MonitorEngineeringPanel channelId={channel.id} /></details>
               <div className="flex-1 min-h-0">
                 <OperationalMultiview
                   sources={multiviewSources}

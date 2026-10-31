@@ -37,8 +37,8 @@ export function Monitors({
   // pior que acontece é o monitor apagar sozinho, e encher a tela de erro por
   // causa de um aviso perdido seria pior que a imagem sumir.
   const avisar = useCallback(
-    (bus: 'pvw' | 'mon') => () => {
-      void api.watching(channel.id, bus).catch(() => {})
+    (bus: 'pvw' | 'mon') => (tier?: 'ref' | 'std' | 'lite') => {
+      void api.watching(channel.id, bus, tier).catch(() => {})
     },
     [channel.id],
   )
@@ -57,7 +57,7 @@ export function Monitors({
             Um texto de cada, senão os dois se escrevem por cima. */}
         <div className="screen">
           {monitors && (
-            <Whep path={monitors.program} port={monitors.port} frameRate={channel.rate.num / channel.rate.den} positionFrames={live.transport.onAir?.elapsed ?? 0} durationFrames={onAirItem && !onAirItem.item.sourceRef ? (live.transport.onAir?.elapsed ?? 0) + onAirRemaining : 0} onSeek={onAirItem?.item.sourceRef ? undefined : (frames) => onSeek('pgm', frames)} onWatching={avisarPgm} />
+            <Whep path={monitors.program} tiers={monitors.tiers?.program} role="pgm" port={monitors.port} frameRate={channel.rate.num / channel.rate.den} positionFrames={live.transport.onAir?.elapsed ?? 0} durationFrames={onAirItem && !onAirItem.item.sourceRef ? (live.transport.onAir?.elapsed ?? 0) + onAirRemaining : 0} onSeek={onAirItem?.item.sourceRef ? undefined : (frames) => onSeek('pgm', frames)} onWatching={avisarPgm} />
           )}
           {onAirItem ? (
             <div className="over">
@@ -81,7 +81,7 @@ export function Monitors({
         </div>
         <div className="screen">
           {monitors?.preview && (
-            <Whep path={monitors.preview} port={monitors.port} frameRate={channel.rate.num / channel.rate.den} positionFrames={live.transport.previewPosition?.frames ?? 0} durationFrames={preview?.seekable ? (live.transport.previewPosition?.duration ?? preview.duration) : 0} onSeek={preview?.seekable ? (frames) => onSeek('pvw', frames) : undefined} onWatching={avisarPvw} />
+            <Whep path={monitors.preview} tiers={monitors.tiers?.preview} role="pvw" port={monitors.port} frameRate={channel.rate.num / channel.rate.den} positionFrames={live.transport.previewPosition?.frames ?? 0} durationFrames={preview?.seekable ? (live.transport.previewPosition?.duration ?? preview.duration) : 0} onSeek={preview?.seekable ? (frames) => onSeek('pvw', frames) : undefined} onWatching={avisarPvw} />
           )}
           {preview ? (
             <div className="over">

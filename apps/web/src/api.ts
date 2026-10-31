@@ -263,6 +263,20 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
 const post = <T>(path: string, body: unknown): Promise<T> =>
   send<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
+/** Tela técnica dos monitores (GET /api/channels/:id/monitors). */
+export interface MonitorTierReport {
+  tier: 'ref' | 'std' | 'lite'; health: string; encoder?: string; hardware: boolean
+  profile?: { width: number; height: number; fpsN: number; fpsD: number; bitrateKbps: number; quality: number }
+  delivered: number; uptimeMs: number; degraded?: string; error?: string
+}
+export interface MonitorEngineering {
+  sessions: { hardware: string | null; total: number | null; reservedForProgram: number; monitorsInUse: number; free: number | null; learned: string | null; encoders: { name: string; hardware: boolean; available: boolean; sessions: number | null; unlimited: boolean }[] } | null
+  watched: { bus: 'pvw' | 'mon'; tier: 'ref' | 'std' | 'lite'; hardware: boolean; lastSeenMs: number }[]
+  clock: boolean
+  monitors: { bus: string | null; outputId: string | null; health: string; encoder: string | null; tiers: MonitorTierReport[]; error: string | null }[]
+  program: { outputId: string | null; health: string; encoder: string | null }[]
+}
+
 export interface LiveReplacementView {
   transactionId:string;targetSourceId?:string;receipt:{phase:string}|null;prepareSent?:boolean;commitSent?:boolean;cancelSent?:boolean;closed?:boolean
   nativeProgramConfirmed:boolean;physicalOutputValidated:false;replayed?:boolean;error?:string;outcomeUnknown?:boolean
@@ -744,12 +758,14 @@ export const api = {
     review:ScheduleRuleReview|null,
   ) => send<ScheduleRuleReview&{applied:true;refreshError?:string}>(`/api/channels/${encodeURIComponent(channelId)}/rules`,{method:'POST',headers:scheduleRuleHeaders(review,channelId),body:JSON.stringify(body)}),
   /** "Estou com este monitor aberto." O engine só codifica enquanto há aviso. */
-  watching: (channelId: string, bus: 'pvw' | 'mon') =>
-    post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, { bus }),
+  watching: (channelId: string, bus: 'pvw' | 'mon', tier?: 'ref' | 'std' | 'lite') =>
+    post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, tier ? { bus, tier } : { bus }),
   qcLiveInspection:(channelId:string,viewerId:string,sourceRef:string,watching:boolean)=>
     post<{ok:true;rendition:'qc-encoded';profileFromSource:true;maxWidth:number;maxHeight:number;maxFps:number;maxBitrateKbps:number}>(`/api/channels/${channelId}/qc/inspection`,{viewerId,sourceRef,watching}),
-  setWatching: (channelId: string, bus: 'pvw' | 'mon', watching = true) =>
-    post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, { bus, watching }),
+  setWatching: (channelId: string, bus: 'pvw' | 'mon', watching = true, tier?: 'ref' | 'std' | 'lite') =>
+    post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, tier ? { bus, watching, tier } : { bus, watching }),
+  monitorStatus: (channelId: string) => send<MonitorEngineering>(`/api/channels/${channelId}/monitors`),
+  setMonitorClock: (channelId: string, on: boolean) => post<{ ok: true; clock: boolean }>(`/api/channels/${channelId}/monitor-clock`, { on }),
 
   playlists: () =>
     send<{ playlists: PlaylistFile[]; today: string | null; date: string }>('/api/playlists'),
