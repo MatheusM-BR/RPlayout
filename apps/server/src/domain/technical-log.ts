@@ -68,7 +68,8 @@ export class TechnicalLog {
   private ingestText(text: string, now: number): void {
     const engine = /^\[engine ([^\]]*)\] ?([\s\S]*)$/.exec(text)
     const body = engine ? engine[2]! : text
-    this.push({ at: now, level: classifyEngineLine(body), source: engine ? 'ENGINE' : 'SERVER', channel: engine ? engine[1]! : null, message: body })
+    // A severidade vira selo; o prefixo "ERRO"/"AVISO" do servidor não se repete na mensagem.
+    this.push({ at: now, level: classifyEngineLine(body), source: engine ? 'ENGINE' : 'SERVER', channel: engine ? engine[1]! : null, message: body.replace(/^(ERRO|AVISO) /, '') })
   }
 
   private push(entry: { at: number; level: TechnicalLogLevel; source: 'ENGINE' | 'SERVER'; channel: string | null; message: string }): void {

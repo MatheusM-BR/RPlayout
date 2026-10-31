@@ -13,6 +13,8 @@ describe('logs técnicos em memória (A6)', () => {
     const { entries } = log.read()
     expect(entries.map(e => `${e.source}:${e.level}:${e.channel ?? '-'}`)).toEqual(['ENGINE:ERROR:QA', 'ENGINE:WARN:QA', 'ENGINE:ERROR:QA', 'SERVER:ERROR:-', 'ENGINE:INFO:QA'])
     expect(entries[0]!.message).toContain('not-negotiated')
+    expect(entries[0]!.message.startsWith('Internal data stream error')).toBe(true)
+    expect(entries[1]!.message).toBe('comando recusado: este canal não tem barramento de preview')
     expect(entries[2]!.crashReport).toBe('/tmp/qa/eng/engine-crashes/engine-crash-2026-10-31T07-25-02-574Z-b46f.txt')
     expect(entries[3]!.message).toBe('Falha no encerramento — Engine não confirmou encerramento normal.')
     expect(entries[4]!.message).not.toContain('segredo')

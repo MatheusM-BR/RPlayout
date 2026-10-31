@@ -5693,7 +5693,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     } catch (error) {
       const status = transportRefusalStatus(error, runtime.transport.health().ready)
       if (status === null) throw error
-      request.log.warn({ action: body.data.action, channelId: id, err: error }, 'Comando de transporte recusado')
+      request.log.warn({ action: body.data.action, channelId: id, status }, `Comando de transporte recusado (${body.data.action.toUpperCase()} → ${status}): ${error instanceof Error ? error.message : 'sem detalhe'}`)
       return reply.code(status).send({ error: error instanceof Error ? error.message : 'Comando recusado.', refused: true, action: body.data.action })
     }
 

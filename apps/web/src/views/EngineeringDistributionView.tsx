@@ -112,7 +112,8 @@ export function EngineeringDistributionView({
   // Mesmo estado do cabeçalho (OK / ALERTA / REINICIANDO / FALHA): um engine
   // que já reiniciou uma vez não fica "ALERTA" para sempre.
   const engineMetric = hostMetrics?.operations?.channels.find(entry => entry.channelId === channel.id)?.engine
-  const engineStatusTag = engineTag(engineMetric)
+  const liveEngineState = engineProcess?.details?.engineState as 'OK' | 'ALERT' | 'RESTARTING' | 'FAILED' | undefined
+  const engineStatusTag = engineTag(engineMetric && liveEngineState ? { ...engineMetric, state: liveEngineState } : engineMetric)
   const engineLevel: Level = engineStatusTag.level
   const engineRss = engineProcess?.memoryBytes ?? engineMetric?.memoryBytes ?? null
   const engineCpu = engineProcess?.cpuPercent ?? engineMetric?.cpuPercent ?? null

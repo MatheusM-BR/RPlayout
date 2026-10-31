@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type ClockStatusView, type HostMetricSample } from '../../api.js'
+import { api, type ClockStatusView, type EngineState, type HostMetricSample } from '../../api.js'
 
 type Level = 'ok' | 'warn' | 'bad' | 'unknown'
 interface Tag { label: string; value: string; level: Level; title: string }
@@ -28,6 +28,12 @@ export function formatFreeGb(bytes: number): string {
   return `${gb >= 100 ? Math.round(gb) : (Math.round(gb * 10) / 10).toLocaleString('pt-BR')} GB`
 }
 
+/** Versão curta para o selo do cabeçalho: "13G", "7,5G". */
+export function shortGb(bytes: number): string {
+  const gb = bytes / 1e9
+  return `${gb >= 10 ? Math.round(gb) : (Math.round(gb * 10) / 10).toLocaleString('pt-BR')}G`
+}
+
 type EngineReading = NonNullable<HostMetricSample['operations']>['channels'][number]['engine']
 /** Um estado só para o engine: OK / ALERTA / REINICIANDO / FALHA. Comando
  * recusado não muda o estado; reinício em curso não aparece como "PARADO". */
@@ -43,9 +49,11 @@ export function engineTag(engine: EngineReading | undefined): Tag {
   return { label: 'ENGINE', value: `OK${suffix}`, level: engine.restarts || engine.stalls ? 'warn' : 'ok', title: `${counters}. Quadros por segundo e perdidos ainda não são informados pelo engine.` }
 }
 
-export function headerHealthTags(sample: HostMetricSample | null, channelId: string, pending: { critical: number; warn: number } | null): Tag[] {
+export function headerHealthTags(sample: HostMetricSample | null, channelId: string, pending: { critical: number; warn: number } | null, liveEngineState?: EngineState | null): Tag[] {
   const channel = sample?.operations?.channels.find(entry => entry.channelId === channelId)
-  const engine = engineTag(channel?.engine)
+  // Estado ao vivo (/api/processes, 3 s) vence a amostra de 10 s do host:
+  // cabeçalho e cartão do Monitor mudam juntos para REINICIANDO.
+  const engine = engineTag(channel?.engine && liveEngineState ? { ...channel.engine, state: liveEngineState } : channel?.engine)
   const outputs = channel?.outputs ?? []
   const live = outputs.filter(output => output.state === 'onAir').length
   const failing = outputs.filter(output => output.state === 'failed' || output.state === 'retrying' || (output.hasError && output.state !== 'onAir')).length
@@ -54,7 +62,7 @@ export function headerHealthTags(sample: HostMetricSample | null, channelId: str
   const used = sample?.disk.percentUsed
   const free = sample?.disk.freeBytes ?? null
   const disk: Tag = used == null ? { label: 'DISCO', value: 'N/D', level: 'unknown', title: sample?.disk.error ?? 'Sem leitura do disco.' }
-    : { label: 'DISCO', value: free == null ? `${Math.round(used)}%` : `${Math.round(used)}% · ${formatFreeGb(free)}`, level: used > 90 ? 'bad' : used > 80 ? 'warn' : 'ok',
+    : { label: 'DISCO', value: free == null ? `${Math.round(used)}%` : `${Math.round(used)}% · ${shortGb(free)}`, level: used > 90 ? 'bad' : used > 80 ? 'warn' : 'ok',
       title: `${sample!.disk.path}: ${formatFreeGb(free ?? 0)} livres de ${formatFreeGb(sample!.disk.totalBytes ?? 0)} (${Math.round(used)}% usado, espaço disponível para o RPlayout; blocos reservados do sistema contam como usados)` }
   const alerts: Tag = !pending ? { label: 'ALERTAS', value: 'N/D', level: 'unknown', title: 'Sem leitura dos alertas.' }
     : { label: 'ALERTAS', value: String(pending.critical + pending.warn), level: pending.critical ? 'bad' : pending.warn ? 'warn' : 'ok', title: `${pending.critical} críticos e ${pending.warn} avisos sem ciente (canal + servidor + relógio)` }
@@ -65,6 +73,7 @@ export function HeaderHealth({ channelId, onClick }: { channelId: string; onClic
   const [sample, setSample] = useState<HostMetricSample | null>(null)
   const [pending, setPending] = useState<{ critical: number; warn: number } | null>(null)
   const [clock, setClock] = useState<ClockStatusView | null>(null)
+  const [liveEngine, setLiveEngine] = useState<EngineState | null>(null)
   useEffect(() => {
     let alive = true
     const read = () => {
@@ -72,11 +81,19 @@ export function HeaderHealth({ channelId, onClick }: { channelId: string; onClic
       void api.clock().then(value => { if (alive) setClock(value) }).catch(() => { if (alive) setClock(null) })
       void api.healthEvents(channelId, { acknowledgement: 'PENDING', includeHost: '1' }).then(value => { if (alive) setPending(value.pending) }).catch(() => { if (alive) setPending(null) })
     }
-    read()
+    const readEngine = () => {
+      void api.processes().then(value => {
+        if (!alive) return
+        const state = value.processes.find(row => row.kind === 'ENGINE' && row.channelId === channelId)?.details?.engineState
+        setLiveEngine(typeof state === 'string' && ['OK', 'ALERT', 'RESTARTING', 'FAILED'].includes(state) ? state as EngineState : null)
+      }).catch(() => { if (alive) setLiveEngine(null) })
+    }
+    read(); readEngine()
     const timer = window.setInterval(read, 10_000)
-    return () => { alive = false; window.clearInterval(timer) }
+    const engineTimer = window.setInterval(readEngine, 3_000)
+    return () => { alive = false; window.clearInterval(timer); window.clearInterval(engineTimer) }
   }, [channelId])
-  const tags = [...headerHealthTags(sample, channelId, pending), clockTag(clock)]
+  const tags = [...headerHealthTags(sample, channelId, pending, liveEngine), clockTag(clock)]
   const rank: Record<Level, number> = { ok: 0, unknown: 1, warn: 2, bad: 3 }
   const worst = tags.reduce<Level>((level, tag) => rank[tag.level] > rank[level] ? tag.level : level, 'ok')
   const worstLabel = worst === 'ok' ? 'OK' : worst === 'bad' ? 'FALHA' : worst === 'warn' ? 'ATENÇÃO' : 'N/D'
@@ -94,7 +111,7 @@ export function HeaderHealth({ channelId, onClick }: { channelId: string; onClic
         <div key={tag.label} title={tag.title} className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
           <span className={`w-1.5 h-1.5 rounded-full ${dot[tag.level]}`}></span>
           <span className="font-label-caps text-[11px] text-on-surface-variant">{tag.label}:</span>
-          <span className={`font-label-caps text-[11px] font-bold ${text[tag.level]}`}>{tag.value}</span>
+          <span className={`font-label-caps text-[11px] font-bold whitespace-nowrap ${text[tag.level]}`}>{tag.value}</span>
         </div>
       ))}
     </div>

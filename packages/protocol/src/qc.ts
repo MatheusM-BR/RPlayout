@@ -86,7 +86,7 @@ export function assessQc(asset: MediaAsset, profile: QcProfile = DEFAULT_QC_PROF
   }
   if (loudness && Number.isFinite(loudness.integratedLufs) && loudness.integratedLufs <= QC_SILENT_LUFS) warnings.push(`Áudio mudo ou abaixo do gate (${loudness.integratedLufs.toFixed(1)} LUFS): confira se o silêncio é intencional.`)
   if (asset.suggestedTrim && asset.durationFrames > 0 && asset.suggestedTrim.out - asset.suggestedTrim.in <= 0) warnings.push('Preto/silêncio detectado no arquivo inteiro.')
-  if (channel && probe) {
+  if (channel && probe && asset.kind === 'VIDEO') {
     const fileFps = validRate ? probe.rate.num / probe.rate.den : null, channelFps = channel.rate.num / channel.rate.den
     if (!profile.fps && fileFps != null && Math.abs(fileFps - channelFps) > 0.01) warnings.push(`Cadência ${fmt(fileFps)} fps difere do canal (${fmt(channelFps)} fps): haverá conversão de cadência.`)
     if (!profile.width && !profile.height && Number.isSafeInteger(probe.width) && Number.isSafeInteger(probe.height) && probe.width > 0 && probe.height > 0 && (probe.width !== channel.width || probe.height !== channel.height)) warnings.push(`Raster ${probe.width}x${probe.height} difere do canal (${channel.width}x${channel.height}): a imagem será escalada.`)

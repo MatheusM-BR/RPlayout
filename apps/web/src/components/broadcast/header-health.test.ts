@@ -11,9 +11,9 @@ const sample = (outputs: Array<{ state: string; hasError: boolean }>, engine = {
 
 it('saúde real: engine, saídas, disco e alertas', () => {
   const ok = headerHealthTags(sample([{ state: 'onAir', hasError: false }, { state: 'onAir', hasError: true }]), 'ch', { critical: 0, warn: 0 })
-  expect(ok.map(tag => `${tag.label}=${tag.value}:${tag.level}`)).toEqual(['ENGINE=OK:ok', 'SAÍDAS=2/2:ok', 'DISCO=42% · 575 GB:ok', 'ALERTAS=0:ok'])
+  expect(ok.map(tag => `${tag.label}=${tag.value}:${tag.level}`)).toEqual(['ENGINE=OK:ok', 'SAÍDAS=2/2:ok', 'DISCO=42% · 575G:ok', 'ALERTAS=0:ok'])
   const bad = headerHealthTags(sample([{ state: 'retrying', hasError: true }, { state: 'onAir', hasError: false }], { ready: false, hasError: true, restarts: 2, stalls: 0 }, 93), 'ch', { critical: 1, warn: 2 })
-  expect(bad.map(tag => `${tag.label}=${tag.value}:${tag.level}`)).toEqual(['ENGINE=PARADO:bad', 'SAÍDAS=1/2:bad', 'DISCO=93% · 575 GB:bad', 'ALERTAS=3:bad'])
+  expect(bad.map(tag => `${tag.label}=${tag.value}:${tag.level}`)).toEqual(['ENGINE=PARADO:bad', 'SAÍDAS=1/2:bad', 'DISCO=93% · 575G:bad', 'ALERTAS=3:bad'])
   expect(headerHealthTags(null, 'ch', null).every(tag => tag.level === 'unknown')).toBe(true)
 })
 
