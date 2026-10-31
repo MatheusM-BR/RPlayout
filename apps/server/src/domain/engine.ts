@@ -1849,13 +1849,16 @@ export class EngineTransport implements Transport {
   /** Há barramento de preview (PVW)? Sem servidor de mídia o engine sobe só com PGM. */
   hasPreviewBus(): boolean { return Boolean(this.options?.preview) }
 
-  /** Grade em loop com lacuna antes de uma HORA FIXA de arquivo: a sequência
-   * não leva o item antes da hora (ele entra pelo TAKE da hora fixa); o loop
-   * segue com os outros itens até lá. Só nos 10 minutos antes da âncora. */
+  /** Grade em loop: arquivo de HORA FIXA só entra pelo TAKE da hora marcada.
+   * A sequência do loop nunca o leva -- nem antes da hora (ia ao ar cedo e de
+   * novo na hora) nem nas voltas seguintes (o comercial das 14:01:00 voltava às
+   * 14:03:55 como item comum). Se o loop só tiver itens de hora fixa, a
+   * sequência continua com eles para o canal não parar. */
   private heldForAnchor(view: RundownView, itemId: string, now = Date.now()): boolean {
     if (!view.rundown.loop) return false
-    const target = priorityLives(view, now).find(entry => entry.itemId === itemId && entry.key.includes(':file:'))
-    return Boolean(target && target.atMs - now > 2000 && target.atMs - now <= 10 * 60_000 && view.items.length > 1)
+    const anchored = new Set(priorityLives(view, now).filter(entry => entry.key.includes(':file:')).map(entry => entry.itemId))
+    if (!anchored.has(itemId)) return false
+    return view.items.some(entry => !anchored.has(entry.item.id) && view.schedule.items.find(timing => timing.id === entry.item.id)?.state !== 'DROPPED')
   }
 
   private airedJustBefore(view: RundownView, itemId: string, atMs: number): boolean {

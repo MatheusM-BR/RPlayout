@@ -1697,6 +1697,15 @@ describe('transporte real confirmado pelo engine', () => {
     event({ event: 'position', itemId: '0', frames: 250, duration: 250 }); event({ event: 'eos', itemId: '0' })
     await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('2'))
   })
+  it('grade em loop: HORA FIXA de arquivo que já passou não volta nas voltas seguintes do loop', async () => {
+    const a = join(directory, 'volta-a.mkv'), fixed = join(directory, 'volta-fixo.mkv'), c = join(directory, 'volta-c.mkv')
+    for (const file of [a, fixed, c]) writeFileSync(file, file)
+    const value = view([a, fixed, c], true), date = new Date(), at = Math.max(0, framesSinceMidnight(date, channel.rate) - 25 * 120)
+    Object.assign(value.items[1]!, { item: { ...value.items[1]!.item, mediaId: '1', anchor: { kind: 'FIXED', at }, title: 'Comercial das 14:01' } })
+    start(value); event({ event: 'ready', channelId: channel.id }); await transport.take('grade', '0')
+    event({ event: 'position', itemId: '0', frames: 250, duration: 250 }); event({ event: 'eos', itemId: '0' })
+    await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('2'))
+  })
   it('HORA FIXA de arquivo que a sequência já levou ao ar logo antes não é repetida', async () => {
     const first = join(directory, 'curto.mkv'), commercial = join(directory, 'comercial-cedo.mkv'); writeFileSync(first, 'video curto'); writeFileSync(commercial, 'comercial')
     const value = view([first, commercial], true), date = new Date(), at = framesSinceMidnight(date, channel.rate) + 25 * 20
