@@ -52,16 +52,29 @@ export class PgmProbe {
     defaultAutoAction: 'SLATE_INJECTED',
   }
 
-  private blackDurationMs = 0
-  private freezeDurationMs = 0
-  private silenceDurationMs = 0
+  private readonly kinds={
+    black:{durationMs:0,alert:null as PgmProbeAlert|null,clearSinceMs:null as number|null,relapse:false},
+    freeze:{durationMs:0,alert:null as PgmProbeAlert|null,clearSinceMs:null as number|null,relapse:false},
+    silence:{durationMs:0,alert:null as PgmProbeAlert|null,clearSinceMs:null as number|null,relapse:false},
+  }
+  /** Sinal limpo exigido antes de declarar recuperação (0 = imediato). */
+  private recoveryHoldMs = 0
+  private get blackDurationMs(){return this.kinds.black.durationMs}
+  private set blackDurationMs(value:number){this.kinds.black.durationMs=value}
+  private get freezeDurationMs(){return this.kinds.freeze.durationMs}
+  private set freezeDurationMs(value:number){this.kinds.freeze.durationMs=value}
+  private get silenceDurationMs(){return this.kinds.silence.durationMs}
+  private set silenceDurationMs(value:number){this.kinds.silence.durationMs=value}
   private lastSampleTimeMs: number | null = null
   private lastSampleAt: string | undefined
   private lastAudioDbfs: number | null = null
 
-  private activeBlackAlert: PgmProbeAlert | null = null
-  private activeFreezeAlert: PgmProbeAlert | null = null
-  private activeSilenceAlert: PgmProbeAlert | null = null
+  private get activeBlackAlert(){return this.kinds.black.alert}
+  private set activeBlackAlert(value:PgmProbeAlert|null){this.kinds.black.alert=value;if(!value){this.kinds.black.clearSinceMs=null;this.kinds.black.relapse=false}}
+  private get activeFreezeAlert(){return this.kinds.freeze.alert}
+  private set activeFreezeAlert(value:PgmProbeAlert|null){this.kinds.freeze.alert=value;if(!value){this.kinds.freeze.clearSinceMs=null;this.kinds.freeze.relapse=false}}
+  private get activeSilenceAlert(){return this.kinds.silence.alert}
+  private set activeSilenceAlert(value:PgmProbeAlert|null){this.kinds.silence.alert=value;if(!value){this.kinds.silence.clearSinceMs=null;this.kinds.silence.relapse=false}}
 
   private emergencySlateActive = false
   private history: PgmProbeAlert[] = []
@@ -82,7 +95,9 @@ export class PgmProbe {
   constructor(
     customThresholds?: Partial<PgmProbeThresholds>,
     onAction?: AutoActionCallback,
+    options?: { recoveryHoldMs?: number },
   ) {
+    if (options?.recoveryHoldMs !== undefined && Number.isFinite(options.recoveryHoldMs) && options.recoveryHoldMs >= 0) this.recoveryHoldMs = options.recoveryHoldMs
     if (customThresholds) {
       this.thresholds = { ...this.thresholds, ...customThresholds }
     }
@@ -158,104 +173,48 @@ export class PgmProbe {
 
     const triggeredAlerts: PgmProbeAlert[] = []
 
-    // 1. Verificação de Black Frame (> 2.0s)
-    if (input.isBlack) {
-      this.blackDurationMs += delta
-      if (this.blackDurationMs >= this.thresholds.blackThresholdMs) {
-        if (!this.activeBlackAlert) {
-          const alert: PgmProbeAlert = {
-            id: randomUUID(),
-            type: 'BLACK_FRAME',
-            durationMs: this.blackDurationMs,
-            thresholdMs: this.thresholds.blackThresholdMs,
-            active: true,
-            timestamp: new Date(now).toISOString(),
+    // Histerese: um incidente aberto só é dado como recuperado depois de
+    // `recoveryHoldMs` de sinal limpo. Se a condição volta antes disso, o
+    // mesmo incidente segue aberto e conta mais uma ocorrência -- em vez de
+    // 48 pares "freeze / recuperado" em 20 minutos. A primeira detecção
+    // continua imediata (limiar normal).
+    const step=(kind:'black'|'freeze'|'silence',type:PgmProbeAlertType,condition:boolean|undefined,duration:number|null,thresholdMs:number)=>{
+      const k=this.kinds[kind]
+      if(condition){
+        k.durationMs=duration??(k.durationMs+delta)
+        if(k.clearSinceMs!==null){k.clearSinceMs=null;k.relapse=true}
+        if(k.durationMs>=thresholdMs){
+          if(!k.alert){
+            const alert: PgmProbeAlert = { id: randomUUID(), type, durationMs: k.durationMs, thresholdMs, active: true, timestamp: new Date(now).toISOString(), occurrences: 1 }
+            k.alert=alert
+            this.history.push(alert)
+            this.transition(alert,'active',now)
+            void this.runAction(this.thresholds.defaultAutoAction, alert)
+            triggeredAlerts.push(alert)
+          } else {
+            if(k.relapse){k.alert.occurrences=(k.alert.occurrences??1)+1;k.relapse=false}
+            k.alert.durationMs=k.durationMs
           }
-          this.activeBlackAlert = alert
-          this.history.push(alert)
-          this.transition(alert,'active',now)
-          void this.runAction(this.thresholds.defaultAutoAction, alert)
-          triggeredAlerts.push(alert)
-        } else {
-          this.activeBlackAlert.durationMs = this.blackDurationMs
         }
-      }
-    } else if(input.isBlack===false) {
-      if (this.activeBlackAlert) {
-        this.activeBlackAlert.active = false
-        this.activeBlackAlert.durationMs = this.blackDurationMs
-        this.transition(this.activeBlackAlert,'recovered',now)
-        this.activeBlackAlert = null
-      }
-      this.blackDurationMs = 0
-    } else this.blackDurationMs=0
-
-    // 2. Verificação de Freeze Frame (> 2.0s)
+      } else if(condition===false){
+        k.durationMs=0
+        if(k.alert){
+          k.clearSinceMs??=now
+          if(now-k.clearSinceMs>=this.recoveryHoldMs){
+            k.alert.active=false
+            this.transition(k.alert,'recovered',now)
+            k.alert=null;k.clearSinceMs=null;k.relapse=false
+          }
+        }
+      } else k.durationMs=0
+    }
+    step('black','BLACK_FRAME',input.isBlack,null,this.thresholds.blackThresholdMs)
     const measuredFreeze=typeof input.freezeDurationMs==='number'&&Number.isFinite(input.freezeDurationMs)&&input.freezeDurationMs>=0?input.freezeDurationMs:null
     const freezing=measuredFreeze!==null?measuredFreeze>0:input.isFreeze
-    if (freezing) {
-      this.freezeDurationMs = measuredFreeze??(this.freezeDurationMs+delta)
-      if (this.freezeDurationMs >= this.thresholds.freezeThresholdMs) {
-        if (!this.activeFreezeAlert) {
-          const alert: PgmProbeAlert = {
-            id: randomUUID(),
-            type: 'FREEZE_FRAME',
-            durationMs: this.freezeDurationMs,
-            thresholdMs: this.thresholds.freezeThresholdMs,
-            active: true,
-            timestamp: new Date(now).toISOString(),
-          }
-          this.activeFreezeAlert = alert
-          this.history.push(alert)
-          this.transition(alert,'active',now)
-          void this.runAction(this.thresholds.defaultAutoAction, alert)
-          triggeredAlerts.push(alert)
-        } else {
-          this.activeFreezeAlert.durationMs = this.freezeDurationMs
-        }
-      }
-    } else if(freezing===false) {
-      if (this.activeFreezeAlert) {
-        this.activeFreezeAlert.active = false
-        this.activeFreezeAlert.durationMs = this.freezeDurationMs
-        this.transition(this.activeFreezeAlert,'recovered',now)
-        this.activeFreezeAlert = null
-      }
-      this.freezeDurationMs = 0
-    } else this.freezeDurationMs=0
-
-    // 3. Verificação de Silêncio (< -60 dBFS por > 3.0s)
+    step('freeze','FREEZE_FRAME',freezing,freezing?measuredFreeze:null,this.thresholds.freezeThresholdMs)
+    // Silêncio (< -60 dBFS por > 3.0s); sem leitura de áudio não há decisão.
     const isSilence = this.lastAudioDbfs !== null && this.lastAudioDbfs <= this.thresholds.silenceDbfs
-    if (isSilence) {
-      this.silenceDurationMs += delta
-      if (this.silenceDurationMs >= this.thresholds.silenceThresholdMs) {
-        if (!this.activeSilenceAlert) {
-          const alert: PgmProbeAlert = {
-            id: randomUUID(),
-            type: 'SILENCE',
-            durationMs: this.silenceDurationMs,
-            thresholdMs: this.thresholds.silenceThresholdMs,
-            active: true,
-            timestamp: new Date(now).toISOString(),
-          }
-          this.activeSilenceAlert = alert
-          this.history.push(alert)
-          this.transition(alert,'active',now)
-          void this.runAction(this.thresholds.defaultAutoAction, alert)
-          triggeredAlerts.push(alert)
-        } else {
-          this.activeSilenceAlert.durationMs = this.silenceDurationMs
-        }
-      }
-    } else if(this.lastAudioDbfs!==null) {
-      if (this.activeSilenceAlert) {
-        this.activeSilenceAlert.active = false
-        this.activeSilenceAlert.durationMs = this.silenceDurationMs
-        this.transition(this.activeSilenceAlert,'recovered',now)
-        this.activeSilenceAlert = null
-      }
-      this.silenceDurationMs = 0
-    } else this.silenceDurationMs=0
+    step('silence','SILENCE',this.lastAudioDbfs===null?undefined:isSilence,null,this.thresholds.silenceThresholdMs)
 
     return triggeredAlerts
   }

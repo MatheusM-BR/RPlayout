@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it} from 'vitest'
 import {openDatabase} from '../db/client.js'
 import {healthEvents,operatorDecisions} from '../db/schema.js'
-import {acknowledgeHealthIncident,readHealthIncidents,type IncidentAuthority} from './health-incidents.js'
+import {acknowledgeHealthIncident,readHealthIncidentPage,readHealthIncidents,type IncidentAuthority} from './health-incidents.js'
 let value:ReturnType<typeof openDatabase>
 const authority:IncidentAuthority={actor:'Supervisor São José',channelIds:['a'],canAcknowledge:true}
 beforeEach(()=>{value=openDatabase(':memory:');for(const [id,channelId]of [['a','a'],['b','b'],['global',null]] as const)value.db.insert(healthEvents).values({id,channelId,component:'ENGINE',state:'NO_VIDEO',severity:'CRITICAL',occurredAt:'2026-10-10T00:00:00.000Z'}).run()})
@@ -49,5 +49,13 @@ describe('incidentes persistentes e reconhecimento auditado',()=>{
     expect(readHealthIncidents(value.db,null,undefined,10)).toHaveLength(4)
     expect(()=>readHealthIncidents(value.db,['a'],'b',10)).toThrow('Sem acesso')
     expect(readHealthIncidents(value.db,['a'],undefined,10,'2026-10-10T00:00:01.000Z')).toEqual([])
+  })
+})
+
+describe('ALERTAS do cabeçalho incluem host e relógio (A5)',()=>{
+  it('includeHost soma incidentes sem canal só para quem vê todos os canais',()=>{
+    expect(readHealthIncidentPage(value.db,null,{channelId:'a',acknowledgement:'PENDING'}).pending).toEqual({critical:1,warn:0})
+    expect(readHealthIncidentPage(value.db,null,{channelId:'a',acknowledgement:'PENDING',includeHost:'1'}).pending).toEqual({critical:2,warn:0})
+    expect(readHealthIncidentPage(value.db,['a'],{channelId:'a',acknowledgement:'PENDING',includeHost:'1'}).pending).toEqual({critical:1,warn:0})
   })
 })

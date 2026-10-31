@@ -145,6 +145,8 @@ export interface Transport {
    * diferentes, e o alerta que junta os dois não ajuda ninguém a procurar.
    */
   health(): { restarts: number; deaths: number; stalls: number; error: string | null; ready: boolean }
+  /** Estado único (OK/ALERTA/REINICIANDO/FALHA). Opcional: o simulado deriva da saúde. */
+  engineStatus?(): import('./engine-status.js').EngineStatus
   /** Aviso recente do motor -- máquina apertada, por exemplo. Nulo se não há. */
   warning(): string | null
   close(): void

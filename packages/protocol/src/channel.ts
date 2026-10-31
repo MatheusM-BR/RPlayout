@@ -28,6 +28,10 @@ export type Scan = 'PROGRESSIVE' | 'INTERLACED'
 
 /** Ordem dos campos. 1080i é TFF; só formatos SD antigos são BFF. */
 export type FieldOrder = 'TFF' | 'BFF'
+/** Ordem de campos que de fato vale: só existe em varredura entrelaçada. O
+ * valor gravado de um canal progressivo é resíduo de padrão e não deve ser exibido. */
+export const effectiveFieldOrder = (channel: { readonly scan: Scan; readonly fieldOrder: FieldOrder }): FieldOrder | null =>
+  channel.scan === 'INTERLACED' ? channel.fieldOrder : null
 
 export interface OutputProfile {
   readonly id: string

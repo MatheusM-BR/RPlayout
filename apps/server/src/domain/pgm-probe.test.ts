@@ -160,3 +160,27 @@ describe('sonda com intervenção efetivamente confirmada', () => {
     expect(probe.getStatus().lastSampleAt).toBeUndefined()
   })
 })
+describe('histerese de recuperação (A5)', () => {
+  it('freeze intermitente vira UM incidente com contador; recupera só após sinal limpo sustentado', () => {
+    const probe = new PgmProbe({ freezeThresholdMs: 2000 }, undefined, { recoveryHoldMs: 15_000 })
+    let t = 1_000_000
+    const feed = (freezeDurationMs: number, deltaMs = 1000) => { t += deltaMs; probe.feedMetrics({ freezeDurationMs, timestampMs: t, deltaMs }) }
+    // Padrão do relatório: ~9 s congelado, ~2 s limpo, repetido 5 vezes.
+    for (let cycle = 0; cycle < 5; cycle++) {
+      for (let s = 1; s <= 9; s++) feed(s * 1000)
+      feed(0); feed(0)
+    }
+    const transitions = probe.pendingTransitions()
+    expect(transitions.filter(row => row.state === 'active')).toHaveLength(1)
+    expect(transitions.filter(row => row.state === 'recovered')).toHaveLength(0)
+    expect(probe.getStatus().activeAlerts[0]).toMatchObject({ type: 'FREEZE_FRAME', occurrences: 5 })
+    for (let s = 0; s < 16; s++) feed(0)
+    const after = probe.pendingTransitions()
+    expect(after.filter(row => row.state === 'recovered')).toHaveLength(1)
+    expect(after.find(row => row.state === 'recovered')!.alert.occurrences).toBe(5)
+    expect(probe.getStatus().activeAlerts).toEqual([])
+    // Detecção real continua imediata depois da recuperação.
+    feed(2500)
+    expect(probe.pendingTransitions().filter(row => row.state === 'active')).toHaveLength(2)
+  })
+})

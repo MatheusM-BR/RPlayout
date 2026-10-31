@@ -7,6 +7,7 @@ import { channels, rundowns, rundownItems } from '../db/schema.js'
 import { getLiveSource } from './srt.js'
 import { sourceWire } from './source-wire.js'
 import { sessionDigest } from './access.js'
+import { EngineCommandRejected } from './engine.js'
 
 vi.mock('../config.js', async original => ({ ...await original<Record<string, unknown>>(), ENGINE_BINARY: '', MEDIAMTX_BINARY: '', DEVICES_BINARY: '', AUTH_USER: '', AUTH_PASSWORD: '', DEFAULT_ROLE: 'ADMIN' }))
 const raw = 'srt://127.0.0.1:9000?mode=caller&latency=120&passphrase=PRIVATE_SOURCE_SECRET'
@@ -68,5 +69,14 @@ describe('HTTP público preserva referências executáveis privadas', () => {
     expect((await server.inject({ method: 'POST', url: '/api/channels/ch/transport', payload })).statusCode).toBe(401)
     expect((await server.inject({ method: 'POST', url: '/api/channels/ch/transport', payload, headers: { cookie: `rplayout_session=${token}` } })).statusCode).toBe(403)
     expect(cue).not.toHaveBeenCalled()
+  })
+  it('CUE recusado pelo engine responde 409 com a mensagem (A4), não 500',async()=>{
+    const runtime=app.runtimes.get('ch')!
+    vi.spyOn(runtime.transport,'cue').mockRejectedValueOnce(new EngineCommandRejected('este canal não tem barramento de preview'))
+    const cue=await server.inject({method:'POST',url:'/api/channels/ch/transport',payload:{action:'cue',sourceRef:sourceWire().reference(raw)}})
+    expect(cue.statusCode).toBe(409)
+    expect(cue.json()).toMatchObject({error:'este canal não tem barramento de preview',refused:true,action:'cue'})
+    vi.spyOn(runtime.transport,'cue').mockRejectedValueOnce(new Error('O arquivo do preview não está disponível. Atualize o acervo.'))
+    expect((await server.inject({method:'POST',url:'/api/channels/ch/transport',payload:{action:'cue',sourceRef:sourceWire().reference(raw)}})).statusCode).toBe(422)
   })
 })

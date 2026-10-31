@@ -208,6 +208,9 @@ export interface ClockStatusView {
   thresholds: { warnMs: number; criticalMs: number; unverifiedRounds: number; jumpMs: number }
   reason: string
 }
+export type EngineState = 'OK' | 'ALERT' | 'RESTARTING' | 'FAILED'
+export type TechnicalLogLevel = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG'
+export interface TechnicalLogEntry { seq:number; at:string; level:TechnicalLogLevel; source:'ENGINE'|'SERVER'; channel:string|null; message:string; crashReport:string|null }
 export interface HostMetricSample {
   operations?:OperationalMetricFrame
   generatedAt: string
@@ -224,7 +227,9 @@ export interface OperationalMetricFrame {
   version:1;capturedAt:string;available:boolean;channelsTruncated:boolean
   channels:Array<{
     channelId:string;rundownId:string|null;revisionId:string|null;executionId:string|null;itemId:string|null;itemName?:string|null;elapsedFrames:number|null;mode:string|null
-    engine:{pid:number|null;ready:boolean;restarts:number;deaths:number;stalls:number;hasError:boolean;cpuTimeMs:number|null;memoryBytes:number|null}
+    engine:{pid:number|null;ready:boolean;restarts:number;deaths:number;stalls:number;hasError:boolean;cpuTimeMs:number|null;memoryBytes:number|null
+      /** Estado único do engine (ausente em amostras antigas). */
+      state?:EngineState;cpuPercent?:number|null}
     sources:Array<{sourceId:string;sourceName?:string|null;nameAmbiguous?:boolean;itemId:string;state:string;busItemIds:Partial<Record<'pgm'|'pvw',string|null>>|null;busSignals:Partial<Record<'pgm'|'pvw',import('@rplayout/protocol').LiveSignalAssessment>>|null;busCatalog?:Partial<Record<'pgm'|'pvw',{configuredSourceId:string;sourceName:string|null;identityBasis:'PUBLISHED_ITEM'|'NATIVE_DECODER'}>>}>
     outputs:Array<{outputId:string;outputName?:string|null;nameAmbiguous?:boolean;identityType?:'PROFILE'|'ENDPOINT';state:string;attempts:number;delivered:number;hasError:boolean}>
     sourcesTruncated:boolean;outputsTruncated:boolean
@@ -552,9 +557,14 @@ export const api = {
         state: string
         cpuTimeMs: number | null
         memoryBytes: number | null
+        /** CPU do processo entre duas leituras (100% = um núcleo). */
+        cpuPercent?: number | null
         details?: Record<string, unknown>
       }>
     }>('/api/processes',{signal}),
+  engineeringLogs:(filter:{level?:TechnicalLogLevel;source?:'ENGINE'|'SERVER';channelId?:string;q?:string;sinceMs?:number;afterSeq?:number;limit?:number}={},signal?:AbortSignal)=>
+    send<{entries:TechnicalLogEntry[];lastSeq:number;capacity:number;retained:number;crashReports:Array<{path:string;at:string;bytes:number}>;generatedAt:string}>(`/api/engineering/logs?${new URLSearchParams(Object.entries(filter).filter(([,value])=>value!==undefined&&value!=='').map(([key,value])=>[key,String(value)])).toString()}`,{signal}),
+  engineeringStatus:(signal?:AbortSignal)=>send<{version:{rplayout:string;build:string|null;node:string;platform:string;gstreamer:string|null;startedAt:string};uptimeSeconds:number;serverTime:string}>('/api/engineering/status',{signal}),
   storageStatus: () => send<{mode:'PROCESS'|'INLINE';connected:boolean;backendPid:number;storagePid:number;automaticReconnect:false;automaticReplay:false;latency:{calls:number;lastMs:number;maxMs:number;meanMs:number}|null;validation:'PENDING'}>('/api/engineering/storage'),
   hostMetrics:(signal?:AbortSignal)=>send<HostMetricSample>('/api/host-metrics',{signal}),
   clock:(signal?:AbortSignal)=>send<ClockStatusView>('/api/clock',{signal}),
@@ -579,7 +589,7 @@ export const api = {
   externalCommandRuns: () => send<{ runs: ManualExternalRun[]; uncertainState: string }>('/api/external/commands'),
   acknowledgeExternalCommand: (requestId: string, note: string) => post(`/api/external/commands/${encodeURIComponent(requestId)}/acknowledge`, { note }),
   controlExternalDevice: (id: string, body: { requestId: string; action: 'PING' | 'ROUTE_CROSSPOINT'; source?: number; destination?: number }) => post<{ run: ManualExternalRun; deduplicated: boolean; physicalOutputValidated: false }>(`/api/external/devices/${encodeURIComponent(id)}/control`, body),
-  healthEvents: (channelId?: string,options?:{severity?:'ALL'|'INFO'|'WARN'|'CRITICAL';acknowledgement?:'ALL'|'PENDING'|'ACKNOWLEDGED';until?:string;beforeAt?:string;beforeId?:string},signal?:AbortSignal) => send<{ events: Array<{ id: string; channelId: string | null; component: string; state: string; severity: 'INFO' | 'WARN' | 'CRITICAL'; message: string | null; occurredAt: string; acknowledgedAt: string | null;resolvedAt?:string|null;observationEndedAt?:string|null;context?:IncidentContext|null }>;pending:{critical:number;warn:number};risk:{observedUnresolved:number;observationEndedUnresolved:number;withoutContext:number};page:{until:string;totalMatching:number;hasMore:boolean;nextBefore:{occurredAt:string;id:string}|null} }>(`/api/health-events?limit=30${channelId ? `&channelId=${encodeURIComponent(channelId)}` : ''}${options?'&'+new URLSearchParams(Object.entries(options).filter((entry):entry is [string,string]=>typeof entry[1]==='string')).toString():''}`,{signal}),
+  healthEvents: (channelId?: string,options?:{severity?:'ALL'|'INFO'|'WARN'|'CRITICAL';acknowledgement?:'ALL'|'PENDING'|'ACKNOWLEDGED';until?:string;beforeAt?:string;beforeId?:string;includeHost?:'1'},signal?:AbortSignal) => send<{ events: Array<{ id: string; channelId: string | null; component: string; state: string; severity: 'INFO' | 'WARN' | 'CRITICAL'; message: string | null; occurredAt: string; acknowledgedAt: string | null;resolvedAt?:string|null;observationEndedAt?:string|null;context?:IncidentContext|null }>;pending:{critical:number;warn:number};risk:{observedUnresolved:number;observationEndedUnresolved:number;withoutContext:number};page:{until:string;totalMatching:number;hasMore:boolean;nextBefore:{occurredAt:string;id:string}|null} }>(`/api/health-events?limit=30${channelId ? `&channelId=${encodeURIComponent(channelId)}` : ''}${options?'&'+new URLSearchParams(Object.entries(options).filter((entry):entry is [string,string]=>typeof entry[1]==='string')).toString():''}`,{signal}),
   acknowledgeHealth: (id: string) => post<{ ok: true }>(`/api/health-events/${id}/ack`, {}),
   schedulerStatus: (signal?:AbortSignal) => send<{ checkedAt: string; channels: Array<{ channelId: string; rundownId: string | null; rundownDate: string | null; revisionId: string | null; source: 'NONE' | 'LEGACY' | 'PUBLISHED'; mode: 'FINITE' | 'LOOP' | 'OPEN_LIVE' | 'MANUAL_HOLD' | 'WAITING_START' | 'NO_EXECUTION' | 'INVALID_DATE'; reason: string | null; automaticHandover: boolean; nextPlaylist: {state:NextPlaylistRun['state'];targetName:string;targetRevisionId:string;policy:'ONE_REVIEWED_EOS'}|null; activeRule: { name: string; startMinute: number; endMinute: number } | null; endsAtFrames: number | null; minutesRemaining: number | null; coverageMinutes: number | null; coverageHours: number | null; targetHours: number; coverageReady: boolean }> }>('/api/scheduler/status',{signal}),
   nextPlaylist:(channelId:string)=>send<NextPlaylistStatus>(`/api/channels/${encodeURIComponent(channelId)}/next-playlist`),

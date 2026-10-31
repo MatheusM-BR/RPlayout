@@ -1,4 +1,4 @@
-import {mkdirSync,writeFileSync} from 'node:fs'
+import {mkdirSync,readdirSync,statSync,writeFileSync} from 'node:fs'
 import {join} from 'node:path'
 
 /** Windows reports NTSTATUS codes as unsigned exit codes. The ones that a
@@ -58,4 +58,12 @@ export function writeEngineCrashReport(directory:string,crash:EngineCrash):strin
     writeFileSync(file,engineCrashReport(crash),{encoding:'utf8',flag:'wx'})
     return file
   }catch{return null}
+}
+
+/** Relatórios de crash existentes (mais recente primeiro), para a tela técnica e o "Exportar saúde". */
+export function listEngineCrashReports(directory:string,limit=10):Array<{path:string;at:string;bytes:number}>{
+  try{
+    return readdirSync(directory).filter(name=>/^engine-crash-.*\.txt$/.test(name)).map(name=>{const path=join(directory,name),info=statSync(path);return {path,at:info.mtime.toISOString(),bytes:info.size}})
+      .sort((a,b)=>b.at.localeCompare(a.at)).slice(0,limit)
+  }catch{return []}
 }

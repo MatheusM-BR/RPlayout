@@ -46,8 +46,8 @@ export function persistPgmSignalIncidents(db:Db,channelId:string,probe:PgmProbe)
       const id='pgm-signal:'+transition.key
       const checked=IncidentContextSchema.safeParse(transition.context)
       const context=checked.success&&checked.data.channelId===channelId?checked.data:null
-      const payload={incidentId:id,alertId:transition.alert.id,kind,state,durationMs:transition.alert.durationMs,thresholdMs:transition.alert.thresholdMs,signalRecovered:transition.state==='recovered',context}
-      const message=transition.state==='active'?`PGM ${kind}: limite de ${transition.alert.thresholdMs} ms atingido.`:transition.state==='recovered'?`PGM ${kind}: recuperação confirmada por nova medição.`:`PGM ${kind}: observação encerrada; recuperação não confirmada.`
+      const payload={incidentId:id,alertId:transition.alert.id,kind,state,durationMs:transition.alert.durationMs,thresholdMs:transition.alert.thresholdMs,signalRecovered:transition.state==='recovered',context,...((transition.alert.occurrences??1)>1?{occurrences:transition.alert.occurrences}:{})}
+      const message=transition.state==='active'?`PGM ${kind}: limite de ${transition.alert.thresholdMs} ms atingido.`:transition.state==='recovered'?`PGM ${kind}: recuperação confirmada por nova medição${(transition.alert.occurrences??1)>1?` (${transition.alert.occurrences} ocorrências agrupadas neste incidente)`:''}.`:`PGM ${kind}: observação encerrada; recuperação não confirmada.`
       const result=tx.insert(healthEvents).values({id,channelId,component:'SIGNAL',state,severity:transition.state==='active'?'CRITICAL':transition.state==='recovered'?'INFO':'WARN',message,occurredAt:transition.occurredAt,context}).onConflictDoNothing().run()
       if(result.changes===1){
         if(transition.state!=='active'){

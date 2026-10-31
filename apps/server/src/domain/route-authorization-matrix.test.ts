@@ -61,4 +61,17 @@ describe('matriz de autorização das rotas que alteram estado',()=>{
       expect(response.json().error).toBe('STORAGE_UNAVAILABLE')
     }}finally{storage.down=false}
   })
+  it('logs técnicos (leitura): sem sessão 401, operador 403, supervisor lê com severidade e busca',async()=>{
+    const {technicalLog}=await import('./technical-log.js')
+    technicalLog.ingest('[engine ch] encerrado: sinal SIGKILL; relatório em /tmp/engine-crashes/engine-crash-x.txt')
+    expect((await server.inject({method:'GET',url:'/api/engineering/logs'})).statusCode).toBe(401)
+    expect((await server.inject({method:'GET',url:'/api/engineering/logs',headers:{cookie:`rplayout_session=${token}`}})).statusCode).toBe(403)
+    const now=new Date().toISOString(),supervisor=randomUUID()
+    await app.db.insert(users).values({id:'sup',username:'sup',passwordHash:'not-used',role:'SUPERVISOR',enabled:true,createdAt:now})
+    await app.db.insert(sessions).values({token:sessionDigest(supervisor),userId:'sup',expiresAt:new Date(Date.now()+600000).toISOString(),createdAt:now})
+    const read=await server.inject({method:'GET',url:'/api/engineering/logs?level=ERROR&q=SIGKILL&channelId=ch',headers:{cookie:`rplayout_session=${supervisor}`}})
+    expect(read.statusCode).toBe(200)
+    expect(read.json().entries.at(-1)).toMatchObject({level:'ERROR',source:'ENGINE',channel:'ch',crashReport:'/tmp/engine-crashes/engine-crash-x.txt'})
+    expect((await server.inject({method:'GET',url:'/api/engineering/logs?level=XYZ',headers:{cookie:`rplayout_session=${supervisor}`}})).statusCode).toBe(400)
+  })
 })

@@ -1,5 +1,6 @@
 import React from 'react'
 import type { MeterReading } from '../../types.js'
+import { loudnessTone, loudnessToneClass } from '../../domain/loudness-tone.js'
 
 interface Props {
   meter: MeterReading
@@ -45,7 +46,7 @@ export const AudioMeterEbu = React.memo(function AudioMeterEbu({
             />
           </div>
         </div>
-        <span className="text-on-surface font-semibold">{integrated.toFixed(1)} LUFS</span>
+        <span className={`font-semibold ${loudnessToneClass[loudnessTone(integrated, targetLufs)]}`}>{integrated.toFixed(1)} LUFS</span>
       </div>
     )
   }
@@ -122,8 +123,8 @@ export const AudioMeterEbu = React.memo(function AudioMeterEbu({
       <div className="grid grid-cols-2 gap-space-xs font-label-mono text-label-mono">
         <div className="bg-surface-panel p-space-sm rounded border border-border-subtle">
           <span className="text-outline block font-label-caps text-label-caps">INTEGRADO (I):</span>
-          <span className="font-headline-md text-headline-md text-status-ok-bright font-bold tabular-nums">
-            {integrated.toFixed(1)} LUFS
+          <span className={`font-headline-md text-headline-md font-bold tabular-nums ${loudnessToneClass[loudnessTone(integrated, targetLufs)]}`}>
+            {integrated.toFixed(1)} LUFS{loudnessTone(integrated, targetLufs) === 'silence' ? ' · SILÊNCIO' : ''}
           </span>
           <span className="text-[11px] text-outline block">ALVO: {targetLufs} ±0.5</span>
         </div>

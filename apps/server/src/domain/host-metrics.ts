@@ -24,6 +24,69 @@ export interface HostMetricSample {
   network: { receivedBytesPerSecond: number | null; sentBytesPerSecond: number | null; source: string | null; error: string | null }
 }
 
+type HostConditionKey = 'CPU' | 'RAM' | 'DISK' | 'DISK_ERROR'
+const HOST_RULES: Record<HostConditionKey, { open: number; close: number; openAfter: number; closeAfter: number }> = {
+  // CPU oscila muito: exige 20 s acima de 90% para abrir e 30 s abaixo de 85% para fechar.
+  CPU: { open: 90, close: 85, openAfter: 2, closeAfter: 3 },
+  RAM: { open: 90, close: 85, openAfter: 2, closeAfter: 3 },
+  DISK: { open: 90, close: 88, openAfter: 1, closeAfter: 3 },
+  DISK_ERROR: { open: 0, close: 0, openAfter: 1, closeAfter: 2 },
+}
+const pct = (value: number) => `${(Math.round(value * 10) / 10).toLocaleString('pt-BR')}%`
+const gb = (bytes: number | null) => bytes === null ? 'N/D' : `${(bytes / 1e9).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} GB`
+export interface HostIncidentChange { kind: 'open' | 'close'; key: HostConditionKey; id: string; message: string }
+/** Estado das condições do host entre amostras. Puro: o banco só recebe as mudanças. */
+export class HostIncidentTracker {
+  private readonly open = new Map<HostConditionKey, { id: string; since: number }>()
+  private readonly above = new Map<HostConditionKey, number>()
+  private readonly below = new Map<HostConditionKey, number>()
+  private adopted = false
+  /** Depois de reiniciar o servidor, continua o incidente aberto em vez de abrir outro. */
+  adopt(sqlite: Database.Database): void {
+    if (this.adopted) return
+    this.adopted = true
+    try {
+      const rows = sqlite.prepare("SELECT id, occurred_at FROM health_events WHERE component='HOST' AND state='degraded' AND id LIKE 'host:%' AND resolved_at IS NULL").all() as Array<{ id: string; occurred_at: string }>
+      for (const row of rows) {
+        const key = row.id.split(':')[1] as HostConditionKey
+        if (key in HOST_RULES && !this.open.has(key)) this.open.set(key, { id: row.id, since: Date.parse(row.occurred_at) || Date.now() })
+      }
+    } catch { /* banco antigo sem resolved_at: começa limpo */ }
+  }
+  isOpen(key: HostConditionKey): boolean { return this.open.has(key) }
+  evaluate(sample: Pick<HostMetricSample, 'cpu' | 'memory' | 'disk' | 'generatedAt'>): HostIncidentChange[] {
+    const now = Date.parse(sample.generatedAt) || Date.now()
+    const readings: Record<HostConditionKey, { value: number | null; text: () => string; recovered: () => string }> = {
+      CPU: { value: sample.cpu.percent, text: () => `CPU acima de 90% (${pct(sample.cpu.percent!)})`, recovered: () => `CPU normalizada (${pct(sample.cpu.percent!)})` },
+      RAM: { value: sample.memory.percent, text: () => `RAM acima de 90% (${pct(sample.memory.percent!)}; ${gb(sample.memory.freeBytes)} livres)`, recovered: () => `RAM normalizada (${pct(sample.memory.percent!)})` },
+      DISK: { value: sample.disk.percentUsed, text: () => `Volume do acervo acima de 90% (${pct(sample.disk.percentUsed!)} usado; ${gb(sample.disk.freeBytes)} livres em ${sample.disk.path})`, recovered: () => `Volume do acervo normalizado (${pct(sample.disk.percentUsed!)} usado; ${gb(sample.disk.freeBytes)} livres)` },
+      DISK_ERROR: { value: sample.disk.error ? 1 : 0, text: () => sample.disk.error ?? 'Volume do acervo inacessível.', recovered: () => 'Volume do acervo acessível novamente.' },
+    }
+    const changes: HostIncidentChange[] = []
+    for (const key of Object.keys(HOST_RULES) as HostConditionKey[]) {
+      const rule = HOST_RULES[key], reading = readings[key]
+      if (reading.value === null) continue // sem leitura não abre nem fecha
+      const isAbove = reading.value > rule.open, isBelow = key === 'DISK_ERROR' ? reading.value === 0 : reading.value < rule.close
+      this.above.set(key, isAbove ? (this.above.get(key) ?? 0) + 1 : 0)
+      this.below.set(key, isBelow ? (this.below.get(key) ?? 0) + 1 : 0)
+      const current = this.open.get(key)
+      if (!current && (this.above.get(key) ?? 0) >= rule.openAfter) changes.push({ kind: 'open', key, id: `host:${key}:${randomUUID()}`, message: reading.text() })
+      else if (current && (this.below.get(key) ?? 0) >= rule.closeAfter) {
+        const minutes = Math.max(1, Math.round((now - current.since) / 60_000))
+        changes.push({ kind: 'close', key, id: current.id, message: `${reading.recovered()} após ${minutes} min.` })
+      }
+    }
+    return changes
+  }
+  /** Só depois de gravado: falha de gravação repete a mudança na próxima amostra. */
+  commit(changes: HostIncidentChange[], at = Date.now()): void {
+    for (const change of changes) {
+      if (change.kind === 'open') this.open.set(change.key, { id: change.id, since: at })
+      else this.open.delete(change.key)
+    }
+  }
+}
+
 /** A single collector per host, shared by all clients. Absent counters stay
  * null. It runs independently of browser attendance and persists its samples. */
 export class HostMetrics {
@@ -35,7 +98,7 @@ export class HostMetrics {
   private pending: Promise<HostMetricSample> | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private closed = false
-  private state = ''
+  private readonly incidents = new HostIncidentTracker()
   constructor(private readonly sqlite: Database.Database, private readonly storagePath: string) {}
   start(): void {
     if (this.timer || this.closed) return
@@ -134,15 +197,24 @@ export class HostMetrics {
       try{sample.operations=await this.onCapture()}catch{sample.operations={version:1,capturedAt:new Date().toISOString(),available:false,channelsTruncated:false,channels:[]}}
     }
     if (!this.closed) {
-      const risks = [percent !== null && percent > 90 ? 'CPU acima de 90%' : '', sample.memory.percent !== null && sample.memory.percent > 90 ? 'RAM acima de 90%' : '', sample.disk.percentUsed !== null && sample.disk.percentUsed > 90 ? 'Volume do acervo acima de 90%' : '', sample.disk.error ?? ''].filter(Boolean)
-      const state = risks.join('; ') || 'healthy'
-      const changed=state!==this.state
+      // Histerese e deduplicação: um incidente por condição (CPU, RAM, disco),
+      // aberto depois de amostras seguidas acima do limite e fechado quando
+      // normaliza abaixo de um limite menor. Mudança de texto não abre outro.
+      this.incidents.adopt(this.sqlite)
+      const changes=this.incidents.evaluate(sample)
       persistMetricHistory(this.sqlite,sample,Date.now(),()=>{
-        if(changed)this.sqlite.prepare('INSERT INTO health_events (id,component,state,severity,message,occurred_at) VALUES (?,?,?,?,?,?)').run(randomUUID(),'HOST',risks.length ? 'degraded' : 'running',risks.length ? 'WARN' : 'INFO',installationVault().encrypt(risks.join('; ') || 'Recursos do servidor dentro dos limites monitorados.', 'health_events.message'),sample.generatedAt)
+        for(const change of changes){
+          const message=installationVault().encrypt(change.message,'health_events.message')
+          if(change.kind==='open')this.sqlite.prepare('INSERT INTO health_events (id,component,state,severity,message,occurred_at) VALUES (?,?,?,?,?,?)').run(change.id,'HOST','degraded','WARN',message,sample.generatedAt)
+          else {
+            this.sqlite.prepare('UPDATE health_events SET resolved_at=? WHERE id=? AND resolved_at IS NULL').run(sample.generatedAt,change.id)
+            this.sqlite.prepare('INSERT OR IGNORE INTO health_events (id,component,state,severity,message,occurred_at) VALUES (?,?,?,?,?,?)').run(change.id+':recovered','HOST','recovered','INFO',message,sample.generatedAt)
+          }
+        }
       })
+      this.incidents.commit(changes)
       this.cached=sample
-      this.state=state
-      if(changed)this.onIncident?.(risks.length ? 'degraded' : 'running',risks.join('; ') || 'Recursos recuperados.',sample)
+      for(const change of changes)this.onIncident?.(change.kind==='open'?'degraded':'running',change.message,sample)
     }
     return sample
   }

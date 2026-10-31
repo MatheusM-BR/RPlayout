@@ -89,8 +89,9 @@ export function QcWorkflowPanel({ assetId, contentHash, channel, onChanged,onRev
     <div className="flex flex-wrap gap-2 justify-between mb-2"><strong>QC · {channel.name} · versão {contentHash.slice(0, 8)}</strong><button disabled={busy||externalBusy||!assessment||stale} className="text-primary underline disabled:opacity-40" onClick={toggleProfile}>Perfil técnico</button><button disabled={busy||externalBusy} className="text-primary underline" onClick={reopen}>Reabrir conferência</button></div>
     {assessment ? <>
       <QcProbePolicy required={Boolean(assessment.profile.requireProbe)}/>
-      <p className={assessment.checks.playable ? 'text-status-ok' : 'text-on-air-crimson'}>{assessment.checks.playable ? 'Verificações técnicas configuradas atendidas.' : 'Bloqueado pelas verificações técnicas.'}</p>
-      {[...assessment.checks.errors, ...assessment.checks.warnings].map((issue, index) => <p key={index} className="mt-1 text-armed-amber">{issue}</p>)}
+      <p role="status" className={!assessment.checks.playable ? 'text-on-air-crimson' : assessment.checks.warnings.length ? 'text-armed-amber' : 'text-status-ok'}>{!assessment.checks.playable ? `Bloqueado pelas verificações técnicas (${assessment.checks.errors.length} erro(s)).` : assessment.checks.warnings.length ? `Pode ir ao ar, com ${assessment.checks.warnings.length} aviso(s) técnico(s) — confira antes de aprovar.` : 'Verificações técnicas atendidas, sem avisos.'}</p>
+      {assessment.checks.errors.map((issue, index) => <p key={`e${index}`} className="mt-1 text-on-air-crimson">✖ {issue}</p>)}
+      {assessment.checks.warnings.map((issue, index) => <p key={`w${index}`} className="mt-1 text-armed-amber">⚠ {issue}</p>)}
       {assessment.decisions[0] && <p className="mt-1 text-outline">Última decisão aplicável ({assessment.decisions[0].channelId==='@all'?'todos os canais':'este canal'}): {assessment.decisions[0].status} · {assessment.decisions[0].notes ?? 'sem ressalva'}</p>}
     </> : <p>Consultando a versão…</p>}
     <label className="block mt-2">Ressalva / motivo<textarea value={notes} onChange={event => setNotes(event.target.value)} maxLength={2000} rows={2} className="block w-full mt-1 bg-surface-base border border-outline/30 rounded p-2" /></label>

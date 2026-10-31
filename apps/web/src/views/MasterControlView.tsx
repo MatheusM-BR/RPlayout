@@ -1,4 +1,5 @@
 import { masterDeleteAllowed } from '../domain/key-guards'
+import { loudnessTone, loudnessToneClass } from '../domain/loudness-tone.js'
 import { confirmAction, notify } from '../domain/confirm.js'
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
 import { finalCount, gradeEndWarning, mmss, nextFixedCommitment, countdownText } from '../domain/broadcast-cues.js'
@@ -61,6 +62,9 @@ interface Props {
   onTakeLive?: (sourceRef: string, title: string) => void
   onStop: () => void
   onCue: (itemId: string) => void
+  /** Último comando de transporte recusado pelo servidor/engine (mensagem perto dos botões). */
+  transportRefusal?: { action: string; message: string; at: number } | null
+  onDismissTransportRefusal?: () => void
   onClearCue: () => void
   onSeek: (bus: 'pgm' | 'pvw', frames: number) => void
   onStartScan: (measure: boolean) => void
@@ -167,6 +171,8 @@ export function MasterControlView({
   onTakeLive,
   onStop,
   onCue,
+  transportRefusal = null,
+  onDismissTransportRefusal,
   onClearCue,
   onSeek,
   onStartScan,
@@ -1114,6 +1120,11 @@ export function MasterControlView({
                   </div>
 
                   {takeReason&&<div role="status" className="text-[11px] text-armed-amber text-center">{takeReason}</div>}
+                  {transportRefusal&&<div role="alert" data-testid="transport-refusal" className="flex items-start gap-1.5 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 text-[12px] text-on-surface">
+                    <span className="material-symbols-outlined text-[15px] text-on-air-crimson shrink-0">block</span>
+                    <span className="flex-1 min-w-0 break-words"><strong className="text-on-air-crimson">{transportRefusal.action.toUpperCase()} recusado:</strong> {transportRefusal.message} <span className="text-outline">(este comando não alterou o PGM)</span></span>
+                    {onDismissTransportRefusal&&<button type="button" onClick={onDismissTransportRefusal} className="shrink-0 text-outline hover:text-on-surface" aria-label="Fechar aviso de comando recusado"><span className="material-symbols-outlined text-[15px]">close</span></button>}
+                  </div>}
                   {!takeReason&&takeLive&&<div role="status" className="text-[11px] text-accent-ice text-center">Ao vivo fora da grade: o TAKE insere “{takeLive.title}” logo após o item no ar e coloca no ar.</div>}
                   <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
                     <button
@@ -1857,8 +1868,10 @@ export function MasterControlView({
                         {nativeMeter ? 'Áudio PGM · EBU R128' : 'Áudio PGM · sem medição nativa'}
                       </span>
                     </div>
-                    <span className="font-headline-md text-[18px] text-status-ok-bright font-bold tabular-nums">
+                    <span className={`font-headline-md text-[18px] font-bold tabular-nums ${loudnessToneClass[nativeMeter ? loudnessTone(meter.integratedLufs, channel.targetLufs) : 'unknown']}`}
+                      title={`Integrado (I) do PGM; alvo ${channel.targetLufs} LUFS. Verde até ±2 LU, âmbar até ±5 LU; abaixo de −60 LUFS é silêncio.`}>
                       {nativeMeter && Number.isFinite(meter.integratedLufs) ? `${meter.integratedLufs.toFixed(1)} LUFS` : 'N/D'}
+                      {nativeMeter && loudnessTone(meter.integratedLufs, channel.targetLufs) === 'silence' && <span className="ml-1.5 text-[12px] font-label-caps align-middle">SILÊNCIO</span>}
                     </span>
                   </div>
 

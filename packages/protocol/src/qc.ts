@@ -1,5 +1,13 @@
 import type { MediaAsset } from './media.js'
 import type {LiveSignalPolicy} from './live-signal.js'
+import type { Rate } from './rate.js'
+/** O que o canal entrega. Comparação padrão: diferença vira AVISO (nunca bloqueia). */
+export interface QcChannelReference {
+  readonly width: number; readonly height: number; readonly rate: Rate
+  readonly scan: 'PROGRESSIVE' | 'INTERLACED'; readonly audioChannels?: number
+}
+/** Abaixo disto a medição EBU R128 está no gate: o arquivo é, na prática, mudo. */
+export const QC_SILENT_LUFS = -60
 export interface QcProfile {
   /** Explicit isolated rendered-bus policy. Absence is unconfigured, not pass. */
   renderedBusPairs?:Array<{outputPair:number;loudness:{minLufs:number;maxLufs:number}|null;maxTruePeakDbtp:number}>
@@ -18,7 +26,26 @@ export const DEFAULT_QC_PROFILE: QcProfile = {
   codecs: [], width: null, height: null, fps: null, scan: 'ANY', requireAudio: false,
   minDurationSeconds: 0, requireLoudness: false, minLufs: -25, maxLufs: -21, maxTruePeakDbtp: -1,
 }
-export function assessQc(asset: MediaAsset, profile: QcProfile = DEFAULT_QC_PROFILE) {
+/** Faixa padrão de aceitação derivada do alvo do canal (±2 LU). Só para
+ * preencher perfis novos ou exibir uma sugestão; nunca reescreve um perfil gravado. */
+export const qcLoudnessRangeFor = (targetLufs: number) => ({ minLufs: targetLufs - 2, maxLufs: targetLufs + 2 })
+/** Perfil efetivo de um canal sem perfil gravado: o padrão, com a faixa de
+ * loudness centrada no alvo do canal (−23 → −25/−21; −14 → −16/−12). Perfis
+ * já gravados não são reescritos (sem migração destrutiva). */
+export function defaultQcProfileFor(targetLufs: number | null | undefined): QcProfile {
+  return Number.isFinite(targetLufs) ? { ...DEFAULT_QC_PROFILE, ...qcLoudnessRangeFor(targetLufs as number) } : DEFAULT_QC_PROFILE
+}
+const fmt = (value: number) => String(Math.round(value * 1000) / 1000).replace('.', ',')
+/**
+ * Avaliação técnica de um arquivo para um canal.
+ *
+ * - `errors` bloqueiam (só o que o perfil exige explicitamente).
+ * - `warnings` são sempre calculados: loudness/TP fora da faixa do perfil e
+ *   diferenças de cadência, raster, varredura e canais de áudio em relação ao
+ *   canal aparecem em âmbar mesmo quando o perfil não exige nada. Um arquivo
+ *   não precisa ser recusado para o engenheiro saber que ele será convertido.
+ */
+export function assessQc(asset: MediaAsset, profile: QcProfile = DEFAULT_QC_PROFILE, channel?: QcChannelReference | null) {
   const errors: string[] = [], warnings: string[] = [], probe = asset.probe
   if (asset.probeError) errors.push(asset.probeError)
   if (asset.kind !== 'VIDEO') errors.push('O perfil de playout requer arquivo de vídeo.')
@@ -51,6 +78,25 @@ export function assessQc(asset: MediaAsset, profile: QcProfile = DEFAULT_QC_PROF
     if (!Number.isFinite(loudness.integratedLufs) || !Number.isFinite(loudness.truePeakDbtp) || !Number.isFinite(loudness.lra) || loudness.lra<0 || !Number.isFinite(Date.parse(loudness.measuredAt))) errors.push('Medição de loudness inválida; refaça a análise do original.')
     if (loudness.integratedLufs < profile.minLufs || loudness.integratedLufs > profile.maxLufs) errors.push(`Loudness ${loudness.integratedLufs.toFixed(1)} LUFS fora da faixa ${profile.minLufs} a ${profile.maxLufs}.`)
     if (loudness.truePeakDbtp > profile.maxTruePeakDbtp) errors.push(`True peak ${loudness.truePeakDbtp.toFixed(1)} dBTP excede ${profile.maxTruePeakDbtp}.`)
+  }
+  if (loudness && !profile.requireLoudness && Number.isFinite(loudness.integratedLufs) && Number.isFinite(loudness.truePeakDbtp)) {
+    const part = loudness.scope === 'FILE' ? '' : ' (medição de trecho)'
+    if (loudness.integratedLufs > QC_SILENT_LUFS && (loudness.integratedLufs < profile.minLufs || loudness.integratedLufs > profile.maxLufs)) warnings.push(`Loudness ${loudness.integratedLufs.toFixed(1)} LUFS fora da faixa ${profile.minLufs} a ${profile.maxLufs}${part}. Não bloqueia: o perfil não exige loudness.`)
+    if (loudness.truePeakDbtp > profile.maxTruePeakDbtp) warnings.push(`True peak ${loudness.truePeakDbtp.toFixed(1)} dBTP excede ${profile.maxTruePeakDbtp}${part}. Não bloqueia: o perfil não exige loudness.`)
+  }
+  if (loudness && Number.isFinite(loudness.integratedLufs) && loudness.integratedLufs <= QC_SILENT_LUFS) warnings.push(`Áudio mudo ou abaixo do gate (${loudness.integratedLufs.toFixed(1)} LUFS): confira se o silêncio é intencional.`)
+  if (asset.suggestedTrim && asset.durationFrames > 0 && asset.suggestedTrim.out - asset.suggestedTrim.in <= 0) warnings.push('Preto/silêncio detectado no arquivo inteiro.')
+  if (channel && probe && asset.kind === 'VIDEO') {
+    const fileFps = validRate ? probe.rate.num / probe.rate.den : null, channelFps = channel.rate.num / channel.rate.den
+    if (!profile.fps && fileFps != null && Math.abs(fileFps - channelFps) > 0.01) warnings.push(`Cadência ${fmt(fileFps)} fps difere do canal (${fmt(channelFps)} fps): haverá conversão de cadência.`)
+    if (!profile.width && !profile.height && Number.isSafeInteger(probe.width) && Number.isSafeInteger(probe.height) && probe.width > 0 && probe.height > 0 && (probe.width !== channel.width || probe.height !== channel.height)) warnings.push(`Raster ${probe.width}x${probe.height} difere do canal (${channel.width}x${channel.height}): a imagem será escalada.`)
+    if (profile.scan === 'ANY') {
+      if (channel.scan === 'PROGRESSIVE' && (probe.interlaceMode === 'interleaved' || probe.interlaceMode === 'mixed')) warnings.push(`Varredura ${probe.interlaceMode === 'mixed' ? 'mista' : 'entrelaçada'} num canal progressivo: haverá desentrelaçamento.`)
+      if (channel.scan === 'INTERLACED' && probe.interlaceMode === 'progressive') warnings.push('Varredura progressiva num canal entrelaçado: confira movimento e ordem de campos.')
+    }
+    const busChannels = channel.audioChannels ?? 2
+    if (probe.hasAudio === false && !profile.requireAudio) warnings.push('Arquivo sem áudio: o PGM ficará mudo durante este item.')
+    else if (probe.hasAudio && Number.isSafeInteger(probe.audioChannels) && probe.audioChannels > 0 && probe.audioChannels !== busChannels) warnings.push(`Áudio com ${probe.audioChannels} canal(is); o barramento do canal tem ${busChannels}${probe.audioChannels === 1 ? ' (mono será duplicado)' : probe.audioChannels > busChannels ? ' (canais excedentes não vão ao ar sem roteamento)' : ''}.`)
   }
   return { playable: errors.length === 0, errors, warnings }
 }

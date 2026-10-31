@@ -1597,6 +1597,18 @@ describe('transporte real confirmado pelo engine', () => {
     await transport.take('grade', '1')
     expect(transport.state().onAir?.itemId).toBe('1')
   })
+  it('comando recusado não vira ERRO permanente; estado coerente OK/ALERTA/REINICIANDO (A4)', async () => {
+    start(view([]))
+    // Resposta negativa do engine a um comando (ex.: CUE sem barramento de preview).
+    event({ event: 'ack', id: 999, ok: false, error: 'este canal não tem barramento de preview' })
+    expect(transport.health().error).toBeNull()
+    expect(transport.engineStatus()).toMatchObject({ state: 'OK', message: null, rejection: { message: 'este canal não tem barramento de preview' } })
+    event({ event: 'error', message: 'Internal data stream error: not-negotiated' })
+    expect(transport.engineStatus()).toMatchObject({ state: 'ALERT', message: 'Internal data stream error: not-negotiated' })
+    child.emit('exit', null, 'SIGKILL')
+    expect(transport.engineStatus().state).toBe('RESTARTING')
+    expect(transport.engineStatus().message).toBe('O engine foi encerrado por SIGKILL.')
+  })
   it('avanço automático continua pulando arquivos ausentes e preserva ordem de load/TAKE', async () => {
     const first = join(directory, 'atual.mkv'), good = join(directory, 'seguinte.mkv')
     writeFileSync(first, 'video'); writeFileSync(good, 'video')
