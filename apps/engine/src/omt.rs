@@ -567,7 +567,7 @@ mod tests {
         let spec = PublisherSpec { output_id: "omt-test".to_string(), kind: Kind::Omt, url: format!("omt:{name}"),
             video_channel: "omt-test-video".to_string(), audio_channel: "omt-test-audio".to_string(), width: 320, height: 180,
             fps_n: 25, fps_d: 1, bitrate_kbps: 450, interlaced: false, top_field_first: true,
-            prefer_software: true, role: "test".to_string(), on_demand: false, opus: false };
+            prefer_software: true, role: "test".to_string(), on_demand: false, opus: false, monitor: None };
         let delivered = Arc::new(AtomicU64::new(0));
         stage(2,"publisher/runtime construction");let output = Running(publisher(&spec, delivered.clone()).unwrap());
         stage(3,"official discovery");

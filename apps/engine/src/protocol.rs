@@ -221,7 +221,19 @@ pub enum Command {
     /// Os pipelines de saída são independentes do do canal, então parar um
     /// monitor não encosta no programa. É o que permite não codificar para uma
     /// janela que ninguém abriu.
-    Monitor { bus: String, on: bool },
+    Monitor {
+        bus: String,
+        on: bool,
+        /// Nível pedido. Ausente = `lite`, o caminho histórico.
+        #[serde(default)]
+        tier: Option<crate::monitor::MonitorTier>,
+        /// Concessão de sessão de placa feita pelo servidor.
+        #[serde(default)]
+        hardware: bool,
+    },
+    /// Liga o relógio de teste gravado na imagem dos monitores (medição de
+    /// atraso de vidro a vidro). Nunca toca o programa.
+    MonitorClock { on: bool },
     /// Troca um destino já ligado ao barramento do programa.
     /// Só suporta RTMP, SRT e arquivo; SDI/NDI/OMT não fazem hot-switch.
     ReplaceOutput {

@@ -140,7 +140,7 @@ pub fn authorize_publication(owner: &str, term: u64) -> Result<()> {
 /// All sink inputs, including SDI, NDI, OMT appsinks and mux/network sinks,
 /// refuse new buffers after expiry even if the command/service loop blocks.
 /// This does not certify external routing or purge packets already in flight.
-pub fn guard_pipeline(pipeline: &gst::Pipeline) -> Result<()> {
+pub fn guard_pipeline(pipeline: &impl IsA<gst::Bin>) -> Result<()> {
     let Some(fence) = FENCE.get() else { return Ok(()); };
     for element in pipeline.iterate_sinks() {
         let element = element.map_err(|_| anyhow!("Não foi possível cercar as saídas HA."))?;

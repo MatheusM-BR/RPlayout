@@ -14,6 +14,50 @@
 //!
 //! O custo é codificar uma vez por destino de rede. Não é regressão: as saídas
 //! já tinham cadeia de codificação própria antes desta separação.
+//!
+//! # API de publicação (estável; usada pelo multiview e pelos monitores)
+//!
+//! Quem produz imagem para fora do canal escreve num par `intervideosink` /
+//! `interaudiosink` com nomes próprios e entrega o resto a um [`Publisher`]:
+//!
+//! ```ignore
+//! let mut publisher = Publisher::new(PublisherSpec {
+//!     output_id: "mvw".into(), kind: Kind::Srt, url: MEDIAMTX_SRT_URL,
+//!     video_channel, audio_channel,            // nomes dos `inter`
+//!     width, height, fps_n, fps_d,             // geometria/cadência no inter
+//!     bitrate_kbps, interlaced: false, top_field_first: true,
+//!     prefer_software: true,                   // classe "monitor" (veja abaixo)
+//!     role: "mvw".into(), on_demand: true, opus: true,
+//!     // Monitor com níveis: Some(..) liga o MonitorBus (crate::monitor).
+//!     monitor: Some(MonitorSource { width, height, fps_n, fps_d,
+//!                                   frame_n, frame_d, bitrate_ceiling_kbps }),
+//! });
+//! publisher.set_tier(MonitorTier::Std, true, hardware_grant); // por nível
+//! publisher.set_wanted(on);   // atalho legado: nível `lite`
+//! publisher.service();        // a cada volta do laço; devolve Report quando muda
+//! publisher.report();         // Report { health, encoder, tiers: [TierReport] }
+//! publisher.shutdown();
+//! ```
+//!
+//! * `monitor: None` é uma saída comum (programa, destino extra, QC): um
+//!   pipeline, um encoder, reconexão com espera crescente.
+//! * `monitor: Some(..)` publica até três níveis (`ref`, `std`, `lite`) a
+//!   partir do mesmo `inter`, cada um num caminho próprio do MediaMTX
+//!   ([`crate::monitor::tier_url`]: `canal/mon-ref`, `canal/mon-std`,
+//!   `canal/mon`). O perfil de cada nível sai de
+//!   [`crate::monitor::tier_profile`] e do orçamento de CPU
+//!   ([`crate::monitor::resolve_profile`]). `width`/`height`/`fps` da spec
+//!   são o que chega pelo `inter`; `bitrate_kbps` é ignorado (o teto vem de
+//!   `bitrate_ceiling_kbps`).
+//! * `prefer_software: true` é a classe monitor: placa só com concessão do
+//!   servidor (`hardware_grant`), que conta as sessões de todos os canais e
+//!   reserva primeiro as do programa. Se a placa falhar no meio, o ramo
+//!   volta em x264 sozinho, sem derrubar os outros níveis. Se o programa
+//!   precisar da placa, [`crate::monitor::revoke_monitor_hardware`] toma as
+//!   sessões dos monitores de volta.
+//! * Comandos do servidor: `{"cmd":"monitor","bus":"pvw","on":true,
+//!   "tier":"ref","hardware":false}` (sem `tier` = `lite`, o legado) e
+//!   `{"cmd":"monitorClock","on":true}` (relógio de teste gravado na imagem).
 
 use anyhow::{anyhow, Context, Result};
 use gstreamer as gst;
@@ -115,6 +159,32 @@ pub struct Report {
     pub generation: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Codificador de vídeo em uso (`nvh264enc`, `x264enc`...), quando há um.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    /// Níveis de um monitor, só os pedidos ou ainda abertos.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tiers: Vec<TierReport>,
+}
+
+/// Situação de um nível de monitor.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierReport {
+    pub tier: crate::monitor::MonitorTier,
+    pub health: Health,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    pub hardware: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<crate::monitor::TierProfile>,
+    pub delivered: u64,
+    pub uptime_ms: u64,
+    /// Por que o nível saiu mais barato que o pedido (CPU, placa devolvida).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Para onde a saída empurra, e em que container.
@@ -203,11 +273,18 @@ pub struct PublisherSpec {
     /// resposta traz `m=audio ... opus/48000/2 sendonly`, medido. Só vale em
     /// MPEG-TS: o FLV do RTMP não carrega Opus.
     pub opus: bool,
+    /// Monitor com níveis de qualidade (veja [`crate::monitor`]). `None` é
+    /// uma saída comum.
+    pub monitor: Option<crate::monitor::MonitorSource>,
 }
 
 static NEXT_PUBLISHER_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub struct Publisher {
+    /// Presente quando a spec é de monitor com níveis: aí é ele quem publica.
+    tiered: Option<crate::monitor::MonitorBus>,
+    /// Codificador que a última abertura usou.
+    encoder: Option<String>,
     spec: PublisherSpec,
     pipeline: Option<gst::Pipeline>,
     bus: Option<gst::Bus>,
@@ -226,7 +303,10 @@ impl Publisher {
 
 impl Publisher {
     pub fn new(spec: PublisherSpec) -> Self {
+        let tiered = spec.monitor.map(|source| crate::monitor::MonitorBus::new(Self::bus_spec(&spec, source)));
         Self {
+            tiered,
+            encoder: None,
             pipeline: None,
             bus: None,
             delivered: Arc::new(AtomicU64::new(0)),
@@ -236,6 +316,34 @@ impl Publisher {
             retry_at: if spec.on_demand { None } else { Some(Instant::now()) },
             error: None,
             spec,
+        }
+    }
+
+    fn bus_spec(spec: &PublisherSpec, source: crate::monitor::MonitorSource) -> crate::monitor::MonitorBusSpec {
+        crate::monitor::MonitorBusSpec {
+            video_channel: spec.video_channel.clone(),
+            audio_channel: spec.audio_channel.clone(),
+            url: spec.url.clone(),
+            source,
+            opus: spec.opus,
+        }
+    }
+
+    /// É um monitor com níveis?
+    pub fn is_tiered(&self) -> bool {
+        self.tiered.is_some()
+    }
+
+    /// Liga ou desliga um nível de monitor. `hardware` é a concessão de
+    /// sessão de placa feita pelo servidor. Devolve `false` se esta saída não
+    /// tem níveis.
+    pub fn set_tier(&mut self, tier: crate::monitor::MonitorTier, on: bool, hardware: bool) -> bool {
+        match self.tiered.as_mut() {
+            Some(bus) => {
+                bus.set_tier(tier, on, hardware);
+                true
+            }
+            None => false,
         }
     }
 
@@ -268,6 +376,20 @@ impl Publisher {
     ) -> Result<()> {
         let old = self.spec.clone();
         let monitor = old.role == "mon";
+        if let (Some(bus), Some(_)) = (self.tiered.as_mut(), old.monitor) {
+            // Monitor: muda endereço e teto, mantém os níveis pedidos. A
+            // geometria que chega pelo inter é a do canal e não muda aqui.
+            let mut source = old.monitor.expect("monitor");
+            if let Some(kbps) = spec.bitrate_kbps { source.bitrate_ceiling_kbps = kbps; }
+            if let (Some(w), Some(h)) = (spec.width, spec.height) {
+                source.width = w.min(channel.width);
+                source.height = h.min(channel.height);
+            }
+            self.spec.url = spec.target.clone();
+            self.spec.monitor = Some(source);
+            bus.replace(Self::bus_spec(&self.spec, source));
+            return Ok(());
+        }
         self.shutdown();
         self.spec = PublisherSpec {
             output_id: old.output_id,
@@ -293,6 +415,7 @@ impl Publisher {
             // Opus é exclusivo do monitor WHEP. Um SRT externo usa AAC para
             // manter compatibilidade com receptores broadcast e relays.
             opus: spec.kind == Kind::Srt && monitor,
+            monitor: None,
         };
         self.health = Health::Retrying;
         self.attempts = 0;
@@ -307,6 +430,11 @@ impl Publisher {
     /// puxam do `intervideosrc` --, então parar um não interrompe o programa.
     /// É isso que permite o monitor existir só enquanto alguém olha.
     pub fn set_wanted(&mut self, on: bool) {
+        if let Some(bus) = self.tiered.as_mut() {
+            // Legado (HA, clientes antigos): o caminho histórico é o leve.
+            bus.set_tier(crate::monitor::MonitorTier::Lite, on, false);
+            return;
+        }
         if !self.spec.on_demand {
             return;
         }
@@ -327,7 +455,22 @@ impl Publisher {
     }
 
     pub fn report(&self) -> Report {
+        if let Some(bus) = self.tiered.as_ref() {
+            return Report {
+                output_id: self.spec.output_id.clone(),
+                url: self.spec.url.clone(),
+                health: bus.health(),
+                attempts: 0,
+                delivered: bus.delivered(),
+                generation: self.generation,
+                error: bus.error(),
+                encoder: None,
+                tiers: bus.tier_reports(),
+            };
+        }
         Report {
+            encoder: self.encoder.clone(),
+            tiers: Vec::new(),
             output_id: self.spec.output_id.clone(),
             url: self.spec.url.clone(),
             health: self.health,
@@ -341,6 +484,9 @@ impl Publisher {
     /// Roda o que houver para rodar e devolve relatório quando algo mudou de
     /// verdade. Chamada a cada volta do laço principal, nunca bloqueia.
     pub fn service(&mut self) -> Option<Report> {
+        if let Some(bus) = self.tiered.as_mut() {
+            return bus.service().then(|| self.report());
+        }
         let before = self.health;
 
         if let Some(bus) = self.bus.clone() {
@@ -397,8 +543,17 @@ impl Publisher {
     fn fall(&mut self, reason: String) {
         // Placa que recusou sessão não melhora tentando de novo: o processo
         // inteiro passa a software, e a próxima tentativa já sobe assim.
+        let mut retry_now = false;
         if e_do_hardware(&reason) {
-            desistir_do_hardware(&reason);
+            // Prioridade absoluta do programa: se monitores deste processo
+            // estão com sessões de placa, elas voltam para cá e a próxima
+            // tentativa já é na placa. Só sem nada a tomar de volta é que o
+            // processo desiste dela.
+            if !self.spec.prefer_software && crate::monitor::revoke_monitor_hardware() {
+                retry_now = true;
+            } else {
+                desistir_do_hardware(&reason);
+            }
         }
         self.close();
         self.health = Health::Retrying;
@@ -408,7 +563,7 @@ impl Publisher {
             self.retry_at = None;
             return;
         }
-        let wait = Duration::from_secs(1 << self.attempts.min(4)).min(RETRY_CAP);
+        let wait = if retry_now { Duration::from_millis(250) } else { Duration::from_secs(1 << self.attempts.min(4)).min(RETRY_CAP) };
         self.retry_at = Some(Instant::now() + wait);
     }
 
@@ -422,6 +577,10 @@ impl Publisher {
     }
 
     pub fn shutdown(&mut self) {
+        if let Some(bus) = self.tiered.as_mut() {
+            bus.shutdown();
+            return;
+        }
         self.retry_at = None;
 
         // Arquivo precisa de EOS antes do NULL: ir direto para NULL deixa o
@@ -459,6 +618,9 @@ impl Publisher {
         // programa saindo em tempos diferentes.
         pipeline.set_latency(LATENCIA_DA_SAIDA);
 
+        self.encoder = pipeline.iterate_elements().into_iter().flatten()
+            .filter_map(|element| element.factory().map(|f| f.name().to_string()))
+            .find(|name| name.ends_with("h264enc"));
         pipeline
             .set_state(gst::State::Playing)
             .context("a saída não entrou em execução")?;
@@ -842,6 +1004,94 @@ fn video_encoder(bitrate_kbps: u32, key_int_max: u32, prefer_software: bool) -> 
     ))
 }
 
+/// Ainda vale tentar placa neste processo?
+pub fn hardware_available() -> bool {
+    HARDWARE_DISPONIVEL.load(Ordering::Relaxed)
+}
+
+/// Formato cru que o encoder quer (I420 no software, NV12 nas placas).
+pub fn encoder_format(encoder: &gst::Element) -> String {
+    formato_do_encoder(encoder)
+}
+
+/// Primeira linha de um erro, curta o bastante para a tela técnica.
+pub fn short_error(text: &str) -> String {
+    let line = text.lines().next().unwrap_or(text);
+    line.chars().take(240).collect()
+}
+
+/// Ajusta uma propriedade de enumeração só se ela existir e aceitar o valor.
+fn set_enum_if_exists(element: &gst::Element, name: &str, value: &str) {
+    let Some(spec) = element.find_property(name) else { return };
+    let Some(enum_spec) = spec.downcast_ref::<gst::glib::ParamSpecEnum>() else { return };
+    if enum_spec.enum_class().value_by_nick(value).is_some() {
+        element.set_property_from_str(name, value);
+    }
+}
+
+/// Codificador de um nível de monitor, com os parâmetros de menor latência e
+/// menor custo de cada um: sem B-frames, GOP de 1 s, sem lookahead,
+/// qualidade constante com teto de bitrate. Devolve o elemento e o nome.
+///
+/// `hardware` vem da concessão do servidor. Sem ela, x264 veryfast/
+/// zerolatency. `RPLAYOUT_MONITOR_ENCODER` força um (teste e diagnóstico).
+pub fn monitor_encoder(profile: &crate::monitor::TierProfile, hardware: bool) -> Result<(gst::Element, String)> {
+    let forced = std::env::var("RPLAYOUT_MONITOR_ENCODER").ok();
+    let candidates: Vec<&str> = match forced.as_deref() {
+        Some(name) => vec![name, "x264enc"],
+        None if hardware && hardware_available() => ENCODERS.to_vec(),
+        None => vec!["x264enc"],
+    };
+    let kbps = profile.bitrate_kbps;
+    let gop = profile.gop();
+    for name in candidates {
+        let Ok(encoder) = make(name) else { continue };
+        if formato_do_encoder_bruto(&encoder).is_empty() {
+            continue;
+        }
+        match name {
+            "x264enc" => {
+                // Qualidade constante com teto: o `bitrate` vira o máximo do VBV.
+                encoder.set_property_from_str("pass", "qual");
+                encoder.set_property("quantizer", profile.quality);
+                encoder.set_property("bitrate", kbps);
+                encoder.set_property("vbv-buf-capacity", 500u32);
+                encoder.set_property_from_str("tune", "zerolatency");
+                encoder.set_property_from_str("speed-preset", "veryfast");
+                encoder.set_property("key-int-max", gop);
+                encoder.set_property("bframes", 0u32);
+            }
+            "nvh264enc" => {
+                set_enum_if_exists(&encoder, "preset", "low-latency-hq");
+                set_enum_if_exists(&encoder, "rc-mode", "vbr");
+                set_if_exists(&encoder, "bitrate", kbps);
+                set_if_exists(&encoder, "max-bitrate", kbps);
+                set_if_exists(&encoder, "gop-size", gop as i32);
+                set_if_exists(&encoder, "bframes", 0u32);
+                set_if_exists(&encoder, "rc-lookahead", 0u32);
+                set_if_exists(&encoder, "zerolatency", true);
+                set_if_exists(&encoder, "const-quality", profile.quality as f64);
+            }
+            "qsvh264enc" => {
+                set_enum_if_exists(&encoder, "rate-control", "vbr");
+                set_if_exists(&encoder, "bitrate", kbps);
+                set_if_exists(&encoder, "max-bitrate", kbps);
+                set_if_exists(&encoder, "gop-size", gop);
+                set_if_exists(&encoder, "b-frames", 0u32);
+                set_if_exists(&encoder, "low-latency", true);
+            }
+            _ => {
+                set_if_exists(&encoder, "bitrate", kbps);
+                set_if_exists(&encoder, "gop-size", gop as i32);
+                set_if_exists(&encoder, "bframes", 0u32);
+                set_if_exists(&encoder, "low-latency", true);
+            }
+        }
+        return Ok((encoder, name.to_string()));
+    }
+    Err(anyhow!("nenhum codificador de H.264 disponível para o monitor"))
+}
+
 /// Os formatos crus deste codificador, ou vazio quando ele não anuncia nenhum.
 fn formato_do_encoder_bruto(encoder: &gst::Element) -> Vec<String> {
     let Some(pad) = encoder.static_pad("sink") else {
@@ -966,7 +1216,7 @@ fn anunciar_encoder(nome: &str) {
 /// Os codificadores de hardware mudam de nome de propriedade entre versões, e
 /// um `set_property` em propriedade que não existe derruba o processo -- num
 /// playout, derrubar por causa de um ajuste opcional é o pior negócio possível.
-fn set_if_exists<V>(element: &gst::Element, name: &str, value: V)
+pub(crate) fn set_if_exists<V>(element: &gst::Element, name: &str, value: V)
 where
     V: Into<gst::glib::Value>,
 {
@@ -1151,7 +1401,7 @@ mod ndi_integration_tests {
             url: format!("ndi:{name}"), video_channel, audio_channel,
             width: 320, height: 180, fps_n: 25, fps_d: 1, bitrate_kbps: 450,
             interlaced: false, top_field_first: true, prefer_software: true,
-            role: "test".into(), on_demand: false, opus: false,
+            role: "test".into(), on_demand: false, opus: false, monitor: None,
         });
         // Production publisher builder, not a fixture-only sender graph.
         let output = Running(publisher.build().unwrap());
@@ -1477,6 +1727,7 @@ mod testes_monitor {
             role: "mon".to_string(),
             on_demand,
             opus: false,
+            monitor: None,
         }
     }
 
