@@ -46,13 +46,21 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
     const sequence=++loadSequence.current
     setIsLoading(true)
     try {
-      const [outs, dist, savedPresets] = await Promise.all([
-        api.outputs(channel.id),
-        api.distribution(),
-        api.transmissionPresets(channel.id),
-      ])
-      if(!mounted.current || sequence!==loadSequence.current)return
-      if(outs.configurationRevision!==savedPresets.configurationRevision)throw new Error('A configuração mudou durante a consulta de saídas/presets. Atualize a lista; o rascunho foi preservado.')
+      // Logo depois de CRIAR SAÍDA o reinício controlado ainda avança a revisão
+      // entre as duas leituras; antes isso virava erro e a lista ficava em
+      // "(0)" (M7). Relê algumas vezes até as duas leituras baterem.
+      let outs!: Awaited<ReturnType<typeof api.outputs>>, dist!: Awaited<ReturnType<typeof api.distribution>>, savedPresets!: Awaited<ReturnType<typeof api.transmissionPresets>>
+      for (let attempt = 0; ; attempt++) {
+        ;[outs, dist, savedPresets] = await Promise.all([
+          api.outputs(channel.id),
+          api.distribution(),
+          api.transmissionPresets(channel.id),
+        ])
+        if(!mounted.current || sequence!==loadSequence.current)return
+        if(outs.configurationRevision===savedPresets.configurationRevision)break
+        if(attempt>=4)throw new Error('A configuração mudou durante a consulta de saídas/presets. Atualize a lista; o rascunho foi preservado.')
+        await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)))
+      }
       const captured=captureConfigurationRevision(channel.id,draftRevisionRef.current,savedPresets.configurationRevision,reopenDraft)
       setOutputs(outs.outputs || [])
       setOutputRevision(outs.configurationRevision);setOperation(outs.configurationOperation)
@@ -209,7 +217,9 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
     setIsSaving(true)
     try {
       await api.restartChannel(channel.id)
-      onMessage(`Canal ${channel.name} reiniciado. Pipeline de saídas atualizado.`)
+      // Reinício não é prova de entrega: a mensagem não promete o que o engine
+      // ainda não confirmou (a gravação local falhava e a tela dizia "atualizado").
+      onMessage(`Canal ${channel.name} reiniciado. Confira o estado de cada saída abaixo; gravação local continua num novo arquivo (o anterior é preservado).`)
       await loadData()
       onChanged()
     } catch (err) {

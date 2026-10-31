@@ -41,6 +41,14 @@ describe('montagem aplica somente a proposta persistida que foi conferida',()=>{
     expect(rows()).toEqual(before);expect(revision()).toBe(version);expect(app.history.state('future').canUndo).toBe(false)
     expect(app.runtimes.get('ch')!.transport.state()).toMatchObject({onAir:{itemId:transport.onAir?.itemId,startedAt:transport.onAir?.startedAt},preview:transport.preview})
   })
+  it('"Por Intervalo" avisa antes de aplicar o que será cortado na grade existente (A7)',async()=>{
+    // O ao vivo (00:00:00–00:01:40) atravessa 00:01:00, onde entra o 1º item com hora fixa.
+    const review=await preview(false,{insertAtMinute:1})
+    expect(review.plan.items[0].anchor).toMatchObject({kind:'FIXED',at:1500})
+    expect(review.impact).toEqual([expect.objectContaining({itemId:'live-future',title:'Estúdio',kind:'TRIMMED',beforeFrames:2500,afterFrames:1500})])
+    // Sem interseção com o conteúdo existente, nada é cortado.
+    expect((await preview(false)).impact).toEqual([])
+  })
   it.each([false,true])('não aplica às cegas ou sem proposta; dia=%s',async day=>{
     const before=rows(),beforeAudits=audits()
     expect((await server.inject({method:'POST',url:endpoint(day),payload:day?{}:{minutes:2}})).statusCode).toBe(428)

@@ -81,6 +81,20 @@ function GraphicsPanelContent({
     finally{if(alive.current&&attempt===generation.current){lock.current=false;setBusy(false)}}
   }
 
+  // Arte gravada no cadastro já entra na lista e no seletor (M8): antes era
+  // preciso "Reabrir conferência" para vê-la. Só relê a conferência; não toca
+  // no editor aberto nem nas escolhas locais de campos.
+  const refreshAfterEdit=async()=>{
+    setBlocked(true)
+    try{
+      const result=await api.graphicsReview(channelId);graphicsHeaders(result,channelId)
+      if(!alive.current)return
+      setReview(result);setSlate(current=>review&&current!==review.slateTemplateId?current:result.slateTemplateId)
+      setChosen(current=>result.templates.some(row=>row.id===current)?current:result.templates[0]?.id??'')
+      setBlocked(result.channelArchived);setError(result.channelArchived?'Canal arquivado: somente consulta.':'')
+    }catch(failure){if(alive.current)setError((failure instanceof Error?failure.message:'Lista de artes não atualizada.')+' Clique em "Reabrir conferência das artes".')}
+  }
+
   useEffect(() => {
     alive.current=true;setCommands(null);setCanReview(false);setReviewNote('');setCommandError('');void load()
     return () => {alive.current=false;generation.current++;commandGeneration.current++;lock.current=false;commandPending.current=false;reads.current.cancel();commandReads.current.cancel()}
@@ -144,7 +158,7 @@ function GraphicsPanelContent({
           </section>}
           <button className="btn" disabled={occupied} onClick={()=>{if(dirty||editorDirty||reviewNote.trim())setIntent({kind:'REOPEN'});else void load()}}>Reabrir conferência das artes</button>
           <button className="btn" disabled={occupied} onClick={()=>{setEditorOpened(true);setShowEditor(value=>!value)}}>{showEditor?'Ocultar cadastro':'Gerenciar artes'}</button>
-          {editorOpened&&<div hidden={!showEditor}><GraphicTemplatesEditor key={channelId} channelId={channelId} disabled={busy} onMutation={()=>{setBlocked(true);setError('Cadastro alterado. Reabra explicitamente antes de usar a lista ou configurar a apresentação técnica.')}} onMessage={onMessage} onDirtyChange={setEditorDirty} onBusyChange={value=>{editorLock.current=value;setEditorBusy(value)}}/></div>}
+          {editorOpened&&<div hidden={!showEditor}><GraphicTemplatesEditor key={channelId} channelId={channelId} disabled={busy} onMutation={()=>{void refreshAfterEdit()}} onMessage={onMessage} onDirtyChange={setEditorDirty} onBusyChange={value=>{editorLock.current=value;setEditorBusy(value)}}/></div>}
           {error&&<div className="note warn" role="alert">{error}</div>}
           {templates === null && <div className="note">Artes ainda não conferidas; falha de consulta não significa lista vazia.</div>}
           {templates?.length === 0 && (

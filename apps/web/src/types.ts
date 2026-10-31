@@ -52,6 +52,8 @@ export interface Live {
   /** Native live source replacement; null on the simulator or an engine without it. */
   /** QC 'em qualidade' is using the shared PVW. A CUE in the Master ends it. */
   qcInspection?: { source: string; viewers: number } | null
+  /** false: o canal não tem barramento de preview (sem servidor de mídia); só TAKE direto. */
+  previewBus?: boolean
   liveReplacement?: { supported: boolean; selectionUncertain: boolean; pgmSourceId: string | null; openTransactionId: string | null } | null
   transport: {
     mode?: 'NATIVE' | 'SIMULATED'
@@ -339,7 +341,9 @@ export interface FillPlan {
 export interface FillProposal {
   id:string;rundownId:string;channelId:string;editorialRevision:number;expiresAt:string;kind:'WINDOW'|'DAY'
 }
-export type FillResponse=Partial<Snapshot>&{plan:FillPlan;proposal:FillProposal;bands?:{rule:string;items:number;leftover:number}[]}
+/** Itens já na grade que a proposta cortaria ou descartaria se aplicada (A7). */
+export interface FillImpact {itemId:string;title:string;kind:'TRIMMED'|'DROPPED';beforeFrames:number;afterFrames:number;reason:string}
+export type FillResponse=Partial<Snapshot>&{plan:FillPlan;proposal:FillProposal;bands?:{rule:string;items:number;leftover:number}[];impact?:FillImpact[]}
 
 /** Uma faixa da pauta: o que entra em cada hora do dia. */
 export interface ScheduleRule {

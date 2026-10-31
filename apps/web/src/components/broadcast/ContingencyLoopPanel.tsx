@@ -4,7 +4,7 @@ import { api } from '../../api.js'
 import type { PgmProbeAutoAction } from '@rplayout/protocol'
 
 type Status = Awaited<ReturnType<typeof api.pgmProbeStatus>>
-export function ContingencyLoopPanel({ channelId, status, onChanged, defaultOpen = false }: { channelId: string; status: Status; onChanged: () => Promise<void>; defaultOpen?: boolean }) {
+export function ContingencyLoopPanel({ channelId, status, onChanged, defaultOpen = false, slateConfigured }: { channelId: string; status: Status; onChanged: () => Promise<void>; defaultOpen?: boolean; slateConfigured?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
   const [configuration, setConfiguration] = useState<Awaited<ReturnType<typeof api.contingencyLoop>> | null>(null)
   const [revisionId, setRevisionId] = useState('')
@@ -58,9 +58,10 @@ export function ContingencyLoopPanel({ channelId, status, onChanged, defaultOpen
       </div>
       <label className="block space-y-1">Ação automática da sonda
         <select aria-label="Ação automática da sonda PGM" className="block w-full rounded border border-border-subtle bg-surface-card p-2" value={status.thresholds.defaultAutoAction} disabled={pending || status.automaticActionsEnabled} onChange={event => void policy(event.target.value as PgmProbeAutoAction)}>
-          <option value="SLATE_INJECTED">Slate opaco configurado</option><option value="CONTINGENCY_LOOP">Playlist de contingência verificada</option><option value="FAILOVER_HOST_B" disabled>Outro host — configuração/homologação pendente</option>
+          <option value="SLATE_INJECTED">{slateConfigured === false ? 'Slate opaco — FALTA ESCOLHER A ARTE' : slateConfigured ? 'Slate opaco (arte de apresentação técnica)' : 'Slate opaco (arte de apresentação técnica)'}</option><option value="CONTINGENCY_LOOP">Playlist de contingência verificada</option><option value="FAILOVER_HOST_B" disabled>Outro host — configuração/homologação pendente</option>
         </select>
       </label>
+      {slateConfigured === false && status.thresholds.defaultAutoAction === 'SLATE_INJECTED' && <p role="alert" className="text-armed-amber">Sem arte de apresentação técnica: o slate (manual ou automático) será recusado. <button type="button" className="underline font-bold" onClick={() => window.dispatchEvent(new CustomEvent('rplayout:open-graphics'))}>Escolher a arte em Grafismo &amp; Artes</button></p>}
       {status.automaticActionsEnabled && <p className="text-armed-amber">Desligue AUTO antes de mudar a configuração ou retornar ao VT.</p>}
       {configuration && !configuration.nativeEngine && <p className="text-armed-amber">Canal simulado: configuração editorial disponível, sem acionamento real de PGM.</p>}
       {active && <p>Retorno preservado: {status.contingency?.itemId ? `${status.contingency.itemId} · último cursor reportado: ${status.contingency.elapsed} frames` : 'Sem item anterior; saída exige CUE/TAKE explícito.'}</p>}

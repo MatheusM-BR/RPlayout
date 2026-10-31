@@ -33,6 +33,9 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
   const [status, setStatus] = useState<ProbeStatus | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  // Recusa do slate fica na tela até o operador fechar ou acionar de novo: a
+  // leitura periódica da sonda limpava `failure` em 2 s e o 409 sumia.
+  const [slateError, setSlateError] = useState<string | null>(null)
   const canAcknowledge = useCan('CHANNEL_STOP')
   const canPolicy = useCan('OUTPUT_CONTROL')
   const currentChannel = useRef(channelId)
@@ -59,13 +62,14 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
 
   const toggleSlate = async () => {
     setPending(true)
+    setSlateError(null)
     try {
       const result = await api.setPgmEmergencySlate(channelId, status?.emergencySlateActive ? 'RESET' : 'TRIGGER')
       if (currentChannel.current !== channelId) return
       onSlateTriggered?.(result.emergencySlateActive)
       await refresh()
     } catch (error) {
-      if (currentChannel.current === channelId) setFailure(error instanceof Error ? error.message : 'Não foi possível alterar o slate de emergência.')
+      if (currentChannel.current === channelId) setSlateError(error instanceof Error ? error.message : 'Não foi possível alterar o slate de emergência.')
     } finally {
       if (currentChannel.current === channelId) setPending(false)
     }
@@ -167,13 +171,30 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
           {status.automaticActionsEnabled ? 'AUTO: LIGADA' : 'AUTO: DESLIGADA'}
         </button>}
       </div>
+      {slateError && <SlateRefusal message={slateError} onClose={() => setSlateError(null)} />}
       {showContingency && status && <ContingencyLoopPanel channelId={channelId} status={status} onChanged={refresh} />}
     </section>
   )
 }
 
+/** Pede ao App para abrir Grafismo & Artes (onde se escolhe a apresentação técnica). */
+export function openGraphicsSettings(): void { window.dispatchEvent(new CustomEvent('rplayout:open-graphics')) }
+
+/** Motivo da recusa do slate, com o caminho para resolver (A5). */
+function SlateRefusal({ message, onClose }: { message: string; onClose: () => void }) {
+  const missingArt = /arte|apresenta/i.test(message)
+  return (
+    <div role="alert" className="w-full border border-armed-amber bg-armed-amber/15 px-3 py-1.5 rounded-lg flex items-center gap-3 text-[12px]">
+      <span className="font-label-caps font-bold text-armed-amber shrink-0">SLATE NÃO ACIONADO</span>
+      <span className="min-w-0 flex-1 text-on-surface">{message}</span>
+      {missingArt && <button type="button" onClick={openGraphicsSettings} className="shrink-0 px-2.5 py-1 rounded border border-armed-amber text-armed-amber font-label-caps text-[11px] font-bold">CONFIGURAR ARTE</button>}
+      <button type="button" onClick={onClose} aria-label="Fechar aviso do slate" className="shrink-0 px-2 py-1 rounded border border-border-subtle text-outline">✕</button>
+    </div>
+  )
+}
+
 /** Contingência e retorno como ferramenta do Master (fora da faixa do ar). */
-export function ContingencyTool({ channelId }: { channelId: string }) {
+export function ContingencyTool({ channelId, slateConfigured }: { channelId: string; slateConfigured?: boolean }) {
   const [status, setStatus] = useState<ProbeStatus | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const refresh = useCallback(async () => {
@@ -188,5 +209,5 @@ export function ContingencyTool({ channelId }: { channelId: string }) {
   }, [refresh])
   if (failure) return <p role="alert" className="text-[12px] text-armed-amber">{failure}</p>
   if (!status) return <p className="text-[12px] text-outline">Consultando…</p>
-  return <ContingencyLoopPanel channelId={channelId} status={status} onChanged={refresh} defaultOpen />
+  return <ContingencyLoopPanel channelId={channelId} status={status} onChanged={refresh} slateConfigured={slateConfigured} defaultOpen />
 }
