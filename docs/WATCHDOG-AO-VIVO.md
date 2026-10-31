@@ -91,6 +91,7 @@ Com os padrões, um fade-to-black de 3 a 5 s nunca chega à contingência, porqu
   - No RETORNO, qualquer recaída zera a contagem de T2.
   - Voltar de RETORNO para ESPERA mantém o início da ESPERA. Uma entrada que fica caindo e voltando chega à contingência em vez de ficar alternando arte e live.
   - Tudo é zerado quando o estado volta a OK.
+  - Em T1, a contingência só entra se uma condição de ação estiver ativa naquele instante. Se o sinal já voltou e as condições só cumprem a histerese, a ESPERA continua até ela terminar (no máximo `clearHoldMs`) e segue para RETORNO. Se a condição reaparecer nesse meio-tempo, a contingência entra na hora. Antes disso, um encoder reiniciado em 0,5 s voltava com imagem antes de T1 e mesmo assim tirava a live do ar.
 - **Só alerta:** as detecções de ação viram alerta, e o estado nunca passa de SUSPEITA. O PVW é sempre só alerta.
 - **Sem playlist de contingência:** o estado vira CONTINGÊNCIA "sem conteúdo", a arte de espera continua e um incidente crítico é aberto.
 - **Ação recusada** (TAKE ou contingência sem confirmação): fica registrada, e a máquina tenta de novo em 10 s, sem avalanche.

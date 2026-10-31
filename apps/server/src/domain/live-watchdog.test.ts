@@ -144,6 +144,21 @@ describe('máquina de estados do watchdog', () => {
     const transitions = machine.drainEvents().filter(event => event.kind === 'TRANSITION')
     expect(transitions.length).toBeLessThanOrEqual(4)
   })
+  it('sinal que volta antes de T1 não vai à contingência só porque a histerese ainda corre; se cair de novo, entra na hora', () => {
+    // Encoder reiniciado: perda de ~5 s (ESPERA às 2 s, T1 às 7 s), quadros de volta às 6,5 s.
+    const back = new WatchdogMachine('srt://x', T0), effects: Array<{ at: number; effect: WatchdogEffect }> = [], p = policy()
+    simulate(back, T0, T0 + 20_000, at => at >= T0 + 1000 && at < T0 + 6500 ? lost(at, T0 + 1000) : healthy(at), p, effects)
+    expect(effects.map(row => row.effect)).toEqual(['SHOW_WAIT', 'HIDE_WAIT'])
+    expect(back.drainEvents().filter(event => event.kind === 'TRANSITION').map(event => event.to)).toEqual(['SUSPEITA', 'ESPERA', 'RETORNO', 'OK'])
+    // Mesma queda, mas o sinal some de novo às 7,25 s (depois de T1): contingência no mesmo passo.
+    const again = new WatchdogMachine('srt://x', T0), relapse: Array<{ at: number; effect: WatchdogEffect }> = []
+    simulate(again, T0, T0 + 9000, at => (at >= T0 + 1000 && at < T0 + 6500) ? lost(at, T0 + 1000) : at >= T0 + 7250 ? lost(at, at - 1000) : healthy(at), p, relapse)
+    expect(relapse.find(row => row.effect === 'ENTER_CONTINGENCY')?.at).toBe(7250)
+    // Sinal que nunca volta: contingência exatamente em T1, como antes.
+    const gone = new WatchdogMachine('srt://x', T0), never: Array<{ at: number; effect: WatchdogEffect }> = []
+    simulate(gone, T0, T0 + 9000, at => at >= T0 + 1000 ? lost(at, T0 + 1000) : healthy(at), p, never)
+    expect(never.find(row => row.effect === 'ENTER_CONTINGENCY')?.at).toBe(7250)
+  })
   it('retorno manual espera o operador; "manter contingência" bloqueia o retorno automático', () => {
     for (const variant of ['MANUAL', 'HOLD'] as const) {
       const machine = new WatchdogMachine('srt://x', T0), effects: Array<{ at: number; effect: WatchdogEffect }> = [], p = policy({ returnMode: variant === 'MANUAL' ? 'MANUAL' : 'AUTO' })

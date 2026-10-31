@@ -259,7 +259,14 @@ export class WatchdogMachine {
       case 'ESPERA':
         if (!automatic) { this.leaveIntervention(now, effects, 'modo automático desligado'); break }
         if (failing.length) {
-          if (now - (this.waitSince ?? now) >= policy.waitMs) {
+          // "Ainda falhando após T1" é uma condição de ação ativa agora. Se o
+          // sinal já voltou e as condições só cumprem a histerese, a
+          // contingência espera por ela (no máximo clearHoldMs): no reteste,
+          // um encoder reiniciado em 0,5 s voltou com 24 quadros/s antes de T1
+          // e mesmo assim tirou a live do ar por 15 s. Se a condição reaparece,
+          // a contingência entra no mesmo passo.
+          const active = failing.some(name => this.conditions.get(name)?.lastTrue === now)
+          if (active && now - (this.waitSince ?? now) >= policy.waitMs) {
             this.go('CONTINGENCIA', now, `${this.describe(failing)} além de ${(policy.waitMs / 1000).toFixed(0)} s`)
             this.enterContingency(now, policy, effects)
           } else if (policy.waitArt.kind !== 'HOLD_LAST_FRAME' && !this.waitArtOnAir && now >= this.retryAt) effects.push('SHOW_WAIT')
