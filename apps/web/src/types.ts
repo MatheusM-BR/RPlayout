@@ -91,6 +91,8 @@ export interface Live {
   alerts: { kind: 'OUTPUT' | 'ENGINE'; message: string }[]
   now: Frames
   meters: { program: MeterReading; preview: MeterReading }
+  /** Multiview composto: composição em uso e estado das células (engine). */
+  multiview?: { composition: import('@rplayout/protocol').MultiviewComposition | null; state: import('@rplayout/protocol').MultiviewEngineState | null } | null
 }
 
 /** Perfil de uma saída do canal. */

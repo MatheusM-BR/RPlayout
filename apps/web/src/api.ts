@@ -269,6 +269,23 @@ export interface LiveReplacementView {
 }
 const liveReplacementPath=(channelId:string,suffix='')=>`/api/channels/${encodeURIComponent(channelId)}/live-replacement${suffix}`
 export type LiveWatchdogView = import('@rplayout/protocol').LiveWatchdogStatus & { revision: number; updatedAt: string | null; updatedBy: string | null }
+export interface MultiviewCompositeView {
+  saved:{layout:MultiviewCompositeLayout;quality:MultiviewQuality;cells:MultiviewCellSource[]|null;revision:number;savedAt:string|null;savedBy:string|null}
+  eTag:string
+  composition:import('@rplayout/protocol').MultiviewComposition
+  sources:Array<{id:string;name:string;kind:string;role:string;enabled:boolean}>
+  layouts:typeof import('@rplayout/protocol').MULTIVIEW_LAYOUTS
+  qualities:typeof import('@rplayout/protocol').MULTIVIEW_QUALITIES
+  engine:import('@rplayout/protocol').MultiviewEngineState|null
+  whep:{port:number;path:string}|null
+  available:boolean
+  reason:string|null
+  canSave:boolean
+  canChangeQuality:boolean
+}
+type MultiviewCompositeLayout=import('@rplayout/protocol').MultiviewCompositeLayout
+type MultiviewQuality=import('@rplayout/protocol').MultiviewQuality
+type MultiviewCellSource=import('@rplayout/protocol').MultiviewCellSource
 const liveWatchdogPath = (channelId: string, suffix = '') => `/api/channels/${encodeURIComponent(channelId)}/live-watchdog${suffix}`
 export const api = {
   liveWatchdog: (channelId: string, signal?: AbortSignal) => send<LiveWatchdogView>(liveWatchdogPath(channelId), { signal }),
@@ -467,6 +484,9 @@ export const api = {
   liveSources: (channelId: string,signal?:AbortSignal) =>
     send<ManagedLiveSource[]>(`/api/sources/live?channelId=${encodeURIComponent(channelId)}`,{signal}),
   liveSourceReview:(channelId:string)=>send<LiveSourceReview>(`/api/channels/${encodeURIComponent(channelId)}/live-source-review`),
+  multiviewComposite:(channelId:string)=>send<MultiviewCompositeView>(`/api/channels/${encodeURIComponent(channelId)}/multiview/composite`),
+  saveMultiviewComposite:(channelId:string,eTag:string,body:{layout:MultiviewCompositeLayout;quality?:MultiviewQuality;cells?:MultiviewCellSource[]|null})=>
+    send<{saved:MultiviewCompositeView['saved'];eTag:string}>(`/api/channels/${encodeURIComponent(channelId)}/multiview/composite`,{method:'PUT',headers:{'if-match':eTag},body:JSON.stringify(body)}),
   multiviewReview:(channelId:string|null)=>send<MultiviewReview>(`/api/multiview/config${channelId===null?'':`?channelId=${encodeURIComponent(channelId)}`}`),
   saveMultiview:(channelId:string|null,layout:MultiviewLayout,review:MultiviewReview|null,cells?:MultiviewCell[])=>send<MultiviewReview&{applied:true;refreshError?:string}>('/api/multiview/config',{method:'PUT',headers:multiviewHeaders(review,channelId),body:JSON.stringify({...(channelId===null?{}:{channelId}),layout,...(cells===undefined?{}:{cells})})}),
   reviewOperationalInsertion:(channelId:string,input:OperationalInsertionInput)=>post<OperationalInsertionReview>(`/api/channels/${encodeURIComponent(channelId)}/operational-insert/review`,input),
@@ -744,11 +764,11 @@ export const api = {
     review:ScheduleRuleReview|null,
   ) => send<ScheduleRuleReview&{applied:true;refreshError?:string}>(`/api/channels/${encodeURIComponent(channelId)}/rules`,{method:'POST',headers:scheduleRuleHeaders(review,channelId),body:JSON.stringify(body)}),
   /** "Estou com este monitor aberto." O engine só codifica enquanto há aviso. */
-  watching: (channelId: string, bus: 'pvw' | 'mon') =>
+  watching: (channelId: string, bus: 'pvw' | 'mon' | 'mv') =>
     post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, { bus }),
   qcLiveInspection:(channelId:string,viewerId:string,sourceRef:string,watching:boolean)=>
     post<{ok:true;rendition:'qc-encoded';profileFromSource:true;maxWidth:number;maxHeight:number;maxFps:number;maxBitrateKbps:number}>(`/api/channels/${channelId}/qc/inspection`,{viewerId,sourceRef,watching}),
-  setWatching: (channelId: string, bus: 'pvw' | 'mon', watching = true) =>
+  setWatching: (channelId: string, bus: 'pvw' | 'mon' | 'mv', watching = true) =>
     post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, { bus, watching }),
 
   playlists: () =>

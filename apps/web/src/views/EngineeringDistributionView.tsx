@@ -10,6 +10,7 @@ import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { OperationalMultiview } from '../components/broadcast/OperationalMultiview.js'
 import {SharedMultiview} from '../components/broadcast/SharedMultiview.js'
+import {CompositeMultiview} from '../components/broadcast/CompositeMultiview.js'
 import type { MultiviewSourceItem } from '../components/broadcast/OperationalMultiview.js'
 import { SrtManagerPanel, type SrtLinkItem } from '../components/broadcast/SrtManagerPanel.js'
 import { RedundancyFailoverPanel } from '../components/broadcast/RedundancyFailoverPanel.js'
@@ -409,12 +410,15 @@ export function EngineeringDistributionView({
               {/* A visão integrada cabe integralmente no viewport operacional.
                   Detalhes extensos seguem nas abas SRT e Redundância. */}
               {monitorLoaded ? <OutputsSummary sample={hostMetrics} channelId={channel.id} profiles={outputs} /> : <div role="status" className="t-data text-outline animate-pulse motion-reduce:animate-none">Carregando saídas…</div>}
-              <div className="flex-1 min-h-0">
-                <OperationalMultiview
-                  sources={multiviewSources}
-                  loading={!monitorLoaded}
-                  initialLayout="COMPACT_LIST"
+              <div className="flex-1 min-h-[320px] lg:min-h-0">
+                <CompositeMultiview channelId={channel.id} live={live} monitors={monitors}
                   onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
+                  individual={<OperationalMultiview
+                    sources={multiviewSources}
+                    loading={!monitorLoaded}
+                    initialLayout="COMPACT_LIST"
+                    onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
+                  />}
                 />
               </div>
 
@@ -424,12 +428,15 @@ export function EngineeringDistributionView({
 
           {/* SEÇÃO 2: MULTIVIEW COMPLETO (FOCO TOTAL) */}
           {activeSection === 'MULTIVIEW' && (
-            <div className="flex-1 min-h-0">
-              <SharedMultiview key={channel.id}
-                channelId={channel.id}
-                sources={multiviewSources}
-                  loading={!monitorLoaded}
+            <div className="flex-1 min-h-[320px] lg:min-h-0">
+              <CompositeMultiview key={channel.id} channelId={channel.id} live={live} monitors={monitors}
                 onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
+                individual={<SharedMultiview key={channel.id}
+                  channelId={channel.id}
+                  sources={multiviewSources}
+                  loading={!monitorLoaded}
+                  onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
+                />}
               />
             </div>
           )}
