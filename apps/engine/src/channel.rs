@@ -873,6 +873,19 @@ fn srt_listener(source: &str) -> bool {
 /// o PGM ficava preto até o fim do item e o caller que voltava era recusado.
 /// Com ele a porta continua escutando e o mesmo pipeline retoma quando o
 /// caller reconecta; a perda continua sendo vista pela checagem de 2 s.
+///
+/// Contrato para quem vier depois (watchdog de entradas ao vivo):
+/// - a queda NÃO gera mais EOS nem `SourceLost` do engine para SRT listener;
+///   ela aparece como fonte sem quadro recente (servidor marca LOST na
+///   barra PGM e abre a linha "SEM SINAL" no as-run);
+/// - a volta reaproveita o mesmo pipeline: o vídeo pode levar alguns
+///   segundos (medido: até ~40 s após 20 s de queda) para voltar a fluir,
+///   enquanto os timestamps do novo fluxo MPEG-TS se reacomodam (videorate);
+///   um watchdog que precise de retomada imediata deve recriar o item
+///   (LOAD+TAKE) no evento `caller-added` do `srtsrc`, coordenando com o
+///   preroll do próximo item (o TAKE do engine não carrega identidade).
+/// - SRT em modo caller e demais URIs seguem o caminho antigo (EOS →
+///   `LiveRecovery` em main.rs).
 fn keep_srt_listening(decoder: &gst::Element) {
     decoder.connect("source-setup", false, |values| {
         if let Some(source) = values.get(1).and_then(|value| value.get::<gst::Element>().ok()) {

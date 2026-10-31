@@ -1798,7 +1798,7 @@ export class EngineTransport implements Transport {
   }
 
   /** Há barramento de preview (PVW)? Sem servidor de mídia o engine sobe só com PGM. */
-  hasPreviewBus(): boolean { return Boolean(this.options.preview) }
+  hasPreviewBus(): boolean { return Boolean(this.options?.preview) }
 
   /** Grade em loop com lacuna antes de uma HORA FIXA de arquivo: a sequência
    * não leva o item antes da hora (ele entra pelo TAKE da hora fixa); o loop
