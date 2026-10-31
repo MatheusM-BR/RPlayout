@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { confirmAction } from '../domain/confirm.js'
-import { durationIn, qcApproved, DEFAULT_QC_PROFILE, type Channel, type ManagedLiveSource, type Rate } from '@rplayout/protocol'
+import { durationIn, qcApproved, assessQc, DEFAULT_QC_PROFILE, type Channel, type ManagedLiveSource, type Rate } from '@rplayout/protocol'
 import type { LibraryFolder, LibraryAsset, ScanStatus, Live } from '../types.js'
 import type { Monitors as MonitorFeeds } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
@@ -818,6 +818,15 @@ function QualityControlSession({
   const okCount = assets.filter((a) => qcApproved(a.qcStatus) && !a.probeError && !a.ignored).length
   const pendingCount = assets.filter((a) => ['PENDING', 'ANALYSIS'].includes(a.qcStatus) && !a.ignored).length
   const alertCount = assets.filter((a) => (!!a.probeError || a.qcStatus === 'FAILED') && !a.ignored).length
+  // Avisos técnicos (âmbar), separados de erros (vermelho). O assessQc com a
+  // referência do canal (3º parâmetro) devolve loudness/TP fora da faixa,
+  // cadência, raster, varredura etc.; numa versão que ainda não o aceita, o
+  // parâmetro extra é ignorado e contam só os avisos que ela já dá.
+  const warningCount = useMemo(() => {
+    const assess = assessQc as unknown as (asset: LibraryAsset, profile: typeof qcProfile, channel?: Channel) => {warnings?: string[]}
+    return assets.filter(a => !a.ignored && !a.probeError && a.qcStatus !== 'FAILED' && (assess(a, qcProfile, channel).warnings ?? [])
+      .some(warning => !warning.startsWith('Compatibilidade de legado'))).length
+  }, [assets, qcProfile, channel])
   const ignoredCount = assets.filter((a) => a.kind === 'VIDEO' && !!a.ignored).length
   // Sem medição o nivelamento automático do PGM não tem referência. Antes
   // cada linha dizia "LUFS N/D" e nada indicava que bastava medir.
@@ -899,7 +908,9 @@ function QualityControlSession({
                 <span>•</span>
                 <span className="text-primary font-bold">{pendingCount} PENDENTES</span>
                 <span>•</span>
-                <span className="text-armed-amber font-bold">{alertCount} ALERTAS</span>
+                <span className={`font-bold ${alertCount ? 'text-on-air-crimson' : 'text-outline'}`} title="Erros: arquivo não sondado ou reprovado na verificação técnica">{alertCount} ALERTAS</span>
+                <span>•</span>
+                <span className={`font-bold ${warningCount ? 'text-armed-amber' : 'text-outline'}`} title="Avisos técnicos contra o perfil e o canal (loudness/TP fora da faixa, cadência, raster, varredura, canais, áudio mudo); não bloqueiam">{warningCount} AVISOS</span>
                 <span>•</span>
                 <span className="text-outline">{ignoredCount} IGNORADOS</span>
                 </>}
