@@ -55,6 +55,7 @@ $required = @(
   'apps/engine/target/release/rplayout-audio-bus-probe.exe',
   'apps/engine/target/release/rplayout-graphic-probe.exe',
   'apps/engine/target/release/rplayout-devices.exe',
+  'apps/engine/target/release/rplayout-encoders.exe',
   'apps/engine/target/release/rplayout-relay.exe',
   'apps/engine/target/release/rplayout-host-guard.exe',
   'apps/engine/target/release/rplayout-file-security.exe',

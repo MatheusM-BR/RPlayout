@@ -46,6 +46,7 @@ import {
   MEDIAMTX_BINARY,
   MEDIAMTX_BIND,
   DEVICES_BINARY,
+  ENCODERS_BINARY,
   MEDIAMTX_LOGLEVEL,
   PGM_RECORD_DIR,
   PGM_RECORD_HOURS,
@@ -79,7 +80,8 @@ import {resolveLiveProgramBinding} from './domain/live-program-binding.js'
 import {assertPersistedLiveReplacementReceipt,unresolvedNativeReplacementJournals,type NativeLiveReplacementContext} from './domain/native-live-replacement-ledger.js'
 import {createNativeReplacementSession,resolveStoppedPredecessorJournals,type NativeReplacementActor,type NativeReplacementAuthorization,type NativeReplacementRuntimePort,type NativeReplacementSession} from './domain/native-live-replacement-session.js'
 import {assertProgramTrim} from './domain/program-trim.js'
-import {programDurationFrames} from '@rplayout/protocol'
+import {programDurationFrames,type MonitorTier} from '@rplayout/protocol'
+import {EncoderSessions,probeEncoders,programEncodedOutputs,NO_HARDWARE} from './domain/encoder-sessions.js'
 import {ExecutionOwnership,type ExecutionLease} from './domain/execution-ownership.js'
 import {endPreviousPgmObservation} from './domain/pgm-signal-incidents.js'
 import {persistRuntimeSignalIncidents,runtimeObservationKey,runtimeObservationSnapshot,RuntimeIncidentRecorder} from './domain/runtime-signal-incidents.js'
@@ -877,6 +879,7 @@ export class ChannelRuntime {
     try{this.executionLease?.release()}catch(error){this.recoveryError=error instanceof Error?error.message:String(error)}
   }
   close(): void {
+    this.encoderSessions?.releaseChannel(this.channel.id)
     if(!this.cancelPersistenceForClose())return
     this.transport.close();this.releaseClosingLease()
   }
@@ -1523,6 +1526,13 @@ export class ChannelRuntime {
   private readonly monitorReafirmado = new Map<'pvw' | 'mon', number>()
   /** Monitores que alguém tentou abrir e que este canal não tem. */
   private readonly monitorPedidoSemExistir = new Set<'pvw' | 'mon'>()
+  /**
+   * Níveis REF/PADRÃO pedidos, por `bus|nível`. O leve segue pelos mapas
+   * acima, que são o caminho histórico (e o que o HA e os testes antigos usam).
+   */
+  private readonly nivelOlhado = new Map<string, { bus: 'pvw' | 'mon'; tier: MonitorTier; at: number; reafirmado: number; hardware: boolean }>()
+  /** Contador global de sessões de placa, injetado pela aplicação. */
+  encoderSessions: EncoderSessions | null = null
 
   /**
    * Há decodificador de AAC nesta instalação? Nulo enquanto não se sabe.
@@ -1537,8 +1547,17 @@ export class ChannelRuntime {
     return this.monitores.has(bus)
   }
 
-  /** A interface diz que alguém está com este monitor aberto. */
-  watching(bus: 'pvw' | 'mon'): void {
+  /** Níveis abertos agora, para a tela técnica. */
+  monitorTiersWatched(): { bus: 'pvw' | 'mon'; tier: MonitorTier; hardware: boolean; lastSeenMs: number }[] {
+    const agora = Date.now()
+    const tiers = [...this.nivelOlhado.values()].map(({ bus, tier, hardware, at }) => ({ bus, tier, hardware, lastSeenMs: agora - at }))
+    for (const bus of ['pvw', 'mon'] as const) if (this.monitorLigado.get(bus)) tiers.push({ bus, tier: 'lite', hardware: false, lastSeenMs: agora - (this.olhando.get(bus) ?? agora) })
+    return tiers
+  }
+
+  /** A interface diz que alguém está com este monitor aberto, neste nível. */
+  watching(bus: 'pvw' | 'mon', tier: MonitorTier = 'lite'): void {
+    if (tier !== 'lite') return this.watchingTier(bus, tier)
     if (!this.monitores.has(bus)) {
       // Mandar ligar o que não existe só rende erro no log. Guarda o pedido
       // para o alerta poder dizer ao operador por que a janela está preta.
@@ -1565,6 +1584,35 @@ export class ChannelRuntime {
     }
   }
 
+  private watchingTier(bus: 'pvw' | 'mon', tier: MonitorTier): void {
+    if (!this.monitores.has(bus)) { this.monitorPedidoSemExistir.add(bus); return }
+    const key = `${bus}|${tier}`, agora = Date.now(), current = this.nivelOlhado.get(key)
+    const sessionKey = { channelId: this.channel.id, bus, tier }
+    if (!current) {
+      // Concessão de placa decidida aqui, uma vez por abertura do nível.
+      const hardware = this.encoderSessions?.request(sessionKey) ?? false
+      this.nivelOlhado.set(key, { bus, tier, at: agora, reafirmado: agora, hardware })
+      console.info(`[monitor] ligando ${bus} ${tier}${hardware ? ' (placa)' : ''}: alguém abriu a janela`)
+      this.transport.setMonitor(bus, true, tier, hardware)
+      return
+    }
+    current.at = agora
+    // A sessão voltou ao contador (placa falhou ou o programa a pediu): o
+    // pedido seguinte já sai sem concessão, para o engine não tentar de novo.
+    if (current.hardware && this.encoderSessions && !this.encoderSessions.has(sessionKey)) current.hardware = false
+    if (agora - current.reafirmado >= MONITOR_REAFIRMAR_MS) {
+      current.reafirmado = agora
+      this.transport.setMonitor(bus, true, tier, current.hardware)
+    }
+  }
+
+  /** Liga/desliga o relógio de teste nos monitores deste canal. */
+  setMonitorClock(on: boolean): boolean {
+    if (!this.transport.setMonitorClock) return false
+    this.transport.setMonitorClock(on)
+    return true
+  }
+
   /**
    * Desliga o que ninguém está olhando há um tempo.
    *
@@ -1581,6 +1629,19 @@ export class ChannelRuntime {
       this.monitorLigado.set(bus, false)
       console.info(`[monitor] desligando ${bus}: ninguém olhando há mais de 20s`)
       this.transport.setMonitor(bus, false)
+    }
+    for (const [key, entry] of this.nivelOlhado) {
+      if (entry.at > limite) continue
+      this.nivelOlhado.delete(key)
+      this.encoderSessions?.release({ channelId: this.channel.id, bus: entry.bus, tier: entry.tier })
+      console.info(`[monitor] desligando ${entry.bus} ${entry.tier}: ninguém olhando há mais de 20s`)
+      this.transport.setMonitor(entry.bus, false, entry.tier, false)
+    }
+    if (this.encoderSessions) {
+      for (const publisher of this.transport.publishers()) {
+        const bus = /\/(pvw|mon)(?:[&?]|$)/.exec(publisher.url)?.[1]
+        if (bus && publisher.tiers?.length) this.encoderSessions.observe(this.channel.id, bus, publisher)
+      }
     }
   }
 
@@ -1762,6 +1823,8 @@ export interface App {
   /** Relógio do servidor contra NTP (SNTP); só mede e avisa. */
   readonly clockMonitor: ClockMonitor
   readonly integrationOutbox: IntegrationOutbox
+  /** Sessões de codificação por placa, contadas para todos os canais. */
+  readonly encoderSessions?: EncoderSessions
   /** Fecha o que precisa de escrita antes de o processo sair. */
   flush(): Promise<void>
   close(): void|Promise<void>
@@ -1845,6 +1908,9 @@ export async function createApp(file: string,options:{restoredAdmission?:Restore
     hostMetrics: new HostMetrics(sqlite, MEDIA_ROOT),
     clockMonitor: new ClockMonitor(db, clockConfigFromEnv(), { log: message => console.warn(message) }),
     integrationOutbox: new IntegrationOutbox(db),
+    // A reserva do programa é recontada a cada pedido, a partir do que os
+    // engines relatam: saída nova ou removida entra na conta sozinha.
+    encoderSessions: new EncoderSessions(NO_HARDWARE, () => [...runtimes.values()].reduce((sum, runtime) => sum + programEncodedOutputs(runtime.transport.publishers()), 0)),
     sources: new Sources(db, DEVICES_BINARY),
     mediaRoot: MEDIA_ROOT,
     thumbnailDir: THUMBNAIL_DIR,
@@ -1948,6 +2014,13 @@ export async function createApp(file: string,options:{restoredAdmission?:Restore
 
   const historicalProcessMetrics=new ProcessMetrics()
   app.hostMetrics.onCapture=()=>captureOperationalMetrics(app.runtimes,historicalProcessMetrics,runtime=>operationalMetricLabels(app.db,runtime.channel.id,app.paths.find(path=>path.channelId===runtime.channel.id),app.runtimes.get(runtime.channel.id)?.executionView??null))
+  // Sessões de placa contadas antes de qualquer canal subir: depois, o
+  // programa já estaria ocupando parte delas e a conta sairia dobrada.
+  if(!haAdmission&&ENCODERS_BINARY){
+    const probe=await probeEncoders(ENCODERS_BINARY)
+    app.encoderSessions?.setProbe(probe)
+    console.info(`[monitor] codificadores: ${probe.encoders.filter(e=>e.available).map(e=>e.hardware?`${e.name} (${e.unlimited?'sem limite':`${e.sessions} sessões`})`:e.name).join(', ')||'nenhum'}`)
+  }
   startupTrace('application construction completed')
   return app
 }
@@ -2059,6 +2132,7 @@ async function createRuntime(app: App, channelId: string): Promise<ChannelRuntim
   // Os alertas precisam saber o que falta na instalação, e não podem esperar
   // por uma descoberta a cada tique: perguntam ao que já foi descoberto.
   runtime.aacDisponivel = () => app.sources.temDecodificadorAac()
+  runtime.encoderSessions = app.encoderSessions ?? null
   app.runtimes.set(channelId, runtime)
   runtime.restoreBoundaryProtection()
   pgmProbeFor(app, channelId)

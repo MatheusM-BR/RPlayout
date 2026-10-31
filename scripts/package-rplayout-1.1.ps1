@@ -94,7 +94,7 @@ Copy-Item apps/engine/third_party/omt/LICENSE.txt "$Destination/licenses/omt/LIC
 if (!(Test-Path 'apps/engine/target/release/rplayout-host-guard.exe')) { throw 'Trava nativa de distribuição não foi compilada; pacote recusado.' }
 if (!(Test-Path 'apps/engine/target/release/rplayout-file-security.exe')) { throw 'Proteção nativa de configuração não foi compilada; pacote recusado.' }
 if (!(Test-Path 'apps/engine/target/release/rplayout-audio-bus-probe.exe' -PathType Leaf)) { throw 'Sonda de barramento completo não foi compilada; pacote recusado.' }
-foreach ($aux in @('rplayout-probe.exe','rplayout-devices.exe','rplayout-relay.exe','rplayout-avsync.exe','rplayout-proxy.exe','rplayout-audio-analysis.exe','rplayout-audio-bus-probe.exe','rplayout-graphic-probe.exe','rplayout-host-guard.exe','rplayout-file-security.exe')) {
+foreach ($aux in @('rplayout-probe.exe','rplayout-devices.exe','rplayout-encoders.exe','rplayout-relay.exe','rplayout-avsync.exe','rplayout-proxy.exe','rplayout-audio-analysis.exe','rplayout-audio-bus-probe.exe','rplayout-graphic-probe.exe','rplayout-host-guard.exe','rplayout-file-security.exe')) {
   if (Test-Path "apps/engine/target/release/$aux") { Copy-Item "apps/engine/target/release/$aux" "$Destination/apps/engine/target/release/$aux" -Force }
 }
 if (!(Test-Path 'apps/server/dist/server.cjs')) { throw 'Servidor empacotado não encontrado. Rode pnpm --filter @rplayout/server build.' }

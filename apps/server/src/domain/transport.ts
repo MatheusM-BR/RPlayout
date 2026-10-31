@@ -6,6 +6,7 @@ import {
   type OnAirState,
   type PreviewTarget,
   type LiveSignalAssessment,
+  type MonitorTier,
 } from '@rplayout/protocol'
 import type { RundownView } from './plan.js'
 import type { MeterReading } from './meters.js'
@@ -23,6 +24,23 @@ export interface PublisherState {
   readonly delivered: number
   /** Native generation changes whenever the delivery counter is reset. */
   readonly generation?: number
+  readonly error?: string
+  /** Codificador de vídeo em uso (saídas comuns). */
+  readonly encoder?: string
+  /** Níveis de um monitor (só os pedidos ou abertos). */
+  readonly tiers?: readonly MonitorTierState[]
+}
+
+/** Um nível de monitor, como o engine reporta. */
+export interface MonitorTierState {
+  readonly tier: MonitorTier
+  readonly health: PublisherState['health']
+  readonly encoder?: string
+  readonly hardware: boolean
+  readonly profile?: { width: number; height: number; fpsN: number; fpsD: number; bitrateKbps: number; quality: number }
+  readonly delivered: number
+  readonly uptimeMs: number
+  readonly degraded?: string
   readonly error?: string
 }
 
@@ -120,7 +138,9 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean): void
+  setMonitor(bus: 'pvw' | 'mon', on: boolean, tier?: MonitorTier, hardware?: boolean): void
+  /** Relógio de teste gravado na imagem dos monitores (medição de atraso). */
+  setMonitorClock?(on: boolean): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   graphicConfirmed?(svg: string | null, fadeMs: number, authorize?:()=>void): Promise<void>
@@ -137,7 +157,7 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean): void
+  setMonitor(bus: 'pvw' | 'mon', on: boolean, tier?: MonitorTier, hardware?: boolean): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */

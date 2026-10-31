@@ -68,3 +68,7 @@ path = "src/bin/file_security.rs"
 [[bin]]
 name = "rplayout-graphic-probe"
 path = "src/bin/graphic_probe.rs"
+
+[[bin]]
+name = "rplayout-encoders"
+path = "src/bin/encoders.rs"

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { and, asc, eq } from 'drizzle-orm'
-import { monitorSize, type Channel, type Scan } from '@rplayout/protocol'
+import { monitorSize, MONITOR_MAX_KBPS, type Channel, type Scan } from '@rplayout/protocol'
 import type { Db } from '../db/client.js'
 import { outputProfiles } from '../db/schema.js'
 import { MediaMtx, type ChannelPaths } from './mediamtx.js'
@@ -87,36 +87,28 @@ export async function ensureManagedOutputs(
   const existing = await listOutputs(db, channel.id)
   const managed: { role: OutputRole; name: string; defaults: Partial<OutputProfileRow> }[] = [
     { role: 'PROGRAM', name: 'Programa', defaults: {} },
-    {
-      role: 'PREVIEW',
-      name: 'Preview',
-      defaults: lowBandwidthMonitor(channel),
-    },
+    // Monitores nascem automáticos: os níveis REF/PADRÃO/LEVE saem do
+    // formato do canal (veja docs/MONITORES-NAVEGADOR.md). O que o operador
+    // preencher vira teto, dentro da proteção de `validateOutputProfile`.
+    { role: 'PREVIEW', name: 'Preview', defaults: {} },
   ]
 
   managed.push({
     role: 'MONITOR',
     name: 'Monitor do programa',
-    // Mesmo conteúdo do ar, em 240p, para a janela do navegador. O engine só
-    // liga esta saída quando alguém abre o monitor -- ver `on_demand` lá.
-    defaults: lowBandwidthMonitor(channel),
+    // Mesmo conteúdo do ar, em níveis, para a janela do navegador. O engine
+    // só codifica um nível enquanto alguém o assiste.
+    defaults: {},
   })
 
   for (const entry of managed) {
     const current = existing.find((row) => row.role === entry.role)
     if (current) {
-      // Upgrade legacy full-resolution preview profiles too. Keep existing
-      // settings when they consume even less bandwidth; never touch PGM.
+      // Monitores: o perfil antigo forçado (240p/15 fps/450 kbps) volta a
+      // automático; um teto do operador fica, aparado à proteção. Nunca
+      // toca o PGM.
       if (entry.role === 'PREVIEW' || entry.role === 'MONITOR') {
-        const defaults = lowBandwidthMonitor(channel)
-        const fps = current.rateNum !== null && current.rateDen !== null && current.rateDen > 0 ? current.rateNum / current.rateDen : Infinity
-        const patch:Partial<OutputProfileRow>={
-          width: Math.min(current.width ?? Infinity, defaults.width!),
-          height: Math.min(current.height ?? Infinity, defaults.height!),
-          ...(fps > 15 ? { rateNum: 15, rateDen: 1 } : {}),
-          scan: 'PROGRESSIVE',
-          bitrateKbps: Math.min(current.bitrateKbps ?? Infinity, defaults.bitrateKbps!),
-        }
+        const patch = monitorProfilePatch(current, channel)
         // A refresh must not look like another operator changed the profile.
         const changed=Object.fromEntries(Object.entries(patch).filter(([key,value])=>current[key as keyof OutputProfileRow]!==value))
         if(Object.keys(changed).length)await db.update(outputProfiles).set(changed).where(eq(outputProfiles.id, current.id))
@@ -146,7 +138,40 @@ export async function ensureManagedOutputs(
   }
 }
 
-/** Small network preview, independent of the broadcast/master profile. */
+/** Maior cadência que um monitor pode ter: a de composição (campo, no entrelaçado). */
+function monitorMaxFps(channel: Partial<Pick<Channel, 'rate' | 'scan'>> & { rateNum?: number | null; rateDen?: number | null }): number {
+  const rate = channel.rate ?? (channel.rateNum && channel.rateDen ? { num: channel.rateNum, den: channel.rateDen } : null)
+  if (!rate) return 120
+  return (rate.num / rate.den) * (channel.scan === 'INTERLACED' ? 2 : 1)
+}
+
+/**
+ * Normaliza o perfil de um monitor existente.
+ *
+ * - O perfil legado que o sistema forçava (o de `lowBandwidthMonitor`, ou
+ *   qualquer coisa em 15 fps até 450 kbps) volta a automático: era limite
+ *   artificial, não escolha de ninguém.
+ * - Teto que o operador escolheu fica, aparado ao que a proteção aceita.
+ */
+export function monitorProfilePatch(current: OutputProfileRow, channel: Pick<Channel, 'width' | 'height'> & Partial<Pick<Channel, 'rate' | 'scan'>>): Partial<OutputProfileRow> {
+  const fps = current.rateNum !== null && current.rateDen !== null && current.rateDen > 0 ? current.rateNum / current.rateDen : null
+  const legacy = fps !== null && fps <= 15 && (current.bitrateKbps ?? Infinity) <= 450 && (current.height ?? Infinity) <= 240
+  if (legacy) return { width: null, height: null, rateNum: null, rateDen: null, scan: null, bitrateKbps: null }
+  const maxW = Math.min(channel.width, 1920), maxH = Math.min(channel.height, 1080)
+  const geometryOk = (current.width === null && current.height === null) || current.width !== null && current.height !== null && current.width <= maxW && current.height <= maxH && current.width % 2 === 0 && current.height % 2 === 0
+  return {
+    ...(geometryOk ? {} : { width: null, height: null }),
+    ...(fps !== null && fps > monitorMaxFps(channel) + 0.01 ? { rateNum: null, rateDen: null } : {}),
+    ...(current.scan === 'INTERLACED' ? { scan: null } : {}),
+    ...(current.bitrateKbps !== null && current.bitrateKbps > MONITOR_MAX_KBPS ? { bitrateKbps: MONITOR_MAX_KBPS } : {}),
+    ...(current.bitrateKbps !== null && current.bitrateKbps < 300 ? { bitrateKbps: 300 } : {}),
+  }
+}
+
+/**
+ * O perfil LEVE de antes (240p, 15 fps, 450 kbps). Não é mais imposto: fica
+ * para reconhecer perfis legados e como referência do nível leve.
+ */
 export function lowBandwidthMonitor(channel: Pick<Channel, 'width' | 'height'>): Partial<OutputProfileRow> {
   const [width, height] = monitorSize(channel.width, channel.height)
   return { width, height, rateNum: 15, rateDen: 1, scan: 'PROGRESSIVE', bitrateKbps: 450 }
@@ -154,7 +179,7 @@ export function lowBandwidthMonitor(channel: Pick<Channel, 'width' | 'height'>):
 
 /** Reject inconsistent edits before touching a publisher. Never silently turn
  * a network monitor into another full-resolution broadcast output. */
-export function validateOutputProfile(row:OutputProfileRow,channel?:Pick<Channel,'width'|'height'>):void{
+export function validateOutputProfile(row:OutputProfileRow,channel?:Pick<Channel,'width'|'height'>&Partial<Pick<Channel,'rate'|'scan'>>):void{
   if(row.role==='EXTRA'){
     if(row.kind==='RTMP' || row.kind==='SRT'){
       let url:URL
@@ -166,8 +191,20 @@ export function validateOutputProfile(row:OutputProfileRow,channel?:Pick<Channel
   }
   if((row.rateNum===null)!==(row.rateDen===null))throw new Error('Informe numerador e denominador da cadência juntos, ou ambos automáticos.')
   if(row.role==='PREVIEW' || row.role==='MONITOR'){
-    const limits=lowBandwidthMonitor(channel??{width:1920,height:1080})
-    if(row.width===null || row.height===null || row.width>limits.width! || row.height>limits.height! || row.rateNum===null || row.rateDen===null || row.rateNum/row.rateDen>15 || row.scan!=='PROGRESSIVE' || row.bitrateKbps===null || row.bitrateKbps>450)throw new Error('Preview/monitor devem permanecer leves: tamanho reduzido, até 15 fps, progressivo e de 50 a 450 kbps, sem herdar o PGM.')
+    // Monitor sem limite artificial: em branco é automático (níveis REF,
+    // PADRÃO e LEVE, escolhidos por quem assiste). O que se preenche é teto,
+    // e a proteção é só a que impede um monitor de virar saída de programa
+    // disfarçada: nunca acima do raster do canal nem de 1080p, nunca acima
+    // da cadência do canal, nunca entrelaçado, nunca acima de 8 Mbps. Que ele
+    // não tire CPU/placa do programa é garantido no engine (orçamento de CPU)
+    // e no servidor (reserva das sessões de placa).
+    const ch=channel??{width:1920,height:1080}
+    const maxW=Math.min(ch.width,1920),maxH=Math.min(ch.height,1080)
+    if((row.width===null)!==(row.height===null))throw new Error('Informe largura e altura do monitor juntas, ou deixe ambas automáticas.')
+    if(row.width!==null&&row.height!==null&&(row.width<2||row.height<2||row.width>maxW||row.height>maxH||row.width%2!==0||row.height%2!==0))throw new Error(`Monitor vai até ${maxW}×${maxH} (o raster do canal, no máximo 1080p), em números pares. Em branco, segue os níveis automáticos.`)
+    if(row.rateNum!==null&&row.rateDen!==null&&(row.rateDen<=0||row.rateNum/row.rateDen>monitorMaxFps(ch)+0.01))throw new Error('Monitor não passa da cadência do canal (a de campo, se entrelaçado).')
+    if(row.scan==='INTERLACED')throw new Error('Monitor é sempre progressivo: o navegador não mostra campos; o nível REF já sai na cadência de campo.')
+    if(row.bitrateKbps!==null&&(row.bitrateKbps<300||row.bitrateKbps>MONITOR_MAX_KBPS))throw new Error(`Teto do monitor entre 300 e ${MONITOR_MAX_KBPS} kbps: acima disso já seria contribuição, não monitor.`)
   }
 }
 

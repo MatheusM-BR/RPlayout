@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { MONITOR_TIERS, monitorTierPath } from '@rplayout/protocol'
 import { DiagnosticLines, sanitizeDiagnostic } from './sanitize-diagnostic.js'
 import { mediaMtxProcessEnvironment } from './media-process-environment.js'
 import { writePrivateConfig } from './private-config-file.js'
@@ -213,9 +214,12 @@ export class MediaMtx {
       ...channels.flatMap((channel) => [
         channel.program,
         channel.clean,
-        channel.preview,
+        // Cada monitor tem um caminho por nível (REF, PADRÃO e o leve no
+        // caminho histórico). O MediaMTX distribui cada um a quantos
+        // espectadores houver; o engine codifica uma vez por nível.
+        ...MONITOR_TIERS.map((tier) => monitorTierPath(channel.preview, tier)),
         ...(channel.inspection ? [channel.inspection] : []),
-        channel.monitor,
+        ...MONITOR_TIERS.map((tier) => monitorTierPath(channel.monitor, tier)),
       ]),
       ...guests.map((guest) => `guest/${guest.streamKey}`),
     ])]
