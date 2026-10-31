@@ -392,7 +392,7 @@ export function EngineeringDistributionView({
         </div>
 
         {/* 4. CONTEÚDO PRINCIPAL DINÂMICO CONFORME A SUB-SEÇÃO */}
-        <div className="lg:flex-1 lg:min-h-0 min-h-[80vh] p-3.5 lg:overflow-hidden flex flex-col gap-2.5">
+        <div className="lg:flex-1 lg:min-h-0 min-h-[80vh] p-3.5 lg:overflow-y-auto flex flex-col gap-2.5">
           {/* WATCHDOG DE SONDA PGM & SLATE DE EMERGÊNCIA (FASE C) */}
           <PgmProbeBanner
             channelId={channel.id}
@@ -405,12 +405,14 @@ export function EngineeringDistributionView({
 
           {/* SEÇÃO 1: VISÃO INTEGRADA MCR (DASHBOARD) */}
           {activeSection === 'DASHBOARD' && (
-            <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
+            <div className="flex-1 min-h-0 flex flex-col gap-2">
               {monitorLoadError && <div role="alert" className="shrink-0 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 font-label-mono text-[12px] text-on-air-crimson">Monitor sem dados: {monitorLoadError}</div>}
               {/* A visão integrada cabe integralmente no viewport operacional.
                   Detalhes extensos seguem nas abas SRT e Redundância. */}
               {monitorLoaded ? <OutputsSummary sample={hostMetrics} channelId={channel.id} profiles={outputs} /> : <div role="status" className="t-data text-outline animate-pulse motion-reduce:animate-none">Carregando saídas…</div>}
-              <div className="flex-1 min-h-[320px] lg:min-h-0">
+              {/* O mosaico precisa de altura útil mesmo em 1366x768: abaixo disso a
+                  área do painel rola em vez de espremer a imagem. */}
+              <div className="flex-1 min-h-[380px]">
                 <CompositeMultiview channelId={channel.id} live={live} monitors={monitors}
                   onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
                   individual={<OperationalMultiview
