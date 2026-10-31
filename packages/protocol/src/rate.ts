@@ -122,13 +122,13 @@ export function formatTimecode(frames: Frames, rate: Rate): string {
  * segundo. A 29,97 um arquivo de 30 s tem 899 quadros (29,9967 s); contar pelo
  * timecode (que anda a 30 por segundo) ou truncar o tempo real mostrava 00:29.
  */
-export function wholeSeconds(frames: Frames, rate: Rate): number {
-  const ms = framesToMs(Math.abs(frames), rate) + framesToMs(0.5, rate)
+export function wholeSeconds(frames: Frames, rate: Rate, toleranceFrames = 0.5): number {
+  const ms = framesToMs(Math.abs(frames), rate) + framesToMs(toleranceFrames, rate)
   return Math.floor(ms / 1000 + 1e-9)
 }
 
-function clockParts(frames: Frames, rate: Rate): { hours: number; minutes: number; seconds: number; negative: boolean } {
-  const total = wholeSeconds(frames, rate)
+function clockParts(frames: Frames, rate: Rate, toleranceFrames = 0.5): { hours: number; minutes: number; seconds: number; negative: boolean } {
+  const total = wholeSeconds(frames, rate, toleranceFrames)
   return {
     hours: Math.floor(total / 3600),
     minutes: Math.floor((total % 3600) / 60),
@@ -151,9 +151,11 @@ export function formatClock(frames: Frames, rate: Rate, withSeconds = true): str
     : `${sign}${pad(p.hours)}:${pad(p.minutes)}`
 }
 
-/** Duração compacta em tempo real: `MM:SS` abaixo de uma hora, `H:MM:SS` acima. */
+/** Duração compacta em tempo real: `MM:SS` abaixo de uma hora, `H:MM:SS` acima.
+ * Tolera um quadro e meio: a posição final do engine é exclusiva (um arquivo de
+ * 20 s exibido inteiro volta como 598 quadros a 29,97) e não deve virar 00:19. */
 export function formatDuration(frames: Frames, rate: Rate): string {
-  const p = clockParts(frames, rate)
+  const p = clockParts(frames, rate, 1.5)
   const sign = p.negative ? '-' : ''
   return p.hours > 0
     ? `${sign}${p.hours}:${pad(p.minutes)}:${pad(p.seconds)}`

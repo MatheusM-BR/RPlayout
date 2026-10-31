@@ -1631,7 +1631,10 @@ export class EngineTransport implements Transport {
       if (!recoveryTrim&&view.schedule.items.find((row) => row.id === entry.item.id)?.state === 'DROPPED') continue
       if (!exact&&!recoveryTrim&&this.spentOneShots.has(entry.item.id)) continue
       const isCued=exact&&this.preview?.kind==='ITEM'&&this.preview.id===entry.item.id
-      const timing=isCued&&this.previewTiming?this.previewTiming:freezeExecutionTiming(view)
+      // Timing da grade vigente a cada candidato: se a revisão mudou durante o
+      // preroll do anterior, os demais não podem herdar a fotografia velha (todos
+      // davam "sem arquivo ou fonte válida" e o PGM congelava no último quadro).
+      const timing=isCued&&this.previewTiming?this.previewTiming:freezeExecutionTiming(this.view()??view)
       if(isCued&&timing.key!==executionTimingKey(view))throw new Error('O item publicado mudou após o CUE. Faça CUE novamente para conferir a mídia e os cortes antes do TAKE.')
       if(recoveryTrim)assertProgramTrim(entry,recoveryTrim,resumeFrames,this.channel.rate)
       const spec = playbackSpec(entry.item.id,timing,recoveryTrim)
@@ -1758,6 +1761,7 @@ export class EngineTransport implements Transport {
     }
     // A inserção pontual que saiu do PGM não volta na próxima volta do loop.
     if (previous && previous.itemId !== spec.itemId) this.spendOneShot(previous.itemId, 'AIRED')
+    if (this.retireQueue.size) setTimeout(() => this.flushRetirements(), 0)
     this.recoveryCursor = null
     // A grade line armed in PVW belongs to the plan that was running; when
     // another playlist takes over, that CUE no longer exists and is cleared.
@@ -1798,11 +1802,24 @@ export class EngineTransport implements Transport {
   /** Item vindo de inserção operacional ("urgent:<pedido>"): vale uma vez. */
   static isOneShot(itemId: string): boolean { return itemId.startsWith('urgent:') }
 
+  private readonly retireQueue = new Map<string, 'AIRED' | 'REFUSED'>()
+  /** Marca a inserção pontual como gasta já (o transporte não a escolhe mais)
+   * e só avisa quem retira da revisão depois do próximo TAKE confirmado: trocar
+   * a revisão no meio de uma virada invalidava o preroll seguinte e o canal
+   * congelava no último quadro ("Contrato alterado: revisão"). */
   private spendOneShot(itemId: string, reason: 'AIRED' | 'REFUSED'): void {
     if (!EngineTransport.isOneShot(itemId) || this.spentOneShots.has(itemId)) return
     this.spentOneShots.add(itemId)
-    try { this.options.onOneShotSpent?.(itemId, reason) }
-    catch (error) { this.fail('Falha ao retirar a inserção pontual da grade: ' + (error instanceof Error ? error.message : String(error))) }
+    this.retireQueue.set(itemId, reason)
+  }
+
+  private flushRetirements(): void {
+    for (const [itemId, reason] of [...this.retireQueue]) {
+      if (itemId === this.onAirItemId) continue
+      this.retireQueue.delete(itemId)
+      try { this.options.onOneShotSpent?.(itemId, reason) }
+      catch (error) { this.fail('Falha ao retirar a inserção pontual da grade: ' + (error instanceof Error ? error.message : String(error))) }
+    }
   }
 
   /** Candidato a próxima entrada automática: nem descartado, nem inserção pontual já gasta. */

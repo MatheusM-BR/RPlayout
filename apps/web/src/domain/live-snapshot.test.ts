@@ -17,4 +17,8 @@ describe('contrato HTTP/WebSocket da operação',()=>{
     expect(snapshot.liveReplacement).toEqual(message.liveReplacement)
     expect(snapshot.qcInspection).toEqual({source:'ndi:X',viewers:1})
   })
+  it('ausência de PVW (TAKE direto) sobrevive ao tick do WebSocket (A1)',()=>{
+    const message={transport:{channelId:'ch'},graphic:null,alerts:[],now:1,meters:{},previewBus:false,type:'live',channelId:'ch'} as unknown as Live
+    expect(liveSnapshot(message).previewBus).toBe(false)
+  })
 })

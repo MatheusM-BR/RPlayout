@@ -572,7 +572,9 @@ export class ChannelRuntime {
   private async retireOneShot(itemId:string,reason:'AIRED'|'REFUSED',attempt=0):Promise<void>{
     const rundownId=this.executionView?.rundown.id
     if(!rundownId||!this.operationalRevision)return
-    if(this.transport.state().onAir?.itemId===itemId){if(attempt<20)setTimeout(()=>{void this.retireOneShot(itemId,reason,attempt+1)},1000);return}
+    // Só com o transporte quieto: revisão nova no meio de preroll/virada
+    // invalida o TAKE em andamento. Espera o item sair e nada estar pendente.
+    if(this.transport.state().onAir?.itemId===itemId||(this.transport instanceof EngineTransport&&this.transport.hasPendingCommand())){if(attempt<60)setTimeout(()=>{void this.retireOneShot(itemId,reason,attempt+1)},1000);return}
     try{
       const row=retireOperationalInsert(this.db,this.channel,rundownId,itemId,this.transport.state().onAir?.itemId??null,reason)
       if(!row)return
@@ -992,12 +994,35 @@ export class ChannelRuntime {
    * quando ele muda para nada, porque preto no ar também é informação.
    */
   async followAsRun(): Promise<void> {
+    this.observeProgramSignal()
     // Native execution is recorded at confirmed TAKE/clear events. Polling a
     // state preceding its ACK could otherwise create a duplicate first row or
     // miss a rapid STOP/retake of the same item between two periodic ticks.
     if (this.transport instanceof EngineTransport) return
     const state = this.transport.state()
     await this.asRun.follow(state.onAir?.itemId ?? null, this.executionView, this.operationalRevision?.id ?? null, state.onAir?.elapsed ?? 0)
+  }
+  private signalWatch:{itemId:string;lost:boolean;okSince:number|null}|null=null
+  /** Perda de sinal do ao vivo no PGM vista pelo estado do transporte (sem
+   * quadro há mais de 2 s), não só pelo EOS do engine: com o listener SRT que
+   * continua escutando a fonte não encerra, e a queda sumia do as-run (M4).
+   * A volta só fecha a linha depois de 3 s estáveis, para não picotar. */
+  observeProgramSignal(now=Date.now()):void{
+    const state=this.transport.state(),itemId=state.onAir?.itemId??null
+    const source=itemId?state.liveSources.find(entry=>entry.busItemIds?.pgm===itemId):undefined
+    const pgm=source?.busStates?.pgm??(source?.itemId===itemId?source?.state:undefined)
+    if(!itemId||!source){this.signalWatch=null;return}
+    if(this.signalWatch?.itemId!==itemId)this.signalWatch={itemId,lost:false,okSince:null}
+    const watch=this.signalWatch
+    if(pgm==='LOST'){
+      watch.okSince=null
+      if(!watch.lost){watch.lost=true;void this.asRun.signal(itemId,true,this.executionView,source.message).catch(()=>{})}
+      return
+    }
+    if(watch.lost&&pgm==='ON_PGM'){
+      watch.okSince??=now
+      if(now-watch.okSince>=3000){watch.lost=false;watch.okSince=null;void this.asRun.signal(itemId,false,this.executionView).catch(()=>{})}
+    }
   }
   emergencyCommandPending=false
   async setEmergencySlate(enabled: boolean,command:{key?:unknown;actorId?:string|null;actorName?:string|null;authorize?:()=>void}={}):Promise<import('./domain/graphic-command-ledger.js').GraphicCommandReceipt> {

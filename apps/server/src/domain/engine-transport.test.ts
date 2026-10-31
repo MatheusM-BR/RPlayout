@@ -1610,6 +1610,25 @@ describe('transporte real confirmado pelo engine', () => {
     await action
     expect(transport.state().onAir?.itemId).toBe('0')
   })
+  it('revisão nova durante a virada não congela o PGM: os candidatos seguintes usam a grade vigente', async () => {
+    const first = join(directory, 'vira-a.mkv'), bad = join(directory, 'vira-b.mkv'), good = join(directory, 'vira-c.mkv')
+    writeFileSync(first, 'video a'); writeFileSync(bad, 'video b'); writeFileSync(good, 'video c')
+    const original = view([first, bad, good])
+    let current = original
+    start(original, undefined, () => current)
+    await transport.take('grade', '0')
+    // O 2º item é recusado pelo decoder; no mesmo instante a revisão muda
+    // (ex.: inserção pontual retirada). Antes o 3º virava "sem arquivo".
+    rejectLoad = bad
+    child.stdin.on('data', (data: Buffer) => {
+      for (const line of data.toString().split('\n').filter(Boolean)) {
+        const command = JSON.parse(line)
+        if (command.cmd === 'load' && command.item?.path === bad) current = { ...original, rundown: { ...original.rundown, name: 'revisão 2' } } as RundownView
+      }
+    })
+    event({ event: 'position', itemId: '0', frames: 250, duration: 250 }); event({ event: 'eos', itemId: '0' })
+    await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('2'))
+  })
   it('recusa do decoder não dispara TAKE manual no item seguinte', async () => {
     const bad = join(directory, 'corrompido.mkv'); const good = join(directory, 'bom.mkv')
     writeFileSync(bad, 'x'); writeFileSync(good, 'video'); rejectLoad = bad

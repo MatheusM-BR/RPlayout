@@ -887,7 +887,8 @@ export function MasterControlView({
   const takeLive=onTakeLive?liveOutsideGrade(live.transport.preview,gradeSourceRefs):null
   const noPreviewBus=live.previewBus===false
   const directSelected=selectedItemIds.size===1?view.items.find(entry=>selectedItemIds.has(entry.item.id))??null:null
-  const directTarget=noPreviewBus?(directSelected??armedItem):null
+  // Seleção no item que já está no ar não trava o botão: vale o próximo.
+  const directTarget=noPreviewBus?((directSelected&&directSelected.item.id!==live.transport.onAir?.itemId?directSelected:null)??armedItem):null
   const direct=noPreviewBus?directTakePlan(publicationRequired,directTarget?{id:directTarget.item.id,title:itemDisplayTitle(directTarget,directTarget.item.title)}:null,live.transport.onAir?.itemId??null):null
   const takeReason=direct?('reason' in direct?direct.reason:null):takeLive?(publicationRequired?takeBlockedReason(publicationRequired,live.transport.preview):null):takeBlockedReason(publicationRequired,live.transport.preview,gradeSourceRefs)
   const filteredAssets = useMemo(() => {

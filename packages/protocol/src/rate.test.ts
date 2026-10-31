@@ -115,6 +115,8 @@ describe('durações e horários em 29,97 (tempo real, não timecode)', () => {
     expect(formatDuration(secondsToFrames(30, rate), rate)).toBe('00:30')
     expect(formatDuration(secondsToFrames(25, rate), rate)).toBe('00:25')
     expect(formatDuration(secondsToFrames(20, rate), rate)).toBe('00:20')
+    // As-run: posição final do engine é exclusiva (598 de 599 quadros).
+    expect(formatDuration(secondsToFrames(20, rate) - 1, rate)).toBe('00:20')
     expect(formatDuration(secondsToFrames(3725, rate), rate)).toBe('1:02:05')
   })
 
