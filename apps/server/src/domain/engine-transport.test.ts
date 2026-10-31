@@ -1664,6 +1664,38 @@ describe('transporte real confirmado pelo engine', () => {
     now += 1000; transport.tick()
     expect(priorityEvents.filter(event => event.kind === 'REQUESTED')).toHaveLength(1)
   })
+  it('HORA FIXA de arquivo corta o VT no ar na hora marcada (A2)', async () => {
+    const first = join(directory, 'longo.mkv'), commercial = join(directory, 'comercial.mkv'); writeFileSync(first, 'video longo'); writeFileSync(commercial, 'comercial')
+    const value = view([first, commercial]), date = new Date(), at = framesSinceMidnight(date, channel.rate) + 25
+    Object.assign(value.items[1]!, { item: { ...value.items[1]!.item, mediaId: '1', anchor: { kind: 'FIXED', at }, title: 'Comercial' } })
+    let now = date.getTime(); vi.spyOn(Date, 'now').mockImplementation(() => now)
+    start(value); event({ event: 'ready', channelId: channel.id }); await transport.take('grade', '0')
+    event({ event: 'position', itemId: '0', frames: 100, duration: 250 })
+    now += 1500; transport.tick()
+    await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('1'))
+    expect(priorityEvents.map(event => event.kind)).toEqual(['REQUESTED', 'CONFIRMED'])
+    expect(priorityEvents.at(-1)).toMatchObject({ previousItemId: '0', itemId: '1' })
+  })
+  it('grade em loop com lacuna antes da HORA FIXA segue o loop e não leva o item antes da hora', async () => {
+    const a = join(directory, 'loop-a.mkv'), fixed = join(directory, 'loop-fixo.mkv'), c = join(directory, 'loop-c.mkv')
+    for (const file of [a, fixed, c]) writeFileSync(file, file)
+    const value = view([a, fixed, c], true), date = new Date(), at = framesSinceMidnight(date, channel.rate) + 25 * 30
+    Object.assign(value.items[1]!, { item: { ...value.items[1]!.item, mediaId: '1', anchor: { kind: 'FIXED', at }, title: 'Comercial' } })
+    start(value); event({ event: 'ready', channelId: channel.id }); await transport.take('grade', '0')
+    event({ event: 'position', itemId: '0', frames: 250, duration: 250 }); event({ event: 'eos', itemId: '0' })
+    await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('2'))
+  })
+  it('HORA FIXA de arquivo que a sequência já levou ao ar logo antes não é repetida', async () => {
+    const first = join(directory, 'curto.mkv'), commercial = join(directory, 'comercial-cedo.mkv'); writeFileSync(first, 'video curto'); writeFileSync(commercial, 'comercial')
+    const value = view([first, commercial], true), date = new Date(), at = framesSinceMidnight(date, channel.rate) + 25 * 20
+    Object.assign(value.items[1]!, { item: { ...value.items[1]!.item, mediaId: '1', anchor: { kind: 'FIXED', at }, title: 'Comercial' } })
+    let now = date.getTime(); vi.spyOn(Date, 'now').mockImplementation(() => now)
+    start(value); event({ event: 'ready', channelId: channel.id }); await transport.take('grade', '1')
+    await transport.take('grade', '0')
+    now += 21_000; transport.tick(); await new Promise(resolve => setTimeout(resolve, 20))
+    expect(priorityEvents).toHaveLength(0)
+    expect(transport.state().onAir?.itemId).toBe('0')
+  })
   it('âncora da grade >24h prepara antes da meia-noite e corta depois somente após quadro confirmado', async () => {
     const first = join(directory, 'virada.mkv'); writeFileSync(first, 'video')
     const value = view([first, 'live'])

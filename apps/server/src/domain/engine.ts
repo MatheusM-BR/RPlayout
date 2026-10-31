@@ -1762,6 +1762,7 @@ export class EngineTransport implements Transport {
     // A inserção pontual que saiu do PGM não volta na próxima volta do loop.
     if (previous && previous.itemId !== spec.itemId) this.spendOneShot(previous.itemId, 'AIRED')
     if (this.retireQueue.size) setTimeout(() => this.flushRetirements(), 0)
+    this.lastConfirmedAt.set(spec.itemId, Date.now())
     this.recoveryCursor = null
     // A grade line armed in PVW belongs to the plan that was running; when
     // another playlist takes over, that CUE no longer exists and is cleared.
@@ -1799,10 +1800,28 @@ export class EngineTransport implements Transport {
   /** Há barramento de preview (PVW)? Sem servidor de mídia o engine sobe só com PGM. */
   hasPreviewBus(): boolean { return Boolean(this.options.preview) }
 
+  /** Grade em loop com lacuna antes de uma HORA FIXA de arquivo: a sequência
+   * não leva o item antes da hora (ele entra pelo TAKE da hora fixa); o loop
+   * segue com os outros itens até lá. Só nos 10 minutos antes da âncora. */
+  private heldForAnchor(view: RundownView, itemId: string, now = Date.now()): boolean {
+    if (!view.rundown.loop) return false
+    const target = priorityLives(view, now).find(entry => entry.itemId === itemId && entry.key.includes(':file:'))
+    return Boolean(target && target.atMs - now > 2000 && target.atMs - now <= 10 * 60_000 && view.items.length > 1)
+  }
+
+  private airedJustBefore(view: RundownView, itemId: string, atMs: number): boolean {
+    const at = this.lastConfirmedAt.get(itemId)
+    if (at === undefined) return false
+    const duration = view.schedule.items.find(row => row.id === itemId)?.duration ?? 0
+    return at >= atMs - framesToMs(duration, this.channel.rate) - 60_000
+  }
+
   /** Item vindo de inserção operacional ("urgent:<pedido>"): vale uma vez. */
   static isOneShot(itemId: string): boolean { return itemId.startsWith('urgent:') }
 
   private readonly retireQueue = new Map<string, 'AIRED' | 'REFUSED'>()
+  /** Quando cada item entrou no ar pela última vez (TAKE confirmado). */
+  private readonly lastConfirmedAt = new Map<string, number>()
   /** Marca a inserção pontual como gasta já (o transporte não a escolhe mais)
    * e só avisa quem retira da revisão depois do próximo TAKE confirmado: trocar
    * a revisão no meio de uma virada invalidava o preroll seguinte e o canal
@@ -1825,6 +1844,7 @@ export class EngineTransport implements Transport {
   /** Candidato a próxima entrada automática: nem descartado, nem inserção pontual já gasta. */
   private schedulable(view: RundownView, itemId: string): boolean {
     if (this.spentOneShots.has(itemId) && itemId !== this.onAirItemId) return false
+    if (this.heldForAnchor(view, itemId)) return false
     return view.schedule.items.find(timing => timing.id === itemId)?.state !== 'DROPPED'
   }
 
@@ -2409,6 +2429,9 @@ export class EngineTransport implements Transport {
     this.priorityObservedAt = now
     const target = crossed.find(target => !this.handledPriorityLives.has(target.key) && target.itemId !== this.onAirItemId && target.atMs > since && target.atMs <= now)
     if (!target) return
+    // Arquivo de HORA FIXA que a sequência já levou ao ar logo antes da hora
+    // (lacuna antes da âncora) não é repetido pelo TAKE da hora fixa.
+    if (target.key.includes(':file:') && this.airedJustBefore(view, target.itemId, target.atMs)) { this.handledPriorityLives.add(target.key); return }
     this.handledPriorityLives.add(target.key)
     const previousItemId = this.onAirItemId
     this.priorityTake = { kind: 'REQUESTED', rundownId: target.rundownId, itemId: target.itemId, previousItemId, previousFrames: this.elapsed, scheduledAt: new Date(target.atMs).toISOString(), occurredAt: new Date(now).toISOString() }

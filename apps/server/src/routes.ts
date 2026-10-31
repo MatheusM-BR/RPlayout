@@ -4256,7 +4256,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
           // An optional captured header protects the opening context. Review
           // itself only persists the encrypted proposal, never grade or PGM.
           if(request.headers['if-match'])requireEditorialRevision(app.concurrency,id,request.headers['if-match'],state.editorialRevision)
-          return proposeFill(tx,state,kind,body.minutes===undefined?undefined:{...body,minutes:body.minutes},actor)
+          // Mesma projeção da tela (agora + PGM quando é a grade carregada):
+          // posição do "Por Intervalo" e aviso de corte batem com o que se vê.
+          const runtime=app.runtimes.get(state.channel.id),current=runtime?.view?.rundown.id===id
+          const clock=rundownClock(state.rundown.date,state.channel.rate,new Date(),current?runtime!.transport.state().onAir:null)
+          return proposeFill(tx,state,kind,body.minutes===undefined?undefined:{...body,minutes:body.minutes},actor,{now:current?clock.now:null,onAir:current?clock.onAir:null})
         },{behavior:'immediate'})
         return result
       }

@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto'
 import {eq} from 'drizzle-orm'
-import {DEFAULT_FIT,resolveTrim,resolveAudio,secondsToFrames,type Anchor,type Frames,type RundownItem} from '@rplayout/protocol'
+import {DEFAULT_FIT,resolveTrim,resolveAudio,secondsToFrames,type Anchor,type Frames,type RundownItem,type OnAirState} from '@rplayout/protocol'
 import type {Db} from '../db/client.js'
 import {operatorDecisions,rundownItems} from '../db/schema.js'
 import {scheduleRuleRevision} from '../db/schedule-rule-revisions.js'
@@ -32,13 +32,16 @@ function dependency(tx:Tx,state:State,entries:Entry[],kind:Proposal['kind']){
     candidates:ids.map(id=>candidates.get(id)??null),rules:kind==='DAY'?rulesFor(tx,state):null,
     ...(kind==='DAY'?{rulesRevision:scheduleRuleRevision(tx,state.channel.id)}:{})}),'autofill-dependencies:v1')
 }
-function insertIndex(state:State,minute:number){
-  const at=secondsToFrames(minute*60,state.channel.rate),index=editorialView(state).schedule.items.findIndex(item=>item.start>=at)
+/** Relógio da grade que o operador está vendo (agora e PGM), para a posição e
+ * o impacto baterem com a tela. Sem ele a grade é projetada da meia-noite. */
+export interface FillClock {now:Frames|null;onAir:OnAirState|null}
+function insertIndex(state:State,minute:number,clock?:FillClock){
+  const at=secondsToFrames(minute*60,state.channel.rate),index=editorialView(state,clock?.now??null,clock?.onAir??null).schedule.items.findIndex(item=>item.start>=at)
   return index<0?state.items.length:index
 }
 /** Immutable encrypted event-backed proposals share the audit store and survive
  * server restarts. No grade rows or transport commands are changed by review. */
-export function proposeFill(tx:Tx,state:State,kind:Proposal['kind'],request:FillRequest|undefined,actor:string|null){
+export function proposeFill(tx:Tx,state:State,kind:Proposal['kind'],request:FillRequest|undefined,actor:string|null,clock?:FillClock){
   const candidates=buildCandidatesNow(tx,state.channel,[...state.assets.values()]),entries:Entry[]=[],ordered=state.items.map(item=>item.id)
   const chosen:Record<string,unknown>[]=[]
   const bands:{rule:string;items:number;leftover:number}[]=[]
@@ -66,14 +69,14 @@ export function proposeFill(tx:Tx,state:State,kind:Proposal['kind'],request:Fill
       const found=state.items.findIndex(item=>item.id===request.insertAfterItemId)
       if(found<0)throw new CollaborativeEditError(409,{error:'O item de inserção não pertence a esta grade. Revise o destino.'})
       index=found+1
-    }else if(request.insertAtMinute!==undefined)index=insertIndex(state,request.insertAtMinute)
+    }else if(request.insertAtMinute!==undefined)index=insertIndex(state,request.insertAtMinute,clock)
     else if(request.insertAtOrder!==undefined){const found=state.items.findIndex(item=>item.order>=request.insertAtOrder!);if(found>=0)index=found}
     result={plan:add(request.minutes,request.categories??[],request.avoidHours??0,index,request.insertAtMinute)}
   }else{
     const rules=rulesFor(tx,state)
     if(!rules.length)throw new CollaborativeEditError(400,{error:'Nenhuma faixa da pauta vale para este dia.'})
     for(const rule of rules){
-      const base=insertIndex(state,rule.startMinute)
+      const base=insertIndex(state,rule.startMinute,clock)
       const before=base===state.items.length?ordered.length:ordered.indexOf(state.items[base]!.id)
       const plan=add(rule.endMinute-rule.startMinute,rule.categories,rule.avoidHours,before,rule.startMinute)
       bands.push({rule:rule.name,items:plan.items.length,leftover:plan.leftover})
@@ -81,7 +84,7 @@ export function proposeFill(tx:Tx,state:State,kind:Proposal['kind'],request:Fill
     result={bands,plan:{window:rules.reduce((n,rule)=>n+secondsToFrames((rule.endMinute-rule.startMinute)*60,state.channel.rate),0),
       leftover:bands.reduce((n,band)=>n+band.leftover,0),reason:bands.every(band=>band.leftover===0)?'FILLED':'OUT_OF_MATERIAL',items:chosen}}
   }
-  result={...result,impact:fillImpact(state,entries,ordered)}
+  result={...result,impact:fillImpact(state,entries,ordered,clock)}
   const id=randomUUID(),now=new Date().toISOString(),expiresAt=new Date(Date.now()+30*60_000).toISOString()
   const payload:Proposal={version:1,kind,channelId:state.channel.id,editorialRevision:state.editorialRevision,expiresAt,
     dependency:dependency(tx,state,entries,kind),entries,ordered,result}
@@ -92,7 +95,7 @@ export function proposeFill(tx:Tx,state:State,kind:Proposal['kind'],request:Fill
  * item de "Por Intervalo" entra com hora fixa, e o que estava passando dessa
  * hora é cortado ou descartado. A proposta diz isso antes de aplicar. */
 export interface FillImpact {itemId:string;title:string;kind:'TRIMMED'|'DROPPED';beforeFrames:number;afterFrames:number;reason:string}
-export function fillImpact(state:State,entries:Entry[],ordered:string[]):FillImpact[]{
+export function fillImpact(state:State,entries:Entry[],ordered:string[],clock?:FillClock):FillImpact[]{
   if(!entries.length)return []
   const byId=new Map(state.items.map(item=>[item.id,item]))
   const added=new Map(entries.map(entry=>[entry.id,entry]))
@@ -103,8 +106,9 @@ export function fillImpact(state:State,entries:Entry[],ordered:string[]):FillImp
     if(!entry)return []
     return [{id,rundownId:state.rundown.id,order,type:'VT',eventType:'SEQUENTIAL',title:entry.title,mediaId:entry.mediaId??null,sourceRef:null,trim:entry.trim??null,audio:entry.audio??null,audioTrack:0,notes:null,durationOverride:null,minDuration:entry.minDuration??0,anchor:entry.anchor as Anchor,onOverrun:'PUSH',elastic:null,blockId:null,fit:DEFAULT_FIT,autoNext:true,loop:false,locked:false,protected:false,trimmable:false,optional:false,timingFlags:{protected:false,trimmable:false,optional:false}} as RundownItem]
   })
-  const before=new Map(editorialView(state).schedule.items.map(row=>[row.id,row]))
-  const after=editorialView({...state,items}).schedule.items
+  const now=clock?.now??null,onAir=clock?.onAir??null
+  const before=new Map(editorialView(state,now,onAir).schedule.items.map(row=>[row.id,row]))
+  const after=editorialView({...state,items},now,onAir).schedule.items
   return after.flatMap((row):FillImpact[]=>{
     const previous=before.get(row.id),item=byId.get(row.id)
     if(!previous||!item)return []
