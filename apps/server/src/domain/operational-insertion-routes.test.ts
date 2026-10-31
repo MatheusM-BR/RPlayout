@@ -157,3 +157,14 @@ describe('inserção urgente usa edição publicada e confirmação operacional'
     expect(app.runtimes.get('ch')!.transport.state().onAir).toBeNull()
   })
 })
+describe('inserção com HORA FIXA que já passou na grade',()=>{
+  it('VT inserido depois do item no ar não é recusado por uma âncora vencida (planejamento sem relógio)',async()=>{
+    // Âncora às 00:00:20 de hoje: já passou. Sem o relógio, o planejamento punha o
+    // item no ar às 00:00:00 e descartava o que viesse antes da âncora --
+    // "O item inserido não tem duração reproduzível".
+    app.db.insert(rundownItems).values({id:'fixo',rundownId:'rd',sortOrder:2,title:'fixo',type:'VT',mediaId:'media',minDuration:0,anchor:{kind:'FIXED',at:500},onOverrun:'PUSH',autoNext:false,loop:false,locked:false}).run()
+    await app.runtimes.get('ch')!.refresh();await reviewedPublish(server,'rd')
+    const res=await server.inject({method:'POST',url:'/api/channels/ch/operational-insert/review',payload:input('NEXT')})
+    expect(res.statusCode,res.body).toBe(200)
+  })
+})

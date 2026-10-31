@@ -22,7 +22,11 @@ const conflict=(message:string)=>new CollaborativeEditError(409,{error:message})
 
 /** Operates on the frozen edition. It never imports unrelated editorial edits,
  * clones external commands or mutates the editorial rundown/asset defaults. */
-export function inspectInsertion(db:Db,context:InsertionContext,input:InsertionInput){
+/** `timed`: a mesma grade com o relógio da execução (agora + PGM). Sem ele, o
+ * planejamento começa na meia-noite e uma HORA FIXA que já passou descartava o
+ * item inserido ("não tem duração reproduzível"), embora na execução a âncora
+ * vencida só entre no fluxo. */
+export function inspectInsertion(db:Db,context:InsertionContext,input:InsertionInput,timed?:(view:RundownView)=>RundownView){
   return db.transaction(tx=>{
     const channelRow=tx.select().from(channels).where(eq(channels.id,context.channelId)).get()
     const revision=tx.select().from(operationalPlaylistRevisions).where(and(eq(operationalPlaylistRevisions.id,context.revisionId),eq(operationalPlaylistRevisions.active,true))).get()
@@ -51,7 +55,8 @@ export function inspectInsertion(db:Db,context:InsertionContext,input:InsertionI
     const ordered=items.map((value,index)=>({...value,order:index}))
     assertPublishedAudio(channel.audioChannels??2,ordered,[...approved.values()])
     const view=buildView(old.rundown,channel,ordered,approved,null,null),candidate=view.items.find(entry=>entry.item.id===item.id)!
-    if(candidate.trim.out<=candidate.trim.in || view.schedule.items.find(row=>row.id===item.id)?.state==='DROPPED')throw conflict('O item inserido não tem duração reproduzível. Confira QC/corte e a grade.')
+    const schedule=timed?timed(view).schedule:view.schedule
+    if(candidate.trim.out<=candidate.trim.in || schedule.items.find(row=>row.id===item.id)?.state==='DROPPED')throw conflict('O item inserido não tem duração reproduzível. Confira QC/corte e a grade.')
     const payload:OperationalPayload={...old,items:ordered,assets:[...approved.values()],schedule:view.schedule,operation:{kind:'INSERT',mode:input.mode,requestId:input.requestId,itemId:item.id,sourceRevisionId:revision.id,at:''}}
     const decisions=tx.select().from(qcDecisions).orderBy(asc(qcDecisions.createdAt),asc(qcDecisions.id)).all().filter(row=>approved.has(row.assetId))
     const reviewToken=installationVault().reviewIdentity(JSON.stringify({context,input,revision,channel,configurationRevision:configurationRevision(db,channel.id),rawAsset,source,decisions,payload}),'operational-insert:v1')
