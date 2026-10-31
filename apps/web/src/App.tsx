@@ -608,6 +608,12 @@ export function App() {
     return view.items.slice(Math.max(0, index + 1)).find((item) => schedule.get(item.item.id)?.state !== 'DROPPED') ?? null
   }, [view, onAirId, schedule])
 
+  const [transportRefusal, setTransportRefusal] = useState<{ action: string; message: string; at: number } | null>(null)
+  useEffect(() => {
+    if (!transportRefusal) return
+    const timer = window.setTimeout(() => setTransportRefusal(null), 20_000)
+    return () => window.clearTimeout(timer)
+  }, [transportRefusal])
   const enqueueTransportCommand = useCallback((action: () => Promise<void>): Promise<void> => {
     return transportQueue.current.enqueue(action)
   }, [])
@@ -639,7 +645,15 @@ export function App() {
       action === 'take' && !takeAllowed() ? Promise.resolve() :
       enqueueTransportCommand(() => guard(async () => {
         if (!view || view.channel.id !== channelRef.current) return
-        absorb(await api.transport(view.channel.id, action, body))
+        try {
+          absorb(await api.transport(view.channel.id, action, body))
+          setTransportRefusal(null)
+        } catch (failure) {
+          // Recusa do comando aparece junto dos botões de transporte, não só
+          // num aviso genérico que a próxima atualização ao vivo apaga.
+          setTransportRefusal({ action, message: failure instanceof Error ? failure.message : 'Comando recusado.', at: Date.now() })
+          throw failure
+        }
       })).finally(() => { if (action === 'take') takeDone() }),
     [view, guard, absorb, enqueueTransportCommand, takeAllowed, takeDone],
   )
@@ -1239,6 +1253,8 @@ export function App() {
           onStop={() => void command('stop')}
           onCue={(itemId?: string) => void command('cue', { itemId })}
           onClearCue={() => void command('cue', {})}
+          transportRefusal={transportRefusal}
+          onDismissTransportRefusal={() => setTransportRefusal(null)}
           onSeek={(bus: 'pvw' | 'pgm', frames: number) =>
             void command('seek', {
               bus,

@@ -3,7 +3,9 @@ import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect } from 'react'
 import type { Channel, ManagedLiveSource, RedundantStreamPair, SrtTelemetry } from '@rplayout/protocol'
 import type { Live, Monitors } from '../types.js'
-import { api } from '../api.js'
+import { api, type ClockStatusView } from '../api.js'
+import { clockTag, engineTag, formatFreeGb } from '../components/broadcast/HeaderHealth.js'
+import { TechnicalLogsPanel } from '../components/broadcast/TechnicalLogsPanel.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { OperationalMultiview } from '../components/broadcast/OperationalMultiview.js'
@@ -39,6 +41,16 @@ type OutputSnapshot = Awaited<ReturnType<typeof api.outputs>>['outputs']
 
 const percent = (value: number | null) => value === null ? 'N/D' : `${value.toFixed(value % 1 ? 1 : 0)}%`
 const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`
+type Level = 'ok' | 'warn' | 'bad' | 'unknown'
+/** Cor por limiar (M2): verde < 70%, âmbar até 90%, vermelho acima. */
+export const levelFor = (value: number | null | undefined, warn = 70, bad = 90): Level => value == null || !Number.isFinite(value) ? 'unknown' : value > bad ? 'bad' : value > warn ? 'warn' : 'ok'
+const levelText: Record<Level, string> = { ok: 'text-status-ok-bright', warn: 'text-armed-amber', bad: 'text-on-air-crimson', unknown: 'text-outline' }
+const levelBar: Record<Level, string> = { ok: 'bg-status-ok', warn: 'bg-armed-amber', bad: 'bg-on-air-crimson', unknown: 'bg-outline' }
+const levelBadge: Record<Level, string> = { ok: 'text-status-ok border-status-ok/30 bg-status-ok/10', warn: 'text-armed-amber border-armed-amber/40 bg-armed-amber/10', bad: 'text-on-air-crimson border-on-air-crimson/40 bg-on-air-crimson/10', unknown: 'text-outline border-border-subtle/40 bg-surface-base' }
+export function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600), m = Math.floor(seconds % 3600 / 60)
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}min` : `${m}min`
+}
 
 export function EngineeringDistributionView({
   channel,
@@ -66,6 +78,8 @@ export function EngineeringDistributionView({
   // Mantido somente durante a remoção gradual do painel legado, que não é renderizado.
   const [legacySinks, setLegacySinks] = useState({ sdi: false, ndi: false, srt: false, whep: false })
   const [engineeringAction, setEngineeringAction] = useState<'restart' | 'cache' | null>(null)
+  const [serverStatus, setServerStatus] = useState<Awaited<ReturnType<typeof api.engineeringStatus>> | null>(null)
+  const [clock, setClock] = useState<ClockStatusView | null>(null)
 
   useEffect(() => {
     let active = true
@@ -80,6 +94,9 @@ export function EngineeringDistributionView({
         setOutputs(outputSnapshot.outputs)
         setMonitorLoadError(null)
         setMonitorLoaded(true)
+        // Versão/uptime/relógio: leitura à parte, a falha não esconde o resto.
+        void api.engineeringStatus().then(value => { if (active) setServerStatus(value) }).catch(() => { if (active) setServerStatus(null) })
+        void api.clock().then(value => { if (active) setClock(value) }).catch(() => { if (active) setClock(null) })
       } catch (error) {
         if (active) setMonitorLoadError(error instanceof Error ? error.message : 'Não foi possível ler as fontes de entrada.')
       }
@@ -92,7 +109,20 @@ export function EngineeringDistributionView({
   const gpu = hostMetrics?.gpu ?? null
   const engineProcess = processes.find((process) => process.kind === 'ENGINE' && process.channelId === channel.id)
   const engineSimulated = engineProcess?.details?.transport === 'SIMULATED'
-  const engineAlert = Boolean(live?.alerts.some((alert) => alert.kind === 'ENGINE')) || engineProcess?.state === 'error'
+  // Mesmo estado do cabeçalho (OK / ALERTA / REINICIANDO / FALHA): um engine
+  // que já reiniciou uma vez não fica "ALERTA" para sempre.
+  const engineMetric = hostMetrics?.operations?.channels.find(entry => entry.channelId === channel.id)?.engine
+  const engineStatusTag = engineTag(engineMetric)
+  const engineLevel: Level = engineStatusTag.level
+  const engineRss = engineProcess?.memoryBytes ?? engineMetric?.memoryBytes ?? null
+  const engineCpu = engineProcess?.cpuPercent ?? engineMetric?.cpuPercent ?? null
+  const cpuLevel = levelFor(hostMetrics?.cpu.percent)
+  const ramLevel = levelFor(hostMetrics?.memory.percent, 80, 90)
+  const gpuLevel = levelFor(hostMetrics?.gpu.utilizationPercent, 80, 95)
+  // CPU do processo: 100% = um núcleo; o limiar considera os núcleos do host.
+  const engineCpuLevel = levelFor(engineCpu === null ? null : engineCpu / Math.max(1, hostMetrics?.cpu.cores ?? 1))
+  const clockInfo = clockTag(clock)
+  const engineRestartsLabel = engineMetric && engineMetric.restarts > 0 ? `Engine reiniciado ${engineMetric.restarts}x nesta sessão (quedas ${engineMetric.deaths}, travamentos ${engineMetric.stalls})` : null
   // Legendas dos cartões de métrica: texto único para exibir e para o tooltip,
   // porque em 1366px o cartão é estreito e a legenda é truncada com reticências.
   const gpuCaption = gpu?.memoryUsedMiB !== null && gpu?.memoryUsedMiB !== undefined && gpu?.memoryTotalMiB !== null && gpu?.memoryTotalMiB !== undefined
@@ -100,7 +130,8 @@ export function EngineeringDistributionView({
     : gpu?.error ?? 'Aguardando coleta'
   const cpuCaption = hostMetrics ? `${hostMetrics.cpu.cores} núcleos • coleta a cada ${hostMetrics.sampleIntervalSeconds} s` : 'Aguardando coleta'
   const ramCaption = hostMetrics ? `${gib(hostMetrics.memory.freeBytes)} livre / ${gib(hostMetrics.memory.totalBytes)}` : 'Aguardando coleta'
-  const engineCaption = engineSimulated ? 'Transporte simulado • sem saída física' : engineProcess ? `Engine ${engineProcess.state} • ${engineProcess.memoryBytes === null ? 'RAM N/D' : `${(engineProcess.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}` : monitorLoaded ? 'Engine não iniciado' : 'Consultando…'
+  const engineCaption = engineSimulated ? 'Transporte simulado • sem saída física' : engineProcess ? `RAM ${engineRss === null ? 'N/D' : `${(engineRss / 1024 ** 2).toFixed(0)} MiB`} • CPU ${engineCpu === null ? 'N/D' : `${engineCpu.toFixed(0)}%`}` : monitorLoaded ? 'Engine não iniciado' : 'Consultando…'
+  const diskCaption = hostMetrics?.disk.percentUsed == null ? (hostMetrics?.disk.error ?? 'Disco N/D') : `Disco ${Math.round(hostMetrics.disk.percentUsed)}% · ${formatFreeGb(hostMetrics.disk.freeBytes ?? 0)} livres`
 
   const multiviewSources: MultiviewSourceItem[] = liveSources.map(source=>liveSourceMonitor(source,live,monitors,source.kind==='SRT'?srtTelemetry[source.id]:undefined,Date.now(),channel.qcProfile?.liveSignalPolicy))
   const srtLinks: SrtLinkItem[] = liveSources
@@ -150,29 +181,6 @@ export function EngineeringDistributionView({
       },
     }
   })()
-
-  // Logs terminal state
-  const [logFilter, setLogFilter] = useState<'ALL' | 'WARN' | 'ENGINE'>('ALL')
-  const [isLogPaused, setIsLogPaused] = useState(false)
-  const [logs, setLogs] = useState<Array<{ id: string; time: string; level: 'INFO' | 'WARN' | 'OK'; msg: string }>>([])
-
-  useEffect(() => {
-    if (isLogPaused) return
-    const now = new Date()
-    const time = now.toLocaleTimeString('pt-BR', { hour12: false })
-    setLogs(processes.map((process) => ({
-      id: `${process.id}:${process.state}:${process.pid ?? 'none'}`,
-      time,
-      level: process.state === 'error' || process.state === 'stopped' ? 'WARN' : process.state === 'running' ? 'OK' : 'INFO',
-      msg: `${process.kind} ${process.channelId ? `(${process.channelId}) ` : ''}${process.state.toUpperCase()}${process.pid ? ` • PID ${process.pid}` : ''}${process.memoryBytes === null ? '' : ` • RAM ${(process.memoryBytes / 1024 ** 2).toFixed(0)} MiB`}`,
-    })))
-  }, [processes, isLogPaused])
-
-  const filteredLogs = logs.filter((l) => {
-    if (logFilter === 'WARN') return l.level === 'WARN'
-    if (logFilter === 'ENGINE') return l.msg.includes('Engine') || l.msg.includes('Sync')
-    return true
-  })
 
   const canRestart = useCan('OUTPUT_CONTROL')
   const restartEngine = async () => {
@@ -228,7 +236,7 @@ export function EngineeringDistributionView({
                     <span className="shrink-0 material-symbols-outlined text-accent-ice text-[15px]">memory</span>
                     <span className="min-w-0 leading-tight" title="UTILIZAÇÃO DA GPU">UTILIZAÇÃO DA GPU</span>
                   </span>
-                  <span className="shrink-0 whitespace-nowrap font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
+                  <span className={`shrink-0 whitespace-nowrap font-label-mono text-[12px] font-bold px-1.5 py-0.5 rounded border ${levelBadge[gpuLevel]}`}>
                     {hostMetrics ? percent(hostMetrics.gpu.utilizationPercent) : 'Carregando…'}
                   </span>
                 </div>
@@ -239,7 +247,7 @@ export function EngineeringDistributionView({
                   <span title={gpuCaption} className="min-w-0 truncate text-right font-label-mono text-[12px] text-on-surface-variant font-medium">{gpuCaption}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
-                  <div className="bg-accent-ice h-full rounded-full" style={{ width: `${hostMetrics?.gpu.utilizationPercent ?? 0}%` }}></div>
+                  <div className={`${levelBar[gpuLevel]} h-full rounded-full`} style={{ width: `${hostMetrics?.gpu.utilizationPercent ?? 0}%` }}></div>
                 </div>
               </div>
 
@@ -247,21 +255,21 @@ export function EngineeringDistributionView({
               <div className="min-w-0 bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
                 <div className="flex items-center justify-between gap-2 mb-1 min-w-0">
                   <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5 min-w-0">
-                    <span className="shrink-0 material-symbols-outlined text-status-ok text-[15px]">developer_board</span>
+                    <span className={`shrink-0 material-symbols-outlined text-[15px] ${levelText[cpuLevel]}`}>developer_board</span>
                     <span className="min-w-0 leading-tight" title="HOST CPU">HOST CPU</span>
                   </span>
-                  <span className="shrink-0 whitespace-nowrap font-label-mono text-[12px] text-status-ok font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
+                  <span className={`shrink-0 whitespace-nowrap font-label-mono text-[12px] font-bold px-1.5 py-0.5 rounded border ${levelBadge[cpuLevel]}`}>
                     {hostMetrics ? percent(hostMetrics.cpu.percent) : 'Carregando…'}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between gap-2 mb-1 min-w-0">
-                  <div className="shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold text-status-ok-bright tracking-tight leading-none">
+                  <div className={`shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold tracking-tight leading-none ${levelText[cpuLevel]}`}>
                     {hostMetrics?.cpu.percent === null || !hostMetrics ? '—' : percent(hostMetrics.cpu.percent)}
                   </div>
                   <span title={cpuCaption} className="min-w-0 truncate text-right font-label-mono text-[12px] text-on-surface-variant font-medium">{cpuCaption}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
-                  <div className="bg-status-ok h-full rounded-full" style={{ width: `${hostMetrics?.cpu.percent ?? 0}%` }}></div>
+                  <div className={`${levelBar[cpuLevel]} h-full rounded-full`} style={{ width: `${hostMetrics?.cpu.percent ?? 0}%` }}></div>
                 </div>
               </div>
 
@@ -269,21 +277,21 @@ export function EngineeringDistributionView({
               <div className="min-w-0 bg-surface-panel p-2.5 rounded-lg border border-border-subtle flex flex-col justify-between shadow-sm hover:border-border-strong transition-colors">
                 <div className="flex items-center justify-between gap-2 mb-1 min-w-0">
                   <span className="font-label-caps text-[11px] text-outline uppercase font-bold tracking-wider flex items-center gap-1.5 min-w-0">
-                    <span className="shrink-0 material-symbols-outlined text-armed-amber text-[15px]">storage</span>
+                    <span className={`shrink-0 material-symbols-outlined text-[15px] ${levelText[ramLevel]}`}>storage</span>
                     <span className="min-w-0 leading-tight" title="MEMÓRIA RAM">MEMÓRIA RAM</span>
                   </span>
-                  <span className="shrink-0 whitespace-nowrap font-label-mono text-[12px] text-accent-ice font-bold bg-surface-base px-1.5 py-0.5 rounded border border-border-subtle/40">
+                  <span className={`shrink-0 whitespace-nowrap font-label-mono text-[12px] font-bold px-1.5 py-0.5 rounded border ${levelBadge[ramLevel]}`}>
                     {hostMetrics ? percent(hostMetrics.memory.percent) : 'Carregando…'}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between gap-2 mb-1 min-w-0">
-                  <div className="shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold text-on-surface tracking-tight leading-none">
+                  <div className={`shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold tracking-tight leading-none ${ramLevel === 'ok' ? 'text-on-surface' : levelText[ramLevel]}`}>
                     {hostMetrics ? gib(hostMetrics.memory.usedBytes) : '—'}
                   </div>
                   <span title={ramCaption} className="min-w-0 truncate text-right font-label-mono text-[12px] text-on-surface-variant font-medium">{ramCaption}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
-                  <div className="bg-armed-amber h-full rounded-full" style={{ width: `${hostMetrics?.memory.percent ?? 0}%` }}></div>
+                  <div className={`${levelBar[ramLevel]} h-full rounded-full`} style={{ width: `${hostMetrics?.memory.percent ?? 0}%` }}></div>
                 </div>
               </div>
 
@@ -294,18 +302,18 @@ export function EngineeringDistributionView({
                     <span className="shrink-0 material-symbols-outlined text-status-ok-bright text-[15px]">speed</span>
                     <span className="min-w-0 leading-tight" title="ENGINE & PROCESSO">ENGINE &amp; PROCESSO</span>
                   </span>
-                  <span className={`shrink-0 whitespace-nowrap font-label-caps text-[11px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${engineAlert ? 'text-on-air-crimson bg-on-air-crimson/10 border border-on-air-crimson/30' : 'text-status-ok bg-status-ok/10 border border-status-ok/30'}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok animate-pulse'}`}></span>{engineAlert ? 'ALERTA' : engineSimulated ? 'SIMULADO' : engineProcess?.state === 'running' ? 'ATIVO' : monitorLoaded ? 'SEM ALERTA' : '—'}
+                  <span title={engineStatusTag.title} className={`shrink-0 whitespace-nowrap font-label-caps text-[11px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 border ${levelBadge[engineLevel]}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${levelBar[engineLevel]} ${engineLevel === 'ok' ? 'animate-pulse motion-reduce:animate-none' : ''}`}></span>{engineSimulated ? 'SIMULADO' : engineStatusTag.value}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between gap-2 mb-1 min-w-0">
-                  <div className="shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold text-status-ok tracking-tight leading-none">
+                  <div className={`shrink-0 whitespace-nowrap font-timecode-display text-[20px] font-bold tracking-tight leading-none ${levelText[engineLevel]}`}>
                     {engineProcess?.pid ? `PID ${engineProcess.pid}` : '—'}
                   </div>
                   <span title={engineCaption} className="min-w-0 truncate text-right font-label-mono text-[12px] text-on-surface-variant font-medium">{engineCaption}</span>
                 </div>
                 <div className="w-full bg-surface-base h-1.5 rounded-full overflow-hidden shadow-inner border border-border-subtle/30">
-                  <div className={`${engineAlert ? 'bg-on-air-crimson' : 'bg-status-ok'} h-full rounded-full`} style={{ width: engineProcess?.state === 'running' ? '100%' : engineProcess ? '45%' : '0%' }}></div>
+                  <div className={`${levelBar[engineLevel === 'ok' && engineCpuLevel !== 'unknown' ? engineCpuLevel : engineLevel]} h-full rounded-full`} title="Barra: estado do engine; com o engine OK, a cor segue a CPU do processo" style={{ width: engineProcess?.state === 'running' ? '100%' : engineProcess ? '45%' : '0%' }}></div>
                 </div>
               </div>
             </div>
@@ -339,6 +347,14 @@ export function EngineeringDistributionView({
                 <span>EXPORTAR SAÚDE</span>
               </button>
             </div>
+          </div>
+          {/* Versão, uptime, relógio e disco: o que o plantonista pergunta primeiro. */}
+          <div role="status" aria-label="Servidor" className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-0.5 font-label-mono text-[12px] text-on-surface-variant">
+            <span title={serverStatus ? `Node ${serverStatus.version.node} · ${serverStatus.version.platform}` : undefined}>RPlayout <strong className="text-on-surface">{serverStatus ? `${serverStatus.version.rplayout}${serverStatus.version.build ? ` (${serverStatus.version.build})` : ''}` : 'N/D'}</strong>{serverStatus?.version.gstreamer ? ` · GStreamer ${serverStatus.version.gstreamer}` : ''}</span>
+            <span>Servidor no ar há <strong className="text-on-surface">{serverStatus ? formatUptime(serverStatus.uptimeSeconds) : 'N/D'}</strong></span>
+            <span title={clockInfo.title}>Relógio <strong className={clockInfo.level === 'ok' ? 'text-status-ok-bright' : clockInfo.level === 'bad' ? 'text-on-air-crimson' : clockInfo.level === 'warn' ? 'text-armed-amber' : 'text-outline'}>{clockInfo.value}</strong>{clock?.offsetMs != null ? ` · desvio ${clock.offsetMs > 0 ? '+' : ''}${clock.offsetMs} ms` : ''}{serverStatus ? ` · hora do servidor ${new Date(serverStatus.serverTime).toLocaleTimeString('pt-BR', { hour12: false })}` : ''}</span>
+            <span className={levelText[levelFor(hostMetrics?.disk.percentUsed, 80, 90)] === 'text-status-ok-bright' ? '' : levelText[levelFor(hostMetrics?.disk.percentUsed, 80, 90)]} title={hostMetrics?.disk.path}>{diskCaption}</span>
+            {engineRestartsLabel && <span title={engineStatusTag.title}>{engineRestartsLabel}</span>}
           </div>
         </div>
 
@@ -603,67 +619,8 @@ export function EngineeringDistributionView({
             </div>
           )}
 
-          {/* SEÇÃO 7: TERMINAL DE LOGS TÉCNICOS */}
-          {activeSection === 'LOGS' && (
-            <div className="flex-1 min-h-0 flex flex-col gap-3">
-              <div className="bg-surface-card p-3 rounded-lg border border-border-subtle flex items-center justify-between shadow-sm">
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-accent-ice text-[18px]">terminal</span>
-                  <h2 className="font-headline-md text-[16px] font-bold text-on-surface uppercase tracking-wide">
-                    TERMINAL DE LOGS DA ENGINE EM TEMPO REAL
-                  </h2>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {(['ALL', 'WARN', 'ENGINE'] as const).map((f) => (
-                    <button
-                      key={f}
-                      onClick={() => setLogFilter(f)}
-                      className={`px-2.5 py-1 rounded font-label-caps text-[11px] cursor-pointer transition-colors ${
-                        logFilter === f
-                          ? 'bg-primary-container text-on-primary-container font-bold'
-                          : 'bg-surface-panel hover:bg-surface-container text-outline'
-                      }`}
-                    >
-                      {f}
-                    </button>
-                  ))}
-                  <button
-                    onClick={() => setIsLogPaused(!isLogPaused)}
-                    className="px-2.5 py-1 rounded font-label-caps text-[11px] bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline cursor-pointer"
-                  >
-                    {isLogPaused ? 'RETOMAR' : 'PAUSAR'}
-                  </button>
-                  <button
-                    onClick={() => setLogs([])}
-                    className="px-2.5 py-1 rounded font-label-caps text-[11px] bg-surface-panel hover:bg-surface-container border border-border-subtle text-outline cursor-pointer"
-                  >
-                    LIMPAR
-                  </button>
-                </div>
-              </div>
-
-              {/* Terminal Box */}
-              <div className="flex-1 bg-[#04060d] rounded-lg border border-border-subtle p-3 overflow-y-auto font-mono text-[12px] leading-relaxed flex flex-col gap-1 broadcast-scroll">
-                {filteredLogs.map((log) => (
-                  <div key={log.id} className="flex items-start gap-2">
-                    <span className="text-outline text-[12px] tabular-nums">{log.time}</span>
-                    <span
-                      className={`font-bold text-[11px] px-1.5 rounded ${
-                        log.level === 'OK'
-                          ? 'bg-status-ok/15 text-status-ok'
-                          : log.level === 'WARN'
-                          ? 'bg-armed-amber/15 text-armed-amber'
-                          : 'bg-accent-ice/15 text-accent-ice'
-                      }`}
-                    >
-                      {log.level}
-                    </span>
-                    <span className="text-on-surface-variant flex-1 break-all">{log.msg}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* SEÇÃO 7: LOGS TÉCNICOS (buffer do servidor: engine + servidor) */}
+          {activeSection === 'LOGS' && <TechnicalLogsPanel channelId={channel.id} channelName={channel.name} />}
         </div>
       </div>
     </div>

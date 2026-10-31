@@ -24,6 +24,20 @@ const alertName: Record<ProbeStatus['activeAlerts'][number]['type'], string> = {
 function seconds(ms: number) {
   return `${(ms / 1_000).toFixed(1)}s`
 }
+const ORDER: Record<ProbeStatus['activeAlerts'][number]['type'], number> = { BLACK_FRAME: 0, SILENCE: 1, FREEZE_FRAME: 2 }
+/** Todas as condições ativas ao mesmo tempo (preto + mudo + congelado), não só
+ * a primeira; flapping agrupado aparece como "×N". */
+export function probeAlertSummary(active: ProbeStatus['activeAlerts']): { key: string | null; label: string | null; detail: string | null } {
+  if (!active.length) return { key: null, label: null, detail: null }
+  const sorted = [...active].sort((a, b) => ORDER[a.type] - ORDER[b.type])
+  const count = (alert: (typeof sorted)[number]) => (alert as { occurrences?: number }).occurrences ?? 1
+  return {
+    key: sorted.map(alert => alert.type).join('+'),
+    label: sorted.map(alert => alertName[alert.type]).join(' + '),
+    detail: sorted.map(alert => `${alertName[alert.type]} ${seconds(alert.durationMs)} / ${seconds(alert.thresholdMs)}${count(alert) > 1 ? ` (×${count(alert)})` : ''}`).join(' · ')
+      + (sorted[0]!.actionMessage ? `. ${sorted[0]!.actionMessage}` : ''),
+  }
+}
 
 /**
  * Única apresentação da sonda PGM. Todo estado vem do processo do servidor;
@@ -82,10 +96,11 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
     finally { if (currentChannel.current === channelId) setPending(false) }
   }
   const alert = active[0]
+  const summary = probeAlertSummary(active)
   // "Ciente" reconhece no servidor os alertas de sinal pendentes do canal (para
   // os lembretes externos) e recolhe a faixa vermelha; ela volta se surgir
   // outro tipo de alerta ou se este sumir e voltar.
-  const alertKey = alert ? `${alert.type}` : null
+  const alertKey = summary.key
   const [acknowledgedKey, setAcknowledgedKey] = useState<string | null>(null)
   useEffect(() => { if (!alertKey) setAcknowledgedKey(null) }, [alertKey])
   const acknowledge = async () => {
@@ -109,7 +124,7 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
       : status?.contingency?.active
         ? 'LOOP NO PGM'
       : alert
-        ? alertName[alert.type]
+        ? summary.label!
         : telemetryAvailable
           ? 'PGM: OK'
           : 'AGUARDANDO AMOSTRA'
@@ -137,14 +152,14 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
     : status?.emergencySlateActive
       ? 'Slate de emergência confirmado pelo engine.'
       : alert && showAlertBanner
-        ? `${alertName[alert.type]} acima do limiar: ${seconds(alert.durationMs)} / ${seconds(alert.thresholdMs)}. ${alert.actionMessage ?? ''}`
+        ? `Acima do limiar: ${summary.detail}`
         : null
   return (
     <section className={`w-full flex flex-col gap-1.5 ${className}`} aria-label="Sonda de qualidade do PGM">
       <div role={message ? 'alert' : undefined} className={`w-full h-9 border px-3 rounded-lg flex items-center gap-3 overflow-hidden ${rowTone}`}>
         <span className={`material-symbols-outlined text-[18px] shrink-0 ${tone === 'ok' ? 'text-status-ok' : tone === 'idle' ? 'text-outline' : tone === 'warn' ? 'text-armed-amber' : 'text-on-air-crimson'}`}>troubleshoot</span>
         <span className="font-label-caps text-[11px] text-on-surface font-bold uppercase tracking-wider shrink-0">Sonda PGM</span>
-        <span className={`shrink-0 px-1.5 py-0.5 rounded border font-label-caps text-[11px] font-bold ${chipTone}`}>{alert && acknowledgedKey === alertKey ? `${alertName[alert.type]} · CIENTE` : stateLabel}</span>
+        <span className={`shrink-0 px-1.5 py-0.5 rounded border font-label-caps text-[11px] font-bold ${chipTone}`}>{alert && acknowledgedKey === alertKey ? `${summary.label} · CIENTE` : stateLabel}</span>
         {message
           ? <span className={`min-w-0 flex-1 truncate font-label-mono text-[12px] ${tone === 'warn' ? 'text-armed-amber' : 'text-on-air-crimson'}`} title={message}>{message}</span>
           : <span className="min-w-0 flex-1 truncate font-label-mono text-[12px] text-outline">

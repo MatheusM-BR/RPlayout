@@ -29,7 +29,7 @@ export function ConfirmHost() {
   const danger = current.tone === 'danger'
   return (
     <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 p-4">
-      <div role="alertdialog" aria-modal="true" aria-labelledby={`confirm-title-${current.id}`} aria-describedby={`confirm-message-${current.id}`} className={`w-full max-w-md rounded-xl border bg-surface-panel p-5 shadow-2xl ${danger ? 'border-on-air-crimson/70' : 'border-border-strong'}`}>
+      <div role="dialog" aria-modal="true" data-tone={current.tone} aria-labelledby={`confirm-title-${current.id}`} aria-describedby={`confirm-message-${current.id}`} className={`w-full max-w-md rounded-xl border bg-surface-panel p-5 shadow-2xl ${danger ? 'border-on-air-crimson/70' : 'border-border-strong'}`}>
         <h2 id={`confirm-title-${current.id}`} className={`mb-2 font-headline-md text-[16px] font-bold uppercase tracking-wide ${danger ? 'text-on-air-crimson' : 'text-on-surface'}`}>{current.title}</h2>
         <p id={`confirm-message-${current.id}`} className="whitespace-pre-line text-[14px] leading-relaxed text-on-surface">{current.message}</p>
         <div className="mt-4 flex flex-wrap justify-end gap-2">
