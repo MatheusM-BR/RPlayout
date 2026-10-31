@@ -357,7 +357,7 @@ export function AiredView({
 
           <div className="bg-surface-card rounded-xl border border-border-subtle p-3 flex flex-col justify-between shadow-sm">
             <span className="font-label-caps text-[11px] text-outline uppercase tracking-wider">
-              Paradas registradas
+              STOP do operador
             </span>
             <div className="font-timecode-display text-[26px] text-status-ok-bright font-bold tabular-nums leading-tight mt-1">
               {entries === null ? (loadError ? '—' : 'Carregando…') : stopCount}
