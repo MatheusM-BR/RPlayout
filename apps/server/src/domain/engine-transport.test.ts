@@ -846,6 +846,27 @@ describe('transporte real confirmado pelo engine', () => {
     event({event:'itemError',itemId:'1',bus:'pgm',message:'entrada não confirmou quadro/áudio exigido em 10 segundos'})
     await vi.waitFor(()=>expect(transport.state().onAir?.itemId).toBe('2'))
   })
+  it('inserção pontual ao vivo recusada não volta na próxima volta do loop (A6)',async()=>{
+    const first=join(directory,'vt-loop-a.mkv'),after=join(directory,'vt-loop-b.mkv');writeFileSync(first,'video a');writeFileSync(after,'video b')
+    const value=view([first,'live',after],true),spent:string[]=[]
+    Object.assign(value.items[1]!,{item:{...value.items[1]!.item,id:'urgent:req',type:'LIVE',sourceRef:'ndi:SUMIU',durationOverride:250},asset:null})
+    ;(value.schedule.items as unknown as Array<{id:string}>)[1]!.id='urgent:req'
+    start(value)
+    Object.assign((transport as unknown as {options:object}).options,{onOneShotSpent:(id:string)=>spent.push(id)})
+    await transport.take('grade','0');holdLiveTake=true
+    event({event:'position',itemId:'0',frames:250,duration:250});event({event:'eos',itemId:'0'})
+    await vi.waitFor(()=>expect(commands.filter(command=>command.cmd==='take')).toHaveLength(2))
+    holdLiveTake=false
+    event({event:'itemError',itemId:'urgent:req',bus:'pgm',message:'entrada não confirmou quadro/áudio exigido em 10 segundos'})
+    await vi.waitFor(()=>expect(transport.state().onAir?.itemId).toBe('2'))
+    expect(spent).toEqual(['urgent:req'])
+    // Fim do último item: o loop volta ao primeiro, sem tentar o ao vivo de novo.
+    event({event:'position',itemId:'2',frames:250,duration:250});event({event:'eos',itemId:'2'})
+    await vi.waitFor(()=>expect(transport.state().onAir?.itemId).toBe('0'))
+    event({event:'position',itemId:'0',frames:250,duration:250});event({event:'eos',itemId:'0'})
+    // Sem o filtro, depois de '0' viria de novo 'urgent:req' (e congelaria '0' por 10 s).
+    await vi.waitFor(()=>expect(transport.state().onAir?.itemId).toBe('2'))
+  })
   it('preserva identidade de publishers distintos no mesmo destino',()=>{
     start(view([]))
     for(const outputId of ['primary','backup'])event({event:'publisher',outputId,url:'rtmp://host/shared',health:'onAir',attempts:0,delivered:1})

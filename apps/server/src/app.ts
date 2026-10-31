@@ -73,7 +73,7 @@ import { existsSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { ContinuityCache } from './domain/continuity-cache.js'
 import { PgmProbe } from './domain/pgm-probe.js'
-import { activeOperationalPlaylist, readOperationalPayload } from './domain/operational-playlist.js'
+import { activeOperationalPlaylist, readOperationalPayload, retireOperationalInsert } from './domain/operational-playlist.js'
 import { Checkpoints, type ChannelCheckpoint } from './domain/checkpoints.js'
 import {resolveLiveProgramBinding} from './domain/live-program-binding.js'
 import {assertPersistedLiveReplacementReceipt,unresolvedNativeReplacementJournals,type NativeLiveReplacementContext} from './domain/native-live-replacement-ledger.js'
@@ -307,6 +307,11 @@ export class ChannelRuntime {
             // Commit every confirmed TAKE to the same serialized as-run queue.
             void this.asRun.follow(itemId, this.executionView, this.operationalRevision?.id ?? null, position, true)
               .catch((error: unknown) => { this.recoveryError = 'Falha no registro de execução: ' + (error instanceof Error ? error.message : String(error)) })
+          },
+          onOneShotSpent:(itemId,reason)=>{ if(!this.closed) void this.retireOneShot(itemId,reason) },
+          onProgramSignal:(itemId,lost,reason)=>{
+            if(this.closed)return
+            void this.asRun.signal(itemId,lost,this.executionView,reason).catch((error:unknown)=>{console.error('RPlayout: perda de sinal não registrada no as-run.',error instanceof Error?error.message:error)})
           },
           onRecoveryRejected:(attempt,error)=>{
             const saved=this.recoveryAttempt
@@ -560,6 +565,20 @@ export class ChannelRuntime {
     const itemIds=new Set(editorial.items.map(row=>row.id))
     for(const itemId of this.cues.keys())if(!itemIds.has(itemId))this.cues.delete(itemId)
     if(!this.operationalView)this.executionCues=this.cues
+  }
+
+  /** Inserção pontual gasta sai da revisão em execução (A6). Espera o item
+   * sair do PGM; falha aqui não para o canal: o transporte já não o escolhe. */
+  private async retireOneShot(itemId:string,reason:'AIRED'|'REFUSED',attempt=0):Promise<void>{
+    const rundownId=this.executionView?.rundown.id
+    if(!rundownId||!this.operationalRevision)return
+    if(this.transport.state().onAir?.itemId===itemId){if(attempt<20)setTimeout(()=>{void this.retireOneShot(itemId,reason,attempt+1)},1000);return}
+    try{
+      const row=retireOperationalInsert(this.db,this.channel,rundownId,itemId,this.transport.state().onAir?.itemId??null,reason)
+      if(!row)return
+      await this.refresh()
+      this.checkpoint(true)
+    }catch(error){console.error('RPlayout: inserção pontual não retirada da revisão.',error instanceof Error?error.message:error)}
   }
 
   async refresh(): Promise<RundownView | null> {
@@ -1561,6 +1580,9 @@ export class ChannelRuntime {
       liveReplacement: this.liveReplacementStatus(),
       // QC "em qualidade" and the Master share this PVW: say so before a CUE.
       qcInspection: this.qcInspection.inspecting(),
+      // Sem PVW (instalação sem servidor de mídia) a interface oferece TAKE
+      // direto do item selecionado em vez de CUE (A1).
+      previewBus: !(this.transport instanceof EngineTransport) || this.transport.hasPreviewBus(),
       graphic: this.graphics.onAir(),
       alerts: this.alerts(),
       now: this.view ? rundownFrames(this.view.rundown.date, this.channel.rate) ?? framesSinceMidnight(new Date(), this.channel.rate) : framesSinceMidnight(new Date(), this.channel.rate),

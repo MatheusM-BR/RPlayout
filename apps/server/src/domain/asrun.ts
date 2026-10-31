@@ -44,6 +44,47 @@ export class AsRun {
   private exitReasons = new Map<string, { reason: string; frames: number }>()
   private deferredEvents:Array<()=>void>|null=null
 
+  /** Linha própria de perda de sinal do ao vivo no PGM: a duração do item
+   * (posição do engine) conta quadros pretos como exibidos; esta linha mostra
+   * quando caiu e quando voltou (ou que só acabou na saída do item). */
+  private signalOpen: { id: string; itemId: string; startedMs: number; rate: Rate } | null = null
+
+  signal(itemId: string, lost: boolean, view: RundownView | null, reason: string | null = null): Promise<void> {
+    return this.enqueue(() => {
+      if (!lost) { if (this.signalOpen?.itemId === itemId) this.closeSignal('SIGNAL_RESTORED'); return }
+      if (this.signalOpen?.itemId === itemId) return
+      if (this.signalOpen) this.closeSignal('ITEM_ENDED')
+      const entry = view?.items.find((candidate) => candidate.item.id === itemId)
+      const id = randomUUID(), at = new Date().toISOString()
+      this.db.transaction(tx => {
+        if (this.lease) this.lease.assertOwned()
+        else if (readExecutionOwner(this.db.$client, this.channel.id)) throw new Error('As-run protegido por posse nativa.')
+        tx.insert(asRun).values({
+          id, channelId: this.channel.id, rundownId: view?.rundown.id ?? null, itemId, mediaId: null, revisionId: null, mediaHash: null,
+          startPositionFrames: null, title: `SEM SINAL — ${entry?.item.title ?? 'entrada ao vivo'}${reason ? ` (${reason.slice(0, 120)})` : ''}`,
+          type: 'SINAL', startedAt: at, endedAt: null, plannedStart: null, actualStart: framesSinceMidnight(new Date(), this.channel.rate),
+          airedFrames: null, rateNum: this.channel.rate.num, rateDen: this.channel.rate.den, executionKind: this.executionKind,
+          durationEvidence: 'UNKNOWN', plannedFrames: null, endedBy: null, createdAt: at,
+        }).run()
+        this.lease?.bindAsRun(id)
+      }, { behavior: 'immediate' })
+      this.signalOpen = { id, itemId, startedMs: Date.now(), rate: { ...this.channel.rate } }
+      this.integration('asrun.signal_lost', { itemId, startedAt: at })
+    })
+  }
+
+  private closeSignal(reason: 'SIGNAL_RESTORED' | 'ITEM_ENDED'): void {
+    const open = this.signalOpen
+    if (!open) return
+    this.signalOpen = null
+    const frames = msToFrames(Math.max(0, Date.now() - open.startedMs), open.rate), at = new Date().toISOString()
+    this.db.transaction(tx => {
+      if (this.lease && !this.lease.ownsAsRun(open.id)) throw new Error('As-run não pertence à execução atual.')
+      tx.update(asRun).set({ endedAt: at, airedFrames: frames, durationEvidence: 'CLOCK_ESTIMATE', endedBy: reason }).where(eq(asRun.id, open.id)).run()
+    }, { behavior: 'immediate' })
+    this.integration('asrun.signal_ended', { itemId: open.itemId, endedAt: at, reason, frames })
+  }
+
   noteExit(itemId: string, reason: string, frames: number): void {
     this.exitReasons.set(itemId, { reason, frames: Math.max(0, Math.floor(frames)) })
   }
@@ -97,6 +138,7 @@ export class AsRun {
     this.reconcileAfterStartup()
     if (this.open && this.open.itemId === itemId && !newTake) return
 
+    if (this.signalOpen && this.signalOpen.itemId !== itemId) this.closeSignal('ITEM_ENDED')
     if (this.open) {
       const exit = this.exitReasons.get(this.open.itemId)
       this.close(this.open, exit?.reason ?? (itemId ? 'NEXT' : 'STOP'), exit?.frames)
@@ -167,6 +209,7 @@ export class AsRun {
   /** Fecha a linha aberta, se houver. Chamado ao encerrar o canal. */
   finish(reason = 'STOP', endPositionFrames?: number): Promise<void> {
     return this.enqueue(async () => {
+      if (this.signalOpen) this.closeSignal('ITEM_ENDED')
       if (!this.open) return
       await this.close(this.open, reason, endPositionFrames)
       this.exitReasons.delete(this.open.itemId)
