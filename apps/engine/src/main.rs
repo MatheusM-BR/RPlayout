@@ -19,6 +19,7 @@ mod live_replacement;
 mod bootstrap;
 mod fencing;
 mod input_quality;
+mod srt_input;
 
 use anyhow::{anyhow, Context, Result};
 use channel::{Channel, Config, Output, Scan};
