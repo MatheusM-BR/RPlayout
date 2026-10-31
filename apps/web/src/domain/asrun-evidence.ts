@@ -36,6 +36,13 @@ export function asRunStatus(entry: AsRunEntry): string {
   if (reason === 'STOP') return 'PARADA MANUAL'
   if (reason === 'RESTART') return 'ENCERRADO NO REINÍCIO'
   if (reason === 'CONTINGENCY_RETURN') return 'RETORNO DE CONTINGÊNCIA'
+  // Saídas do watchdog, da inserção e do encerramento do servidor: antes caíam
+  // em "ENCERRAMENTO NÃO CLASSIFICADO" no AIRED.
+  if (reason === 'CONTINGENCY') return 'CORTE PARA A CONTINGÊNCIA'
+  if (reason === 'WATCHDOG_LIVE_RETURN') return 'RETORNO À LIVE (WATCHDOG)'
+  if (reason === 'OPERATIONAL_INSERT_NOW') return 'CORTE POR INSERÇÃO AGORA'
+  if (reason === 'PLAYLIST_BOUNDARY') return 'VIRADA DE GRADE'
+  if (reason === 'SHUTDOWN') return 'ENCERRADO COM O SERVIDOR'
   if (reason === 'SKIP' || reason === 'DROPPED') return 'DESCARTADO'
   if (reason === 'SIGNAL_RESTORED') return 'SINAL VOLTOU'
   if (reason === 'ITEM_ENDED') return 'SEM SINAL ATÉ A SAÍDA'

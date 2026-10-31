@@ -1,7 +1,10 @@
 import { outageTotalMs, type LiveOutage, type LiveOutageAction, type LiveOutageClosedBy, type WatchdogDetection } from '@rplayout/protocol'
 type Sqlite = import('better-sqlite3').Database
 interface Row { id: string; as_run_id: string | null; item_id: string | null; source_name: string; started_at: string; ended_at: string | null; reasons: string; action: string; closed_by: string | null }
-interface AsRunLike { id: string; itemId: string | null; startedAt: string; endedAt: string | null }
+interface AsRunLike { id: string; itemId: string | null; startedAt: string; endedAt: string | null; type?: string | null }
+/** Linha "SEM SINAL" do as-run (perda de sinal do PGM): tem o mesmo item da
+ * live, mas a parada pertence à linha do item ao vivo, não a ela. */
+const isSignalRow = (entry: AsRunLike) => entry.type === 'SINAL'
 
 const toOutage = (row: Row, asRunId: string | null): LiveOutage => {
   let reasons: WatchdogDetection[] = []
@@ -24,8 +27,8 @@ export function attachLiveOutages<T extends AsRunLike>(sqlite: Sqlite, channelId
   const byRun = new Map<string, LiveOutage[]>()
   const close = sqlite.prepare("UPDATE live_outages SET ended_at=?,closed_by='ITEM_ENDED',as_run_id=COALESCE(as_run_id,?) WHERE id=? AND ended_at IS NULL")
   for (const row of rows) {
-    const entry = (row.as_run_id ? entries.find(candidate => candidate.id === row.as_run_id) : undefined)
-      ?? entries.find(candidate => candidate.itemId === row.item_id && candidate.startedAt <= row.started_at && (!candidate.endedAt || candidate.endedAt >= row.started_at))
+    let entry = row.as_run_id ? entries.find(candidate => candidate.id === row.as_run_id) : undefined
+    if (!entry || isSignalRow(entry)) entry = entries.find(candidate => !isSignalRow(candidate) && candidate.itemId === row.item_id && candidate.startedAt <= row.started_at && (!candidate.endedAt || candidate.endedAt >= row.started_at)) ?? entry
     if (!entry) continue
     if (!row.ended_at && !activeIds.has(row.id) && entry.endedAt) {
       const ended = entry.endedAt < row.started_at ? row.started_at : entry.endedAt
