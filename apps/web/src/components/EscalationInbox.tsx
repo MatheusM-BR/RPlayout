@@ -7,6 +7,11 @@ import { useCan } from '../domain/permissions.js'
 
 const stateName: Record<string, string> = { black: 'BLACK', freeze: 'CONGELAMENTO', silence: 'SILÊNCIO' }
 const tierName = { OPERATOR: 'Operador', SUPERVISOR: 'Supervisor', GESTOR: 'Gestor', ADMIN: 'Administrador' } as const
+/** Posição das Pendências: centro da borda de baixo. No canto direito (antes),
+ * o contador cobria APROVAR QC/REJEITAR do QC e o painel aberto cobria
+ * "Confirmar inserção" do Master; no centro de baixo ficam o medidor de áudio
+ * do Master e o texto da decisão do QC, que não são botões. */
+export const PENDING_POSITION = 'fixed bottom-3 left-1/2 -translate-x-1/2'
 
 /** Faixa discreta "Pendências": quedas de sinal do PGM ainda sem ciente, por nível.
  * "Visto" só silencia o som nesta estação; "Ciente" grava no servidor. */
@@ -44,13 +49,13 @@ export function EscalationInbox() {
   const urgent = unseen.length > 0
   if (!expanded) return (
     <button type="button" aria-label={`Pendências: ${notifications.length}. Abrir lista`} aria-expanded={false} onClick={() => setExpanded(true)}
-      className={`fixed bottom-3 right-3 z-[65] flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-bold shadow-lg ${urgent ? 'border-on-air-crimson bg-on-air-crimson/90 text-white animate-pulse motion-reduce:animate-none' : 'border-armed-amber bg-surface-panel text-armed-amber'}`}>
+      className={`${PENDING_POSITION} z-[65] flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] font-bold shadow-lg ${urgent ? 'border-on-air-crimson bg-on-air-crimson/90 text-white animate-pulse motion-reduce:animate-none' : 'border-armed-amber bg-surface-panel text-armed-amber'}`}>
       <span className="material-symbols-outlined text-[16px]">notifications_active</span>
       PENDÊNCIAS <span className="tabular-nums">{notifications.length}</span>{!soundOn && <span className="font-normal opacity-80">· sem som</span>}
     </button>
   )
   return (
-    <aside role="region" aria-label="Pendências" className="fixed bottom-3 right-3 z-[65] w-[min(560px,calc(100vw-24px))] max-h-[45vh] overflow-y-auto rounded border border-armed-amber bg-surface-panel px-3 py-1.5 text-[12px] shadow-lg select-none">
+    <aside role="region" aria-label="Pendências" className={`${PENDING_POSITION} z-[65] w-[min(560px,calc(100vw-24px))] max-h-[45vh] overflow-y-auto rounded border border-armed-amber bg-surface-panel px-3 py-1.5 text-[12px] shadow-lg select-none`}>
       <div className="flex items-center gap-2">
         <b className="text-armed-amber">Pendências ({notifications.length})</b>
         {!soundOn && <span className="text-armed-amber" title="Sem som nesta estação">SOM DESLIGADO</span>}
