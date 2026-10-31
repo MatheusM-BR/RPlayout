@@ -857,6 +857,96 @@ fn uri_decoder_with_policy(hardware_enabled: bool) -> Result<gst::Element> {
     Ok(source)
 }
 
+/// SRT em modo listener: `mode=listener` explícito ou sem host (`srt://:9000`).
+fn srt_listener(source: &str) -> bool {
+    let Some(rest) = source.strip_prefix("srt://") else { return false };
+    let query = rest.split_once('?').map(|(_, query)| query).unwrap_or("");
+    let explicit = query.split('&').find_map(|pair| pair.strip_prefix("mode="));
+    match explicit {
+        Some(mode) => mode.eq_ignore_ascii_case("listener") || mode.eq_ignore_ascii_case("server"),
+        None => rest.starts_with(':') || rest.starts_with("@:"),
+    }
+}
+
+/// Entrada SRT que cai precisa voltar sozinha (A4). Sem `keep-listening` o
+/// `srtsrc` em listener fecha a porta e manda EOS quando o caller desconecta:
+/// o PGM ficava preto até o fim do item e o caller que voltava era recusado.
+/// Com ele a porta continua escutando e o mesmo pipeline retoma quando o
+/// caller reconecta; a perda continua sendo vista pela checagem de 2 s.
+fn keep_srt_listening(decoder: &gst::Element) {
+    decoder.connect("source-setup", false, |values| {
+        if let Some(source) = values.get(1).and_then(|value| value.get::<gst::Element>().ok()) {
+            if source.find_property("keep-listening").is_some() {
+                source.set_property("keep-listening", true);
+            } else {
+                eprintln!("[engine] srtsrc sem keep-listening nesta instalação: entrada SRT que cair só volta pela recuperação do item");
+            }
+        }
+        None
+    });
+}
+
+#[cfg(test)]
+mod srt_listener_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    #[test]
+    fn srt_listener_detection_matches_only_listener_inputs(){
+        assert!(srt_listener("srt://127.0.0.1:9000?mode=listener&latency=800"));
+        assert!(srt_listener("srt://:9000"));
+        assert!(srt_listener("srt://0.0.0.0:9000?mode=server"));
+        assert!(!srt_listener("srt://10.0.0.5:9000?mode=caller"));
+        assert!(!srt_listener("srt://10.0.0.5:9000"));
+        assert!(!srt_listener("rtmp://host/live"));
+    }
+
+    /// A4: caller que cai e volta é retomado pelo mesmo listener, sem EOS.
+    #[test]
+    fn srt_listener_keeps_listening_after_caller_disconnects(){
+        gst::init().unwrap();
+        if gst::ElementFactory::find("srtsrc").is_none() || gst::ElementFactory::find("srtsink").is_none() { eprintln!("sem plugin SRT; teste pulado"); return; }
+        let port = 19_500 + (std::process::id() % 400) as u16;
+        let listener = format!("srt://127.0.0.1:{port}?mode=listener&latency=120");
+        let decoder = uri_decoder().unwrap();
+        decoder.set_property("uri", &listener);
+        keep_srt_listening(&decoder);
+        let receiver = gst::Pipeline::new();
+        let sink = gst::ElementFactory::make("fakesink").property("sync", false).build().unwrap();
+        receiver.add_many([&decoder, &sink]).unwrap();
+        let sink_weak = sink.downgrade();
+        decoder.connect_pad_added(move |_, pad| {
+            if let Some(sink) = sink_weak.upgrade() {
+                if pad.current_caps().is_some_and(|caps| caps.structure(0).is_some_and(|st| st.name().starts_with("video/"))) {
+                    let _ = pad.link(&sink.static_pad("sink").unwrap());
+                }
+            }
+        });
+        let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = frames.clone();
+        sink.static_pad("sink").unwrap().add_probe(gst::PadProbeType::BUFFER, move |_, _| { counter.fetch_add(1, Ordering::Relaxed); gst::PadProbeReturn::Ok });
+        receiver.set_state(gst::State::Playing).unwrap();
+        let send = |seconds: u64| {
+            let caller = gst::parse::launch(&format!("videotestsrc is-live=true ! video/x-raw,width=160,height=90,framerate=25/1 ! x264enc tune=zerolatency speed-preset=ultrafast key-int-max=25 ! mpegtsmux ! srtsink uri=srt://127.0.0.1:{port}?mode=caller&latency=120 wait-for-connection=false")).unwrap();
+            caller.set_state(gst::State::Playing).unwrap();
+            std::thread::sleep(Duration::from_secs(seconds));
+            caller.set_state(gst::State::Null).unwrap();
+        };
+        let ended = |pipeline: &gst::Pipeline| pipeline.bus().unwrap().iter().any(|message| matches!(message.view(), gst::MessageView::Eos(_)));
+        send(3);
+        let first = frames.load(Ordering::Relaxed);
+        assert!(first > 10, "primeira sessão sem quadros: {first}");
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(!ended(&receiver), "listener mandou EOS quando o caller caiu");
+        let paused = frames.load(Ordering::Relaxed);
+        send(4);
+        let resumed = frames.load(Ordering::Relaxed);
+        receiver.set_state(gst::State::Null).unwrap();
+        assert!(resumed > paused + 10, "caller que voltou não foi retomado: {paused} -> {resumed}");
+    }
+}
+
 fn uri_decoder() -> Result<gst::Element> {
     uri_decoder_with_policy(std::env::var("RPLAYOUT_HARDWARE_DECODE").is_ok_and(|value|value=="1"))
 }
@@ -914,6 +1004,7 @@ fn source_for(spec: &ItemSpec) -> Result<LiveInput> {
             }
         }
         src.set_property("buffer-duration", buffer_duration);
+        if srt_listener(source) { keep_srt_listening(&src); }
         return Ok(LiveInput { video: src, audio: None, dynamic: true });
     }
 
