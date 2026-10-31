@@ -21,7 +21,7 @@ export function watchdogDetail(input: WatchdogInputStatus): string {
   const conditions = input.conditions.map(condition => `${WATCHDOG_DETECTION_LABELS[condition.detection]} ${seconds(condition.durationMs)}/${seconds(condition.thresholdMs)}${condition.action === 'ACT' ? '' : ' (alerta)'}`)
   const parts: string[] = []
   if (input.state === 'ESPERA') parts.push(input.waitArtOnAir ? `Arte de espera no ar · contingência em ${seconds(input.waitRemainingMs)}` : `Espera · contingência em ${seconds(input.waitRemainingMs)}`)
-  if (input.state === 'CONTINGENCIA') parts.push(!input.contingencyOnAir ? 'Contingência sem conteúdo · arte de espera mantida'
+  if (input.state === 'CONTINGENCIA') parts.push(!input.contingencyOnAir ? (input.pendingAction === 'ENTER_CONTINGENCY' ? 'Acionando a contingência (vinheta + vídeos)' : 'Contingência sem conteúdo · arte de espera mantida')
     : input.blindReturn ? 'Contingência no PGM · canal sem PVW: retorno por tentativa (só corta com quadro real)' : 'Contingência no PGM · observando a entrada no PVW')
   if (input.state === 'RETORNO') parts.push(input.awaitingOperator ? 'Sinal estável · aguardando "voltar para a live"' : `Sinal voltou · estável há ${seconds(input.stableMs)}`)
   if (input.holdContingency) parts.push('contingência mantida pelo operador')

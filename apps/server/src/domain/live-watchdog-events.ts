@@ -12,6 +12,19 @@ import type { RecordedWatchdogEvent } from './live-watchdog.js'
  * uma condição vira UM incidente aberto até normalizar, e SUSPEITA não abre
  * incidente -- só ESPERA, CONTINGÊNCIA, falha de ação e condição confirmada.
  */
+type Sqlite = import('better-sqlite3').Database
+function persistOutage(sqlite: Sqlite, channelId: string, event: RecordedWatchdogEvent) {
+  const outage = event.outage!
+  const iso = (ms: number | null) => ms === null ? null : new Date(ms).toISOString()
+  if (outage.phase === 'OPEN') {
+    // Linha as-run do item ao vivo no ar quando a parada começou.
+    const row = event.itemId ? sqlite.prepare('SELECT id FROM as_run WHERE channel_id=? AND item_id=? AND started_at<=? ORDER BY started_at DESC LIMIT 1').get(channelId, event.itemId, iso(event.at)) as { id: string } | undefined : undefined
+    sqlite.prepare('INSERT OR IGNORE INTO live_outages(id,channel_id,as_run_id,item_id,source_key,source_name,started_at,ended_at,reasons,action,closed_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(outage.id, channelId, row?.id ?? null, event.itemId, event.sourceKey, event.sourceName, iso(outage.startedAt), null, JSON.stringify(outage.reasons), outage.action, null, new Date(event.at).toISOString())
+  } else sqlite.prepare('UPDATE live_outages SET reasons=?,action=?,ended_at=COALESCE(?,ended_at),closed_by=COALESCE(?,closed_by) WHERE id=? AND channel_id=?')
+    .run(JSON.stringify(outage.reasons), outage.action, iso(outage.endedAt), outage.closedBy, outage.id, channelId)
+}
+
 export class LiveWatchdogRecorder {
   private readonly open = new Map<string, string>()
   constructor(private readonly db: Db, private readonly channelId: string) {}
@@ -22,6 +35,12 @@ export class LiveWatchdogRecorder {
     this.db.transaction(tx => {
       for (const event of events) {
         const occurredAt = new Date(event.at).toISOString()
+        // Paradas: só a entrada do PGM, presas à linha as-run do item que estava no ar.
+        if (event.kind === 'OUTAGE') {
+          if (event.bus !== 'pgm' || !event.outage) continue
+          persistOutage(this.db.$client, this.channelId, event)
+          continue
+        }
         tx.insert(operatorDecisions).values({ id: randomUUID(), rundownId: context.rundownId ?? '@execution', itemId: context.itemId,
           kind: 'LIVE_WATCHDOG_' + event.kind, actorUsername: event.kind === 'OPERATOR' ? null : '@watchdog', createdAt: occurredAt,
           payload: { channelId: this.channelId, source: event.sourceName, sourceId: event.sourceId, bus: event.bus, message: event.message,

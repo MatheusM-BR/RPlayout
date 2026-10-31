@@ -1282,6 +1282,12 @@ export class ChannelRuntime {
     contingencyActive: () => Boolean(this.contingencyState?.active && this.transport.state().onAir),
     canMonitor: () => this.temMonitor('pvw'),
     contingencyOrigin: () => this.watchdogContingencyOrigin(),
+    openOutage: sourceKey => {
+      const row=this.db.$client.prepare('SELECT id,started_at AS startedAt,reasons,action FROM live_outages WHERE channel_id=? AND source_key=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1').get(this.channel.id,sourceKey) as {id:string;startedAt:string;reasons:string;action:string}|undefined
+      if(!row)return null
+      let reasons:import('@rplayout/protocol').WatchdogDetection[]=[];try{reasons=JSON.parse(row.reasons)}catch{}
+      return {id:row.id,startedAt:Date.parse(row.startedAt),reasons,action:row.action as import('@rplayout/protocol').LiveOutageAction}
+    },
   })
   private async watchdogShowWait(art: WatchdogWaitArt, key: string): Promise<void> {
     if (art.kind === 'HOLD_LAST_FRAME') return

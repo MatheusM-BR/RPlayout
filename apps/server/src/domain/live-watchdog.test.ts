@@ -322,3 +322,35 @@ describe('política configurável do watchdog', () => {
     expect(effectiveWatchdogPolicy(base, 'outra').mode).toBe('AUTOMATIC')
   })
 })
+
+describe('paradas da entrada ao vivo (para o AIRED)', () => {
+  const outages = (machine: WatchdogMachine) => machine.drainEvents().filter(event => event.kind === 'OUTAGE').map(event => event.outage!)
+  it('parada no meio do item: começa quando o sinal sumiu e termina quando a live voltou, com a ação tomada', () => {
+    const machine = new WatchdogMachine('srt://x', T0), effects: Array<{ at: number; effect: WatchdogEffect }> = [], p = policy()
+    simulate(machine, T0, T0 + 20_000, at => at >= T0 + 4000 && at < T0 + 7000 ? lost(at, T0 + 4000) : healthy(at), p, effects)
+    const rows = outages(machine)
+    expect(rows[0]).toMatchObject({ phase: 'OPEN', startedAt: T0 + 4000, action: 'NONE', reasons: ['SIGNAL_LOSS'] })
+    const close = rows.find(row => row.phase === 'CLOSE')!
+    expect(close.action).toBe('WAIT_ART')
+    expect(close.closedBy).toBe('SIGNAL_RETURNED')
+    // Termina quando a arte sai e a live volta ao ar (sinal estável por T2).
+    expect(close.endedAt! - T0).toBeGreaterThanOrEqual(7000 + 5000)
+  })
+  it('mais de uma parada no mesmo item, inclusive só alerta (termina quando o sinal volta)', () => {
+    const machine = new WatchdogMachine('srt://x', T0), p = policy({ mode: 'ALERT_ONLY' })
+    const bad = (at: number) => (at >= T0 + 3000 && at < T0 + 6000) || (at >= T0 + 15_000 && at < T0 + 19_000)
+    simulate(machine, T0, T0 + 30_000, at => bad(at) ? lost(at, at < T0 + 10_000 ? T0 + 3000 : T0 + 15_000) : healthy(at), p, [])
+    const closed = outages(machine).filter(row => row.phase === 'CLOSE')
+    expect(closed).toHaveLength(2)
+    expect(closed.map(row => [row.startedAt - T0, row.endedAt! - T0, row.action])).toEqual([[3000, 5750, 'NONE'], [15_000, 18_750, 'NONE']])
+  })
+  it('contingência fica registrada na parada; item que sai do ar fecha a parada aberta', () => {
+    const machine = new WatchdogMachine('srt://x', T0), p = policy()
+    simulate(machine, T0, T0 + 9000, at => at >= T0 + 3000 ? lost(at, T0 + 3000) : healthy(at), p, [])
+    machine.abandon(T0 + 9500, 'TAKE manual')
+    const rows = outages(machine)
+    expect(rows.at(-1)).toMatchObject({ phase: 'CLOSE', action: 'CONTINGENCY', closedBy: 'ITEM_ENDED', endedAt: T0 + 9500 })
+    expect(machine.outage).toBeNull()
+  })
+})
+

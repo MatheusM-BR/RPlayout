@@ -4,6 +4,7 @@ import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { AncineComplianceCard } from '../components/broadcast/AncineComplianceCard.js'
 import { api } from '../api.js'
+import { outageDurationText, outageLine } from '@rplayout/protocol'
 import { dur } from '../format.js'
 import { asRunCsv, asRunDuration, asRunReport, asRunStatus, asRunXml, summarizeAsRun } from '../domain/asrun-evidence.js'
 import type { AsRunEntry } from '../types.js'
@@ -38,6 +39,8 @@ export function AiredView({
   onOpenSettings,
 }: Props) {
   const [entries, setEntries] = useState<AsRunEntry[] | null>(null)
+  // Exportação: incluir as paradas do ao vivo (padrão ligado; desmarcado sai como antes).
+  const [includeOutages, setIncludeOutages] = useState(true)
   const [loadError,setLoadError]=useState<string|null>(null)
   const [archivedChannels,setArchivedChannels]=useState<Channel[]>([])
   const [archivedSelection,setArchivedSelection]=useState<string>('')
@@ -188,9 +191,9 @@ export function AiredView({
     document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url)
     setIsExporting(false)
   }
-  const handleExportCsv = () => download(asRunCsv(filteredEntries), 'text/csv;charset=utf-8', 'csv')
-  const handleExportBxf = () => { if (historyChannel) download(asRunXml(filteredEntries, historyChannel), 'application/xml;charset=utf-8', 'xml') }
-  const handleExportCev = () => { if (historyChannel) download(asRunReport(filteredEntries, historyChannel, new Date()), 'text/plain;charset=utf-8', 'txt') }
+  const handleExportCsv = () => download(asRunCsv(filteredEntries, { includeOutages }), 'text/csv;charset=utf-8', 'csv')
+  const handleExportBxf = () => { if (historyChannel) download(asRunXml(filteredEntries, historyChannel, { includeOutages }), 'application/xml;charset=utf-8', 'xml') }
+  const handleExportCev = () => { if (historyChannel) download(asRunReport(filteredEntries, historyChannel, new Date(), { includeOutages }), 'text/plain;charset=utf-8', 'txt') }
   const getAsRunBadge = (entry: AsRunEntry) => ({
     label: asRunStatus(entry),
     style: !entry.endedAt ? 'bg-armed-amber/20 text-armed-amber border-armed-amber/40' : 'bg-surface-panel text-on-surface border-border-subtle',
@@ -279,6 +282,10 @@ export function AiredView({
 
           {/* Ações de Exportação Broadcast Fase C */}
           <div className="flex flex-wrap items-center gap-space-sm">
+            <label className="flex items-center gap-1.5 px-2 py-1.5 rounded border border-border-subtle bg-surface-panel text-[12px] text-on-surface cursor-pointer" title="Nas exportações (CSV, XML e relatório): cada parada da entrada ao vivo com início, fim, duração, motivo e ação, e o total parado por item">
+              <input type="checkbox" data-testid="aired-include-outages" checked={includeOutages} onChange={event => setIncludeOutages(event.target.checked)} />
+              <span>Incluir paradas do ao vivo</span>
+            </label>
             <button
               onClick={() => window.print()}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle font-body-sm text-[12px] transition-colors cursor-pointer"
@@ -589,9 +596,10 @@ export function AiredView({
                   const endDatePart = entry.endedAt ? local(entry.endedAt).date : ''
                   const endTimePart = entry.endedAt ? local(entry.endedAt).time : 'NO AR'
 
+                  const outages = entry.outages ?? []
                   return (
+                    <div key={`${entry.id}-${idx}`}>
                     <div
-                      key={`${entry.id}-${idx}`}
                       className="grid grid-cols-12 px-4 py-2 bg-surface-card hover:bg-surface-panel items-center text-body-sm font-body-sm transition-colors"
                     >
                       <div className="col-span-1 font-label-mono text-[12px] text-outline">{idx + 1}</div>
@@ -646,6 +654,22 @@ export function AiredView({
                           NÃO HOMOLOGADA
                         </span>
                       </div>
+                    </div>
+                    {outages.length > 0 && (
+                      <div data-testid="aired-outages" className="bg-on-air-crimson/5 border-t border-on-air-crimson/20 px-4 py-1.5 grid grid-cols-12 text-[12px]">
+                        <div className="col-span-1" />
+                        <div className="col-span-11 space-y-0.5">
+                          <div className="font-label-caps text-[11px] text-on-air-crimson font-bold uppercase tracking-wider">
+                            Parado no item: {outageDurationText(entry.outageTotalMs ?? 0)} em {outages.length} parada{outages.length > 1 ? 's' : ''}
+                          </div>
+                          {outages.map(outage => (
+                            <div key={outage.id} className="font-label-mono text-on-surface tabular-nums" title={`UTC: ${outage.startedAt} → ${outage.endedAt ?? 'em andamento'} · entrada ${outage.sourceName}`}>
+                              <span className="text-outline">↳</span> {outageLine(outage, iso => new Date(iso).toLocaleTimeString('pt-BR', { hour12: false }))}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     </div>
                   )
                 })

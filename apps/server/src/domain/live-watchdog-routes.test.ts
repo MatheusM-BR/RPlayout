@@ -4,7 +4,8 @@ import {randomUUID} from 'node:crypto'
 import {DEFAULT_LIVE_WATCHDOG_POLICY} from '@rplayout/protocol'
 import {createApp,type App} from '../app.js'
 import {registerRoutes} from '../routes.js'
-import {channels,users,sessions,liveSources,graphicTemplates} from '../db/schema.js'
+import {channels,users,sessions,liveSources,graphicTemplates,asRun} from '../db/schema.js'
+import {attachLiveOutages} from './live-outages.js'
 import {sessionDigest} from './access.js'
 vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',DEVICES_BINARY:'',AUTH_USER:'',AUTH_PASSWORD:'',DEFAULT_ROLE:'ADMIN'}))
 let app:App,server:FastifyInstance
@@ -71,3 +72,50 @@ describe('rotas do watchdog das entradas ao vivo',()=>{
     expect((await server.inject({method:'POST',url:'/api/channels/ch/live-watchdog/command',payload:{action:'RETURN_NOW'}})).statusCode).toBe(401)
   })
 })
+
+describe('paradas do ao vivo no AIRED',()=>{
+  const day='2026-10-31T'
+  const seed=async()=>{
+    const row=(id:string,item:string,start:string,end:string|null,title:string,type='LIVE')=>({id,channelId:'ch',itemId:item,title,type,startedAt:day+start+'.000Z',endedAt:end?day+end+'.000Z':null,actualStart:0,createdAt:day+start+'.000Z'})
+    await app.db.insert(asRun).values([row('ar-live','live-1','12:00:00','14:00:00','Leilão ao vivo'),row('ar-vt','vt-1','14:00:00','14:00:30','VT','VT'),row('ar-live2','live-2','15:00:00',null,'Segundo leilão')] as never)
+    const insert=app.sqlite.prepare('INSERT INTO live_outages(id,channel_id,as_run_id,item_id,source_key,source_name,started_at,ended_at,reasons,action,closed_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    insert.run('o1','ch','ar-live','live-1','srt://cam','Câmera',day+'13:10:00.000Z',day+'13:10:15.000Z','["SIGNAL_LOSS"]','WAIT_ART','SIGNAL_RETURNED',day+'13:10:01.000Z')
+    insert.run('o2','ch',null,'live-1','srt://cam','Câmera',day+'13:30:00.000Z',day+'13:32:00.000Z','["BLACK","LOW_BITRATE"]','CONTINGENCY','SIGNAL_RETURNED',day+'13:30:03.000Z')
+    // Parada que ficou aberta quando o item terminou.
+    insert.run('o3','ch','ar-live','live-1','srt://cam','Câmera',day+'13:59:50.000Z',null,'["FREEZE"]','WAIT_ART',null,day+'13:59:55.000Z')
+    // Parada em andamento num item ainda no ar.
+    insert.run('o4','ch','ar-live2','live-2','srt://cam','Câmera',day+'15:05:00.000Z',null,'["AUDIO_STALL"]','NONE',null,day+'15:05:02.000Z')
+  }
+  it('parada no meio, mais de uma, aberta no fim do item (fechada e gravada) e em andamento',async()=>{
+    await seed()
+    const read=await server.inject({method:'GET',url:'/api/channels/ch/asrun?since=2026-10-31T00:00:00.000Z',headers:as('OPERATOR')})
+    expect(read.statusCode).toBe(200)
+    const entries=read.json().entries as Array<{id:string;outages:Array<{id:string;endedAt:string|null;closedBy:string|null;durationMs:number|null;reasons:string[]}>;outageTotalMs:number}>
+    const live=entries.find(entry=>entry.id==='ar-live')!
+    expect(live.outages.map(outage=>[outage.id,outage.durationMs,outage.closedBy])).toEqual([['o1',15000,'SIGNAL_RETURNED'],['o2',120000,'SIGNAL_RETURNED'],['o3',10000,'ITEM_ENDED']])
+    expect(live.outageTotalMs).toBe(145000)
+    expect(entries.find(entry=>entry.id==='ar-vt')!.outages).toEqual([])
+    expect(entries.find(entry=>entry.id==='ar-live2')!.outages[0]).toMatchObject({id:'o4',endedAt:null,closedBy:null})
+    // O fechamento no fim do item ficou gravado (não muda de uma consulta para outra).
+    expect(app.sqlite.prepare("SELECT ended_at AS e,closed_by AS c,as_run_id AS a FROM live_outages WHERE id='o3'").get()).toEqual({e:day+'14:00:00.000Z',c:'ITEM_ENDED',a:'ar-live'})
+  })
+  it('parada acompanhada pelo watchdog não é fechada por quem lê',async()=>{
+    await seed()
+    const rows=attachLiveOutages(app.sqlite,'ch',[{id:'ar-live',itemId:'live-1',startedAt:day+'12:00:00.000Z',endedAt:day+'14:00:00.000Z'}],new Set(['o3']))
+    expect(rows[0]!.outages.find(outage=>outage.id==='o3')!.endedAt).toBeNull()
+  })
+  it('exportação CSV do servidor: com paradas (padrão) e sem (paradas=0, igual a antes)',async()=>{
+    await seed()
+    const withStops=await server.inject({method:'GET',url:'/api/channels/ch/asrun.csv?since=2026-10-31T00:00:00.000Z',headers:as('OPERATOR')})
+    expect(withStops.statusCode).toBe(200)
+    expect(withStops.body.split('\n')[0]).toMatch(/;parado_total_s$/)
+    expect(withStops.body).toContain(';Leilão ao vivo;LIVE;')
+    expect(withStops.body).toContain(day+'13:10:00.000Z;'+day+'13:10:15.000Z;  ↳ parada: sem sinal / grafismo de espera;PARADA;;;;sinal voltou;15.0')
+    expect(withStops.body).toContain('fechada no fim do item')
+    const without=await server.inject({method:'GET',url:'/api/channels/ch/asrun.csv?since=2026-10-31T00:00:00.000Z&paradas=0',headers:as('OPERATOR')})
+    expect(without.body.split('\n')[0]).toBe('entrou;saiu;item;tipo;previsto_frames;no_ar_frames;diferenca_frames;saiu_por')
+    expect(without.body).not.toContain('PARADA')
+    expect(without.body.split('\n')).toHaveLength(4)
+  })
+})
+

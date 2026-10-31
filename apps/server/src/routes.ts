@@ -67,7 +67,8 @@ import {
   type EditScope,
 } from '@rplayout/protocol'
 import { networkInterfaces } from 'node:os'
-import { LiveWatchdogPolicySchema } from '@rplayout/protocol'
+import { LiveWatchdogPolicySchema, OUTAGE_ACTION_LABELS, outageReasonText } from '@rplayout/protocol'
+import { attachLiveOutages } from './domain/live-outages.js'
 import { readLiveWatchdogPolicy, writeLiveWatchdogPolicy } from './db/live-watchdog-policies.js'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -4390,20 +4391,21 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
 
     const defaultSince = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
     const start = since !== undefined ? since : defaultSince
-    const entries = (await listAsRun(app.db, id, start, 5000, until)).filter((entry) =>
+    const includeOutages = (request.query as { paradas?: string }).paradas !== '0'
+    const entries = attachLiveOutages(app.sqlite, id, await listAsRun(app.db, id, start, 5000, until), app.runtimes.get(id)?.liveWatchdog.activeOutageIds()).filter((entry) =>
       (!nome || entry.title.toLowerCase().includes(nome.toLowerCase())) &&
       (!categoria || entry.type === categoria) &&
       (!data || entry.startedAt.slice(0, 10) === data) &&
       (!hora || entry.startedAt.slice(11, 16).startsWith(hora)),
     )
 
-    const head = 'entrou;saiu;item;tipo;previsto_frames;no_ar_frames;diferenca_frames;saiu_por'
-    const lines = entries.map((entry) => {
+    const head = 'entrou;saiu;item;tipo;previsto_frames;no_ar_frames;diferenca_frames;saiu_por' + (includeOutages ? ';parado_total_s' : '')
+    const lines = entries.flatMap((entry) => {
       const drift =
         entry.airedFrames !== null && entry.plannedFrames !== null
           ? entry.airedFrames - entry.plannedFrames
           : ''
-      return [
+      const main = [
         entry.startedAt,
         entry.endedAt ?? '',
         // Ponto e vírgula no título quebraria a coluna: vira vírgula.
@@ -4413,7 +4415,14 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         entry.airedFrames ?? '',
         drift,
         entry.endedBy ?? '',
+        ...(includeOutages ? [entry.outages.length ? (entry.outageTotalMs / 1000).toFixed(1) : ''] : []),
       ].join(';')
+      // Paradas do ao vivo como sub-linhas do mesmo item: início, fim, duração, motivo e ação.
+      const stops = includeOutages ? entry.outages.map(outage => [outage.startedAt, outage.endedAt ?? '',
+        `  ↳ parada: ${outageReasonText(outage)} / ${OUTAGE_ACTION_LABELS[outage.action]}`.replace(/;/g, ','), 'PARADA', '', '', '',
+        outage.closedBy === 'ITEM_ENDED' ? 'fechada no fim do item' : outage.endedAt ? 'sinal voltou' : 'em andamento',
+        outage.durationMs === null ? '' : (outage.durationMs / 1000).toFixed(1)].join(';')) : []
+      return [main, ...stops]
     })
 
     void reply.header('content-type', 'text/csv; charset=utf-8')
@@ -4706,7 +4715,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const defaultSince = new Date(Date.now() - 24 * 3600 * 1000).toISOString()
     const start = since !== undefined ? since : defaultSince
     const maxEntries = limit ? parseInt(limit, 10) || 1000 : 2000
-    const entries = await listAsRun(app.db, id, start, maxEntries, until)
+    const entries = attachLiveOutages(app.sqlite, id, await listAsRun(app.db, id, start, maxEntries, until), runtime?.liveWatchdog.activeOutageIds())
     return { since: start, until: until ?? null, entries }
   })
 

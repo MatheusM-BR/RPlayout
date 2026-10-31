@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import {
   WATCHDOG_DETECTIONS, WATCHDOG_DETECTION_LABELS, WATCHDOG_STATE_LABELS, effectiveWatchdogPolicy, signalSampleAge,
   type LiveWatchdogPolicy, type WatchdogConditionView, type WatchdogDetection, type WatchdogDetectionAction,
-  type WatchdogInputStatus, type WatchdogMetrics, type WatchdogSample, type WatchdogState, type WatchdogWaitArt,
+  type WatchdogInputStatus, type WatchdogMetrics, type LiveOutageAction, type LiveOutageClosedBy, type WatchdogSample, type WatchdogState, type WatchdogWaitArt,
 } from '@rplayout/protocol'
 
 /**
@@ -103,7 +103,7 @@ export function detect(sample: WatchdogSample | null, policy: LiveWatchdogPolicy
 export type WatchdogEffect = 'SHOW_WAIT' | 'HIDE_WAIT' | 'ENTER_CONTINGENCY' | 'MONITOR_SOURCE' | 'RETURN_LIVE'
 export interface WatchdogEvent {
   at: number
-  kind: 'TRANSITION' | 'CONDITION' | 'CONDITION_CLEARED' | 'ACTION' | 'ACTION_FAILED' | 'OPERATOR'
+  kind: 'TRANSITION' | 'CONDITION' | 'CONDITION_CLEARED' | 'ACTION' | 'ACTION_FAILED' | 'OPERATOR' | 'OUTAGE'
   severity: 'INFO' | 'WARN' | 'CRITICAL'
   message: string
   detection?: WatchdogDetection
@@ -111,7 +111,10 @@ export interface WatchdogEvent {
   to?: WatchdogState
   durationMs?: number
   thresholdMs?: number
+  /** Parada da entrada (para o AIRED): aberta, atualizada ou encerrada. */
+  outage?: OutageRecord
 }
+export interface OutageRecord { phase: 'OPEN' | 'UPDATE' | 'CLOSE'; id: string; startedAt: number; endedAt: number | null; reasons: WatchdogDetection[]; action: LiveOutageAction; closedBy: LiveOutageClosedBy | null }
 interface Condition { since: number; lastTrue: number; confirmed: boolean; announced: boolean }
 
 const RETRY_MS = 10_000
@@ -133,6 +136,8 @@ export class WatchdogMachine {
   contingencySince: number | null = null
   /** Sem PVW, retorno que volta a falhar logo dobra a espera da próxima tentativa (até 60 s). */
   private blindDelayMs: number | null = null
+  /** Parada em curso (de uma condição confirmada até a live voltar). */
+  outage: { id: string; startedAt: number; lastBad: number; reasons: Set<WatchdogDetection>; action: LiveOutageAction } | null = null
   private lastReturnAt: number | null = null
   /** Contingência acionada sem conteúdo (sem playlist configurada ou recusada). */
   contingencyWithoutContent = false
@@ -174,8 +179,10 @@ export class WatchdogMachine {
         if (!condition) { condition = { since: measuredSince, lastTrue: now, confirmed: false, announced: false }; this.conditions.set(detection, condition) }
         else { condition.lastTrue = now; condition.since = Math.min(condition.since, measuredSince) }
         const duration = now - condition.since
+        if (condition.confirmed && this.outage) this.outage.lastBad = Math.max(this.outage.lastBad, now)
         if (!condition.confirmed && duration >= config.thresholdMs) {
           condition.confirmed = true
+          this.noteOutage(detection, condition.since, now)
           if (!condition.announced) {
             condition.announced = true
             const acts = this.actionOf(detection) === 'ACT'
@@ -186,8 +193,37 @@ export class WatchdogMachine {
       } else if (condition && now - condition.lastTrue >= policy.clearHoldMs) this.clearCondition(detection, condition, now)
     }
   }
+  private outageEvent(phase: OutageRecord['phase'], now: number, endedAt: number | null = null, closedBy: LiveOutageClosedBy | null = null) {
+    const outage = this.outage!
+    this.emit({ kind: 'OUTAGE', severity: 'INFO', message: `${this.label}: parada ${phase === 'OPEN' ? 'iniciada' : phase === 'CLOSE' ? 'encerrada' : 'atualizada'}.`,
+      outage: { phase, id: outage.id, startedAt: outage.startedAt, endedAt, reasons: [...outage.reasons], action: outage.action, closedBy } }, now)
+  }
+  /** Condição confirmada: abre a parada (com o início real da condição) ou acrescenta o motivo. */
+  private noteOutage(detection: WatchdogDetection, since: number, now: number) {
+    if (!this.outage) {
+      this.outage = { id: randomUUID(), startedAt: since, lastBad: now, reasons: new Set([detection]), action: 'NONE' }
+      this.outageEvent('OPEN', now)
+    } else if (!this.outage.reasons.has(detection)) { this.outage.reasons.add(detection); this.outageEvent('UPDATE', now) }
+  }
+  private outageAction(action: LiveOutageAction, now: number) {
+    const rank: Record<LiveOutageAction, number> = { NONE: 0, HOLD_LAST_FRAME: 1, WAIT_ART: 2, CONTINGENCY: 3 }
+    if (this.outage && rank[action] > rank[this.outage.action]) { this.outage.action = action; this.outageEvent('UPDATE', now) }
+  }
+  /** Encerra a parada. `at` é quando a live voltou de fato (ou o fim do item). */
+  closeOutage(at: number, now: number, closedBy: LiveOutageClosedBy) {
+    if (!this.outage) return
+    this.outageEvent('CLOSE', now, Math.max(at, this.outage.startedAt), closedBy)
+    this.outage = null
+  }
+  /** Retoma uma parada que ficou aberta no banco (servidor reiniciado). */
+  resumeOutage(row: { id: string; startedAt: number; reasons: WatchdogDetection[]; action: LiveOutageAction }) {
+    this.outage = { id: row.id, startedAt: row.startedAt, lastBad: row.startedAt, reasons: new Set(row.reasons), action: row.action }
+  }
   private clearCondition(detection: WatchdogDetection, condition: Condition, now: number) {
     this.conditions.delete(detection)
+    // Sem intervenção no ar, a parada acaba quando a última condição confirmada some.
+    const intervening = this.waitArtOnAir || this.contingencyOnAir || this.state === 'ESPERA' || this.state === 'CONTINGENCIA' || this.state === 'RETORNO'
+    if (this.outage && !intervening && ![...this.conditions.values()].some(other => other.confirmed)) this.closeOutage(this.outage.lastBad, now, 'SIGNAL_RETURNED')
     if (condition.announced) this.emit({ kind: 'CONDITION_CLEARED', severity: 'INFO', detection, durationMs: condition.lastTrue - condition.since,
       message: `${this.label}: ${WATCHDOG_DETECTION_LABELS[detection]} normalizado (${((condition.lastTrue - condition.since) / 1000).toFixed(1)} s).` }, now)
   }
@@ -216,6 +252,7 @@ export class WatchdogMachine {
       case 'SUSPEITA':
         if (failing.length && automatic) {
           this.go('ESPERA', now, this.describe(failing)); this.waitSince = now
+          if (policy.waitArt.kind === 'HOLD_LAST_FRAME') this.outageAction('HOLD_LAST_FRAME', now)
           if (policy.waitArt.kind !== 'HOLD_LAST_FRAME') effects.push('SHOW_WAIT')
         } else if (!entries.length) this.go('OK', now, 'condições normalizadas')
         break
@@ -278,6 +315,7 @@ export class WatchdogMachine {
     this.go(this.conditions.size ? 'SUSPEITA' : 'OK', now, reason); this.waitSince = null
   }
   private finishReturn(now: number) {
+    this.closeOutage(now, now, 'SIGNAL_RETURNED')
     this.lastReturnAt = now
     this.go('OK', now, 'retorno à live confirmado')
     this.waitSince = null; this.returnSince = null; this.returnFrom = null; this.awaitingOperator = false; this.holdContingency = false
@@ -303,12 +341,13 @@ export class WatchdogMachine {
     this.lastError = null
     this.emit({ kind: 'ACTION', severity: 'INFO', message: `${this.label}: ${effectLabel[effect]} confirmado.` }, now)
     switch (effect) {
-      case 'SHOW_WAIT': this.waitArtOnAir = true; break
+      case 'SHOW_WAIT': this.waitArtOnAir = true; this.outageAction('WAIT_ART', now); break
       case 'HIDE_WAIT':
         this.waitArtOnAir = false
         if (this.state === 'RETORNO' && !this.contingencyOnAir) this.finishReturn(now)
         break
       case 'ENTER_CONTINGENCY':
+        this.outageAction('CONTINGENCY', now)
         // A arte de espera sai junto; a partir daqui a entrada é observada no PVW.
         this.contingencyOnAir = true; this.waitArtOnAir = false; this.monitoring = false; this.contingencyWithoutContent = false; this.contingencySince = now
         this.forgetConditions()
@@ -347,6 +386,8 @@ export class WatchdogMachine {
 
   /** Executor externo mudou o PGM (TAKE manual): a intervenção deixa de valer. */
   abandon(now: number, reason: string) {
+    // A live saiu do ar com a parada aberta: fecha no fim do item.
+    this.closeOutage(now, now, 'ITEM_ENDED')
     this.emit({ kind: 'TRANSITION', severity: 'INFO', from: this.state, to: 'OK', message: `${this.label}: watchdog encerrou o acompanhamento — ${reason}.` }, now)
   }
 
@@ -389,6 +430,8 @@ export interface WatchdogExecutor {
   /** Reserva no ar cuja origem é uma entrada ao vivo (ex.: servidor reiniciado
    * durante a contingência): o watchdog a retoma em vez de abandoná-la. */
   contingencyOrigin?(): WatchdogObservedSource | null
+  /** Parada que ficou aberta no banco para esta entrada (reinício durante a parada). */
+  openOutage?(sourceKey: string): { id: string; startedAt: number; reasons: WatchdogDetection[]; action: LiveOutageAction } | null
 }
 
 export interface WatchdogTickInput {
@@ -401,7 +444,7 @@ export interface WatchdogTickInput {
   preview: WatchdogObservedSource[]
 }
 
-export interface RecordedWatchdogEvent extends WatchdogEvent { sourceKey: string; sourceId: string | null; sourceName: string; bus: 'pgm' | 'pvw' }
+export interface RecordedWatchdogEvent extends WatchdogEvent { sourceKey: string; sourceId: string | null; sourceName: string; bus: 'pgm' | 'pvw'; itemId: string | null }
 
 /** Watchdog de um canal: acompanha a live do PGM (age) e as do PVW (só alerta). */
 export class ChannelLiveWatchdog {
@@ -415,8 +458,8 @@ export class ChannelLiveWatchdog {
   drain(): RecordedWatchdogEvent[] { const events = this.recorded; this.recorded = []; return events }
   private collect(machine: WatchdogMachine, source: WatchdogObservedSource, bus: 'pgm' | 'pvw') {
     for (const event of machine.drainEvents()) {
-      const row = { ...event, sourceKey: source.sourceKey, sourceId: source.sourceId, sourceName: source.name, bus }
-      this.recorded.push(row); this.history.push(row)
+      const row = { ...event, sourceKey: source.sourceKey, sourceId: source.sourceId, sourceName: source.name, bus, itemId: source.itemId }
+      this.recorded.push(row); if (row.kind !== 'OUTAGE') this.history.push(row)
     }
     if (this.history.length > 200) this.history.splice(0, this.history.length - 200)
   }
@@ -459,6 +502,8 @@ export class ChannelLiveWatchdog {
       if (origin) {
         const machine = new WatchdogMachine(origin.sourceKey, now, origin.name)
         machine.adoptContingency(now)
+        const open = this.executor.openOutage?.(origin.sourceKey)
+        if (open) machine.resumeOutage(open)
         tracked = this.program = { machine, source: origin, metrics: detect(null, input.policy, { now, channelFps: input.channelFps, audioExpected: true }).metrics }
       }
     }
@@ -478,7 +523,7 @@ export class ChannelLiveWatchdog {
       const audioExpected = policy.overrides[tracked.source.sourceId ?? '']?.audioExpected !== false
       const result = detect(machine.contingencyOnAir && !observed ? null : observed?.sample ?? null, policy, { now, channelFps: input.channelFps, audioExpected })
       tracked.metrics = result.metrics
-      if (policy.mode === 'OFF' && !machine.waitArtOnAir && !machine.contingencyOnAir) { this.program = null }
+      if (policy.mode === 'OFF' && !machine.waitArtOnAir && !machine.contingencyOnAir) { machine.closeOutage(now, now, 'ITEM_ENDED'); this.program = null }
       else this.run(machine, machine.step(now, result.detections, policy.mode === 'OFF' ? { ...policy, mode: 'ALERT_ONLY' } : policy), policy, clock)
       this.collect(machine, tracked.source, 'pgm')
     }
@@ -524,6 +569,8 @@ export class ChannelLiveWatchdog {
     for (const { machine, source, metrics } of this.previews.values()) rows.push({ ...machine.status(now, { sourceId: source.sourceId, name: source.name, kind: source.kind, bus: 'pvw', itemId: source.itemId, metrics }, effectiveWatchdogPolicy(policy, source.sourceId)), mode: 'ALERT_ONLY' })
     return rows
   }
+  /** Paradas ainda acompanhadas (não devem ser fechadas por quem lê o AIRED). */
+  activeOutageIds(): Set<string> { const id = this.program?.machine.outage?.id; return new Set(id ? [id] : []) }
   /** Há intervenção do watchdog no ar (arte de espera ou contingência)? */
   intervening(): boolean { return Boolean(this.program && (this.program.machine.waitArtOnAir || this.program.machine.contingencyOnAir || this.program.machine.pending)) }
 }

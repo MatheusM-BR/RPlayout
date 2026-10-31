@@ -327,6 +327,9 @@ export interface AsRunEntry {
   durationEvidence?: 'ENGINE_POSITION' | 'CLOCK_ESTIMATE' | 'UNKNOWN'
   plannedFrames: number | null
   endedBy: string | null
+  /** Paradas da entrada ao vivo dentro deste item (watchdog). */
+  outages?: import('@rplayout/protocol').LiveOutage[]
+  outageTotalMs?: number
 }
 
 /** O que a montagem automática propôs. */
