@@ -879,18 +879,24 @@ fn srt_listener(source: &str) -> bool {
 /// Com ele a porta continua escutando e o mesmo pipeline retoma quando o
 /// caller reconecta; a perda continua sendo vista pela checagem de 2 s.
 ///
+/// `keep-listening` sozinho só resolve a desconexão educada (o caller manda
+/// `shutdown`). Numa queda de verdade (encoder que morre, rede que cai) o
+/// libsrt leva ~5 s para dar a sessão por morta, e até lá o caller que volta
+/// não é atendido. A retomada rápida (`srt_input::recycle_stalled_srt`)
+/// reabre só o socket depois de 1 s sem dados, em caller e em listener.
+///
 /// Contrato para quem vier depois (watchdog de entradas ao vivo):
-/// - a queda NÃO gera mais EOS nem `SourceLost` do engine para SRT listener;
-///   ela aparece como fonte sem quadro recente (servidor marca LOST na
-///   barra PGM e abre a linha "SEM SINAL" no as-run);
-/// - a volta reaproveita o mesmo pipeline: o vídeo pode levar alguns
-///   segundos (medido: até ~40 s após 20 s de queda) para voltar a fluir,
-///   enquanto os timestamps do novo fluxo MPEG-TS se reacomodam (videorate);
-///   um watchdog que precise de retomada imediata deve recriar o item
-///   (LOAD+TAKE) no evento `caller-added` do `srtsrc`, coordenando com o
-///   preroll do próximo item (o TAKE do engine não carrega identidade).
-/// - SRT em modo caller e demais URIs seguem o caminho antigo (EOS →
-///   `LiveRecovery` em main.rs).
+/// - a queda NÃO gera EOS nem `SourceLost` do engine para SRT (listener ou
+///   caller); ela aparece como fonte sem quadro recente (servidor marca LOST
+///   na barra PGM e abre a linha "SEM SINAL" no as-run);
+/// - a volta reaproveita o mesmo pipeline e o mesmo decoder do PGM: quadros
+///   em ≤ 1 s depois que a fonte reconecta (medido em localhost: 0,3 a 0,6 s),
+///   sem TAKE nem recriação do item. A imagem nova ainda espera no sink a
+///   latência fixa do pipeline do item (~0,9 s, dos quais 700 ms são do
+///   `tsdemux`), a mesma da abertura. Uma fonte que volta no meio do GOP só
+///   dá quadro íntegro a partir do próximo quadro-chave;
+/// - demais URIs (RTMP, RTSP) seguem o caminho antigo: EOS/erro →
+///   `LiveRecovery` em main.rs, que recria o item a cada 2 s.
 fn keep_srt_listening(decoder: &gst::Element) {
     decoder.connect("source-setup", false, |values| {
         if let Some(source) = values.get(1).and_then(|value| value.get::<gst::Element>().ok()) {
@@ -965,6 +971,205 @@ mod srt_listener_tests {
     }
 }
 
+/// Entrada SRT que cai e volta (A4/watchdog): medição ponta a ponta no item
+/// do canal, com gerador local (srtsink) e o pipeline real do engine.
+#[cfg(test)]
+mod srt_recovery_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    struct RunningChannel(Channel);
+    impl Drop for RunningChannel { fn drop(&mut self) { self.0.shutdown(); } }
+
+    fn srt_available() -> bool {
+        gst::init().unwrap();
+        ["srtsrc","srtsink","x264enc","avenc_aac","mpegtsmux","aacparse","h264parse"].iter().all(|name| gst::ElementFactory::find(name).is_some())
+            && std::process::Command::new("gst-launch-1.0").arg("--version").output().is_ok()
+    }
+
+    fn port(offset: u16) -> u16 { 20_000 + (std::process::id() % 600) as u16 * 8 + offset }
+
+    /// Como um encoder de verdade, o gerador em listener só começa a mandar
+    /// quando o caller conecta, e começa por um quadro-chave. Se a sessão
+    /// começasse no meio do GOP, o decoder (corretamente) só daria quadro
+    /// íntegro no próximo quadro-chave.
+    fn sender_description(uri: &str) -> String {
+        let wait = uri.contains("mode=listener");
+        format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width=320,height=180,framerate=25/1 \
+            ! x264enc tune=zerolatency speed-preset=ultrafast key-int-max=25 bitrate=600 ! h264parse \
+            ! valve name=vv drop-mode=transform-to-gap ! queue ! mpegtsmux name=m alignment=7 \
+            ! srtsink uri={uri} wait-for-connection={wait} \
+            audiotestsrc is-live=true volume=0.3 ! audio/x-raw,rate=48000,channels=2 ! avenc_aac ! aacparse \
+            ! valve name=av drop-mode=transform-to-gap ! queue ! m.")
+    }
+
+    /// Gerador em processo separado: `kill` (SIGKILL) é a queda real de um
+    /// encoder ou da rede, sem o `shutdown` educado do SRT.
+    fn spawn_sender(uri: &str) -> std::process::Child {
+        std::process::Command::new("gst-launch-1.0").arg("-q")
+            .args(sender_description(uri).split_whitespace())
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .spawn().expect("gst-launch-1.0")
+    }
+
+    fn live_channel(name: &str) -> RunningChannel {
+        if gst::ElementFactory::find("rplayoutlimiter").is_none() { crate::limiter_element::register().unwrap(); }
+        let unique=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let channel=RunningChannel(Channel::new(Config{channel_id:format!("{name}-{unique}"),width:320,height:180,fps_n:25,fps_d:1,bitrate_kbps:450,ceiling_dbtp:-1.,audio_channels:2,scan:Scan::Progressive,top_field_first:true,outputs:vec![Output::Null],preview:None}).unwrap());
+        channel.0.start().unwrap();
+        channel
+    }
+
+    fn take_live(channel: &mut RunningChannel, uri: &str) {
+        let spec:ItemSpec=serde_json::from_value(serde_json::json!({"itemId":"srt-live","source":uri,"trimIn":0,"trimOut":0,"gainDb":0})).unwrap();
+        channel.0.load(spec).unwrap();
+        channel.0.take().unwrap();
+        let deadline=Instant::now()+Duration::from_secs(10);
+        while channel.0.pending_live_take && Instant::now()<deadline {
+            channel.0.service_pending_take().unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(channel.0.on_air_id().as_deref(),Some("srt-live"),"TAKE da entrada SRT não confirmou");
+    }
+
+    fn delivered(channel: &RunningChannel) -> (Option<Instant>, Option<Instant>) {
+        let statistics=channel.0.on_air.as_ref().unwrap().source_statistics.lock().unwrap();
+        (statistics.last_delivered_video, statistics.last_delivered_audio)
+    }
+
+    /// Espera quadros entregues ao `intervideosink` depois de `since`.
+    fn video_back_after(channel: &RunningChannel, since: Instant, limit: Duration) -> Option<Duration> {
+        let deadline=since+limit;
+        while Instant::now()<deadline {
+            if let (Some(video),_)=delivered(channel) { if video>since { return Some(video-since); } }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+
+    /// Defeito 1: queda de 3 s do gerador. A entrada tem de voltar a entregar
+    /// quadros em até ~1 s depois que a fonte reconecta (antes: 2,3 s em
+    /// caller e 4 s em listener), sem trocar o decoder do PGM.
+    fn reconnect_case(engine_mode: &str, sender_mode: &str, offset: u16) {
+        if !srt_available() { eprintln!("sem SRT/x264/aac; teste pulado"); return; }
+        let port=port(offset);
+        let engine_uri=format!("srt://127.0.0.1:{port}?mode={engine_mode}&latency=120");
+        let sender_uri=format!("srt://127.0.0.1:{port}?mode={sender_mode}&latency=120");
+        let mut channel=live_channel(&format!("srt-{engine_mode}"));
+        let mut sender=spawn_sender(&sender_uri);
+        take_live(&mut channel, &engine_uri);
+        let decoder=channel.0.decoder_id("pgm");
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(delivered(&channel).0.is_some_and(|at|at.elapsed()<Duration::from_millis(300)),"sem quadros antes da queda");
+        // Atraso de cada quadro no sink (QoS: >0 é quadro atrasado, que o
+        // sink descarta e que faz o decoder pular até o próximo quadro-chave).
+        let lateness=Arc::new(std::sync::Mutex::new(Vec::<(Instant,i64)>::new()));
+        {
+            let sink=channel.0.on_air.as_ref().unwrap().pipeline.iterate_recurse().into_iter().flatten()
+                .find(|element|element.factory().is_some_and(|f|f.name()=="intervideosink")).unwrap();
+            let record=Arc::clone(&lateness);
+            sink.static_pad("sink").unwrap().add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
+                if let Some(gst::PadProbeData::Event(event))=&info.data { if let gst::EventView::Qos(qos)=event.view() {
+                    record.lock().unwrap().push((Instant::now(), qos.get().2/1_000_000));
+                }}
+                gst::PadProbeReturn::Ok
+            });
+        }
+        sender.kill().unwrap(); let _=sender.wait();
+        std::thread::sleep(Duration::from_secs(3));
+        let back=Instant::now();
+        let mut sender=spawn_sender(&sender_uri);
+        let took=video_back_after(&channel, back, Duration::from_secs(10));
+        // Voltar é entregar quadros sem parar, não um quadro solto: o
+        // watchdog só considera a entrada íntegra com a cadência de volta.
+        let mut worst=Duration::ZERO;
+        let steady=Instant::now()+Duration::from_secs(2);
+        while took.is_some() && Instant::now()<steady {
+            std::thread::sleep(Duration::from_millis(20));
+            worst=worst.max(delivered(&channel).0.map(|at|at.elapsed()).unwrap_or(Duration::MAX));
+        }
+        let _=sender.kill(); let _=sender.wait();
+        let late=lateness.lock().unwrap().iter().filter(|(at,_)|*at>back+Duration::from_millis(2000)).map(|(_,ms)|*ms).max();
+        eprintln!("[teste] SRT {engine_mode}: quadros de volta em {took:?} após a fonte reconectar; maior intervalo nos 2 s seguintes {worst:?}; maior atraso no sink depois de 2 s {late:?} ms");
+        assert_eq!(channel.0.decoder_id("pgm"),decoder,"a volta não pode depender de recriar o item do PGM");
+        assert_eq!(channel.0.on_air_id().as_deref(),Some("srt-live"));
+        let took=took.expect("entrada SRT não voltou em 10 s");
+        assert!(took<=Duration::from_millis(1300),"entrada SRT {engine_mode} levou {took:?} para voltar (alvo ≤ 1 s + partida do gerador)");
+        // O primeiro quadro espera no sink a latência do pipeline (~0,9 s,
+        // dos quais 700 ms são do tsdemux). O buraco depois dele é essa
+        // espera, a mesma da abertura do item, e não um soluço.
+        let mut query=gst::query::Latency::new();
+        assert!(channel.0.on_air.as_ref().unwrap().pipeline.query(&mut query));
+        let latency=Duration::from_nanos(query.result().1.nseconds());
+        assert!(worst<latency+Duration::from_millis(250),"entrada SRT {engine_mode} voltou aos soluços: {worst:?} sem quadro (latência do pipeline {latency:?})");
+        let late=late.expect("sink sem QoS depois da volta: não renderizou quadros");
+        assert!(late<100,"quadros da sessão nova chegam {late} ms atrasados ao sink (mapa PCR da sessão velha)");
+    }
+
+    #[test]
+    fn srt_listener_returns_within_a_second_after_caller_reconnects(){ reconnect_case("listener","caller",0); }
+
+    #[test]
+    fn srt_caller_returns_within_a_second_after_listener_reconnects(){ reconnect_case("caller","listener",1); }
+
+    /// Contador de buffers na entrada de um `inter*sink` do item no PGM.
+    fn sink_counter(channel: &RunningChannel, factory: &str) -> Arc<AtomicU64> {
+        let counter=Arc::new(AtomicU64::new(0));
+        let sink=channel.0.on_air.as_ref().unwrap().pipeline.iterate_recurse().into_iter().flatten()
+            .find(|element|element.factory().is_some_and(|f|f.name()==factory)).unwrap();
+        let count=Arc::clone(&counter);
+        sink.static_pad("sink").unwrap().add_probe(gst::PadProbeType::BUFFER, move |_, _| { count.fetch_add(1, Ordering::Relaxed); gst::PadProbeReturn::Ok });
+        counter
+    }
+
+    /// Defeito 2: áudio some do MPEG-TS com o vídeo andando (e o contrário).
+    /// Cada trilha tem de seguir sozinha; quem para é só a que sumiu.
+    #[test]
+    fn srt_audio_gap_keeps_video_and_video_gap_keeps_audio(){
+        if !srt_available() { eprintln!("sem SRT/x264/aac; teste pulado"); return; }
+        let port=port(2);
+        let mut channel=live_channel("srt-gap");
+        let sender=gst::parse::launch(&sender_description(&format!("srt://127.0.0.1:{port}?mode=caller&latency=120"))).unwrap().downcast::<gst::Pipeline>().unwrap();
+        sender.set_state(gst::State::Playing).unwrap();
+        take_live(&mut channel, &format!("srt://127.0.0.1:{port}?mode=listener&latency=120"));
+        std::thread::sleep(Duration::from_secs(2));
+        let video=sink_counter(&channel,"intervideosink");
+        let audio=sink_counter(&channel,"interaudiosink");
+        // Janela de 2,5 s, começando 1,5 s depois do corte (latência SRT,
+        // filas e o último PES que o tsdemux ainda tinha).
+        let window=|name:&str|{
+            sender.by_name(name).unwrap().set_property("drop",true);
+            std::thread::sleep(Duration::from_millis(1500));
+            let (v0,a0)=(video.load(Ordering::Relaxed),audio.load(Ordering::Relaxed));
+            std::thread::sleep(Duration::from_millis(2500));
+            let counts=(video.load(Ordering::Relaxed)-v0,audio.load(Ordering::Relaxed)-a0);
+            let back=Instant::now();
+            sender.by_name(name).unwrap().set_property("drop",false);
+            (counts,back)
+        };
+        // 25 quadros/s e ~47 buffers de AAC (1024 amostras a 48 kHz) por segundo.
+        let ((frames,blocks),back)=window("av");
+        eprintln!("[teste] áudio cortado: {frames} quadros e {blocks} blocos de áudio em 2,5 s");
+        assert!(frames>=50,"vídeo parou junto com o áudio: {frames} quadros em 2,5 s");
+        assert!(blocks<=2,"o áudio cortado deveria aparecer parado: {blocks} blocos");
+        let deadline=back+Duration::from_secs(3);
+        let before=audio.load(Ordering::Relaxed);
+        while audio.load(Ordering::Relaxed)<before+20 && Instant::now()<deadline { std::thread::sleep(Duration::from_millis(10)); }
+        assert!(audio.load(Ordering::Relaxed)>=before+20,"áudio não voltou");
+        eprintln!("[teste] áudio de volta em {:?}", back.elapsed());
+        std::thread::sleep(Duration::from_secs(1));
+        let ((frames,blocks),back)=window("vv");
+        eprintln!("[teste] vídeo cortado: {frames} quadros e {blocks} blocos de áudio em 2,5 s");
+        assert!(blocks>=100,"áudio parou junto com o vídeo: {blocks} blocos em 2,5 s");
+        assert!(frames<=2,"o vídeo cortado deveria aparecer parado: {frames} quadros");
+        let took=video_back_after(&channel, back, Duration::from_secs(6));
+        eprintln!("[teste] vídeo de volta em {took:?}");
+        sender.set_state(gst::State::Null).unwrap();
+        assert!(took.is_some_and(|took|took<Duration::from_millis(2000)),"vídeo não voltou depois do buraco: {took:?}");
+    }
+}
+
 fn uri_decoder() -> Result<gst::Element> {
     uri_decoder_with_policy(std::env::var("RPLAYOUT_HARDWARE_DECODE").is_ok_and(|value|value=="1"))
 }
@@ -1023,6 +1228,7 @@ fn source_for(spec: &ItemSpec) -> Result<LiveInput> {
         }
         src.set_property("buffer-duration", buffer_duration);
         if srt_listener(source) { keep_srt_listening(&src); }
+        if source.starts_with("srt://") { crate::srt_input::recycle_stalled_srt(&src); }
         return Ok(LiveInput { video: src, audio: None, dynamic: true });
     }
 
