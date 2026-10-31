@@ -1052,6 +1052,112 @@ mod tests {
         assert_eq!(state.cells[1].signal, CellSignal::Unavailable, "sem PVW aberto a célula é indisponível");
     }
 
+    /// Medição de custo (docs/MULTIVIEW.md). Não roda na suíte: é lenta e
+    /// depende da máquina. `cargo test --release medir_custo_multiview -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn medir_custo_multiview() {
+        gst::init().unwrap();
+        fn ticks() -> u64 {
+            let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+            let fields: Vec<&str> = stat.rsplit_once(')').unwrap().1.split_whitespace().collect();
+            fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+        }
+        fn cpu(seconds: f64, work: &mut dyn FnMut()) -> f64 {
+            let (start, at) = (ticks(), Instant::now());
+            while at.elapsed().as_secs_f64() < seconds { work(); std::thread::sleep(Duration::from_millis(40)); }
+            (ticks() - start) as f64 / at.elapsed().as_secs_f64() // 100 ticks/s = 1 núcleo
+        }
+        struct Receiver { pipeline: gst::Pipeline, sink: gst_app::AppSink, width: usize }
+        impl Drop for Receiver { fn drop(&mut self) { let _ = self.pipeline.set_state(gst::State::Null); } }
+        fn receiver(port: u16, decode: bool) -> Receiver {
+            let tail = if decode { "tsdemux ! h264parse ! avdec_h264 ! videoconvert ! video/x-raw,format=I420 ! appsink name=out sync=false max-buffers=2 drop=true" } else { "appsink name=out sync=false max-buffers=2 drop=true" };
+            let pipeline = gst::parse::launch(&format!("srtsrc uri=srt://127.0.0.1:{port}?mode=caller latency=120 ! {tail}")).unwrap().downcast::<gst::Pipeline>().unwrap();
+            let sink = pipeline.by_name("out").unwrap().downcast::<gst_app::AppSink>().unwrap();
+            pipeline.set_state(gst::State::Playing).unwrap();
+            Receiver { pipeline, sink, width: 0 }
+        }
+        /// Tempo entre a fonte virar branca e o receptor decodificado ver branco
+        /// no ponto (fx, fy).
+        fn flip(source: &gst::Element, receiver: &mut Receiver, fx: f64, fy: f64, service: &mut dyn FnMut()) -> Option<Duration> {
+            let mut luma = |sample: &gst::Sample| -> f64 {
+                let caps = sample.caps().unwrap().structure(0).unwrap().to_owned();
+                let (w, h) = (caps.get::<i32>("width").unwrap() as usize, caps.get::<i32>("height").unwrap() as usize);
+                receiver.width = w;
+                let map = sample.buffer().unwrap().map_readable().unwrap();
+                map[(fy * h as f64) as usize * w + (fx * w as f64) as usize] as f64
+            };
+            source.set_property_from_str("pattern", "black");
+            let settle = Instant::now();
+            while settle.elapsed() < Duration::from_secs(3) { service(); if let Some(sample) = receiver.sink.try_pull_sample(gst::ClockTime::from_mseconds(20)) { let _ = luma(&sample); } }
+            source.set_property_from_str("pattern", "white");
+            let at = Instant::now();
+            while at.elapsed() < Duration::from_secs(5) {
+                service();
+                if let Some(sample) = receiver.sink.try_pull_sample(gst::ClockTime::from_mseconds(5)) { if luma(&sample) > 180.0 { return Some(at.elapsed()); } }
+            }
+            None
+        }
+        let profile = Quality::Padrao.profile(25, 1);
+        for n in [4usize, 9] {
+            let sources: Vec<Source> = (0..n).map(|_| source("ball", 1280, 720)).collect();
+            let baseline = cpu(4.0, &mut || {});
+            // --- Composto: um mosaico, uma codificação.
+            let port = 20_100 + n as u16;
+            let mut multiview = Multiview::new(&format!("bench-{n}"), 25, 1, Some((Kind::Srt, format!("srt://127.0.0.1:{port}?mode=listener"))));
+            let layout = if n == 4 { Layout::Grid2x2 } else { Layout::Grid3x3 };
+            let cells: Vec<CellSource> = (0..n).map(|i| CellSource::Source { id: format!("s{i}") }).collect();
+            multiview.configure(Composition { layout, cells, quality: Quality::Padrao }).unwrap();
+            let points = TapPoints { sources: sources.iter().enumerate().map(|(i, s)| (format!("s{i}"), point(s, i as u64 + 1, "pvw"))).collect(), ..TapPoints::default() };
+            multiview.set_wanted(true);
+            let rx = receiver(port, false);
+            serve(&mut multiview, &points, Duration::from_secs(3));
+            let composite = cpu(8.0, &mut || { multiview.service(&points); });
+            drop(rx);
+            let mut rx = receiver(port, true);
+            serve(&mut multiview, &points, Duration::from_secs(2));
+            let source0 = sources[0].pipeline.by_name("videotestsrc0").or_else(|| sources[0].pipeline.iterate_elements().into_iter().flatten().find(|e| e.factory().is_some_and(|f| f.name() == "videotestsrc"))).unwrap();
+            let fx = if n == 4 { 0.25 } else { 1.0 / 6.0 };
+            let composite_latency = flip(&source0, &mut rx, fx, fx, &mut || { multiview.service(&points); });
+            drop(rx); multiview.shutdown(); drop(multiview);
+            std::thread::sleep(Duration::from_millis(500));
+            // --- Individual: um monitor 240p por fonte (o modelo WHEP por fonte).
+            let (mw, mh) = crate::channel::monitor_size(1280, 720);
+            let mut feeds = Vec::new();
+            let mut publishers = Vec::new();
+            for (i, s) in sources.iter().enumerate() {
+                let video = format!("bench-ind-{n}-{i}-video");
+                // O item de PVW já entrega 240p ao barramento: escala no item, depois intervideosink.
+                let scale = gst::parse::launch(&format!("appsrc name=in is-live=true format=time do-timestamp=true ! videoscale ! video/x-raw,width={mw},height={mh} ! intervideosink channel={video}")).unwrap().downcast::<gst::Pipeline>().unwrap();
+                let appsrc = scale.by_name("in").unwrap().downcast::<gst_app::AppSrc>().unwrap();
+                scale.set_state(gst::State::Playing).unwrap();
+                let forward = appsrc.clone();
+                let probe = s.pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+                    if let (Some(buffer), Some(caps)) = (info.buffer(), pad.current_caps()) { push(&forward, &caps, &buffer.to_owned()); }
+                    gst::PadProbeReturn::Ok
+                }).unwrap();
+                feeds.push((scale, s.pad.clone(), probe));
+                let mut publisher = Publisher::new(PublisherSpec { output_id: format!("ind{i}"), kind: Kind::Srt, url: format!("srt://127.0.0.1:{}?mode=listener", 20_200 + (n * 10 + i) as u16),
+                    video_channel: video, audio_channel: format!("bench-ind-{n}-{i}-audio"), width: mw, height: mh, fps_n: 25, fps_d: 1,
+                    bitrate_kbps: (4000 / 16u32).clamp(180, 450), interlaced: false, top_field_first: true, prefer_software: true, role: "pvw".into(), on_demand: true, opus: true });
+                publisher.set_wanted(true);
+                publishers.push(publisher);
+            }
+            let receivers: Vec<Receiver> = (0..n).map(|i| receiver(20_200 + (n * 10 + i) as u16, false)).collect();
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(3) { for p in &mut publishers { p.service(); } std::thread::sleep(Duration::from_millis(40)); }
+            let individual = cpu(8.0, &mut || { for p in &mut publishers { p.service(); } });
+            drop(receivers);
+            let mut rx = receiver(20_200 + (n * 10) as u16, true);
+            let individual_latency = flip(&source0, &mut rx, 0.5, 0.5, &mut || { for p in &mut publishers { p.service(); } });
+            drop(rx);
+            for p in &mut publishers { p.shutdown(); }
+            for (pipeline, pad, probe) in feeds { pad.remove_probe(probe); let _ = pipeline.set_state(gst::State::Null); }
+            eprintln!("[medida] N={n}: fontes sozinhas {baseline:.0}% de um núcleo; composto {:.0}% (+{:.0}); individual {:.0}% (+{:.0}); latência fonte→decodificado: composto {:?}, individual {:?}; mosaico {}x{}@{}/{}",
+                composite, composite - baseline, individual, individual - baseline, composite_latency, individual_latency, profile.width, profile.height, profile.fps_n, profile.fps_d);
+        }
+    }
+
     /// Prova pedida: multiview lento ou travado nunca atrasa o programa. O
     /// teste usa o canal de verdade (tee do PGM) e um multiview 12x mais lento
     /// que a cadência, depois trava a sonda por 1 s.
