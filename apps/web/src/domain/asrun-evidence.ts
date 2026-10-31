@@ -1,5 +1,10 @@
 import type { AsRunEntry } from '../types.js'
 import { csvRows } from './csv.js'
+import { OUTAGE_ACTION_LABELS, outageDurationText, outageReasonText } from '@rplayout/protocol'
+
+/** Opções da exportação do AIRED. `includeOutages` (padrão: sim) põe as paradas do ao vivo. */
+export interface AsRunExportOptions { includeOutages?: boolean }
+const closedText = (closedBy: string | null, endedAt: string | null) => closedBy === 'ITEM_ENDED' ? 'fechada no fim do item' : endedAt ? 'sinal voltou' : 'em andamento'
 
 /** Historical cadence belongs to the occurrence, not today's preset. Never
  * substitute planned duration for executed duration on an open/legacy row. */
@@ -56,22 +61,31 @@ export function summarizeAsRun(all: AsRunEntry[]) {
   }
 }
 const xml = (value: unknown) => String(value ?? '').replace(/[<>&'\"]/g, character => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[character]!)
-export function asRunCsv(entries: AsRunEntry[]) {
-  const headers = ['ID', 'Título', 'Categoria', 'Início (UTC)', 'Fim (UTC)', 'Quadros registrados', 'Cadência num', 'Cadência den', 'Segundos registrados/estimados', 'Evidência da duração', 'Tempo real no PGM (s)', 'Parado/congelado além da duração (s)', 'Transporte', 'Motivo', 'Estado', 'Homologação regulatória']
-  return csvRows([headers, ...entries.map(entry => {
+export function asRunCsv(entries: AsRunEntry[], options: AsRunExportOptions = {}) {
+  const include = options.includeOutages !== false
+  const headers = ['ID', 'Título', 'Categoria', 'Início (UTC)', 'Fim (UTC)', 'Quadros registrados', 'Cadência num', 'Cadência den', 'Segundos registrados/estimados', 'Evidência da duração', 'Tempo real no PGM (s)', 'Parado/congelado além da duração (s)', 'Transporte', 'Motivo', 'Estado', 'Homologação regulatória', ...(include ? ['Parado total (s)'] : [])]
+  return csvRows([headers, ...entries.flatMap(entry => {
     const duration = asRunDuration(entry), hold = asRunHold(entry)
-    return [entry.id, entry.title, entry.type, entry.startedAt, entry.endedAt, duration.frames, duration.rate?.num, duration.rate?.den, duration.seconds, duration.evidence, hold.wallSeconds, hold.heldSeconds, entry.executionKind ?? 'UNKNOWN', entry.endedBy, asRunStatus(entry), 'NÃO HOMOLOGADA']
+    const outages = include ? entry.outages ?? [] : []
+    const main = [entry.id, entry.title, entry.type, entry.startedAt, entry.endedAt, duration.frames, duration.rate?.num, duration.rate?.den, duration.seconds, duration.evidence, hold.wallSeconds, hold.heldSeconds, entry.executionKind ?? 'UNKNOWN', entry.endedBy, asRunStatus(entry), 'NÃO HOMOLOGADA', ...(include ? [outages.length ? ((entry.outageTotalMs ?? 0) / 1000).toFixed(1) : ''] : [])]
+    // Sub-linhas do mesmo item: início, fim, duração, motivo e ação de cada parada.
+    const stops = outages.map(outage => [outage.id, `↳ parada: ${outageReasonText(outage)}`, 'PARADA', outage.startedAt, outage.endedAt, '', '', '', outage.durationMs === null ? '' : (outage.durationMs / 1000).toFixed(1), 'RELÓGIO DO SERVIDOR', '', '', '', OUTAGE_ACTION_LABELS[outage.action], closedText(outage.closedBy, outage.endedAt), '', ''])
+    return [main, ...stops]
   })])
 }
-export function asRunXml(entries: AsRunEntry[], channel: { id: string; name: string }) {
+export function asRunXml(entries: AsRunEntry[], channel: { id: string; name: string }, options: AsRunExportOptions = {}) {
   return '<?xml version="1.0" encoding="UTF-8"?>\n' + `<AsRun channelId="${xml(channel.id)}" channelName="${xml(channel.name)}" clock="LOCAL_HOST" regulatoryValidation="NOT_HOMOLOGATED">\n` + entries.map(entry => {
     const duration = asRunDuration(entry)
-    return `  <Event id="${xml(entry.id)}" type="${xml(entry.type)}" transport="${xml(entry.executionKind ?? 'UNKNOWN')}" status="${xml(asRunStatus(entry))}"><Title>${xml(entry.title)}</Title><Start>${xml(entry.startedAt)}</Start>${entry.endedAt ? `<End>${xml(entry.endedAt)}</End>` : ''}<Duration frames="${duration.frames ?? ''}" rateNum="${duration.rate?.num ?? ''}" rateDen="${duration.rate?.den ?? ''}" seconds="${duration.seconds ?? ''}" evidence="${duration.evidence}"/><Reason>${xml(entry.endedBy)}</Reason></Event>`
+    return `  <Event id="${xml(entry.id)}" type="${xml(entry.type)}" transport="${xml(entry.executionKind ?? 'UNKNOWN')}" status="${xml(asRunStatus(entry))}"><Title>${xml(entry.title)}</Title><Start>${xml(entry.startedAt)}</Start>${entry.endedAt ? `<End>${xml(entry.endedAt)}</End>` : ''}<Duration frames="${duration.frames ?? ''}" rateNum="${duration.rate?.num ?? ''}" rateDen="${duration.rate?.den ?? ''}" seconds="${duration.seconds ?? ''}" evidence="${duration.evidence}"/><Reason>${xml(entry.endedBy)}</Reason>${options.includeOutages !== false && entry.outages?.length ? `<LiveOutages totalSeconds="${((entry.outageTotalMs ?? 0) / 1000).toFixed(1)}">${entry.outages.map(outage => `<Outage start="${xml(outage.startedAt)}"${outage.endedAt ? ` end="${xml(outage.endedAt)}"` : ''} seconds="${outage.durationMs === null ? '' : (outage.durationMs / 1000).toFixed(1)}" reason="${xml(outage.reasons.join(','))}" action="${xml(outage.action)}" closedBy="${xml(outage.closedBy ?? '')}">${xml(outageReasonText(outage))} · ${xml(OUTAGE_ACTION_LABELS[outage.action])}</Outage>`).join('')}</LiveOutages>` : ''}</Event>`
   }).join('\n') + '\n</AsRun>'
 }
-export function asRunReport(entries: AsRunEntry[], channel: { id: string; name: string }, generatedAt: Date) {
+export function asRunReport(entries: AsRunEntry[], channel: { id: string; name: string }, generatedAt: Date, options: AsRunExportOptions = {}) {
   return `RPLAYOUT — RELATÓRIO OPERACIONAL AS-RUN\nCanal: ${channel.name} (${channel.id})\nGerado em: ${generatedAt.toISOString()}\nRelógio: host local; sincronização NTP não aferida.\nSem assinatura digital, certificação regulatória ou confirmação física de veiculação.\nSIMULATED representa simulação; UNKNOWN identifica registro sem proveniência.\n\n` + entries.map(entry => {
     const duration = asRunDuration(entry), hold = asRunHold(entry)
-    return `${entry.startedAt} → ${entry.endedAt ?? 'em execução'} | ${entry.executionKind ?? 'UNKNOWN'} | ${asRunStatus(entry)} | duração ${duration.seconds === null ? 'N/D' : duration.seconds.toFixed(3) + 's'} (${duration.evidence})${hold.heldSeconds !== null ? ` | PGM parado/congelado +${hold.heldSeconds.toFixed(1)}s (tempo real ${hold.wallSeconds!.toFixed(1)}s)` : ''} | ${entry.id} | ${entry.title}`
+    const line = `${entry.startedAt} → ${entry.endedAt ?? 'em execução'} | ${entry.executionKind ?? 'UNKNOWN'} | ${asRunStatus(entry)} | duração ${duration.seconds === null ? 'N/D' : duration.seconds.toFixed(3) + 's'} (${duration.evidence})${hold.heldSeconds !== null ? ` | PGM parado/congelado +${hold.heldSeconds.toFixed(1)}s (tempo real ${hold.wallSeconds!.toFixed(1)}s)` : ''} | ${entry.id} | ${entry.title}`
+    const outages = options.includeOutages !== false ? entry.outages ?? [] : []
+    if (!outages.length) return line
+    return [line, `    parado no item: ${outageDurationText(entry.outageTotalMs ?? 0)} em ${outages.length} parada(s)`, ...outages.map(outage =>
+      `    ↳ ${outage.startedAt} → ${outage.endedAt ?? 'em andamento'} (${outageDurationText(outage.durationMs)}) · ${outageReasonText(outage)} · ${OUTAGE_ACTION_LABELS[outage.action]}${outage.closedBy === 'ITEM_ENDED' ? ' · fechada no fim do item' : ''}`)].join('\n')
   }).join('\n')
 }

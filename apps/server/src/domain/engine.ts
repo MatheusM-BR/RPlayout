@@ -2122,7 +2122,7 @@ export class EngineTransport implements Transport {
       if(reason!=='OPERATIONAL_INSERT_NOW' && this.options.canStartProgram?.()===false)throw new Error('Há retorno de VT inconclusivo. Nenhum novo TAKE será automático.')
       if (view.channel.id !== this.channel.id || view.rundown.channelId !== this.channel.id) throw new Error('Playlist pertence a outro canal.')
       const spec = this.specFor(itemId, view)
-      if (!spec || spec.source && reason!=='OPERATIONAL_INSERT_NOW') throw new Error('A troca de playlist exige um arquivo de vídeo aprovado e reproduzível.')
+      if (!spec || spec.source && reason!=='OPERATIONAL_INSERT_NOW' && reason!=='WATCHDOG_LIVE_RETURN') throw new Error('A troca de playlist exige um arquivo de vídeo aprovado e reproduzível.')
       if (spec.itemId === this.onAirItemId) throw new Error('Este item já está no PGM; use o fluxo de revisão da playlist atual, não uma troca de grade.')
       if (!stillCurrent()) throw new Error('O estado operacional mudou; prepare novamente a troca de playlist.')
       if (this.pendingLiveTake) {

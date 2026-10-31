@@ -33,7 +33,7 @@ describe('matriz de autorização das rotas que alteram estado',()=>{
     }
     expect(accepted).toEqual([])
   },120_000)
-  it('operador não administra contas, integrações, backup de atualização, canais nem saídas',async()=>{
+  it('operador não administra contas, integrações, backup de atualização, canais, saídas nem o watchdog das entradas',async()=>{
     const cookie={cookie:`rplayout_session=${token}`}
     const cases:Array<[string,string,object]>=[
       ['POST','/api/users',{username:'intruso',password:'senha-muito-forte',role:'ADMIN'}],
@@ -43,6 +43,7 @@ describe('matriz de autorização das rotas que alteram estado',()=>{
       ['POST','/api/channels',{name:'novo'}],
       ['DELETE','/api/channels/ch',{}],
       ['POST','/api/channels/ch/outputs',{name:'x',kind:'SRT',target:'srt://127.0.0.1:9000'}],
+      ['PUT','/api/channels/ch/live-watchdog',{revision:0,policy:{}}],
     ]
     const results=[]
     for(const [method,url,payload] of cases){const response=await server.inject({method:method as 'POST',url,payload,headers:{...cookie,'if-match':'w/"1"'}});results.push(`${method} ${url} -> ${response.statusCode}${response.statusCode===403?"":" "+response.body.slice(0,200)}`)}

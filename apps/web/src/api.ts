@@ -268,7 +268,13 @@ export interface LiveReplacementView {
   nativeProgramConfirmed:boolean;physicalOutputValidated:false;replayed?:boolean;error?:string;outcomeUnknown?:boolean
 }
 const liveReplacementPath=(channelId:string,suffix='')=>`/api/channels/${encodeURIComponent(channelId)}/live-replacement${suffix}`
+export type LiveWatchdogView = import('@rplayout/protocol').LiveWatchdogStatus & { revision: number; updatedAt: string | null; updatedBy: string | null }
+const liveWatchdogPath = (channelId: string, suffix = '') => `/api/channels/${encodeURIComponent(channelId)}/live-watchdog${suffix}`
 export const api = {
+  liveWatchdog: (channelId: string, signal?: AbortSignal) => send<LiveWatchdogView>(liveWatchdogPath(channelId), { signal }),
+  saveLiveWatchdog: (channelId: string, revision: number, policy: import('@rplayout/protocol').LiveWatchdogPolicy) =>
+    requestResult<{ ok?: true; policy?: import('@rplayout/protocol').LiveWatchdogPolicy; revision?: number; error?: string; issues?: Array<{ path: string; message: string }> }>(liveWatchdogPath(channelId), { method: 'PUT', body: JSON.stringify({ revision, policy }) }, { acceptedStatuses: [400, 409] }),
+  liveWatchdogCommand: (channelId: string, action: 'RETURN_NOW' | 'HOLD' | 'RELEASE_HOLD') => post<{ ok: true }>(liveWatchdogPath(channelId, '/command'), { action }),
   notifications:(signal?:AbortSignal)=>send<{notifications:Array<{id:string;channelId:string|null;component:string;state:string;severity:'CRITICAL';occurredAt:string;minutesOpen:number;tier:'OPERATOR'|'SUPERVISOR'|'GESTOR'|'ADMIN';forMe:boolean}>}>('/api/notifications',{signal}),
   /** PREPARE: 409 bodies are returned (not thrown) so the screen can show outcome flags. */
   liveReplacementPrepare:(channelId:string,targetSourceId:string,idempotencyKey:string)=>requestResult<LiveReplacementView>(liveReplacementPath(channelId),{method:'POST',headers:{'idempotency-key':idempotencyKey},body:JSON.stringify({targetSourceId})},{acceptedStatuses:[409]}),

@@ -46,3 +46,30 @@ describe('evidência da ocorrência sem valores regulatórios inventados', () =>
     expect(asRunHold(entry).heldSeconds).toBeNull()
   })
 })
+
+describe('paradas do ao vivo na exportação do AIRED', () => {
+  const live: AsRunEntry = { ...entry, id: 'live', title: 'Leilão', type: 'LIVE', startedAt: '2026-10-31T12:00:00.000Z', endedAt: '2026-10-31T14:00:00.000Z', outageTotalMs: 25000,
+    outages: [
+      { id: 'o1', asRunId: 'live', itemId: 'i', sourceName: 'Câmera', startedAt: '2026-10-31T13:10:00.000Z', endedAt: '2026-10-31T13:10:15.000Z', durationMs: 15000, reasons: ['SIGNAL_LOSS'], action: 'WAIT_ART', closedBy: 'SIGNAL_RETURNED' },
+      { id: 'o2', asRunId: 'live', itemId: 'i', sourceName: 'Câmera', startedAt: '2026-10-31T13:59:50.000Z', endedAt: '2026-10-31T14:00:00.000Z', durationMs: 10000, reasons: ['BLACK'], action: 'CONTINGENCY', closedBy: 'ITEM_ENDED' },
+    ] }
+  it('com a opção (padrão): sub-linhas com início, fim, duração, motivo e ação, e o total parado', () => {
+    const csv = asRunCsv([live])
+    expect(csv).toContain('Parado total (s)')
+    expect(csv).toContain('↳ parada: sem sinal')
+    expect(csv).toContain('2026-10-31T13:10:00.000Z')
+    expect(csv).toContain('fechada no fim do item')
+    const xml = asRunXml([live], { id: 'c', name: 'Canal' })
+    expect(xml).toContain('<LiveOutages totalSeconds="25.0"><Outage start="2026-10-31T13:10:00.000Z" end="2026-10-31T13:10:15.000Z" seconds="15.0" reason="SIGNAL_LOSS" action="WAIT_ART"')
+    const report = asRunReport([live], { id: 'c', name: 'Canal' }, new Date('2026-10-31T15:00:00Z'))
+    expect(report).toContain('parado no item: 25 s em 2 parada(s)')
+    expect(report).toContain('↳ 2026-10-31T13:10:00.000Z → 2026-10-31T13:10:15.000Z (15 s) · sem sinal · grafismo de espera')
+  })
+  it('sem a opção: exportação igual à de antes', () => {
+    const plain = { ...live, outages: undefined, outageTotalMs: undefined }
+    expect(asRunCsv([live], { includeOutages: false })).toBe(asRunCsv([plain], { includeOutages: false }))
+    expect(asRunCsv([live], { includeOutages: false }).split('\n')[0]).not.toContain('Parado total')
+    expect(asRunXml([live], { id: 'c', name: 'Canal' }, { includeOutages: false })).toBe(asRunXml([plain], { id: 'c', name: 'Canal' }))
+    expect(asRunReport([live], { id: 'c', name: 'Canal' }, new Date(0), { includeOutages: false })).toBe(asRunReport([plain], { id: 'c', name: 'Canal' }, new Date(0)))
+  })
+})
