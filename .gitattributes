@@ -1,0 +1,4 @@
+# Preserve binary QA evidence and bundled native runtimes without newline conversion.
+*.pdf binary
+*.png binary
+*.dll binary

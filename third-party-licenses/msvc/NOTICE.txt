@@ -1,0 +1,4 @@
+Microsoft Visual C++ Redistributable 14.51 (Microsoft.VC145.CRT), copiado ao
+lado dos executáveis (app-local), conforme os termos de redistribuição do
+Visual Studio: https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
+Arquivos: concrt140.dll, msvcp140*.dll, vccorlib140.dll, vcruntime140*.dll.

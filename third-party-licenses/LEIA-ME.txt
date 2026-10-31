@@ -1,0 +1,13 @@
+Licenças de terceiros incluídas no RPlayout
+
+RPLAYOUT-EULA.txt ...... contrato do RPlayout, com os termos exigidos pelo NDI
+ndi/ ................... runtime NDI 6.3.2: contratos oficiais e aviso
+node/ .................. Node.js v24.16.0 (MIT e dependências)
+rust/ .................. 82 bibliotecas Rust do engine (inventory.json + textos)
+sqlite/ ................ SQLite e better-sqlite3
+gstreamer/ ............. GStreamer 1.28.7 e bibliotecas incluídas
+msvc/ .................. runtime Microsoft Visual C++
+omt/ ................... Open Media Transport (MIT)
+../mediamtx/LICENSE .... MediaMTX (MIT)
+../apps/server/dist/third-party/ e ../apps/web/dist/third-party/
+                         ... pacotes JavaScript do servidor e da interface

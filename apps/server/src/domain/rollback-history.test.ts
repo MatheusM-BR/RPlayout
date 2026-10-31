@@ -1,0 +1,8 @@
+import Database from 'better-sqlite3'
+import {it,expect} from 'vitest'
+import {assertLosslessRollbackHistory,assertExactRollbackAsRunCopy} from './rollback-history.js'
+function fixture(){const db=new Database(':memory:');db.exec('CREATE TABLE as_run(id TEXT PRIMARY KEY,channel_id TEXT,item_id TEXT,started_at TEXT,ended_at TEXT,title TEXT)');return db}
+function add(db:Database.Database,id:string,end:string|null=null){db.prepare('INSERT INTO as_run VALUES(?,?,?,?,?,?)').run(id,'ch','vt','2026-10-16',end,'VT')}
+it('preserva novos registros e fechamento posterior usando o snapshot atual inteiro',()=>{const a=fixture(),b=fixture();try{add(a,'old');add(b,'old','2026-10-17');add(b,'new');expect(assertLosslessRollbackHistory(a,b)).toMatchObject({newRecords:1,changedRecords:1,allBaselineIdsPreserved:true,historyPolicy:'LATEST_COMPLETE_SNAPSHOT_NO_MERGE',historyMerged:false,rollbackReady:false})}finally{a.close();b.close()}})
+it('não descarta IDs ausentes nem mistura identidades históricas',()=>{const a=fixture(),b=fixture();try{add(a,'old');expect(()=>assertLosslessRollbackHistory(a,b)).toThrow('perdeu IDs');add(b,'old');b.exec("UPDATE as_run SET channel_id='other'");expect(()=>assertLosslessRollbackHistory(a,b)).toThrow('Identidade histórica')}finally{a.close();b.close()}})
+it('confere cada coluna da cópia, não somente contagens',()=>{const a=fixture(),b=fixture();try{add(a,'old');add(b,'old');expect(assertExactRollbackAsRunCopy(a,b)).toEqual({rows:1});b.exec("UPDATE as_run SET title='changed'");expect(()=>assertExactRollbackAsRunCopy(a,b)).toThrow('diverge');add(b,'extra');expect(()=>assertExactRollbackAsRunCopy(a,b)).toThrow('extra/ausente')}finally{a.close();b.close()}})

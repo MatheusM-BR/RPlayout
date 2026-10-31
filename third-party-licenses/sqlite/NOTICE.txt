@@ -1,0 +1,3 @@
+SQLite (embutido em better-sqlite3 12.11.1) está em domínio público:
+https://www.sqlite.org/copyright.html
+better-sqlite3: licença MIT (better-sqlite3-LICENSE.txt).

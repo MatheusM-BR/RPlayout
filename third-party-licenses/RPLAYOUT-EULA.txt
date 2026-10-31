@@ -1,0 +1,36 @@
+RPlayout — Contrato de licença de uso (EULA)
+
+1. O RPlayout é licenciado, não vendido, para uso pelo licenciado e por quem
+   ele autorizar. Os componentes de terceiros listados nesta pasta seguem as
+   próprias licenças, que prevalecem sobre este contrato no que lhes couber.
+
+2. Termos exigidos pelo NDI® SDK License Agreement, item 3d, aplicáveis ao
+   SDK NDI, ao runtime NDI e a qualquer produto NDI incluído:
+   (i)   é proibido modificar o SDK, o SDK específico, os produtos NDI ou
+         qualquer parte deles;
+   (ii)  é proibido fazer engenharia reversa, desmontar ou recompilar o SDK,
+         o SDK específico, os produtos NDI ou qualquer parte deles, ou os
+         protocolos usados por eles — transmitidos ou recebidos pela rede,
+         internos ou externos à máquina física ou virtual em que rodam — e
+         qualquer tentativa de fazê-lo;
+   (iii) é proibido contornar qualquer limitação técnica do SDK, do SDK
+         específico, dos produtos NDI ou de qualquer parte deles;
+   (iv)  é proibido remover, ocultar ou alterar avisos ou rótulos de
+         propriedade contidos no SDK, no SDK específico ou nos produtos NDI;
+   (v)   a NDI e cada um de seus licenciadores não dão garantia alguma; toda
+         garantia em nome deles fica excluída;
+   (vi)  na extensão permitida pela lei aplicável, a NDI e seus licenciadores
+         não respondem por danos diretos, indiretos, incidentais ou
+         consequenciais decorrentes do uso do produto ou de produtos
+         combinados;
+   (vii) o licenciado cumprirá as leis e regulamentos de exportação dos
+         Estados Unidos, de modo que o produto e suas partes não sejam
+         exportados, direta ou indiretamente, em violação dessa lei;
+   (viii) Copyright © Vizrt NDI AB (NDI, Inc.) para o SDK e os produtos NDI;
+   (ix)  terceiros que usarem o RPlayout para desenvolver produtos próprios
+         devem cumprir os termos do NDI SDK License Agreement, inclusive
+         manter compatibilidade NDI atual e completa, e incluir no próprio
+         contrato de licença os termos deste item 2.
+
+3. O software é fornecido "como está", sem garantias, na extensão permitida
+   pela lei.
