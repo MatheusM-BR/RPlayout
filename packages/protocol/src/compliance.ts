@@ -54,6 +54,9 @@ export interface PgmProbeAlert {
   actionStatus?: 'DISABLED' | 'PENDING' | 'SUCCEEDED' | 'FAILED'
   actionMessage?: string
   timestamp: string
+  /** Quantas vezes a condição voltou enquanto o incidente seguia aberto
+   * (flapping agrupado). Ausente = 1. */
+  occurrences?: number
 }
 
 export type AsRunExtendedStatus =
