@@ -139,3 +139,15 @@ describe('paradas e a linha SEM SINAL do as-run',()=>{
     expect(entries.find(entry=>entry.id==='ar-sinal')!.outages).toEqual([])
   })
 })
+describe('incidentes do watchdog por episódio',()=>{
+  it('ESPERA e CONTINGÊNCIA saem das pendências quando a live volta (RETORNO → OK)',async()=>{
+    const recorder=new LiveWatchdogRecorder(app.db,'ch'),at=Date.parse('2026-10-31T15:00:00.000Z')
+    const event=(from:string,to:string,offset:number)=>({kind:'TRANSITION',severity:'CRITICAL',message:`${from} → ${to}`,from,to,at:at+offset,sourceKey:'srt://cam',sourceId:'cam',sourceName:'Câmera',bus:'pgm',itemId:'live-1'})
+    recorder.persist([event('SUSPEITA','ESPERA',0),event('ESPERA','CONTINGENCIA',5000)] as never,{rundownId:'r',itemId:'live-1'})
+    const pending=()=>app.sqlite.prepare("SELECT state FROM health_events WHERE component='LIVE_WATCHDOG' AND resolved_at IS NULL ORDER BY occurred_at").all()
+    expect(pending()).toEqual([{state:'espera'},{state:'contingencia'}])
+    recorder.persist([event('CONTINGENCIA','RETORNO',20000),event('RETORNO','OK',21000)] as never,{rundownId:'r',itemId:'live-1'})
+    expect(pending()).toEqual([])
+    expect(app.sqlite.prepare("SELECT count(*) AS n FROM health_events WHERE component='LIVE_WATCHDOG'").get()).toEqual({n:3})
+  })
+})
