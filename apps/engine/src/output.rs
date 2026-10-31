@@ -37,16 +37,34 @@ const MUX_LATENCY: u64 = 500_000_000;
 
 /// Atomically claim a new recording name. A restart/reconfiguration must not
 /// silently truncate yesterday's recording, even when the browser is bypassed.
-fn reserve_recording(path: &str) -> Result<()> {
-    std::fs::OpenOptions::new().write(true).create_new(true).open(path)
-        .map(drop)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                anyhow!("Gravação não iniciada: o destino já existe. Escolha um novo nome; o arquivo anterior foi preservado: {path}")
-            } else {
-                anyhow!("Não foi possível reservar um novo arquivo de gravação em {path}: {error}")
-            }
-        })
+///
+/// Quando o nome pedido já existe (reinício do engine, "REINICIAR SAÍDAS"), a
+/// gravação continua num novo segmento `nome-2.mkv`, `nome-3.mkv`… em vez de
+/// falhar: antes o reinício derrubava a "Gravação Local" com "o destino já
+/// existe" e o canal seguia sem gravar. O arquivo anterior nunca é tocado.
+fn reserve_recording(path: &str) -> Result<String> {
+    let claim = |candidate: &str| std::fs::OpenOptions::new().write(true).create_new(true).open(candidate).map(drop);
+    match claim(path) {
+        Ok(()) => return Ok(path.to_string()),
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+            return Err(anyhow!("Não foi possível reservar um novo arquivo de gravação em {path}: {error}"))
+        }
+        Err(_) => {}
+    }
+    let file = std::path::Path::new(path);
+    let stem = file.file_stem().and_then(|value| value.to_str()).unwrap_or("gravacao");
+    let extension = file.extension().and_then(|value| value.to_str());
+    for segment in 2..=9999u32 {
+        let name = match extension { Some(ext) => format!("{stem}-{segment}.{ext}"), None => format!("{stem}-{segment}") };
+        let candidate = file.with_file_name(name);
+        let Some(candidate) = candidate.to_str() else { break };
+        match claim(candidate) {
+            Ok(()) => return Ok(candidate.to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(anyhow!("Não foi possível reservar um novo arquivo de gravação em {candidate}: {error}")),
+        }
+    }
+    Err(anyhow!("Gravação não iniciada: o destino já existe e não há nome livre para um novo segmento. Escolha um novo nome; o arquivo anterior foi preservado: {path}"))
 }
 
 /// Janela em que um `intervideosrc` conserva o último quadro válido antes de
@@ -553,8 +571,11 @@ impl Publisher {
             Kind::File => {
                 let mux = make("matroskamux")?;
                 let sink = make("filesink")?;
-                reserve_recording(&spec.url)?;
-                sink.set_property("location", &spec.url);
+                let location = reserve_recording(&spec.url)?;
+                if location != spec.url {
+                    eprintln!("[saida] gravação continua em novo segmento (o anterior foi preservado): {location}");
+                }
+                sink.set_property("location", &location);
                 // The reservation owns this empty file. Opening in append mode
                 // also avoids truncation if another process races the sink open.
                 // Failed starts leave the reserved name visible, never erase it.
@@ -1520,21 +1541,27 @@ mod recording_tests {
         std::fs::create_dir(&directory).unwrap();
         let target = directory.join("GRAVAÇÃO — ação.mkv");
         let name = target.to_str().unwrap();
-        reserve_recording(name).unwrap();
+        assert_eq!(reserve_recording(name).unwrap(), name);
         std::fs::write(&target, b"original recording - must remain intact").unwrap();
-        let error = reserve_recording(name).unwrap_err().to_string();
-        assert!(error.contains("arquivo anterior foi preservado"));
+        // Reinício: mesmo nome pedido vira novo segmento; o original fica intacto.
+        let second = reserve_recording(name).unwrap();
+        assert_eq!(second, directory.join("GRAVAÇÃO — ação-2.mkv").to_str().unwrap());
+        let third = reserve_recording(name).unwrap();
+        assert_eq!(third, directory.join("GRAVAÇÃO — ação-3.mkv").to_str().unwrap());
         assert_eq!(std::fs::read(&target).unwrap(), b"original recording - must remain intact");
+        assert_eq!(std::fs::metadata(&second).unwrap().len(), 0);
 
         let race = directory.join("simultânea.mkv");
         let results = std::thread::scope(|scope| {
             let attempts: Vec<_> = (0..8).map(|_| {
                 let race = &race;
-                scope.spawn(move || reserve_recording(race.to_str().unwrap()).is_ok())
+                scope.spawn(move || reserve_recording(race.to_str().unwrap()).unwrap())
             }).collect();
-            attempts.into_iter().map(|attempt| attempt.join().unwrap()).filter(|success| *success).count()
+            attempts.into_iter().map(|attempt| attempt.join().unwrap()).collect::<Vec<_>>()
         });
-        assert_eq!(results, 1, "only one recorder can claim the name");
+        // Cada gravador simultâneo fica com um nome próprio; ninguém divide arquivo.
+        let names: std::collections::HashSet<_> = results.iter().cloned().collect();
+        assert_eq!(names.len(), 8, "each recorder claims a distinct segment");
         assert_eq!(std::fs::metadata(&race).unwrap().len(), 0);
         // Only this test's freshly created directory is removed.
         std::fs::remove_dir_all(directory).unwrap();
