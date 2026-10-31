@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react'
 import type {Rate,ScheduleRuleReview} from '@rplayout/protocol'
 import { api } from '../api.js'
 import { dur } from '../format.js'
-import type {FillPlan,FillProposal,Snapshot} from '../types.js'
+import type {FillImpact,FillPlan,FillProposal,Snapshot} from '../types.js'
 import {ScheduleRulesEditor} from './ScheduleRulesEditor.js'
 
 interface Props {
@@ -75,6 +75,7 @@ export function AutoFillDialog(props:Props) {
   const [plan, setPlan] = useState<FillPlan | null>(null)
   const [proposal,setProposal]=useState<(FillProposal&{criteriaKey:string})|null>(null)
   const [bands,setBands]=useState<{rule:string;items:number;leftover:number}[]>([])
+  const [impact,setImpact]=useState<FillImpact[]>([])
   const busyRef=useRef(false)
   const [busy, setBusy] = useState(false)
   const [operationError,setOperationError]=useState<string|null>(null)
@@ -163,7 +164,7 @@ export function AutoFillDialog(props:Props) {
     Promise.resolve().then(request).then(result=>{
       if(result.proposal.rundownId!==rundownId || result.proposal.channelId!==channelId)
         throw new Error('A proposta não corresponde à grade aberta. Feche e confira a seleção.')
-      setPlan(result.plan);setBands(result.bands??[])
+      setPlan(result.plan);setBands(result.bands??[]);setImpact(result.impact??[])
       setProposal({...result.proposal,criteriaKey:capturedKey})
       onMessage(`Proposta conferida: ${result.plan.items.length} itens. A aplicação não recalculará a seleção.`)
     }).catch((failure:Error)=>{setOperationError(failure.message);onMessage(failure.message)})
@@ -601,6 +602,11 @@ export function AutoFillDialog(props:Props) {
             Revisão {proposal.editorialRevision} · válida até {new Date(proposal.expiresAt).toLocaleTimeString('pt-BR')}.
             {!proposalCurrent && <p className="text-armed-amber">Os critérios mudaram. Proponha novamente antes de aplicar; a conferência anterior foi mantida.</p>}
             {bands.map((band,index)=><p key={index}>{band.rule}: {band.items} itens · saldo {dur(band.leftover,rate)}</p>)}
+            {impact.length>0&&<div role="alert" className="mt-1 rounded border border-armed-amber bg-armed-amber/10 p-2 text-armed-amber">
+              <p className="font-bold">Aplicar esta proposta muda {impact.length} {impact.length===1?'item que já está':'itens que já estão'} na grade (o 1º item entra com hora fixa):</p>
+              <ul className="list-disc pl-4">{impact.map(row=><li key={row.itemId} title={row.reason}>{row.title}: {row.kind==='DROPPED'?`DESCARTADO (${dur(row.beforeFrames,rate)})`:`cortado de ${dur(row.beforeFrames,rate)} para ${dur(row.afterFrames,rate)}`}</li>)}</ul>
+              <p>Para não cortar, escolha um horário depois do fim do conteúdo ou use "Preencher lacuna".</p>
+            </div>}
             <p>Montagem editorial. Não altera o PGM nem publica automaticamente.</p>
           </div>}
         </fieldset>

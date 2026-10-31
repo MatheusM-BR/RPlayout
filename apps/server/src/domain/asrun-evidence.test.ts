@@ -29,6 +29,19 @@ describe('proveniência durável do as-run', () => {
     expect(toAsRunRecordExtended({ ...legacy, endedBy: 'EOF' }).status).toBe('PLAYED_FULL')
     expect(toAsRunRecordExtended({ ...legacy, endedBy: 'FAILED_MEDIA_ERROR', airedFrames: null }).status).toBe('FAILED')
   })
+  it('perda de sinal do ao vivo no PGM vira linha própria até voltar ou até a saída do item (M4)', async () => {
+    const value = await setup(), recorder = new AsRun(value.db, value.channel, 'NATIVE',new ExecutionOwnership(value.db).claim(value.channel.id))
+    await recorder.follow('live', null, 'rev', 0)
+    await recorder.signal('live', true, null, 'a fonte encerrou o sinal')
+    await recorder.signal('live', true, null)
+    await recorder.signal('live', false, null)
+    await recorder.signal('live', true, null)
+    await recorder.follow('vt', null, 'rev', 0)
+    const rows = (await listAsRun(value.db, 'ch')).filter(row => row.type === 'SINAL')
+    expect(rows).toHaveLength(2)
+    expect(rows.map(row => row.endedBy).sort()).toEqual(['ITEM_ENDED','SIGNAL_RESTORED'])
+    expect(rows.every(row => row.title.startsWith('SEM SINAL') && row.endedAt !== null && row.itemId === 'live')).toBe(true)
+  })
   it('migra histórico anterior sem inventar cadência, duração ou transporte', () => {
     const directory = mkdtempSync(join(tmpdir(), 'RPlayout-asrun-migration-'))
     let handle: ReturnType<typeof openDatabase> | undefined

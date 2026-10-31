@@ -23,7 +23,7 @@ export function captureAccountAuthority(db: Db,request: AccessRequest): AccountA
 }
 function authorize(db: Db,authority: AccountAuthority): ReturnType<AccessControl['identity']> {
   const access = new AccessControl(db.$client),identity = access.identity(authority.request)
-  if ((identity?.id ?? null)!==authority.ownerId || access.required()&&!identity || !can(access.role(authority.request),'USER_MANAGE_LOWER') || identity?.channelIds!==undefined&&identity.channelIds!==null) reject(403,'A sessão ou permissão de gestão de contas mudou. Confira o acesso; nada foi alterado.')
+  if ((identity?.id ?? null)!==authority.ownerId || access.required()&&!identity || !can(access.role(authority.request),'USER_MANAGE_LOWER') || identity?.channelIds!==undefined&&identity.channelIds!==null) reject(403,'Seu papel não permite gerenciar contas (ou a sessão expirou). Nada foi alterado.')
   return identity
 }
 /** O servidor é a fonte da regra: GESTOR só mexe em contas de papéis abaixo de GESTOR

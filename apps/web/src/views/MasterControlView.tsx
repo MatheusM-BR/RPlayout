@@ -148,6 +148,23 @@ export function takeBlockedReason(publicationRequired:boolean,preview:unknown,gr
   if(source&&gradeSourceRefs&&!gradeSourceRefs.includes(source))return 'TAKE indisponível: esta entrada ao vivo está só no PVW e não está na grade. Insira-a na grade (Inserir na Biblioteca) e faça CUE na linha dela.'
   return null
 }
+/** Sem barramento de PVW (A1): o TAKE leva direto ao ar o item selecionado
+ * (ou o próximo), depois de confirmação. Devolve o motivo quando não dá. */
+export function directTakePlan(publicationRequired:boolean,target:{id:string;title:string}|null,onAirId:string|null):{itemId:string;title:string}|{reason:string}{
+  if(publicationRequired)return {reason:'TAKE bloqueado: publique a grade revisada em PLAYLIST.'}
+  if(!target)return {reason:'Sem PVW nesta instalação: selecione na grade o item que vai ao ar e use TAKE DIRETO.'}
+  if(target.id===onAirId)return {reason:'O item selecionado já está no ar. Selecione outro item da grade para o TAKE DIRETO.'}
+  return {itemId:target.id,title:target.title}
+}
+/** Sinal do ao vivo de uma linha: LOST no PGM (caiu) ou FAILED (TAKE recusado
+ * sem sinal). M3/M4: a grade não pode chamar de "EXIBIDO" o que nunca entrou,
+ * nem mostrar "NO AR" limpo com a fonte caída. */
+export function liveLineSignal(itemId:string,sources:readonly {itemId:string;state:string;busItemIds?:Partial<Record<'pgm'|'pvw',string>>}[]):'LOST'|'FAILED'|null{
+  const own=sources.filter(source=>source.itemId===itemId||source.busItemIds?.pgm===itemId)
+  if(own.some(source=>source.state==='LOST'))return 'LOST'
+  if(own.some(source=>source.state==='FAILED'))return 'FAILED'
+  return null
+}
 /** Live in PVW that is not a grade line: TAKE inserts it after the item on air. */
 export function liveOutsideGrade(preview:unknown,gradeSourceRefs:readonly string[]):{source:string;title:string}|null{
   const value=preview as {kind?:string;source?:string;title?:string}|null
@@ -646,7 +663,8 @@ export function MasterControlView({
       setSelectedItemIds(new Set([itemId]))
       lastClickedIndexRef.current = index
       setSelectedPreviewAsset(null)
-      if(!publicationRequired)onCue(item.item.id)
+      // Sem PVW o clique só seleciona: o CUE dava 500 ("este canal não tem barramento de preview").
+      if(!publicationRequired&&live.previewBus!==false)onCue(item.item.id)
     }
   }
 
@@ -715,7 +733,14 @@ export function MasterControlView({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [live.transport.preview, publicationRequired, onAirKey])
 
-  const handleTake = () => {
+  const handleTake = async () => {
+    if (direct) {
+      if ('reason' in direct) return
+      if (!(await confirmAction(`TAKE DIRETO: levar “${direct.title}” ao ar agora? Esta instalação não tem PVW; o item entra sem conferência prévia no preview.`))) return
+      takeClickRef.current = { at: performance.now(), from: onAirKey }
+      onTake(direct.itemId)
+      return
+    }
     if (publicationRequired || !live.transport.preview) return
     takeClickRef.current = { at: performance.now(), from: onAirKey }
     const outside = onTakeLive ? liveOutsideGrade(live.transport.preview, view.items.map((entry) => entry.item.sourceRef).filter((ref): ref is string => Boolean(ref))) : null
@@ -866,7 +891,12 @@ export function MasterControlView({
 
   const gradeSourceRefs=useMemo(()=>view.items.map(entry=>entry.item.sourceRef).filter((ref):ref is string=>Boolean(ref)),[view.items])
   const takeLive=onTakeLive?liveOutsideGrade(live.transport.preview,gradeSourceRefs):null
-  const takeReason=takeLive?(publicationRequired?takeBlockedReason(publicationRequired,live.transport.preview):null):takeBlockedReason(publicationRequired,live.transport.preview,gradeSourceRefs)
+  const noPreviewBus=live.previewBus===false
+  const directSelected=selectedItemIds.size===1?view.items.find(entry=>selectedItemIds.has(entry.item.id))??null:null
+  // Seleção no item que já está no ar não trava o botão: vale o próximo.
+  const directTarget=noPreviewBus?((directSelected&&directSelected.item.id!==live.transport.onAir?.itemId?directSelected:null)??armedItem):null
+  const direct=noPreviewBus?directTakePlan(publicationRequired,directTarget?{id:directTarget.item.id,title:itemDisplayTitle(directTarget,directTarget.item.title)}:null,live.transport.onAir?.itemId??null):null
+  const takeReason=direct?('reason' in direct?direct.reason:null):takeLive?(publicationRequired?takeBlockedReason(publicationRequired,live.transport.preview):null):takeBlockedReason(publicationRequired,live.transport.preview,gradeSourceRefs)
   const filteredAssets = useMemo(() => {
     return allAssetsWithLive.filter((asset) => {
       const matchesSearch =
@@ -1013,6 +1043,11 @@ export function MasterControlView({
                         <span className="font-label-mono text-[12px] text-outline">
                           {formatStandardRate(channel.rate, channel.scan, channel.height)} • {onAirItem?.item.type === 'LIVE' ? 'AO VIVO' : onAirItem?.asset?.kind ?? 'SEM ITEM'}
                         </span>
+                        {onAirItem && liveLineSignal(onAirItem.item.id, live.transport.liveSources) === 'LOST' && (
+                          <span role="alert" className="px-1.5 py-0.5 rounded bg-on-air-crimson text-white font-label-caps text-[11px] font-bold animate-pulse motion-reduce:animate-none" title="A fonte ao vivo no PGM perdeu o sinal; o engine tenta reabrir a entrada.">
+                            SEM SINAL
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-start justify-between gap-2 pt-0.5">
@@ -1125,17 +1160,18 @@ export function MasterControlView({
                     <span className="flex-1 min-w-0 break-words"><strong className="text-on-air-crimson">{transportRefusal.action.toUpperCase()} recusado:</strong> {transportRefusal.message} <span className="text-outline">(este comando não alterou o PGM)</span></span>
                     {onDismissTransportRefusal&&<button type="button" onClick={onDismissTransportRefusal} className="shrink-0 text-outline hover:text-on-surface" aria-label="Fechar aviso de comando recusado"><span className="material-symbols-outlined text-[15px]">close</span></button>}
                   </div>}
+                  {!takeReason&&direct&&'itemId' in direct&&<div role="status" className="text-[11px] text-accent-ice text-center">Sem PVW nesta instalação: o TAKE DIRETO leva “{direct.title}” ao ar, com confirmação.</div>}
                   {!takeReason&&takeLive&&<div role="status" className="text-[11px] text-accent-ice text-center">Ao vivo fora da grade: o TAKE insere “{takeLive.title}” logo após o item no ar e coloca no ar.</div>}
                   <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
                     <button
-                      onClick={handleTake}
+                      onClick={() => void handleTake()}
                       className="col-span-6 h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
                       id="btn-take"
                       disabled={takeReason!==null}
-                      title={takeReason??'Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE'}
+                      title={takeReason??(noPreviewBus?'TAKE DIRETO: leva ao ar o item selecionado (ou o próximo), com confirmação; não há PVW nesta instalação':'Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE')}
                     >
                       <span className="material-symbols-outlined text-[18px]">play_arrow</span>
-                      <span>TAKE</span>
+                      <span>{noPreviewBus ? 'TAKE DIRETO' : 'TAKE'}</span>
                       <span className="bg-surface-base/20 px-1 py-0.2 rounded font-label-mono text-[12px] text-surface-base font-semibold">ESPAÇO</span>
                     </button>
 
@@ -1147,8 +1183,9 @@ export function MasterControlView({
                         const target = selected ?? armedItem
                         if (target && !publicationRequired) onCue(target.item.id)
                       }}
-                      className="col-span-4 h-12 bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer"
-                      title="Abre em CUE no PVW o item selecionado; sem seleção, abre o Próximo (F2)"
+                      disabled={noPreviewBus}
+                      className="col-span-4 h-12 disabled:opacity-40 disabled:cursor-not-allowed bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer"
+                      title={noPreviewBus ? 'Sem barramento de preview (PVW) nesta instalação: não há CUE. Selecione o item e use TAKE DIRETO.' : 'Abre em CUE no PVW o item selecionado; sem seleção, abre o Próximo (F2)'}
                     >
                       <div className="flex items-center gap-0.5">
                         <span className="material-symbols-outlined text-[14px]">skip_next</span>
@@ -1480,7 +1517,9 @@ export function MasterControlView({
                       remainingFrames={remainingFrames}
                       onSelectItem={(index) => {
                         const target = view.items[index]
-                        if (target && !publicationRequired) onCue(target.item.id)
+                        if (!target) return
+                        if (live.previewBus === false) { setSelectedItemIds(new Set([target.item.id])); return }
+                        if (!publicationRequired) onCue(target.item.id)
                       }}
                       onAutoFill={onAutoFill}
                       rundownId={view.rundown?.id}
@@ -1536,6 +1575,7 @@ export function MasterControlView({
                             const isItemOnAir = index === onAirIndex
                             const isItemCued = selectedPreviewAsset === null && cueItem?.item.id === item.item.id
                             const isItemPrepared = item.item.id === live.transport.preparedItemId
+                            const lineSignal = item.item.type === 'LIVE' || item.item.sourceRef ? liveLineSignal(item.item.id, live.transport.liveSources) : null
                             const isAired = onAirIndex >= 0 && index < onAirIndex
                             const durationFrames = getItemDuration(item)
                             const isSelected = selectedItemIds.has(item.item.id)
@@ -1604,7 +1644,11 @@ export function MasterControlView({
                                 <td className="py-1.5 px-3 whitespace-nowrap">
                                   {isItemOnAir ? (
                                     <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-on-air-crimson text-surface-base font-label-caps t-status">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-surface-base animate-ping"></span> NO AR
+                                      <span className="w-1.5 h-1.5 rounded-full bg-surface-base animate-ping"></span> NO AR{lineSignal === 'LOST' ? ' · SEM SINAL' : ''}
+                                    </span>
+                                  ) : isAired && lineSignal === 'FAILED' ? (
+                                    <span className="px-2 py-0.5 rounded font-label-caps t-status text-on-air-crimson bg-on-air-crimson/10" title="TAKE recusado: a entrada não entregou sinal; o item não foi ao ar (confira o AIRED).">
+                                      NÃO EXIBIDO
                                     </span>
                                   ) : isItemCued ? (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-armed-amber text-surface-base font-label-caps t-status">
@@ -1974,7 +2018,7 @@ export function MasterControlView({
                 {live.transport.preview&&<PreviewFrameStatus sample={live.transport.previewFrame}/>}
               </div>
 
-            <MasterToolsPanel channelId={channel.id} rate={channel.rate} assets={allAssets} />
+            <MasterToolsPanel channelId={channel.id} rate={channel.rate} assets={allAssets} slateConfigured={Boolean(channel.slateTemplateId)} />
           </aside>
         </div>
       </main>

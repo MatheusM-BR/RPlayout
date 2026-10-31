@@ -333,7 +333,7 @@ export function AddItemDialog({
               : ''}
             {mode === 'FLOW' && 'Entra quando o item anterior terminar. Vai para o fim da grade.'}
             {mode === 'FIXED' &&
-              'Hora obrigatória. O que estiver na frente é cortado ou descartado para caber.'}
+              'Hora obrigatória: na hora marcada o item entra com TAKE. O item que atravessar a hora sai cortado, e o que cairia inteiro depois dela é descartado da grade.'}
             {mode === 'SOFT' &&
               'Hora alvo com folga para os dois lados. O motor escolhe o melhor ponto da janela.'}
           </div>

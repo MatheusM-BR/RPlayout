@@ -164,6 +164,10 @@ export interface EngineOptions {
   readonly executionOccurrenceId?:()=>string|null
   readonly onLivePriority?: (event: LivePriorityEvent) => void
   readonly onTakeConfirmed?: (itemId: string, startPositionFrames: number, recovered: boolean, previous: {itemId:string;frames:number;reason:string} | null) => void
+  /** Inserção operacional pontual ("PRÓXIMO"/"AGORA") que já foi ao ar ou foi recusada: não volta na próxima volta do loop. */
+  readonly onOneShotSpent?: (itemId: string, reason: 'AIRED' | 'REFUSED') => void
+  /** Perda e volta do sinal de um ao vivo que está no PGM (para o as-run). */
+  readonly onProgramSignal?: (itemId: string, lost: boolean, reason: string | null) => void
   readonly onHeldRecoveryConfirmed?:(attempt:{rundownId:string;itemId:string;frames:number;programTrim:ProgramTrim},proof:{itemId:string;decoderId:number;frames:number})=>Promise<void>
   /** Terminal refusal of the exact native live opening, after its positive ACK. */
   readonly onRecoveryRejected?: (attempt:{rundownId:string;itemId:string;frames:number},error:EngineCommandRejected)=>void
@@ -353,6 +357,11 @@ export class EngineTransport implements Transport {
   private priorityContext: string | null = null
   private readonly handledPriorityLives = new Set<string>()
   private priorityTake: LivePriorityEvent | null = null
+  /** Inserções pontuais já exibidas ou recusadas nesta execução. Enquanto a
+   * revisão sem elas não chega, o transporte não as escolhe de novo. */
+  private readonly spentOneShots = new Set<string>()
+  /** Item ao vivo no PGM cuja fonte caiu e ainda não voltou. */
+  private programSignalLost: string | null = null
   private preview: PreviewTarget | null = null
   /** Last preview command actually sent; includes opening/clearing before ACK.
    * Historical source rows are not ownership of the currently requested bus. */
@@ -952,6 +961,9 @@ export class EngineTransport implements Transport {
           const opening=this.pendingLiveTake,cursor=this.recoveryCursor
           this.pendingLiveTake = null
           this.pendingProgramExit = null
+          // Ao vivo pontual recusado (sem sinal) não é tentado de novo a cada
+          // volta -- cada tentativa congelava o item anterior por ~10 s.
+          this.spendOneShot(opening.itemId, 'REFUSED')
           // A native live itemError on this pending PGM decoder is emitted only
           // after service_pending_take refuses it. PVW/stale/legacy identities
           // cannot authorize another TAKE, nor can silence or a lost ACK.
@@ -982,10 +994,16 @@ export class EngineTransport implements Transport {
         // tentando reabrir; aqui só registramos para o operador ver.
         this.updateSourceForItem(event.itemId, 'LOST', event.reason, 'pgm')
         this.fail(`fonte ao vivo caiu: ${event.reason}`)
+        this.programSignalLost = event.itemId
+        try { this.options.onProgramSignal?.(event.itemId, true, event.reason ?? null) } catch { /* registro é auxiliar */ }
         break
       case 'sourceReady':
         if (!this.sourceEventMatchesBus(event.itemId, event.bus, event.decoderId)) break
         this.updateSourceForItem(event.itemId, event.bus === 'pgm' ? 'ON_PGM' : 'PVW_READY', null, event.bus)
+        if (event.bus === 'pgm' && this.programSignalLost === event.itemId) {
+          this.programSignalLost = null
+          try { this.options.onProgramSignal?.(event.itemId, false, null) } catch { /* registro é auxiliar */ }
+        }
         this.recordNativeCatalogBinding(event.itemId,event.bus,event.configuredSourceId,event.decoderId)
         this.dirty = true
         this.notifySignalObservation()
@@ -1660,8 +1678,12 @@ export class EngineTransport implements Transport {
     let versionFailure = false
     for (const entry of candidates) {
       if (!recoveryTrim&&view.schedule.items.find((row) => row.id === entry.item.id)?.state === 'DROPPED') continue
+      if (!exact&&!recoveryTrim&&this.spentOneShots.has(entry.item.id)) continue
       const isCued=exact&&this.preview?.kind==='ITEM'&&this.preview.id===entry.item.id
-      const timing=isCued&&this.previewTiming?this.previewTiming:freezeExecutionTiming(view)
+      // Timing da grade vigente a cada candidato: se a revisão mudou durante o
+      // preroll do anterior, os demais não podem herdar a fotografia velha (todos
+      // davam "sem arquivo ou fonte válida" e o PGM congelava no último quadro).
+      const timing=isCued&&this.previewTiming?this.previewTiming:freezeExecutionTiming(this.view()??view)
       if(isCued&&timing.key!==executionTimingKey(view))throw new Error('O item publicado mudou após o CUE. Faça CUE novamente para conferir a mídia e os cortes antes do TAKE.')
       if(recoveryTrim)assertProgramTrim(entry,recoveryTrim,resumeFrames,this.channel.rate)
       const spec = playbackSpec(entry.item.id,timing,recoveryTrim)
@@ -1786,6 +1808,10 @@ export class EngineTransport implements Transport {
       this.emitLivePriority({ ...this.priorityTake, kind: 'CONFIRMED', occurredAt: new Date(Date.now()).toISOString() })
       this.priorityTake = null
     }
+    // A inserção pontual que saiu do PGM não volta na próxima volta do loop.
+    if (previous && previous.itemId !== spec.itemId) this.spendOneShot(previous.itemId, 'AIRED')
+    if (this.retireQueue.size) setTimeout(() => this.flushRetirements(), 0)
+    this.lastConfirmedAt.set(spec.itemId, Date.now())
     this.recoveryCursor = null
     // A grade line armed in PVW belongs to the plan that was running; when
     // another playlist takes over, that CUE no longer exists and is cleared.
@@ -1820,6 +1846,57 @@ export class EngineTransport implements Transport {
     catch (error) { this.fail('Falha ao registrar saída de PGM: ' + (error instanceof Error ? error.message : String(error))) }
   }
 
+  /** Há barramento de preview (PVW)? Sem servidor de mídia o engine sobe só com PGM. */
+  hasPreviewBus(): boolean { return Boolean(this.options?.preview) }
+
+  /** Grade em loop com lacuna antes de uma HORA FIXA de arquivo: a sequência
+   * não leva o item antes da hora (ele entra pelo TAKE da hora fixa); o loop
+   * segue com os outros itens até lá. Só nos 10 minutos antes da âncora. */
+  private heldForAnchor(view: RundownView, itemId: string, now = Date.now()): boolean {
+    if (!view.rundown.loop) return false
+    const target = priorityLives(view, now).find(entry => entry.itemId === itemId && entry.key.includes(':file:'))
+    return Boolean(target && target.atMs - now > 2000 && target.atMs - now <= 10 * 60_000 && view.items.length > 1)
+  }
+
+  private airedJustBefore(view: RundownView, itemId: string, atMs: number): boolean {
+    const at = this.lastConfirmedAt.get(itemId)
+    if (at === undefined) return false
+    const duration = view.schedule.items.find(row => row.id === itemId)?.duration ?? 0
+    return at >= atMs - framesToMs(duration, this.channel.rate) - 60_000
+  }
+
+  /** Item vindo de inserção operacional ("urgent:<pedido>"): vale uma vez. */
+  static isOneShot(itemId: string): boolean { return itemId.startsWith('urgent:') }
+
+  private readonly retireQueue = new Map<string, 'AIRED' | 'REFUSED'>()
+  /** Quando cada item entrou no ar pela última vez (TAKE confirmado). */
+  private readonly lastConfirmedAt = new Map<string, number>()
+  /** Marca a inserção pontual como gasta já (o transporte não a escolhe mais)
+   * e só avisa quem retira da revisão depois do próximo TAKE confirmado: trocar
+   * a revisão no meio de uma virada invalidava o preroll seguinte e o canal
+   * congelava no último quadro ("Contrato alterado: revisão"). */
+  private spendOneShot(itemId: string, reason: 'AIRED' | 'REFUSED'): void {
+    if (!EngineTransport.isOneShot(itemId) || this.spentOneShots.has(itemId)) return
+    this.spentOneShots.add(itemId)
+    this.retireQueue.set(itemId, reason)
+  }
+
+  private flushRetirements(): void {
+    for (const [itemId, reason] of [...this.retireQueue]) {
+      if (itemId === this.onAirItemId) continue
+      this.retireQueue.delete(itemId)
+      try { this.options.onOneShotSpent?.(itemId, reason) }
+      catch (error) { this.fail('Falha ao retirar a inserção pontual da grade: ' + (error instanceof Error ? error.message : String(error))) }
+    }
+  }
+
+  /** Candidato a próxima entrada automática: nem descartado, nem inserção pontual já gasta. */
+  private schedulable(view: RundownView, itemId: string): boolean {
+    if (this.spentOneShots.has(itemId) && itemId !== this.onAirItemId) return false
+    if (this.heldForAnchor(view, itemId)) return false
+    return view.schedule.items.find(timing => timing.id === itemId)?.state !== 'DROPPED'
+  }
+
   private advanceAfter(itemId: string, failed = false): void {
     if (this.advancing) return
     this.advancing = true
@@ -1830,7 +1907,8 @@ export class EngineTransport implements Transport {
       const current = view.items[index]
       if (!current) return
       const candidates = [...view.items.slice(index + 1), ...(view.rundown.loop ? view.items.slice(0, index + 1) : [])]
-      const next = candidates.find(entry => view.schedule.items.find(timing => timing.id === entry.item.id)?.state !== 'DROPPED')
+      // A inserção pontual no ar não se repete nem quando é o único item do loop.
+      const next = candidates.find(entry => this.schedulable(view, entry.item.id) && !(entry.item.id === itemId && EngineTransport.isOneShot(itemId)))
       if (!failed && current.item.loop) {
         await this.playFrom(view.rundown.id, current.item.id)
         return
@@ -1884,7 +1962,7 @@ export class EngineTransport implements Transport {
       const index=view.items.findIndex(entry=>entry.item.id===failedId)
       if(index<0)return
       const candidates=[...view.items.slice(index+1),...(view.rundown.loop?view.items.slice(0,index):[])]
-      const next=candidates.find(entry=>entry.item.id!==failedId&&view.schedule.items.find(timing=>timing.id===entry.item.id)?.state!=='DROPPED')
+      const next=candidates.find(entry=>entry.item.id!==failedId&&this.schedulable(view,entry.item.id))
       if(!next)return
       this.fail('Entrada ao vivo sem sinal na virada automática; a grade seguiu para o próximo item.')
       await this.playFrom(view.rundown.id,next.item.id)
@@ -2400,6 +2478,9 @@ export class EngineTransport implements Transport {
     this.priorityObservedAt = now
     const target = crossed.find(target => !this.handledPriorityLives.has(target.key) && target.itemId !== this.onAirItemId && target.atMs > since && target.atMs <= now)
     if (!target) return
+    // Arquivo de HORA FIXA que a sequência já levou ao ar logo antes da hora
+    // (lacuna antes da âncora) não é repetido pelo TAKE da hora fixa.
+    if (target.key.includes(':file:') && this.airedJustBefore(view, target.itemId, target.atMs)) { this.handledPriorityLives.add(target.key); return }
     this.handledPriorityLives.add(target.key)
     const previousItemId = this.onAirItemId
     this.priorityTake = { kind: 'REQUESTED', rundownId: target.rundownId, itemId: target.itemId, previousItemId, previousFrames: this.elapsed, scheduledAt: new Date(target.atMs).toISOString(), occurredAt: new Date(now).toISOString() }
@@ -2527,7 +2608,7 @@ export class EngineTransport implements Transport {
     const upcomingItem = upcoming ? view.items.find(entry => entry.item.id === upcoming.itemId) : undefined
     const next = upcomingItem ?? candidates.find((entry) => {
       if (entry.item.id === this.onAirItemId || failed(entry.item.id)) return false
-      return view.schedule.items.find((row) => row.id === entry.item.id)?.state !== 'DROPPED' &&
+      return this.schedulable(view, entry.item.id) &&
         this.specFor(entry.item.id) !== null
     })
     if (!next) {

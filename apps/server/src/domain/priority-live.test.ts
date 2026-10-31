@@ -35,4 +35,14 @@ describe('âncoras prioritárias de live', () => {
     const grade = view(); Object.assign(grade.items[2]!.item, {anchor:{kind:'FIXED',at:-25}})
     expect(priorityLives(grade,today).map(row => row.itemId)).toEqual(['future'])
   })
+  it('HORA FIXA de arquivo também é TAKE obrigatório na hora (A2); SOFT e FLOW não', () => {
+    const grade = view()
+    ;(grade.items as unknown as Array<{ item: unknown }>).push(
+      { item: { id: 'comercial', type: 'VT', mediaId: 'm1', anchor: { kind: 'FIXED', at: 12*3600*25 + 25 } } },
+      { item: { id: 'vt-soft', type: 'VT', mediaId: 'm2', anchor: { kind: 'SOFT', at: 12*3600*25 } } },
+    )
+    const list = priorityLives(grade, today)
+    expect(list.map(row => row.itemId)).toEqual(['earlier','comercial','future'])
+    expect(list.find(row => row.itemId === 'comercial')?.key).toContain('file:m1')
+  })
 })

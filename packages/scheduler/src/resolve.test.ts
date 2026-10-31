@@ -207,6 +207,72 @@ describe('estouro antes de uma âncora fixa', () => {
     expect(result.conflicts[0]?.kind).toBe('ANCHOR_MISSED')
   })
 
+  it('HORA FIXA com vários itens estourando entra na hora: descarta os de depois e corta o que atravessa (A2)', () => {
+    order = 0
+    // 04:00 + 7:10 + 3 min + 12 s + 2 min: a grade passa de 04:10 em 2:22.
+    const result = plan(
+      [
+        item({ id: 'programa', duration: s(430) }),
+        item({ id: 'movimento', duration: s(180) }),
+        item({ id: 'preto', duration: s(12) }),
+        item({ id: 'barras', duration: s(120) }),
+        item({ id: 'comercial', duration: s(25), anchor: { kind: 'FIXED', at: at(4, 10) } }),
+        item({ id: 'depois', duration: s(30) }),
+      ],
+      at(4, 0),
+    )
+
+    const comercial = byId(result, 'comercial')
+    expect(clock(comercial.start)).toBe('04:10:00')
+    expect(comercial.deviation).toBe(0)
+    expect(comercial.anchorHit).toBe(true)
+    // 'movimento' (04:07:10) atravessa 04:10: cortado para 2:50; os de depois saem.
+    expect(byId(result, 'movimento').duration).toBe(s(170))
+    expect(byId(result, 'preto').state).toBe('DROPPED')
+    expect(byId(result, 'barras').state).toBe('DROPPED')
+    // Nada fica na grade com 0 s.
+    expect(result.items.filter((row) => row.state !== 'DROPPED' && row.duration === 0)).toEqual([])
+    expect(clock(byId(result, 'depois').start)).toBe('04:10:25')
+  })
+
+  it('HORA FIXA descarta, sem deixar 0 s, os itens que inteiros cairiam depois da hora (A2/A7)', () => {
+    order = 0
+    const result = plan(
+      [
+        item({ id: 'longo', duration: s(660) }),
+        item({ id: 'preto', duration: s(12) }),
+        item({ id: 'curto', duration: s(20) }),
+        item({ id: 'comercial', duration: s(25), anchor: { kind: 'FIXED', at: at(4, 10) } }),
+      ],
+      at(4, 0),
+    )
+
+    expect(clock(byId(result, 'comercial').start)).toBe('04:10:00')
+    expect(byId(result, 'preto').state).toBe('DROPPED')
+    expect(byId(result, 'curto').state).toBe('DROPPED')
+    expect(byId(result, 'preto').adjustments[0]?.kind).toBe('DROPPED')
+    expect(byId(result, 'longo').duration).toBe(s(600))
+    expect(result.compensationReport?.actions.filter((a) => a.actionType === 'DROP_ITEM').map((a) => a.itemId).sort()).toEqual(['curto', 'preto'])
+  })
+
+  it('HORA FIXA com o item no ar estourando: corta o PGM na hora, sem passar do já exibido', () => {
+    order = 0
+    const result = resolve({
+      rate,
+      items: [
+        item({ id: 'no-ar', duration: s(900) }),
+        item({ id: 'seguinte', duration: s(60) }),
+        item({ id: 'comercial', duration: s(25), anchor: { kind: 'FIXED', at: at(4, 10) } }),
+      ],
+      now: at(4, 5),
+      onAir: { itemId: 'no-ar', startedAt: at(4, 0), elapsed: s(300) },
+      plannedStart: at(4, 0),
+    })
+    expect(clock(byId(result, 'comercial').start)).toBe('04:10:00')
+    expect(byId(result, 'no-ar').duration).toBe(s(600))
+    expect(byId(result, 'seguinte').state).toBe('DROPPED')
+  })
+
   it('duas âncoras fixas que não cabem uma na outra são sinalizadas', () => {
     order = 0
     const result = plan(

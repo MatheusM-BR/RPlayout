@@ -4,7 +4,8 @@ import { MirrorStatus } from '../components/MirrorStatus.js'
 import { useEscape } from '../domain/use-escape.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import { wallClock, nowHms, parseHms, formatHms, anchorWall, anchorFramesFor, resolveWallInstant, type DayChoice } from '../domain/wall-clock.js'
+import { dayCoverage } from '../domain/day-coverage.js'
+import { wallClock, wallTime, nowHms, parseHms, formatHms, anchorWall, anchorFramesFor, resolveWallInstant, type DayChoice } from '../domain/wall-clock.js'
 import {itemDisplayTitle} from '../domain/item-title.js'
 import type { Channel, ManagedLiveSource, Rundown, AssetMetadataReview } from '@rplayout/protocol'
 import { durationIn, qcApproved } from '@rplayout/protocol'
@@ -69,7 +70,9 @@ interface Props {
   sessionRole?: string
   authRequired?: boolean
   onAddItem?: (rundownId?: string, onApplied?: (snapshot: any) => void,revision?:number) => void
-  onExportCsv?: () => void
+  /** Abre a importação de lista (arquivo M3U/M3U8/CSV/TXT) para esta grade. */
+  onOpenImport?: (rundownId: string, onApplied?: (snapshot: any) => void, revision?: number) => void
+  onExportCsv?: (rundownId?: string, format?: 'csv' | 'm3u') => void
   onOpenTrim?: (item: ItemView) => void
   onOpenAudio?: (item: ItemView) => void
   onRemoveItem?: (itemId: string, rundownId?: string, onRemoved?: () => void,revision?:number) => void
@@ -97,6 +100,7 @@ export function PlaylistScheduleView({
   sessionRole = 'Operador Master',
   authRequired = false,
   onAddItem,
+  onOpenImport,
   onExportCsv,
   onOpenTrim,
   onOpenAudio,
@@ -706,6 +710,18 @@ export function PlaylistScheduleView({
     }finally{operationalBusy.current=false;setIsPublishingOperational(false)}
   }
 
+  const handleImport = async () => {
+    if (!onOpenImport) return
+    let target:RundownView
+    try { target=await ensureEditorialView() } catch(error){setFeedbackMessage(error instanceof Error?error.message:'Não consegui abrir a data.');return}
+    onOpenImport(target.rundown.id, (snapshot) => {
+      if (!isLoadedEditorial && snapshot?.view) {
+        setDateRundownView(snapshot.view)
+        void refreshAvailableRundowns()
+      }
+    },target.editorialRevision)
+  }
+
   const handleAddItem = async () => {
     if (!onAddItem) return
     let target:RundownView
@@ -1186,8 +1202,27 @@ export function PlaylistScheduleView({
       }
     }
 
-    return { blocks, gaps: detectedGaps, totalFrames: totalDayFrames, visibleFrames }
-  }, [displayItems, scheduleMap, rate, visibleHours, viewportStartHour])
+    // Lacuna real do dia (M2), independente do zoom: buracos entre itens e o
+    // resto do dia depois do último item. Antes só contava buracos ENTRE itens
+    // visíveis, e 2 min de conteúdo num dia de 24 h davam "LACUNAS: 0".
+    const day = dayCoverage(blocks.filter((block) => scheduleMap.get(block.item.item.id)?.state !== 'DROPPED'), Boolean(activeView?.rundown.loop), totalDayFrames, fps)
+    const lastEnd = day.lastEnd, tailFrames = day.tailFrames
+    if (tailFrames > 0 && lastEnd < viewportStartFrames + visibleFrames) {
+      const gapStart = Math.max(lastEnd, viewportStartFrames)
+      const gapEnd = viewportStartFrames + visibleFrames
+      const leftPct = Math.min(100, Math.max(0, ((gapStart - viewportStartFrames) / visibleFrames) * 100))
+      detectedGaps.push({
+        start: gapStart,
+        end: gapEnd,
+        duration: gapEnd - gapStart,
+        leftPct,
+        widthPct: Math.min(100 - leftPct, Math.max(0.2, ((gapEnd - gapStart) / visibleFrames) * 100)),
+        label: `${wallClock(gapStart, rate, activeView?.rundown.date)} - ${wallClock(gapEnd, rate, activeView?.rundown.date)} (fim da grade)`,
+      })
+    }
+
+    return { blocks, gaps: detectedGaps, totalFrames: totalDayFrames, visibleFrames, day }
+  }, [displayItems, scheduleMap, rate, visibleHours, viewportStartHour, activeView?.rundown.loop, activeView?.rundown.date])
 
   // Total de tempo previsto e gap total
   const totalDurationFrames = displayItems.reduce((acc, it) => {
@@ -1286,9 +1321,16 @@ export function PlaylistScheduleView({
               COBERTURA: <strong className="text-accent-ice-bright font-bold">{dur(totalDurationFrames, rate)}</strong>
             </span>
             <span className="text-outline">•</span>
-            <span className="text-outline">
-              LACUNAS: <strong className={timelineData.gaps.length > 0 ? 'text-armed-amber font-bold' : 'text-status-ok-bright font-bold'}>{timelineData.gaps.length}</strong>
-            </span>
+            {timelineData.day.loop && timelineData.day.cycleFrames > 0 ? (
+              <span className="text-outline" title={`Grade em loop: o ciclo de ${dur(timelineData.day.cycleFrames, rate)} se repete o dia todo. Sem o loop, o dia teria ${dur(Math.max(0, timelineData.totalFrames - timelineData.day.cycleFrames), rate)} sem programação.`}>
+                LACUNAS: <strong className="text-accent-ice-bright font-bold">LOOP COBRE O DIA</strong> <span className="text-outline">(ciclo {dur(timelineData.day.cycleFrames, rate)} · repete ~{timelineData.day.repeats}×)</span>
+              </span>
+            ) : (
+              <span className="text-outline" title="Tempo do dia sem programação: buracos entre itens e o resto do dia após o último item.">
+                LACUNAS: <strong className={timelineData.day.gapCount > 0 ? 'text-armed-amber font-bold' : 'text-status-ok-bright font-bold'}>{timelineData.day.gapCount}</strong>
+                {timelineData.day.gapFrames > 0 && <span className="text-armed-amber"> ({dur(timelineData.day.gapFrames, rate)} sem programação)</span>}
+              </span>
+            )}
           </div>
         </div>
 
@@ -2039,12 +2081,13 @@ export function PlaylistScheduleView({
               <div className="flex flex-wrap items-center gap-1.5">
                 <button type="button" disabled={!activeView} className="btn small" onClick={()=>setShowProtectedZones(true)}>ZONAS PROTEGIDAS ({activeView?.rundown.protectedZones?.length ?? 0})</button>
                 <button
-                  onClick={handleAddItem}
+                  onClick={handleImport}
+                  disabled={!onOpenImport}
                   className="flex items-center gap-1 bg-surface-panel hover:bg-surface-container text-on-surface border border-border-subtle hover:border-border-strong px-2 py-1 rounded font-body-sm text-[11px] transition-colors cursor-pointer"
-                  title="Importar grade no padrão broadcast BXF ou M3U8"
+                  title="Importar lista de reprodução (arquivo .m3u, .m3u8, .csv ou .txt, ou uma lista da pasta do acervo). BXF ainda não é lido."
                 >
                   <span className="material-symbols-outlined text-[15px] text-accent-ice">cloud_download</span>
-                  <span>Importar BXF / M3U</span>
+                  <span>Importar M3U</span>
                 </button>
 
                 {/* Dropdown de Exportação */}
@@ -2062,20 +2105,33 @@ export function PlaylistScheduleView({
                     <div className="absolute top-full left-0 mt-1 w-72 bg-surface-card border-2 border-accent-ice/40 rounded shadow-2xl p-2 z-50 flex flex-col gap-1.5 text-left select-none">
                       <div className="flex items-center justify-between border-b border-border-subtle pb-1">
                         <span className="font-label-caps text-[11px] text-on-surface font-bold uppercase">
-                          EXPORTAR GRADE • ${selectedDate}
+                          EXPORTAR GRADE • {selectedDate.split('-').reverse().join('/')}
                         </span>
                         <button onClick={() => setShowExportMenu(false)} className="text-outline hover:text-on-surface font-bold text-xs cursor-pointer">✕</button>
                       </div>
                       <button
+                        disabled={!activeView}
                         onClick={() => {
-                          if (onExportCsv) onExportCsv()
+                          if (onExportCsv) onExportCsv(activeView?.rundown.id, 'csv')
                           setShowExportMenu(false)
                         }}
                         className="p-1.5 rounded hover:bg-surface-panel flex items-center justify-between text-body-sm cursor-pointer text-left"
                       >
-                        <span className="font-bold text-on-surface text-[11px]">Planilha CSV Oficial</span>
-                        <span className="text-[11px] text-outline">Excel / LibreOffice</span>
+                        <span className="font-bold text-on-surface text-[11px]">Planilha CSV</span>
+                        <span className="text-[11px] text-outline">horários HH:MM:SS · Excel</span>
                       </button>
+                      <button
+                        disabled={!activeView}
+                        onClick={() => {
+                          if (onExportCsv) onExportCsv(activeView?.rundown.id, 'm3u')
+                          setShowExportMenu(false)
+                        }}
+                        className="p-1.5 rounded hover:bg-surface-panel flex items-center justify-between text-body-sm cursor-pointer text-left"
+                      >
+                        <span className="font-bold text-on-surface text-[11px]">Lista M3U8</span>
+                        <span className="text-[11px] text-outline">vMix / reimportar aqui</span>
+                      </button>
+                      <span className="px-1.5 text-[11px] text-outline">BXF ainda não é gerado.</span>
                     </div>
                   )}
                 </div>
@@ -2212,12 +2268,13 @@ export function PlaylistScheduleView({
                       </button>
 
                       <button
-                        onClick={handleAddItem}
+                        onClick={handleImport}
+                        disabled={!onOpenImport}
                         className="p-3 bg-surface-panel hover:bg-surface-container border border-border-subtle hover:border-tertiary/50 rounded flex items-center gap-2.5 text-left transition-colors cursor-pointer group"
                       >
                         <span className="material-symbols-outlined text-tertiary text-[22px] group-hover:scale-110 transition-transform">upload_file</span>
                         <div className="flex flex-col">
-                          <span className="font-bold text-xs text-on-surface">Importar M3U / BXF</span>
+                          <span className="font-bold text-xs text-on-surface">Importar M3U</span>
                           <span className="text-[11px] text-outline">Carregar playlist pronta de arquivo</span>
                         </div>
                       </button>
@@ -2278,6 +2335,11 @@ export function PlaylistScheduleView({
                           <span className="px-1 py-0.2 rounded font-label-caps t-label bg-surface-container font-semibold text-primary">
                             {item.asset?.kind ?? item.item.type ?? 'VT'}
                           </span>
+                          {(item.item.anchor?.kind === 'FIXED' || item.item.anchor?.kind === 'HARD_TIME') && (
+                            <span className="px-1 py-0.2 rounded font-label-caps text-[11px] font-bold border border-armed-amber/60 text-armed-amber" title={item.item.anchor.kind === 'HARD_TIME' ? 'Horário de rede (disparo obrigatório)' : 'Hora fixa: entra na hora marcada; o que vier antes é cortado'}>
+                              {item.item.anchor.kind === 'HARD_TIME' ? 'REDE' : 'FIXO'} {wallTime(item.item.anchor.at, rate, activeView?.rundown.date)}
+                            </span>
+                          )}
                           {item.asset?.categoryId && (() => {
                             const catName = item.asset.categoryId
                             const catInfo = availableCategoriesList.find((c) => c.id === catName)
@@ -2302,9 +2364,23 @@ export function PlaylistScheduleView({
                             ? wallClock(scheduleMap.get(item.item.id)!.start, rate, activeView?.rundown.date)
                             : '--:--:--:--'}
                         </div>
-                        <div className="col-span-2 font-label-mono t-time text-outline">
-                          {dur(durationFrames, rate)}
-                        </div>
+                        {(() => {
+                          // A grade mostra o que vai ao ar (A7): item cortado ou descartado
+                          // pelo planejador (hora fixa, auto-fill) é marcado na própria linha.
+                          const planned = scheduleMap.get(item.item.id)
+                          const changes = planned?.adjustments.filter((adjustment) => ['TRIMMED', 'DROPPED', 'SKIPPED', 'SHRUNK'].includes(adjustment.kind)) ?? []
+                          const dropped = planned?.state === 'DROPPED'
+                          const cut = !dropped && planned && planned.duration < durationFrames
+                          if (!dropped && !cut) return <div className="col-span-2 font-label-mono t-time text-outline">{dur(durationFrames, rate)}</div>
+                          const why = changes.map((adjustment) => adjustment.reason).join(' ') || (dropped ? 'Descartado pelo planejamento.' : 'Cortado pelo planejamento.')
+                          return (
+                            <div className="col-span-2 font-label-mono t-time leading-tight" title={`${why} Duração original ${dur(durationFrames, rate)}.`}>
+                              {dropped
+                                ? <><span className="line-through text-outline">{dur(durationFrames, rate)}</span> <span className="text-on-air-crimson font-bold text-[11px]">DESCARTADO</span></>
+                                : <><span className="text-armed-amber font-bold">{dur(planned!.duration, rate)}</span> <span className="text-armed-amber text-[11px]">CORTADO de {dur(durationFrames, rate)}</span></>}
+                            </div>
+                          )
+                        })()}
                         <div className="col-span-3 font-body-sm t-data truncate text-on-surface">
                           {item.asset?.title || item.item.title || item.item.id}
                         </div>

@@ -185,10 +185,16 @@ fn poll_pending_take(channel:&mut Channel)->(bool,Option<Event>) {
         Ok(Some(_))=>(true,None),
         Ok(None)=>(false,None),
         Err(error)=>(true,Some(match candidate {
-            Some(item_id)=>Event::ItemError{item_id,bus:"pgm",decoder_id,message:format!("TAKE recusado: {error}; PGM anterior preservado")},
-            None=>Event::Error{message:format!("TAKE pendente recusado: {error}; PGM anterior preservado")},
+            Some(item_id)=>Event::ItemError{item_id,bus:"pgm",decoder_id,message:refusal("TAKE recusado",&error)},
+            None=>Event::Error{message:refusal("TAKE pendente recusado",&error)},
         })),
     }
+}
+
+/// "PGM anterior preservado" uma vez só: o erro do preroll já costuma trazer.
+fn refusal(prefix:&str,error:&anyhow::Error)->String{
+    let text=error.to_string();
+    if text.contains("PGM anterior preservado"){format!("{prefix}: {text}")}else{format!("{prefix}: {text}; PGM anterior preservado")}
 }
 
 #[derive(Default)]
@@ -746,6 +752,13 @@ mod tests {
         assert_eq!(command_text("{\"id\":2}"), "{\"id\":2}");
         // Only a leading BOM is removed; a BOM inside the payload is not rewritten.
         assert!(serde_json::from_str::<Envelope>(command_text("{\"id\":3,\"cmd\":\"\u{feff}shutdown\"}")).is_err());
+    }
+
+    #[test]
+    fn refused_take_says_previous_program_preserved_once() {
+        let already = anyhow!("entrada não confirmou quadro em 10 segundos; PGM anterior preservado");
+        assert_eq!(refusal("TAKE recusado", &already).matches("PGM anterior preservado").count(), 1);
+        assert_eq!(refusal("TAKE recusado", &anyhow!("sem sinal")), "TAKE recusado: sem sinal; PGM anterior preservado");
     }
 
     #[test]

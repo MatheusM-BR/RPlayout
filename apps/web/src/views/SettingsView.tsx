@@ -672,8 +672,8 @@ export function SettingsView({
                         onChange={(e) => setTargetLufs(Number(e.target.value))}
                         className="bg-surface-panel text-on-surface px-3 py-2 rounded border border-border-subtle font-label-mono text-[12px] outline-none focus:border-primary cursor-pointer"
                       >
-                        <option value={-24}>-24.0 LUFS (Padrão TV Brasil / EBU R128)</option>
-                        <option value={-23}>-23.0 LUFS (EBU Estendido)</option>
+                        <option value={-24}>-24.0 LUFS (ATSC A/85 · comum na TV brasileira)</option>
+                        <option value={-23}>-23.0 LUFS (EBU R128)</option>
                         <option value={-16}>-16.0 LUFS (Podcasts / Apple)</option>
                         <option value={-14}>-14.0 LUFS (Web / YouTube)</option>
                       </select>

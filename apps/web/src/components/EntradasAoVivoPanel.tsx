@@ -285,7 +285,7 @@ export function EntradasAoVivoPanel({ channel, onMessage, onChanged }: Props) {
             </div> : <CanonicalProtocolSelector
               key={editingSource?.id ?? 'new'}
               mode="INPUT"
-              defaultKind={editingSource?.kind ?? 'NDI'}
+              defaultKind={editingSource?.kind ?? 'SRT'}
               initialUri={editingSource?.credentialProtected ? '' : editingSource?.targetUrl ?? ''}
               onChange={selectInput}
             />}

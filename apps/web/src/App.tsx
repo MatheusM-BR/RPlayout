@@ -71,7 +71,7 @@ import {EscalationInbox} from './components/EscalationInbox.js'
 type Dialog =
   | {kind:'asset-removal';assetId:string|null}
   | { kind: 'trim'; view: ItemView }
-  | { kind: 'playlists';revision?:number }
+  | { kind: 'playlists';revision?:number;rundownId?:string;onApplied?:(snapshot:Snapshot)=>void }
   | { kind: 'still'; view: ItemView }
   | { kind: 'audio'; view: ItemView; channel:Channel }
   | { kind: 'add'; assetId?: string; rundownId?: string; onApplied?: (snapshot: Snapshot) => void; revision?:number }
@@ -134,6 +134,13 @@ export function App() {
     const toggle = () => setShortcutsOpen(open => !open)
     window.addEventListener('rplayout:shortcuts', toggle)
     return () => window.removeEventListener('rplayout:shortcuts', toggle)
+  }, [])
+  // "CONFIGURAR ARTE" da sonda/contingência leva a Grafismo & Artes, onde se
+  // escolhe a apresentação técnica que o slate usa.
+  useEffect(() => {
+    const open = () => setDialog({ kind: 'graphics' })
+    window.addEventListener('rplayout:open-graphics', open)
+    return () => window.removeEventListener('rplayout:open-graphics', open)
   }, [])
   // Painel bloqueado: nenhuma tecla ou clique de operação nesta estação até
   // desbloquear no aviso do topo. Para transmissões longas e mesa compartilhada.
@@ -772,6 +779,7 @@ export function App() {
       // F2 = CUE: abre no PVW o item selecionado ou, sem seleção, o próximo.
       if (event.key === 'F2') {
         event.preventDefault()
+        if (live?.previewBus === false) { say('Esta instalação não tem PVW (sem servidor de mídia): selecione o item e use TAKE DIRETO.'); return }
         const targetItemId = selectedId ?? live?.transport.preparedItemId ?? undefined
         if (targetItemId) void command('cue', { itemId: targetItemId })
         return
@@ -1088,11 +1096,11 @@ export function App() {
     void guard(async () => absorb(await api.rundown(rundownId)))
   }
 
-  const exportCsv = (): void => {
+  const exportCsv = (rundownId?: string, format: 'csv' | 'm3u' = 'csv'): void => {
     if (!view) return
     const a = document.createElement('a')
-    a.href = `/api/rundowns/${view.rundown.id}/export.csv`
-    a.download = `grade-${view.channel.name.toLowerCase().replace(/\s+/g, '-')}.csv`
+    a.href = `/api/rundowns/${encodeURIComponent(rundownId ?? view.rundown.id)}/export.${format}`
+    a.download = `grade-${view.channel.name.toLowerCase().replace(/\s+/g, '-')}.${format === 'm3u' ? 'm3u8' : 'csv'}`
     a.click()
   }
 
@@ -1265,7 +1273,7 @@ export function App() {
           onStartScan={(measure: boolean) => void startScan(measure)}
           onAddItem={() => setDialog({ kind: 'add',revision:view.editorialRevision })}
           onAutoFill={() => setDialog({ kind: 'autofill',revision:view.editorialRevision })}
-          onExportCsv={exportCsv}
+          onExportCsv={() => exportCsv()}
           onOpenTrim={(item: ItemView) =>
             setDialog({
               kind: item.asset && isStill(item.asset) ? 'still' : 'trim',
@@ -1342,6 +1350,9 @@ export function App() {
           authRequired={authRequired}
           onAddItem={(rundownId?: string, onApplied?: (snapshot: Snapshot) => void,revision?:number) =>
             setDialog({ kind: 'add', rundownId, onApplied,revision })
+          }
+          onOpenImport={(rundownId: string, onApplied?: (snapshot: Snapshot) => void, revision?: number) =>
+            setDialog({ kind: 'playlists', rundownId, onApplied, revision })
           }
           onExportCsv={exportCsv}
           onOpenTrim={(item: ItemView) =>
@@ -1583,10 +1594,11 @@ export function App() {
       {dialog?.kind === 'playlists' && (
         <PlaylistsDialog
           revision={dialog.revision}
-          rundownId={view.rundown.id}
+          rundownId={dialog.rundownId ?? view.rundown.id}
           onCancel={() => setDialog(null)}
           onLoaded={(snapshot, message) => {
-            absorb(snapshot)
+            if (!dialog.rundownId || dialog.rundownId === view.rundown.id) absorb(snapshot)
+            dialog.onApplied?.(snapshot)
             setDialog(null)
             say(message)
           }}

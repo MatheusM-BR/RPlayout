@@ -159,6 +159,7 @@ import {configuredSourceEndpoint} from './domain/item-source-binding.js'
 import {isRecoveryRehearsal,rehearsalRequestAllowed} from './domain/recovery-rehearsal.js'
 import { ExternalCommandLedger, DeviceCommandConflict } from './domain/external-command-ledger.js'
 import { sourceWire, sourceAddress, credentialAddress } from './domain/source-wire.js'
+import { gradeCsv, gradeM3u } from './domain/grade-export.js'
 import {requireItemSourceBinding} from './domain/item-source-binding.js'
 import {scopedSourceList} from './domain/sources.js'
 import { activeHorizonRule, executionHorizon } from './domain/continuous.js'
@@ -3346,24 +3347,19 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar a grade.' })
     const result = await editorialSnapshot(app, id)
     if (!result) return reply.code(404).send({ error: 'Grade não encontrada.' })
-    const esc = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
-    const lines = ['ordem;item;tipo;arquivo;entrada prevista;duração;âncora;estado']
-    result.view.items.forEach((item, index) => {
-      const planned = result.view.schedule.items.find((entry) => entry.id === item.item.id)
-      lines.push([
-        index + 1,
-        esc(item.item.title),
-        esc(item.item.type),
-        esc(item.asset?.path ?? sourceAddress(item.item.sourceRef ?? '')),
-        esc(planned?.start ?? ''),
-        esc(planned?.duration ?? ''),
-        esc(item.item.anchor.kind),
-        esc(planned?.state ?? ''),
-      ].join(';'))
-    })
     void reply.header('content-type', 'text/csv; charset=utf-8')
-    void reply.header('content-disposition', `attachment; filename="grade-${result.view.channel.name.replace(/\W+/g, '-')}.csv"`)
-    return `\ufeff${lines.join('\n')}`
+    void reply.header('content-disposition', `attachment; filename="grade-${result.view.channel.name.replace(/\W+/g, '-')}${result.view.rundown.date ? `-${result.view.rundown.date}` : ''}.csv"`)
+    return gradeCsv(result.view)
+  })
+
+  server.get('/api/rundowns/:id/export.m3u', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar a grade.' })
+    const result = await editorialSnapshot(app, id)
+    if (!result) return reply.code(404).send({ error: 'Grade não encontrada.' })
+    void reply.header('content-type', 'audio/x-mpegurl; charset=utf-8')
+    void reply.header('content-disposition', `attachment; filename="grade-${result.view.channel.name.replace(/\W+/g, '-')}${result.view.rundown.date ? `-${result.view.rundown.date}` : ''}.m3u8"`)
+    return gradeM3u(result.view)
   })
 
   server.get('/api/v1/schedule/compensation-report', async (request, reply) => {
@@ -4355,7 +4351,11 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
           // An optional captured header protects the opening context. Review
           // itself only persists the encrypted proposal, never grade or PGM.
           if(request.headers['if-match'])requireEditorialRevision(app.concurrency,id,request.headers['if-match'],state.editorialRevision)
-          return proposeFill(tx,state,kind,body.minutes===undefined?undefined:{...body,minutes:body.minutes},actor)
+          // Mesma projeção da tela (agora + PGM quando é a grade carregada):
+          // posição do "Por Intervalo" e aviso de corte batem com o que se vê.
+          const runtime=app.runtimes.get(state.channel.id),current=runtime?.view?.rundown.id===id
+          const clock=rundownClock(state.rundown.date,state.channel.rate,new Date(),current?runtime!.transport.state().onAir:null)
+          return proposeFill(tx,state,kind,body.minutes===undefined?undefined:{...body,minutes:body.minutes},actor,{now:current?clock.now:null,onAir:current?clock.onAir:null})
         },{behavior:'immediate'})
         return result
       }

@@ -20,7 +20,7 @@ export const MASTER_TOOL_IDS: readonly ToolId[] = TABS.map(tab => tab.id)
 /** Ferramentas do Master numa gaveta em abas (U1). Todas ficam montadas
  * (estado e consultas continuam, ex.: passagem de grade enfileirada); a aba
  * só escolhe qual aparece, e a escolha fica guardada nesta estação. */
-export function MasterToolsPanel({ channelId, rate, assets }: { channelId: string; rate: Rate; assets: readonly LibraryAsset[] }) {
+export function MasterToolsPanel({ channelId, rate, assets, slateConfigured }: { channelId: string; rate: Rate; assets: readonly LibraryAsset[]; slateConfigured?: boolean }) {
   const [tab, setTab] = useStoredChoice<ToolId>('rplayout.master.tool', MASTER_TOOL_IDS, 'overlays')
   return (
     <section className="flex-1 min-h-[180px] flex flex-col bg-surface-card border border-border-subtle rounded-xl overflow-hidden" aria-label="Ferramentas do Master">
@@ -38,7 +38,7 @@ export function MasterToolsPanel({ channelId, rate, assets }: { channelId: strin
         <div hidden={tab !== 'gfx'}><DynamicCgSecondaryBar channelId={channelId} /></div>
         <div hidden={tab !== 'insert'}><OperationalInsertionPanel channelId={channelId} rate={rate} assets={assets} defaultOpen /></div>
         <div hidden={tab !== 'next'}><NextPlaylistPanel channelId={channelId} defaultOpen /></div>
-        <div hidden={tab !== 'contingency'}><ContingencyTool channelId={channelId} /></div>
+        <div hidden={tab !== 'contingency'}><ContingencyTool channelId={channelId} slateConfigured={slateConfigured} /></div>
       </div>
     </section>
   )

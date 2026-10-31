@@ -817,8 +817,9 @@ function hashFile(path: string,signal?:AbortSignal): Promise<string> {
   })
 }
 
-/** Título de partida: o nome do arquivo sem extensão, com separadores virando espaço. */
-function titleFrom(path: string): string {
+/** Título de partida: o nome do arquivo sem extensão, com separadores virando
+ * espaço. Ponto entre dígitos fica ("1080p29.97", "v1.2"): antes virava "29 97". */
+export function titleFrom(path: string): string {
   const name = basename(path, extname(path))
-  return name.replace(/[_.]+/g, ' ').replace(/\s+/g, ' ').trim() || name
+  return name.replace(/_+/g, ' ').replace(/\.(?!\d)|(?<!\d)\./g, ' ').replace(/\s+/g, ' ').trim() || name
 }

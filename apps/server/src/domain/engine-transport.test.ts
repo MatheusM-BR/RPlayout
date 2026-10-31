@@ -846,6 +846,27 @@ describe('transporte real confirmado pelo engine', () => {
     event({event:'itemError',itemId:'1',bus:'pgm',message:'entrada não confirmou quadro/áudio exigido em 10 segundos'})
     await vi.waitFor(()=>expect(transport.state().onAir?.itemId).toBe('2'))
   })
+  it('inserção pontual ao vivo recusada não volta na próxima volta do loop (A6)',async()=>{
+    const first=join(directory,'vt-loop-a.mkv'),after=join(directory,'vt-loop-b.mkv');writeFileSync(first,'video a');writeFileSync(after,'video b')
+    const value=view([first,'live',after],true),spent:string[]=[]
+    Object.assign(value.items[1]!,{item:{...value.items[1]!.item,id:'urgent:req',type:'LIVE',sourceRef:'ndi:SUMIU',durationOverride:250},asset:null})
+    ;(value.schedule.items as unknown as Array<{id:string}>)[1]!.id='urgent:req'
+    start(value)
+    Object.assign((transport as unknown as {options:object}).options,{onOneShotSpent:(id:string)=>spent.push(id)})
+    await transport.take('grade','0');holdLiveTake=true
+    event({event:'position',itemId:'0',frames:250,duration:250});event({event:'eos',itemId:'0'})
+    await vi.waitFor(()=>expect(commands.filter(command=>command.cmd==='take')).toHaveLength(2))
+    holdLiveTake=false
+    event({event:'itemError',itemId:'urgent:req',bus:'pgm',message:'entrada não confirmou quadro/áudio exigido em 10 segundos'})
+    await vi.waitFor(()=>expect(transport.state().onAir?.itemId).toBe('2'))
+    expect(spent).toEqual(['urgent:req'])
+    // Fim do último item: o loop volta ao primeiro, sem tentar o ao vivo de novo.
+    event({event:'position',itemId:'2',frames:250,duration:250});event({event:'eos',itemId:'2'})
+    await vi.waitFor(()=>expect(transport.state().onAir?.itemId).toBe('0'))
+    event({event:'position',itemId:'0',frames:250,duration:250});event({event:'eos',itemId:'0'})
+    // Sem o filtro, depois de '0' viria de novo 'urgent:req' (e congelaria '0' por 10 s).
+    await vi.waitFor(()=>expect(transport.state().onAir?.itemId).toBe('2'))
+  })
   it('preserva identidade de publishers distintos no mesmo destino',()=>{
     start(view([]))
     for(const outputId of ['primary','backup'])event({event:'publisher',outputId,url:'rtmp://host/shared',health:'onAir',attempts:0,delivered:1})
@@ -1589,6 +1610,25 @@ describe('transporte real confirmado pelo engine', () => {
     await action
     expect(transport.state().onAir?.itemId).toBe('0')
   })
+  it('revisão nova durante a virada não congela o PGM: os candidatos seguintes usam a grade vigente', async () => {
+    const first = join(directory, 'vira-a.mkv'), bad = join(directory, 'vira-b.mkv'), good = join(directory, 'vira-c.mkv')
+    writeFileSync(first, 'video a'); writeFileSync(bad, 'video b'); writeFileSync(good, 'video c')
+    const original = view([first, bad, good])
+    let current = original
+    start(original, undefined, () => current)
+    await transport.take('grade', '0')
+    // O 2º item é recusado pelo decoder; no mesmo instante a revisão muda
+    // (ex.: inserção pontual retirada). Antes o 3º virava "sem arquivo".
+    rejectLoad = bad
+    child.stdin.on('data', (data: Buffer) => {
+      for (const line of data.toString().split('\n').filter(Boolean)) {
+        const command = JSON.parse(line)
+        if (command.cmd === 'load' && command.item?.path === bad) current = { ...original, rundown: { ...original.rundown, name: 'revisão 2' } } as RundownView
+      }
+    })
+    event({ event: 'position', itemId: '0', frames: 250, duration: 250 }); event({ event: 'eos', itemId: '0' })
+    await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('2'))
+  })
   it('recusa do decoder não dispara TAKE manual no item seguinte', async () => {
     const bad = join(directory, 'corrompido.mkv'); const good = join(directory, 'bom.mkv')
     writeFileSync(bad, 'x'); writeFileSync(good, 'video'); rejectLoad = bad
@@ -1635,6 +1675,38 @@ describe('transporte real confirmado pelo engine', () => {
     expect(priorityEvents.at(-1)).toMatchObject({ kind: 'CONFIRMED', previousItemId: '0', previousFrames: 140, itemId: '1' })
     now += 1000; transport.tick()
     expect(priorityEvents.filter(event => event.kind === 'REQUESTED')).toHaveLength(1)
+  })
+  it('HORA FIXA de arquivo corta o VT no ar na hora marcada (A2)', async () => {
+    const first = join(directory, 'longo.mkv'), commercial = join(directory, 'comercial.mkv'); writeFileSync(first, 'video longo'); writeFileSync(commercial, 'comercial')
+    const value = view([first, commercial]), date = new Date(), at = framesSinceMidnight(date, channel.rate) + 25
+    Object.assign(value.items[1]!, { item: { ...value.items[1]!.item, mediaId: '1', anchor: { kind: 'FIXED', at }, title: 'Comercial' } })
+    let now = date.getTime(); vi.spyOn(Date, 'now').mockImplementation(() => now)
+    start(value); event({ event: 'ready', channelId: channel.id }); await transport.take('grade', '0')
+    event({ event: 'position', itemId: '0', frames: 100, duration: 250 })
+    now += 1500; transport.tick()
+    await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('1'))
+    expect(priorityEvents.map(event => event.kind)).toEqual(['REQUESTED', 'CONFIRMED'])
+    expect(priorityEvents.at(-1)).toMatchObject({ previousItemId: '0', itemId: '1' })
+  })
+  it('grade em loop com lacuna antes da HORA FIXA segue o loop e não leva o item antes da hora', async () => {
+    const a = join(directory, 'loop-a.mkv'), fixed = join(directory, 'loop-fixo.mkv'), c = join(directory, 'loop-c.mkv')
+    for (const file of [a, fixed, c]) writeFileSync(file, file)
+    const value = view([a, fixed, c], true), date = new Date(), at = framesSinceMidnight(date, channel.rate) + 25 * 30
+    Object.assign(value.items[1]!, { item: { ...value.items[1]!.item, mediaId: '1', anchor: { kind: 'FIXED', at }, title: 'Comercial' } })
+    start(value); event({ event: 'ready', channelId: channel.id }); await transport.take('grade', '0')
+    event({ event: 'position', itemId: '0', frames: 250, duration: 250 }); event({ event: 'eos', itemId: '0' })
+    await vi.waitFor(() => expect(transport.state().onAir?.itemId).toBe('2'))
+  })
+  it('HORA FIXA de arquivo que a sequência já levou ao ar logo antes não é repetida', async () => {
+    const first = join(directory, 'curto.mkv'), commercial = join(directory, 'comercial-cedo.mkv'); writeFileSync(first, 'video curto'); writeFileSync(commercial, 'comercial')
+    const value = view([first, commercial], true), date = new Date(), at = framesSinceMidnight(date, channel.rate) + 25 * 20
+    Object.assign(value.items[1]!, { item: { ...value.items[1]!.item, mediaId: '1', anchor: { kind: 'FIXED', at }, title: 'Comercial' } })
+    let now = date.getTime(); vi.spyOn(Date, 'now').mockImplementation(() => now)
+    start(value); event({ event: 'ready', channelId: channel.id }); await transport.take('grade', '1')
+    await transport.take('grade', '0')
+    now += 21_000; transport.tick(); await new Promise(resolve => setTimeout(resolve, 20))
+    expect(priorityEvents).toHaveLength(0)
+    expect(transport.state().onAir?.itemId).toBe('0')
   })
   it('âncora da grade >24h prepara antes da meia-noite e corta depois somente após quadro confirmado', async () => {
     const first = join(directory, 'virada.mkv'); writeFileSync(first, 'video')

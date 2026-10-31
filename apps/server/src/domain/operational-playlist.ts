@@ -27,6 +27,7 @@ export interface OperationalPayload {
     | {kind:'INSERT';mode:'NEXT'|'NOW';requestId:string;itemId:string;sourceRevisionId:string;at:string}
     | {kind:'COMPENSATION';action:string;itemId:string;deltaFrames:number;sourceRevisionId:string;at:string}
     | {kind:'ALIGNMENT';focusItemId:string;actions:unknown[];sourceRevisionId:string;at:string}
+    | {kind:'INSERT_RETIRED';itemId:string;reason:'AIRED'|'REFUSED';sourceRevisionId:string;at:string}
 }
 
 export function readOperationalPayload(payload: Record<string, unknown>): OperationalPayload {
@@ -99,7 +100,7 @@ export function diffOperationalGraphics(previous: OperationalPayload | null, nex
  * (better-sqlite3 é síncrono: no setImmediate ela já foi confirmada ou
  * desfeita, e quem escuta confere se a revisão existe). Usado pelo espelho
  * multicanal para não depender de cada caminho de publicação lembrar dele. */
-export type RevisionChange = 'PUBLISH' | 'ROLLBACK' | 'LIVE_DURATION' | 'INSERT' | 'COMPENSATION' | 'ALIGNMENT' | 'ADJUST'
+export type RevisionChange = 'PUBLISH' | 'ROLLBACK' | 'LIVE_DURATION' | 'INSERT' | 'INSERT_RETIRED' | 'COMPENSATION' | 'ALIGNMENT' | 'ADJUST'
 export interface RevisionEvent { rundownId: string; revisionId: string; revision: number; change: RevisionChange; actor: string | null }
 const revisionListeners = new Set<(event: RevisionEvent) => void>()
 export function onOperationalRevision(listener: (event: RevisionEvent) => void): () => void {
@@ -168,6 +169,29 @@ export function adjustPublishedLiveDuration(db: Pick<Db,'transaction'>, channel:
     assertOnAirMediaUnchanged(payload, next, itemId)
     return persistRevision(tx, rundownId, next, actor)
   })
+}
+
+/**
+ * Inserção operacional ("PRÓXIMO"/"AGORA") é pontual: depois de ir ao ar uma
+ * vez -- ou de ser recusada, como ao vivo sem sinal -- sai da revisão em
+ * execução. Sem isto ela virava item permanente da grade em loop e voltava a
+ * cada volta (o ao vivo sem sinal congelava o item anterior a cada tentativa).
+ * Só retira o próprio item `urgent:`; nunca o que está no ar.
+ */
+export function retireOperationalInsert(db: Pick<Db,'transaction'>, channel: Channel, rundownId: string, itemId: string, onAirItemId: string | null, reason: 'AIRED'|'REFUSED') {
+  if (!itemId.startsWith('urgent:') || itemId === onAirItemId) return null
+  return db.transaction(tx => {
+    const active = tx.select().from(operationalPlaylistRevisions).where(and(eq(operationalPlaylistRevisions.rundownId, rundownId), eq(operationalPlaylistRevisions.active, true))).get()
+    if (!active) return null
+    const payload = readOperationalPayload(active.payload)
+    if (!payload.items.some(item => item.id === itemId)) return null
+    assertOperationalCadence(tx,channel,payload)
+    const items = payload.items.filter(item => item.id !== itemId).map((item, index) => ({ ...item, order: index }))
+    const assets = new Map((payload.assets ?? []).map(asset => [asset.id, asset]))
+    const schedule = buildView(payload.rundown, channel, items, assets, null, null).schedule
+    const next: OperationalPayload = { ...payload, items, schedule, operation: { kind: 'INSERT_RETIRED', itemId, reason, sourceRevisionId: active.id, at: new Date().toISOString() } }
+    return persistRevision(tx, rundownId, next, '@automation', { kind: 'OPERATIONAL_INSERT_RETIRED', payload: { itemId, reason, sourceRevisionId: active.id } })
+  }, { behavior: 'immediate' })
 }
 
 /** Publica uma fotografia operacional: itens, regras e timing resolvido. */

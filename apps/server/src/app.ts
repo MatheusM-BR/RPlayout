@@ -73,7 +73,7 @@ import { existsSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { ContinuityCache } from './domain/continuity-cache.js'
 import { PgmProbe } from './domain/pgm-probe.js'
-import { activeOperationalPlaylist, readOperationalPayload } from './domain/operational-playlist.js'
+import { activeOperationalPlaylist, readOperationalPayload, retireOperationalInsert } from './domain/operational-playlist.js'
 import { Checkpoints, type ChannelCheckpoint } from './domain/checkpoints.js'
 import {resolveLiveProgramBinding} from './domain/live-program-binding.js'
 import {assertPersistedLiveReplacementReceipt,unresolvedNativeReplacementJournals,type NativeLiveReplacementContext} from './domain/native-live-replacement-ledger.js'
@@ -307,6 +307,11 @@ export class ChannelRuntime {
             // Commit every confirmed TAKE to the same serialized as-run queue.
             void this.asRun.follow(itemId, this.executionView, this.operationalRevision?.id ?? null, position, true)
               .catch((error: unknown) => { this.recoveryError = 'Falha no registro de execução: ' + (error instanceof Error ? error.message : String(error)) })
+          },
+          onOneShotSpent:(itemId,reason)=>{ if(!this.closed) void this.retireOneShot(itemId,reason) },
+          onProgramSignal:(itemId,lost,reason)=>{
+            if(this.closed)return
+            void this.asRun.signal(itemId,lost,this.executionView,reason).catch((error:unknown)=>{console.error('RPlayout: perda de sinal não registrada no as-run.',error instanceof Error?error.message:error)})
           },
           onRecoveryRejected:(attempt,error)=>{
             const saved=this.recoveryAttempt
@@ -560,6 +565,22 @@ export class ChannelRuntime {
     const itemIds=new Set(editorial.items.map(row=>row.id))
     for(const itemId of this.cues.keys())if(!itemIds.has(itemId))this.cues.delete(itemId)
     if(!this.operationalView)this.executionCues=this.cues
+  }
+
+  /** Inserção pontual gasta sai da revisão em execução (A6). Espera o item
+   * sair do PGM; falha aqui não para o canal: o transporte já não o escolhe. */
+  private async retireOneShot(itemId:string,reason:'AIRED'|'REFUSED',attempt=0):Promise<void>{
+    const rundownId=this.executionView?.rundown.id
+    if(!rundownId||!this.operationalRevision)return
+    // Só com o transporte quieto: revisão nova no meio de preroll/virada
+    // invalida o TAKE em andamento. Espera o item sair e nada estar pendente.
+    if(this.transport.state().onAir?.itemId===itemId||(this.transport instanceof EngineTransport&&this.transport.hasPendingCommand())){if(attempt<60)setTimeout(()=>{void this.retireOneShot(itemId,reason,attempt+1)},1000);return}
+    try{
+      const row=retireOperationalInsert(this.db,this.channel,rundownId,itemId,this.transport.state().onAir?.itemId??null,reason)
+      if(!row)return
+      await this.refresh()
+      this.checkpoint(true)
+    }catch(error){console.error('RPlayout: inserção pontual não retirada da revisão.',error instanceof Error?error.message:error)}
   }
 
   async refresh(): Promise<RundownView | null> {
@@ -973,12 +994,35 @@ export class ChannelRuntime {
    * quando ele muda para nada, porque preto no ar também é informação.
    */
   async followAsRun(): Promise<void> {
+    this.observeProgramSignal()
     // Native execution is recorded at confirmed TAKE/clear events. Polling a
     // state preceding its ACK could otherwise create a duplicate first row or
     // miss a rapid STOP/retake of the same item between two periodic ticks.
     if (this.transport instanceof EngineTransport) return
     const state = this.transport.state()
     await this.asRun.follow(state.onAir?.itemId ?? null, this.executionView, this.operationalRevision?.id ?? null, state.onAir?.elapsed ?? 0)
+  }
+  private signalWatch:{itemId:string;lost:boolean;okSince:number|null}|null=null
+  /** Perda de sinal do ao vivo no PGM vista pelo estado do transporte (sem
+   * quadro há mais de 2 s), não só pelo EOS do engine: com o listener SRT que
+   * continua escutando a fonte não encerra, e a queda sumia do as-run (M4).
+   * A volta só fecha a linha depois de 3 s estáveis, para não picotar. */
+  observeProgramSignal(now=Date.now()):void{
+    const state=this.transport.state(),itemId=state.onAir?.itemId??null
+    const source=itemId?state.liveSources.find(entry=>entry.busItemIds?.pgm===itemId):undefined
+    const pgm=source?.busStates?.pgm??(source?.itemId===itemId?source?.state:undefined)
+    if(!itemId||!source){this.signalWatch=null;return}
+    if(this.signalWatch?.itemId!==itemId)this.signalWatch={itemId,lost:false,okSince:null}
+    const watch=this.signalWatch
+    if(pgm==='LOST'){
+      watch.okSince=null
+      if(!watch.lost){watch.lost=true;void this.asRun.signal(itemId,true,this.executionView,source.message).catch(()=>{})}
+      return
+    }
+    if(watch.lost&&pgm==='ON_PGM'){
+      watch.okSince??=now
+      if(now-watch.okSince>=3000){watch.lost=false;watch.okSince=null;void this.asRun.signal(itemId,false,this.executionView).catch(()=>{})}
+    }
   }
   emergencyCommandPending=false
   async setEmergencySlate(enabled: boolean,command:{key?:unknown;actorId?:string|null;actorName?:string|null;authorize?:()=>void}={}):Promise<import('./domain/graphic-command-ledger.js').GraphicCommandReceipt> {
@@ -1561,6 +1605,9 @@ export class ChannelRuntime {
       liveReplacement: this.liveReplacementStatus(),
       // QC "em qualidade" and the Master share this PVW: say so before a CUE.
       qcInspection: this.qcInspection.inspecting(),
+      // Sem PVW (instalação sem servidor de mídia) a interface oferece TAKE
+      // direto do item selecionado em vez de CUE (A1).
+      previewBus: !(this.transport instanceof EngineTransport) || this.transport.hasPreviewBus(),
       graphic: this.graphics.onAir(),
       alerts: this.alerts(),
       now: this.view ? rundownFrames(this.view.rundown.date, this.channel.rate) ?? framesSinceMidnight(new Date(), this.channel.rate) : framesSinceMidnight(new Date(), this.channel.rate),

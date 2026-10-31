@@ -5,7 +5,7 @@ import { channels, rundowns, rundownItems, operationalPlaylistRevisions, graphic
 import type { MediaWorkflow } from './media-workflow.js'
 import { getChannel, listItems } from '../db/repo.js'
 import { ChannelRuntime } from '../app.js'
-import { activeOperationalPlaylist, adjustPublishedLiveDuration, diffOperationalGraphics, diffOperationalItems, publishOperationalPlaylist, readOperationalPayload, rollbackOperationalPlaylist, simulateOperationalPlaylist,assertOnAirMediaUnchanged } from './operational-playlist.js'
+import { activeOperationalPlaylist, adjustPublishedLiveDuration, diffOperationalGraphics, diffOperationalItems, publishOperationalPlaylist, readOperationalPayload, rollbackOperationalPlaylist, simulateOperationalPlaylist,assertOnAirMediaUnchanged, persistRevision, retireOperationalInsert } from './operational-playlist.js'
 
 let database: ReturnType<typeof openDatabase>
 let runtime: ChannelRuntime
@@ -145,6 +145,24 @@ describe('playlist operacional separada da grade editorial', () => {
     expect(readOperationalPayload(reduced.payload).items[0]?.durationOverride).toBe(925)
     expect((await listItems(database.db, 'rd'))[0]?.title).toBe('Editada')
     await expect(Promise.resolve().then(() => adjustPublishedLiveDuration(database.db, runtime.channel, 'rd', 'missing', 25, 0, 'operator'))).rejects.toThrow('ao vivo')
+  })
+  it('inserção pontual sai da revisão depois de exibida ou recusada; nada além dela muda (A6)', async () => {
+    const first = await publishOperationalPlaylist(database.db, runtime.channel, 'rd', 'editor')
+    const payload = readOperationalPayload(first.payload)
+    const urgent = { ...payload.items[0]!, id: 'urgent:req-1', title: 'Leilao Ao Vivo', order: 1 }
+    persistRevision(database.db, 'rd', { ...payload, items: [...payload.items, urgent] }, 'operador')
+    // Ainda no ar: não retira.
+    expect(retireOperationalInsert(database.db, runtime.channel, 'rd', 'urgent:req-1', 'urgent:req-1', 'AIRED')).toBeNull()
+    // Item comum nunca é retirado por este caminho.
+    expect(retireOperationalInsert(database.db, runtime.channel, 'rd', 'live', null, 'AIRED')).toBeNull()
+    const retired = retireOperationalInsert(database.db, runtime.channel, 'rd', 'urgent:req-1', 'live', 'REFUSED')!
+    const next = readOperationalPayload(retired.payload)
+    expect(next.items.map(item => item.id)).toEqual(['live'])
+    expect(next.schedule.items.map(item => item.id)).toEqual(['live'])
+    expect(next.operation).toMatchObject({ kind: 'INSERT_RETIRED', itemId: 'urgent:req-1', reason: 'REFUSED' })
+    expect((await activeOperationalPlaylist(database.db, 'rd'))?.id).toBe(retired.id)
+    // Idempotente: já retirada.
+    expect(retireOperationalInsert(database.db, runtime.channel, 'rd', 'urgent:req-1', null, 'AIRED')).toBeNull()
   })
   it('a execução continua com fonte/nome/duração publicados após edição editorial', async () => {
     await publishOperationalPlaylist(database.db, runtime.channel, 'rd', 'editor')
