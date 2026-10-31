@@ -206,6 +206,9 @@ pub struct CellState {
     pub height: Option<i32>,
     /// Barramento onde a fonte foi encontrada (pgm, pvw, next, qc, contingency).
     pub bus: Option<&'static str>,
+    /// Quadros que a sonda deixou de guardar porque o multiview estava ocupado
+    /// (o PGM seguiu sem esperar).
+    pub skipped: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -699,6 +702,7 @@ impl Multiview {
                 source: cell.source.clone(), signal, age_ms, fps: (fps * 10.0).round() / 10.0,
                 width: structure.and_then(|s| s.0), height: structure.and_then(|s| s.1),
                 bus: cell.installed.as_ref().map(|installed| installed.bus),
+                skipped: cell.tap.skipped(),
             }
         }).collect();
         MultiviewState {
@@ -1008,6 +1012,44 @@ mod tests {
         // 3x3: a fonte ocupa o terço de cima à esquerda; o resto é preto.
         assert!(near(out.luma(1.0 / 6.0, 1.0 / 6.0), RED), "célula do 3x3 fora do lugar");
         assert!(near(out.luma(0.5, 1.0 / 6.0), 16.0), "célula vazia deveria ser preta");
+    }
+
+    /// Saída de verdade: o mosaico sai codificado uma vez pelo Publisher (SRT,
+    /// H.264) e um leitor externo (ffprobe) o reconhece no tamanho do nível.
+    #[test]
+    fn composed_multiview_is_encoded_once_and_readable_over_srt() {
+        gst::init().unwrap();
+        if gst::ElementFactory::find("srtsink").is_none() || std::process::Command::new("ffprobe").arg("-version").output().is_err() {
+            eprintln!("sem srtsink/ffprobe; teste pulado"); return;
+        }
+        if gst::ElementFactory::find("rplayoutlimiter").is_none() { crate::limiter_element::register().unwrap(); }
+        struct Running(Channel);
+        impl Drop for Running { fn drop(&mut self) { self.0.shutdown(); } }
+        let port = 19_900 + (std::process::id() % 90) as u16;
+        let mut channel = Running(Channel::new(Config { channel_id: "mv-srt".into(), width: 1280, height: 720, fps_n: 25, fps_d: 1, bitrate_kbps: 450,
+            ceiling_dbtp: -1.0, audio_channels: 2, scan: Scan::Progressive, top_field_first: true, outputs: vec![Output::Null], preview: None }).unwrap());
+        channel.0.start().unwrap();
+        channel.0.attach_multiview(&Output::parse(&format!("srt://127.0.0.1:{port}?mode=listener")).unwrap()).unwrap();
+        assert!(channel.0.attach_multiview(&Output::parse("rtmp://127.0.0.1/x/y").unwrap()).is_err());
+        channel.0.configure_multiview(Composition { layout: Layout::PgmPvw, cells: vec![CellSource::Pgm, CellSource::Pvw], quality: Quality::Leve }).unwrap();
+        assert!(channel.0.set_monitor(BUS, true));
+        let probe = std::thread::spawn(move || std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-rw_timeout", "15000000", "-show_entries", "stream=codec_type,codec_name,width,height,avg_frame_rate", "-of", "json",
+                   &format!("srt://127.0.0.1:{port}?mode=caller")]).output());
+        let started = Instant::now();
+        while !probe.is_finished() && started.elapsed() < Duration::from_secs(25) { channel.0.service_outputs(); std::thread::sleep(Duration::from_millis(40)); }
+        let output = probe.join().unwrap().unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        eprintln!("[teste] ffprobe do multiview: {text}");
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let video = json["streams"].as_array().unwrap().iter().find(|stream| stream["codec_type"] == "video").expect("sem vídeo no SRT do multiview").clone();
+        assert_eq!(video["codec_name"], "h264");
+        assert_eq!((video["width"].as_i64(), video["height"].as_i64()), (Some(960), Some(540)));
+        let reports = channel.0.outputs_report();
+        assert!(reports.iter().any(|report| report.output_id == "multiview"), "relatório do monitor mv ausente");
+        let state = channel.0.multiview_state().unwrap();
+        assert_eq!(state.cells[0].signal, CellSignal::Live);
+        assert_eq!(state.cells[1].signal, CellSignal::Unavailable, "sem PVW aberto a célula é indisponível");
     }
 
     /// Prova pedida: multiview lento ou travado nunca atrasa o programa. O
