@@ -167,4 +167,12 @@ describe('inserção com HORA FIXA que já passou na grade',()=>{
     const res=await server.inject({method:'POST',url:'/api/channels/ch/operational-insert/review',payload:input('NEXT')})
     expect(res.statusCode,res.body).toBe(200)
   })
+  it('AGORA: o engine recebe a grade com o relógio da execução (o VT inserido não chega descartado)',async()=>{
+    app.db.insert(rundownItems).values({id:'fixo',rundownId:'rd',sortOrder:2,title:'fixo',type:'VT',mediaId:'media',minDuration:0,anchor:{kind:'FIXED',at:500},onOverrun:'PUSH',autoNext:false,loop:false,locked:false}).run()
+    await app.runtimes.get('ch')!.refresh();await reviewedPublish(server,'rd')
+    const fixture=native(),body=await review(input('NOW')),res=await execute(body)
+    expect(res.statusCode,res.body).toBe(200)
+    const view=fixture.take.mock.calls[0]![0] as {schedule:{items:Array<{id:string;state:string}>}}
+    expect(view.schedule.items.find(row=>row.id===`urgent:${body.input.requestId}`)?.state).not.toBe('DROPPED')
+  })
 })

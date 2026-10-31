@@ -4534,7 +4534,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         app.db.transaction(tx=>{guard();insertions.claim(input,initial,reviewToken,actor,lease.runId);lease.record(tx,'INSERT_PREPARING')},{behavior:'immediate'})
         let dispatched=false,committed=false
         const work=async(controls:Parameters<EngineTransport['insertOperational']>[0] extends (commands:infer T)=>unknown?T:never)=>{
-          guard();const view=await runtime.prepareInsertionView(initial.payload);guard()
+          guard();const view=runtime.insertionTiming(await runtime.prepareInsertionView(initial.payload),input);guard()
           const current=()=>{guard();return true}
           const commit=(previous:{itemId:string;frames:number}|null)=>{
             const timedView=runtime.insertionTiming(view,input)
