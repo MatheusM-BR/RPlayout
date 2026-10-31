@@ -479,7 +479,7 @@ async function main(): Promise<void> {
     try{
       const onAir=[...app.runtimes.values()].filter(runtime=>runtime.transport.state().onAir).map(runtime=>runtime.channel.name)
       app.db.insert(healthEvents).values({id:randomUUID(),channelId:null,...serverShutdownEvent(reason,onAir),occurredAt:new Date().toISOString()}).run()
-    }catch{ /* o registro não pode impedir o encerramento */ }
+    }catch(error){ try{server.log.warn(`Encerramento não registrado nos incidentes: ${error instanceof Error?error.message:String(error)}`)}catch{ /* o registro não pode impedir o encerramento */ } }
     background.close()
     libraryClosing = true
     clearInterval(libraryTimer)

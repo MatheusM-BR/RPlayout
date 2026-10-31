@@ -46,3 +46,15 @@ describe('âncoras prioritárias de live', () => {
     expect(list.find(row => row.itemId === 'comercial')?.key).toContain('file:m1')
   })
 })
+describe('corte da hora fixa e retomada de VT', () => {
+  it('só a live deixa VT interrompido para retomar; arquivo de HORA FIXA corta por plano', async () => {
+    const { priorityTakeInterruptsForResume } = await import('./priority-live.js')
+    const value = { items: [
+      { item: { id: 'live', type: 'LIVE', sourceRef: 'srt://x' } },
+      { item: { id: 'comercial', type: 'VT', mediaId: 'm1', anchor: { kind: 'FIXED', at: 0 } } },
+    ] } as unknown as RundownView
+    expect(priorityTakeInterruptsForResume(value, 'live')).toBe(true)
+    expect(priorityTakeInterruptsForResume(value, 'comercial')).toBe(false)
+    expect(priorityTakeInterruptsForResume(value, 'desconhecido')).toBe(true)
+  })
+})
