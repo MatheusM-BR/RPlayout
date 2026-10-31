@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { liveEngineStateOf } from '../../domain/engine-indicator.js'
 import { api, type ClockStatusView, type EngineState, type HostMetricSample } from '../../api.js'
 
 type Level = 'ok' | 'warn' | 'bad' | 'unknown'
@@ -84,8 +85,7 @@ export function HeaderHealth({ channelId, onClick }: { channelId: string; onClic
     const readEngine = () => {
       void api.processes().then(value => {
         if (!alive) return
-        const state = value.processes.find(row => row.kind === 'ENGINE' && row.channelId === channelId)?.details?.engineState
-        setLiveEngine(typeof state === 'string' && ['OK', 'ALERT', 'RESTARTING', 'FAILED'].includes(state) ? state as EngineState : null)
+        setLiveEngine(liveEngineStateOf(value.processes, channelId))
       }).catch(() => { if (alive) setLiveEngine(null) })
     }
     read(); readEngine()
