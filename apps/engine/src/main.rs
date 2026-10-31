@@ -49,7 +49,7 @@ const LIVE_TELEMETRY_EVERY: Duration = Duration::from_millis(500);
 /// shutdown/TAKE as invalid JSON.
 fn command_text(line: &str) -> &str { line.strip_prefix('\u{feff}').unwrap_or(line) }
 
-fn parse_args(input: &mut impl BufRead) -> Result<(Config, Option<String>, Option<Output>,bool)> {
+fn parse_args(input: &mut impl BufRead) -> Result<(Config, Option<String>, Option<Output>,bool,Option<Output>)> {
     let mut channel_id = String::from("canal");
     let mut width = 1920;
     let mut height = 1080;
@@ -63,6 +63,7 @@ fn parse_args(input: &mut impl BufRead) -> Result<(Config, Option<String>, Optio
     let mut outputs = Vec::new();
     let mut preview = None;
     let mut qc_preview = None;
+    let mut multiview = None;
     let mut private_outputs = false;
     let mut fence_owner = None;
     let mut hold_program_outputs=false;
@@ -91,6 +92,7 @@ fn parse_args(input: &mut impl BufRead) -> Result<(Config, Option<String>, Optio
             "--field-order" => top_field_first = value()? != "bff",
             "--output" => outputs.push(Output::parse(&value()?)?),
             "--preview" => preview = Some(Output::parse(&value()?)?),
+            "--multiview" => multiview = Some(Output::parse(&value()?)?),
             "--private-outputs-stdin" => private_outputs = true,
             other => return Err(anyhow!("argumento desconhecido: {other}")),
         }
@@ -110,6 +112,8 @@ fn parse_args(input: &mut impl BufRead) -> Result<(Config, Option<String>, Optio
             .map_err(|_| anyhow!("Preview inválido na configuração privada."))?;
         qc_preview = private.qc_preview.as_deref().map(Output::parse).transpose()
             .map_err(|_| anyhow!("Inspeção inválida na configuração privada."))?;
+        multiview = private.multiview.as_deref().map(Output::parse).transpose()
+            .map_err(|_| anyhow!("Multiview inválido na configuração privada."))?;
     }
     if outputs.is_empty() {
         outputs.push(Output::Null);
@@ -129,7 +133,7 @@ fn parse_args(input: &mut impl BufRead) -> Result<(Config, Option<String>, Optio
         top_field_first,
         outputs,
         preview,
-    }, fence_owner, qc_preview,hold_program_outputs))
+    }, fence_owner, qc_preview,hold_program_outputs,multiview))
 }
 
 /// Empacota uma leitura do medidor para o protocolo.
@@ -416,6 +420,11 @@ fn run_command(channel: &mut Channel, command: Command, request_id:u64) -> Resul
             }
             Ok(true)
         }
+        Command::Multiview { composition } => {
+            channel.configure_multiview(composition)?;
+            if let Some(state) = channel.multiview_state() { Event::MultiviewState { state }.emit(); }
+            Ok(true)
+        }
         Command::QcSource { item } => {
             channel.qc_source(item)?;
             for report in channel.outputs_report() { Event::Publisher { report }.emit(); }
@@ -442,6 +451,7 @@ fn run_command(channel: &mut Channel, command: Command, request_id:u64) -> Resul
             for report in channel.outputs_report() {
                 Event::Publisher { report }.emit();
             }
+            if let Some(state) = channel.multiview_state() { Event::MultiviewState { state }.emit(); }
             Ok(true)
         }
         Command::Shutdown => Ok(false),
@@ -520,7 +530,7 @@ fn main() -> Result<()> {
     limiter_element::register().context("o limiter não registrou")?;
 
     let mut input = std::io::BufReader::new(std::io::stdin());
-    let (config, fence_owner, qc_preview,hold_program_outputs) = parse_args(&mut input)?;
+    let (config, fence_owner, qc_preview,hold_program_outputs,multiview) = parse_args(&mut input)?;
     let channel_id = config.channel_id.clone();
     let width = config.width;
     let height = config.height;
@@ -549,6 +559,10 @@ fn main() -> Result<()> {
     fencing::wait_initial()?;
     let mut channel = Channel::new_with_program_hold(config,hold_program_outputs).context("não consegui montar o pipeline do canal")?;
     if let Some(output) = qc_preview { channel.attach_qc_preview(&output)?; }
+    // Multiview é monitor: se o destino não serve, o canal sobe sem ele.
+    if let Some(output) = multiview {
+        if let Err(error) = channel.attach_multiview(&output) { eprintln!("[engine] multiview desligado: {error:#}"); }
+    }
     channel.start().context("o canal não entrou em execução")?;
     // As saídas de rede sobem depois do canal e por conta própria: se o
     // destino ainda não está de pé, o canal não pode ficar esperando por ele.
@@ -728,6 +742,10 @@ fn main() -> Result<()> {
             last_live_telemetry = Instant::now();
             for (item_id, bus, signal) in channel.live_signal_reports() {
                 Event::SourceTelemetry { item_id, bus, decoder_id:channel.decoder_id(bus), configured_source_id:channel.configured_source_id(bus), signal }.emit();
+            }
+            // Só com espectador: parado, o multiview não fala nada.
+            if let Some(state) = channel.multiview_state().filter(|state| state.running) {
+                Event::MultiviewState { state }.emit();
             }
         }
         if last_output.elapsed() >= OUTPUT_EVERY {

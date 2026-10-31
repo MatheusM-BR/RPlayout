@@ -27,6 +27,10 @@ use crate::output::{Kind, Publisher, PublisherSpec, Report};
 use crate::protocol::{Fit, ItemSpec, SourceSignalReport};
 use crate::live_replacement::{Journal as ReplacementJournal, Phase as ReplacementPhase, Receipt as ReplacementReceipt, Request as ReplacementRequest};
 
+/// Multiview composto (R88-36). Módulo filho para ler os itens sem abrir campos.
+#[path = "multiview.rs"]
+pub mod multiview;
+
 /// Para onde o programa sai. Todas as saídas penduram no mesmo par de tees,
 /// então o canal codifica uma vez, não uma vez por destino.
 #[derive(Debug, Clone)]
@@ -726,6 +730,8 @@ pub struct Channel {
     /// Buffer reaproveitado da conversão de bytes para amostras. Alocar a cada
     /// volta do laço num processo que fica meses no ar não é opção.
     meter_scratch: Vec<f32>,
+    /// Multiview composto: só existe com destino configurado, só roda com espectador.
+    multiview: Option<multiview::Multiview>,
 }
 
 /// A regra de comutação é deliberadamente pequena e isolada para que uma
@@ -1870,6 +1876,7 @@ impl Channel {
             overlays: crate::overlay::Overlays::default(),
             overlay_wait_ms: 0.0,
             meter_scratch: Vec::with_capacity(16_384),
+            multiview: None,
         };
 
         if program_outputs_held { channel.attach_output(0,&Output::Null,&tee_video,&tee_audio)?; }
@@ -2515,6 +2522,7 @@ impl Channel {
     pub fn set_monitor(&mut self, bus: &str, on: bool) -> bool {
         // Generic monitor traffic must not bypass source-bound inspection.
         if bus == "qc" { return false; }
+        if bus == multiview::BUS { return self.set_multiview_wanted(on); }
         let mut achou = false;
         for publisher in &mut self.publishers {
             if publisher.role() == bus {
@@ -2631,15 +2639,17 @@ impl Channel {
         if self.qc_deadline.is_some() && self.qc_item.as_ref().is_some_and(|item| item.qc_ready.load(Ordering::Acquire)) {
             for publisher in &mut self.publishers { if publisher.role() == "qc" { publisher.set_wanted(true); } }
         }
+        let multiview = self.service_multiview();
         self.publishers
             .iter_mut()
             .filter_map(|publisher| publisher.service())
+            .chain(multiview)
             .collect()
     }
 
     /// Situação de todas as saídas de rede, mudando ou não.
     pub fn outputs_report(&self) -> Vec<Report> {
-        self.publishers.iter().map(Publisher::report).collect()
+        self.publishers.iter().map(Publisher::report).chain(self.multiview_report()).collect()
     }
 
     pub fn bus(&self) -> gst::Bus {
@@ -3689,6 +3699,7 @@ impl Channel {
         if let Some(item) = self.qc_item.take() {
             discard(item);
         }
+        if let Some(mut multiview) = self.multiview.take() { multiview.shutdown(); }
         for publisher in &mut self.publishers {
             publisher.shutdown();
         }

@@ -222,6 +222,9 @@ pub enum Command {
     /// monitor não encosta no programa. É o que permite não codificar para uma
     /// janela que ninguém abriu.
     Monitor { bus: String, on: bool },
+    /// Layout, células e qualidade do multiview composto. Recria só o pipeline
+    /// do multiview; PGM e saídas não são tocados.
+    Multiview { composition: crate::channel::multiview::Composition },
     /// Troca um destino já ligado ao barramento do programa.
     /// Só suporta RTMP, SRT e arquivo; SDI/NDI/OMT não fazem hot-switch.
     ReplaceOutput {
@@ -370,6 +373,12 @@ pub enum Event {
     /// Quantos frames o compositor entregou. É a prova de que o PGM não parou.
     Output {
         frames: u64,
+    },
+    /// Multiview composto: geometria, qualidade e estado de cada célula. O
+    /// navegador desenha rótulo, tally, VU e estado em HTML a partir disto.
+    MultiviewState {
+        #[serde(flatten)]
+        state: crate::channel::multiview::MultiviewState,
     },
     /// Situação de uma saída de rede. Emitido quando muda e no `status`, para
     /// a interface saber se o canal está de fato chegando ao destino.
