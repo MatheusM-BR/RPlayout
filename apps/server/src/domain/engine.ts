@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import type { EngineStatus } from './engine-status.js'
 import {readNativeLiveReplacementCapability,NativeLiveReplacementWire,type NativeLiveReplacementRequest,type NativeLiveReplacementReceipt,type NativeLiveReplacementOperation} from './native-live-replacement.js'
 import {resolveLiveProgramBinding,type LiveProgramBinding} from './live-program-binding.js'
 import {createHash} from 'node:crypto'
@@ -254,6 +255,14 @@ const MORTE_DEMORADA_MS = 10_000
  * alerta sumir sozinho quando o problema passa.
  */
 const AVISO_VALE_MS = 30_000
+/** Erro de um engine que continua pronto vira ALERTA por este tempo. */
+const ERRO_VALE_MS = 5 * 60_000
+/** Recusa de comando fica visível (título/log) por este tempo. */
+const REJEICAO_VALE_MS = 5 * 60_000
+/** Reinícios seguidos sem um quadro saudável: o watchdog não está resolvendo. */
+const REINICIOS_ATE_FALHA = 3
+/** Subida/recuperação que não termina neste tempo deixa de ser "reiniciando". */
+const SUBIDA_ATE_FALHA_MS = 90_000
 
 /** Espera antes de uma nova tentativa, limitada para não gerar tempestade. */
 export function restartDelayMs(consecutiveFailures: number): number {
@@ -393,6 +402,14 @@ export class EngineTransport implements Transport {
   private stalls = 0
   /** Último erro do engine, para a interface não ficar adivinhando. */
   lastError: string | null = null
+  /** Quando `lastError` foi registrado: erro antigo de um engine saudável não
+   * pode manter o cabeçalho vermelho para sempre ("cry wolf"). */
+  private lastErrorAt: number | null = null
+  /** Último comando recusado pelo engine. Recusa é resposta, não falha: o
+   * engine continua saudável e quem pediu recebe a mensagem. */
+  private lastRejection: { message: string; at: number } | null = null
+  /** Início do processo atual, para separar "subindo" de "travado ao subir". */
+  private childStartedAt = Date.now()
   /** Configuration restoration must not race a decoder awaiting TAKE. */
   hasPendingCommand(): boolean { return this.queuedOperations > 0 || this.pending.size > 0 || (this.replacementWire?.health().pending??0)>0 || this.pendingLiveTake !== null || this.priorityTake !== null || this.pendingPlaylistTake !== null || this.advancing || this.preparingBoundary }
   commandRevision(): number { return this.commandSequence }
@@ -755,6 +772,7 @@ export class EngineTransport implements Transport {
     }catch(error){child.kill('SIGKILL');throw error}
     this.alive = true
     this.ready = false
+    this.childStartedAt = Date.now()
     this.framesOut = 0
     this.lastFrames = 0
     this.semQuadroMs = 0
@@ -1033,7 +1051,10 @@ export class EngineTransport implements Transport {
             else pending.reject(new EngineCommandRejected(sanitizeDiagnostic(event.error ?? 'O engine recusou o comando.')))
           }
         }
-        if (!event.ok && event.error) this.fail(event.error)
+        // Comando recusado (ex.: "este canal não tem barramento de preview")
+        // não é falha do engine: quem pediu recebe a recusa e o estado do
+        // motor continua OK. Fica registrado e no log como aviso.
+        if (!event.ok && event.error) this.reject(event.error)
         break
       case 'error':
         this.fail(event.message)
@@ -1057,8 +1078,36 @@ export class EngineTransport implements Transport {
    */
   private fail(message: string): void {
     this.lastError = sanitizeDiagnostic(message)
+    this.lastErrorAt = Date.now()
     this.dirty = true
     process.stderr.write(`[engine ${sanitizeDiagnostic(this.channel.name)}] ERRO ${this.lastError}\n`)
+  }
+
+  private reject(message: string): void {
+    this.lastRejection = { message: sanitizeDiagnostic(message), at: Date.now() }
+    this.dirty = true
+    process.stderr.write(`[engine ${sanitizeDiagnostic(this.channel.name)}] AVISO comando recusado: ${this.lastRejection.message}\n`)
+  }
+
+  /**
+   * Estado único do engine para cabeçalho, cartões e incidentes.
+   *
+   * - OK: processo vivo e pronto (pode haver recusa recente de comando, que
+   *   não muda o estado).
+   * - ALERTA: vivo e pronto, mas reportou erro nos últimos minutos.
+   * - REINICIANDO: morto aguardando o watchdog, ou subindo/recuperando há pouco.
+   * - FALHA: não volta sozinho (reinícios seguidos sem quadro, processo que não
+   *   encerra, ou subida que não termina).
+   */
+  engineStatus(now = Date.now()): EngineStatus {
+    const rejection = this.lastRejection && now - this.lastRejection.at < REJEICAO_VALE_MS ? { ...this.lastRejection, at: new Date(this.lastRejection.at).toISOString() } : null
+    const base = { message: this.lastError, rejection }
+    if (this.closed) return { ...base, state: 'FAILED' }
+    if (this.mateiEm !== null && now - this.mateiEm > MORTE_DEMORADA_MS) return { ...base, state: 'FAILED' }
+    if (!this.alive) return { ...base, state: this.restartStreak >= REINICIOS_ATE_FALHA ? 'FAILED' : 'RESTARTING' }
+    if (!this.ready || this.recoveryCursor !== null) return { ...base, state: now - this.childStartedAt > SUBIDA_ATE_FALHA_MS ? 'FAILED' : 'RESTARTING' }
+    if (this.lastError !== null && this.lastErrorAt !== null && now - this.lastErrorAt < ERRO_VALE_MS) return { ...base, state: 'ALERT' }
+    return { ...base, state: 'OK' }
   }
 
   /**

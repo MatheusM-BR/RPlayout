@@ -2,16 +2,19 @@ import type {Transport} from './transport.js'
 import {ProcessMetrics} from './process-metrics.js'
 import {installationVault} from './secret-vault.js'
 import {safeMetricLabel,type MetricLabels} from './operational-metric-labels.js'
+import {engineStatusOf,type EngineState} from './engine-status.js'
 export interface MetricRuntime {
   channel:{id:string}
-  transport:Pick<Transport,'state'|'health'|'processId'|'publishers'>
+  transport:Pick<Transport,'state'|'health'|'processId'|'publishers'|'engineStatus'>
   telemetryIdentity():{revisionId:string|null;executionId:string|null}
 }
 export interface OperationalMetricFrame {
   version:1;capturedAt:string;available:boolean;channelsTruncated:boolean
   channels:Array<{
     channelId:string;rundownId:string|null;revisionId:string|null;executionId:string|null;itemId:string|null;itemName?:string|null;elapsedFrames:number|null;mode:string|null
-    engine:{pid:number|null;ready:boolean;restarts:number;deaths:number;stalls:number;hasError:boolean;cpuTimeMs:number|null;memoryBytes:number|null}
+    engine:{pid:number|null;ready:boolean;restarts:number;deaths:number;stalls:number;hasError:boolean;cpuTimeMs:number|null;memoryBytes:number|null
+      /** Ausentes em amostras antigas. */
+      state?:EngineState;cpuPercent?:number|null}
     sources:Array<{sourceId:string;sourceName?:string|null;nameAmbiguous?:boolean;itemId:string;state:string;busItemIds:unknown;busSignals:unknown;busCatalog?:Partial<Record<'pgm'|'pvw',{configuredSourceId:string;sourceName:string|null;identityBasis:'PUBLISHED_ITEM'|'NATIVE_DECODER'}>>}>
     outputs:Array<{outputId:string;outputName?:string|null;nameAmbiguous?:boolean;identityType?:'PROFILE'|'ENDPOINT';state:string;attempts:number;delivered:number;hasError:boolean}>
     sourcesTruncated:boolean;outputsTruncated:boolean
@@ -28,7 +31,7 @@ export async function captureOperationalMetrics(runtimes:ReadonlyMap<string,Metr
     const state=runtime.transport.state(),health=runtime.transport.health(),pid=runtime.transport.processId(),counter=pid!==null&&initialPids.get(runtime)===pid&&health.ready?counters.samples.get(pid):undefined,outputs=runtime.transport.publishers()
     let labels:MetricLabels|undefined;try{labels=labelsFor?.(runtime)}catch{/* Names unavailable: retain health data, never invent a label. */}
     return {channelId:runtime.channel.id,rundownId:state.rundownId,...runtime.telemetryIdentity(),itemId:state.onAir?itemIdentity(state.onAir.itemId):null,itemName:safeMetricLabel(state.onAir?labels?.items.get(state.onAir.itemId):null),elapsedFrames:state.onAir?.elapsed??null,mode:state.mode??null,
-      engine:{pid,ready:health.ready,restarts:health.restarts,deaths:health.deaths,stalls:health.stalls,hasError:health.error!==null,cpuTimeMs:counter?.cpuTimeMs??null,memoryBytes:counter?.memoryBytes??null},
+      engine:{pid,ready:health.ready,restarts:health.restarts,deaths:health.deaths,stalls:health.stalls,hasError:health.error!==null,cpuTimeMs:counter?.cpuTimeMs??null,memoryBytes:counter?.memoryBytes??null,state:engineStatusOf(runtime.transport).state,cpuPercent:counter?.cpuPercent??null},
       sources:state.liveSources.slice(0,128).map(source=>{
         // Keep physical endpoint identity separate from catalog attribution.
         // A decoder may serve two published selections on different buses.

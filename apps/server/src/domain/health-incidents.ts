@@ -13,12 +13,15 @@ export interface IncidentPageQuery {
   channelId?:string;limit?:number;severity?:'ALL'|'INFO'|'WARN'|'CRITICAL'
   acknowledgement?:'ALL'|'PENDING'|'ACKNOWLEDGED'
   until?:string;beforeAt?:string;beforeId?:string
+  /** '1': junto do canal, inclui incidentes do servidor (HOST, CLOCK, MEDIAMTX…),
+   * que não pertencem a canal. Só para quem enxerga todos os canais. */
+  includeHost?:string
 }
 
 /** Keyset pagination includes the ID because several transitions share a timestamp.
  * The date window stays fixed; acknowledgements reflect the current database. */
 export function readHealthIncidentPage(db:Db,channelIds:string[]|null,query:IncidentPageQuery){
-  for(const field of ['channelId','severity','acknowledgement','until','beforeAt','beforeId'] as const)if(query[field]!==undefined&&typeof query[field]!=='string')throw new IncidentError(400,'Parâmetro de incidentes inválido.')
+  for(const field of ['channelId','severity','acknowledgement','until','beforeAt','beforeId','includeHost'] as const)if(query[field]!==undefined&&typeof query[field]!=='string')throw new IncidentError(400,'Parâmetro de incidentes inválido.')
   const {channelId,beforeAt,beforeId}=query
   if(channelId&&channelIds!==null&&!channelIds.includes(channelId))throw new IncidentError(403,'Sem acesso aos incidentes deste canal.')
   const severity=query.severity??'ALL',acknowledgement=query.acknowledgement??'ALL'
@@ -28,7 +31,8 @@ export function readHealthIncidentPage(db:Db,channelIds:string[]|null,query:Inci
   const until=query.until??new Date().toISOString()
   if(!validDate(until)||beforeAt!==undefined&&(!validDate(beforeAt)||beforeAt>until))throw new IncidentError(400,'Janela de incidentes inválida.')
   const limit=Math.min(500,Math.max(1,Math.trunc(query.limit??200)||200))
-  const scope=channelId?eq(healthEvents.channelId,channelId):channelIds!==null?inArray(healthEvents.channelId,channelIds):undefined
+  const withHost=query.includeHost==='1'&&channelIds===null
+  const scope=channelId?(withHost?or(eq(healthEvents.channelId,channelId),isNull(healthEvents.channelId)):eq(healthEvents.channelId,channelId)):channelIds!==null?inArray(healthEvents.channelId,channelIds):undefined
   const none=channelIds?.length===0
   return db.transaction(tx=>{
     const pending={critical:0,warn:0}
@@ -51,10 +55,11 @@ export function readHealthIncidentPage(db:Db,channelIds:string[]|null,query:Inci
 }
 
 /** Apply visibility before the limit: other channels must not starve this list. */
-export function readHealthIncidents(db:Db,channelIds:string[]|null,channelId:string|undefined,limit:number,since?:string){
+export function readHealthIncidents(db:Db,channelIds:string[]|null,channelId:string|undefined,limit:number,since?:string,includeHost=false){
   if(channelId&&channelIds!==null&&!channelIds.includes(channelId))throw new IncidentError(403,'Sem acesso aos incidentes deste canal.')
   if(channelIds?.length===0)return []
-  const scope=channelId?eq(healthEvents.channelId,channelId):channelIds!==null?inArray(healthEvents.channelId,channelIds):undefined
+  const withHost=includeHost&&channelIds===null
+  const scope=channelId?(withHost?or(eq(healthEvents.channelId,channelId),isNull(healthEvents.channelId)):eq(healthEvents.channelId,channelId)):channelIds!==null?inArray(healthEvents.channelId,channelIds):undefined
   return db.select().from(healthEvents).where(and(scope,since?gte(healthEvents.occurredAt,since):undefined))
     .orderBy(desc(healthEvents.occurredAt),desc(healthEvents.id)).limit(limit).all().reverse()
 }

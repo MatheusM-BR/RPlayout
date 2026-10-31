@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
+import { transportRefusalStatus } from './domain/transport-refusal.js'
+import { engineStatusOf } from './domain/engine-status.js'
 import {NativeLiveReplacementUnknown} from './domain/native-live-replacement.js'
 import {GraphicCommandLedger} from './domain/graphic-command-ledger.js'
 import { setChannelArchived } from './domain/channel-archive.js'
@@ -43,7 +45,7 @@ import {
   multiviewETag,
   scheduleRuleETag,
   graphicsETag,
-  DEFAULT_QC_PROFILE, assessQc, qcApproved, type QcStatus,
+  DEFAULT_QC_PROFILE, assessQc, defaultQcProfileFor, qcApproved, type QcStatus,
   qcDecisionETag,
   inferLiveSourceType,
   dateInName,
@@ -162,7 +164,10 @@ import {scopedSourceList} from './domain/sources.js'
 import { activeHorizonRule, executionHorizon } from './domain/continuous.js'
 import { localDate, rundownClock, rundownFrames, rundownMidnight } from './domain/rundown-clock.js'
 import { inspectBoundary, PlaylistBoundaryLedger } from './domain/playlist-boundary.js'
-import { AUTH_PASSWORD, AUTH_USER, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from './config.js'
+import { AUTH_PASSWORD, AUTH_USER, BACKUP_DIR, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from './config.js'
+import { technicalLog, type TechnicalLogLevel } from './domain/technical-log.js'
+import { softwareVersion } from './domain/software-version.js'
+import { listEngineCrashReports } from './domain/engine-crash-report.js'
 
 const execFileAsync = promisify(execFile)
 import * as Roots from './domain/roots.js'
@@ -270,6 +275,9 @@ import type { TimelineZoomLevel, ConflictResolutionDecision } from '@rplayout/pr
  * escolhida significar alguma coisa quando aparece ao lado.
  */
 const COR_PADRAO = '#5570ab'
+/** Linha do banco → referência que o QC usa para comparar o arquivo com o canal. */
+const qcChannelReference = (row:{width:number;height:number;rateNum:number;rateDen:number;scan:'PROGRESSIVE'|'INTERLACED';audioChannels:number}) =>
+  ({width:row.width,height:row.height,rate:{num:row.rateNum,den:row.rateDen},scan:row.scan,audioChannels:row.audioChannels})
 
 const MIME: Record<string, string> = {
   '.mp4': 'video/mp4',
@@ -618,6 +626,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   sharedReads.add('/api/categories/:id/review')
   sharedReads.add('/api/scheduler/status') // Its collection is filtered per authorized channel.
   sharedReads.add('/api/clock') // Estado do relógio do servidor; sem dados de canal.
+  sharedReads.add('/api/engineering/status') // Versão e uptime do servidor; sem dados de canal.
   sharedReads.add('/api/health-events') // Visibility is enforced before the query limit.
   sharedReads.add('/api/health-events.csv')
   sharedReads.add('/api/distribution/execution-ownership') // Generic status only, no paths/process IDs.
@@ -842,13 +851,49 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   server.get('/api/health-events.csv', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para exportar saúde.' })
     const query = request.query as { channelId?: string; since?: string }
-    const filtered=readHealthIncidents(app.db,access.identity(request)?.channelIds??null,query.channelId,10000,query.since)
+    const visible=access.identity(request)?.channelIds??null
+    // Pacote de saúde para o plantonista: incidentes do canal + do servidor
+    // (HOST, CLOCK, MEDIAMTX…), versão, uptime e relatórios de crash.
+    const withHost=visible===null
+    const filtered=readHealthIncidents(app.db,visible,query.channelId,10000,query.since,withHost)
     void reply.header('Cache-Control','private, no-store')
     const quote = (value: unknown): string => `"${String(value ?? '').replace(/"/g, '""')}"`
-    const csv = ['horário;canal;componente;estado;severidade;mensagem;reconhecido;recuperado;observação encerrada', ...filtered.map((row) => [row.occurredAt, row.channelId, row.component, row.state, row.severity, row.message, row.acknowledgedAt,row.resolvedAt,row.observationEndedAt].map(quote).join(';'))].join('\n')
+    const version=softwareVersion(),crashes=withHost?listEngineCrashReports(resolvePath(BACKUP_DIR,'..','engine-crashes')):[]
+    const names=new Map((await listChannels(app.db,true)).map(row=>[row.id,row.name]))
+    const preamble=[
+      `# RPlayout ${version.rplayout}${version.build?` (${version.build})`:''} · Node ${version.node} · ${version.platform}${version.gstreamer?` · GStreamer ${version.gstreamer}`:''}`,
+      `# Exportado em ${new Date().toISOString()} · servidor no ar desde ${version.startedAt} (${Math.floor(process.uptime())} s)`,
+      `# Canal: ${query.channelId?`${names.get(query.channelId)??query.channelId} (${query.channelId})`:'todos os autorizados'}${withHost?' · inclui incidentes do servidor (HOST/CLOCK/MEDIAMTX)':''}`,
+      withHost?`# Relatórios de crash do engine (${resolvePath(BACKUP_DIR,'..','engine-crashes')}): ${crashes.length?crashes.map(row=>row.path).join(' | '):'nenhum'}`:'# Relatórios de crash: disponíveis só para contas com acesso a todos os canais.',
+    ]
+    const csv = [...preamble,'horário;canal;componente;estado;severidade;mensagem;reconhecido;recuperado;observação encerrada', ...filtered.map((row) => [row.occurredAt, row.channelId?names.get(row.channelId)??row.channelId:'SERVIDOR', row.component, row.state, row.severity, row.message, row.acknowledgedAt,row.resolvedAt,row.observationEndedAt].map(quote).join(';'))].join('\n')
     void reply.header('content-type', 'text/csv; charset=utf-8')
     void reply.header('content-disposition', 'attachment; filename="rplayout-saude.csv"')
     return csv
+  })
+  // Logs técnicos (A6): últimas linhas do engine e do servidor, em memória.
+  // Mesmo papel de quem reinicia o engine; conta restrita a canais não lê
+  // linhas de outros canais (rota fora de sharedReads).
+  server.get('/api/engineering/logs', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Logs técnicos exigem papel de Supervisor, Gestor ou Administrador.' })
+    const query = request.query as Record<string, unknown>
+    const text = (value: unknown) => typeof value === 'string' && value.length <= 200 ? value : undefined
+    const number = (value: unknown) => typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : undefined
+    const level = text(query.level)?.toUpperCase()
+    if (level && !['ERROR', 'WARN', 'INFO', 'DEBUG'].includes(level)) return reply.code(400).send({ error: 'Severidade inválida.' })
+    const source = text(query.source)?.toUpperCase()
+    if (source && !['ENGINE', 'SERVER'].includes(source)) return reply.code(400).send({ error: 'Origem inválida.' })
+    const channelId = text(query.channelId)
+    const channelName = channelId ? (await listChannels(app.db, true)).find(row => row.id === channelId)?.name : undefined
+    reply.header('Cache-Control', 'private, no-store')
+    return { ...technicalLog.read({ minLevel: level as TechnicalLogLevel | undefined, source: source as 'ENGINE' | 'SERVER' | undefined, channel: channelName, query: text(query.q), sinceMs: number(query.sinceMs), afterSeq: number(query.afterSeq), limit: number(query.limit) }),
+      crashReports: listEngineCrashReports(resolvePath(BACKUP_DIR, '..', 'engine-crashes')), generatedAt: new Date().toISOString() }
+  })
+  // Versão/uptime para os cartões do Monitor. Sem dados de canal.
+  server.get('/api/engineering/status', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar saúde.' })
+    reply.header('Cache-Control', 'private, no-store')
+    return { version: softwareVersion(), uptimeSeconds: Math.floor(process.uptime()), serverTime: new Date().toISOString() }
   })
   server.get('/api/notifications', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar pendências.' })
@@ -2852,7 +2897,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if(!asset||!channel)return null
       const review={assetId:id,channelId:channel.id,contentHash:asset.contentHash,assetRevision:qcRevision(tx,id),configurationRevision:configurationRevision(tx,channel.id)}
       const decisions=tx.select().from(qcDecisions).where(and(eq(qcDecisions.assetId,id),eq(qcDecisions.contentHash,asset.contentHash),or(eq(qcDecisions.channelId,channel.id),eq(qcDecisions.channelId,'@all')))).orderBy(desc(sql`rowid`)).all()
-      return {contentHash:asset.contentHash,review,profile:channel.qcProfile??DEFAULT_QC_PROFILE,checks:assessQc(toAsset(asset),channel.qcProfile??DEFAULT_QC_PROFILE),decisions}
+      return {contentHash:asset.contentHash,review,profile:channel.qcProfile??defaultQcProfileFor(channel.targetLufs),checks:assessQc(toAsset(asset),channel.qcProfile??defaultQcProfileFor(channel.targetLufs),qcChannelReference(channel)),decisions}
     })
     if(!result)return reply.code(404).send({error:'Arquivo/canal não encontrado.'})
     return reply.header('cache-control','private, no-store').header('etag',qcDecisionETag(result.review)).send(result)
@@ -2870,7 +2915,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if(!current||!channel)throw new CollaborativeEditError(404,{error:'Arquivo/canal não encontrado.'})
       const before=requireQcReview(tx,id,request.headers['if-match'],channelId)
       if(current.contentHash!==body.data.contentHash)throw new CollaborativeEditError(409,{error:'O arquivo mudou durante a conferência. Revise a nova versão antes de decidir.'})
-      const checks=assessQc(toAsset(current),channel.qcProfile??DEFAULT_QC_PROFILE)
+      const checks=assessQc(toAsset(current),channel.qcProfile??defaultQcProfileFor(channel.targetLufs),qcChannelReference(channel))
       if(qcApproved(body.data.status)&&!checks.playable)throw new CollaborativeEditError(409,{error:checks.errors.join(' '),checks})
       const actor=access.identity(request)?.username??null,now=new Date().toISOString(),decisionId=randomUUID()
       tx.insert(qcDecisions).values({id:decisionId,assetId:id,contentHash:current.contentHash,channelId,status:body.data.status,notes:body.data.notes?.trim()??null,checks,actor,createdAt:now}).run()
@@ -3882,6 +3927,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       state: string
       cpuTimeMs: number | null
       memoryBytes: number | null
+      cpuPercent?: number | null
       details?: Record<string, unknown>
     }> = []
 
@@ -3904,14 +3950,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         kind: 'ENGINE',
         channelId,
         pid: runtime.transport.processId(),
-        state: runtime.transport.health().error
-          ? 'error'
-          : runtime.transport.health().ready
-            ? 'running'
-            : 'starting',
+        // Um estado só (o mesmo do cabeçalho): erro antigo ou comando recusado
+        // não marcam um engine pronto como "error".
+        state: ({ OK: 'running', ALERT: 'running', RESTARTING: 'starting', FAILED: 'error' } as const)[engineStatusOf(runtime.transport).state],
         cpuTimeMs: null,
         memoryBytes: null,
         details: {
+          engineState: engineStatusOf(runtime.transport).state,
+          lastError: engineStatusOf(runtime.transport).message,
+          lastRejection: engineStatusOf(runtime.transport).rejection,
           transport: runtime.transport instanceof EngineTransport ? 'NATIVE' : 'SIMULATED',
           restarts: runtime.transport.health().restarts,
           deaths: runtime.transport.health().deaths,
@@ -3954,7 +4001,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const counters = await processMetrics.latest(pids)
     for (const row of rows) {
       const sample = row.pid === null ? undefined : counters.samples.get(row.pid)
-      if (sample) { row.memoryBytes = sample.memoryBytes; row.cpuTimeMs = sample.cpuTimeMs }
+      if (sample) { row.memoryBytes = sample.memoryBytes; row.cpuTimeMs = sample.cpuTimeMs; row.cpuPercent = sample.cpuPercent ?? null }
     }
     return { generatedAt: new Date().toISOString(), processes: rows, measurementError:counters.error }
   })
@@ -5579,65 +5626,75 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const interruptedReturnBlock=app.interruptionCommands.blockedReason(id)
     if(interruptedReturnBlock && (['take','park'].includes(body.data.action) || body.data.action==='seek' && body.data.bus!=='pvw'))return reply.code(409).send({error:interruptedReturnBlock})
     if(!execution && (['take','park'].includes(body.data.action) || body.data.action==='cue' && body.data.itemId || body.data.action==='seek' && body.data.bus==='pgm'))return reply.code(409).send({error:'A grade convertida exige revisão e nova publicação antes do CUE/TAKE de itens.'})
-    switch (body.data.action) {
-      case 'take': {
-        const state = runtime.transport.state()
-        const interruptedItemId = state.onAir?.itemId ?? null
-        let target
-        try { target = resolveTakeTarget(execution!, state, body.data.itemId) }
-        catch (error) { return reply.code(error instanceof TakeTargetError ? error.statusCode : 409).send({ error: error instanceof Error ? error.message : 'TAKE recusado.' }) }
-        const { itemId: resolvedItemId, item: targetItem } = target
-        await runtime.transport.take(execution!.rundown.id, resolvedItemId)
-        // Live é prioridade editorial, mas não pode virar uma troca invisível
-        // no histórico. O TAKE pode permanecer pendente até o primeiro quadro;
-        // este registro representa a solicitação, e o as-run registra a troca
-        // real quando o engine a confirmar.
-        if ((targetItem?.type === 'LIVE' || targetItem?.sourceRef) && interruptedItemId !== resolvedItemId) {
-          const payload = {
-            requestedItemId: resolvedItemId,
-            interruptedItemId,
-            sourceRef: targetItem?.sourceRef ?? null,
-            title: targetItem?.title ?? 'Entrada ao vivo',
-            awaitingSignal: runtime.transport.state().onAir?.itemId !== resolvedItemId,
+    // Pré-condição recusada (engine respondeu "não", arquivo mudou, item
+    // indisponível) é resposta para o operador, não erro interno: 409/422
+    // com a mensagem, nunca 500. O estado do engine não muda por causa disso.
+    try {
+      switch (body.data.action) {
+        case 'take': {
+          const state = runtime.transport.state()
+          const interruptedItemId = state.onAir?.itemId ?? null
+          let target
+          try { target = resolveTakeTarget(execution!, state, body.data.itemId) }
+          catch (error) { return reply.code(error instanceof TakeTargetError ? error.statusCode : 409).send({ error: error instanceof Error ? error.message : 'TAKE recusado.' }) }
+          const { itemId: resolvedItemId, item: targetItem } = target
+          await runtime.transport.take(execution!.rundown.id, resolvedItemId)
+          // Live é prioridade editorial, mas não pode virar uma troca invisível
+          // no histórico. O TAKE pode permanecer pendente até o primeiro quadro;
+          // este registro representa a solicitação, e o as-run registra a troca
+          // real quando o engine a confirmar.
+          if ((targetItem?.type === 'LIVE' || targetItem?.sourceRef) && interruptedItemId !== resolvedItemId) {
+            const payload = {
+              requestedItemId: resolvedItemId,
+              interruptedItemId,
+              sourceRef: targetItem?.sourceRef ?? null,
+              title: targetItem?.title ?? 'Entrada ao vivo',
+              awaitingSignal: runtime.transport.state().onAir?.itemId !== resolvedItemId,
+            }
+            await logDecision(app, runtime.view.rundown.id, resolvedItemId, 'LIVE_PRIORITY_TAKE_REQUESTED', payload, await usernameOf(request))
+            void emitIntegrationEvent(app.db, 'live.take.requested', payload, runtime.channel.id)
           }
-          await logDecision(app, runtime.view.rundown.id, resolvedItemId, 'LIVE_PRIORITY_TAKE_REQUESTED', payload, await usernameOf(request))
-          void emitIntegrationEvent(app.db, 'live.take.requested', payload, runtime.channel.id)
+          break
         }
-        break
-      }
-      case 'cue': {
-        const target: PreviewTarget | null = body.data.sourceRef
-          ? { kind: 'SOURCE', source: body.data.sourceRef, ...(body.data.sourceTitle ? { title: body.data.sourceTitle } : {}) }
-          : body.data.assetId
-          ? { kind: 'ASSET', id: body.data.assetId }
-          : body.data.itemId
-            ? { kind: 'ITEM', id: body.data.itemId }
-            : null
-        await runtime.transport.cue(target)
-        break
-      }
-      case 'park': {
-        const first = execution!.items[0]
-        if (!first) return reply.code(400).send({ error: 'Grade vazia.' })
-        await runtime.transport.park(first.item.id)
-        break
-      }
-      case 'stop':
-        if (!(await allowed(request, 'CHANNEL_STOP'))) {
-          return reply.code(403).send({ error: 'Seu papel não pode parar o canal.' })
+        case 'cue': {
+          const target: PreviewTarget | null = body.data.sourceRef
+            ? { kind: 'SOURCE', source: body.data.sourceRef, ...(body.data.sourceTitle ? { title: body.data.sourceTitle } : {}) }
+            : body.data.assetId
+            ? { kind: 'ASSET', id: body.data.assetId }
+            : body.data.itemId
+              ? { kind: 'ITEM', id: body.data.itemId }
+              : null
+          await runtime.transport.cue(target)
+          break
         }
-        app.publishedContinuity.suspend(id,await usernameOf(request),'STOP explícito; continuidade recorrente suspensa.')
-        app.schedulePublication.suspend(id,await usernameOf(request),'STOP explícito; publicação automática suspensa.')
-        runtime.cancelQueuedBoundaryOnStop(await usernameOf(request))
-        await runtime.transport.stop()
-        await logDecision(app, runtime.view.rundown.id, null, 'CHANNEL_STOPPED', {}, await usernameOf(request))
-        void emitIntegrationEvent(app.db, 'channel.stopped', { rundownId: runtime.view.rundown.id }, runtime.channel.id)
-        break
-      case 'seek':
-        if (!body.data.bus || body.data.frames === undefined) return reply.code(400).send({ error: 'Informe barramento e posição.' })
-        await runtime.transport.seek(body.data.bus, body.data.frames)
-        await logDecision(app, runtime.view.rundown.id, body.data.itemId ?? null, 'TRANSPORT_SEEK', { bus: body.data.bus, frames: body.data.frames }, await usernameOf(request))
-        break
+        case 'park': {
+          const first = execution!.items[0]
+          if (!first) return reply.code(400).send({ error: 'Grade vazia.' })
+          await runtime.transport.park(first.item.id)
+          break
+        }
+        case 'stop':
+          if (!(await allowed(request, 'CHANNEL_STOP'))) {
+            return reply.code(403).send({ error: 'Seu papel não pode parar o canal.' })
+          }
+          app.publishedContinuity.suspend(id,await usernameOf(request),'STOP explícito; continuidade recorrente suspensa.')
+          app.schedulePublication.suspend(id,await usernameOf(request),'STOP explícito; publicação automática suspensa.')
+          runtime.cancelQueuedBoundaryOnStop(await usernameOf(request))
+          await runtime.transport.stop()
+          await logDecision(app, runtime.view.rundown.id, null, 'CHANNEL_STOPPED', {}, await usernameOf(request))
+          void emitIntegrationEvent(app.db, 'channel.stopped', { rundownId: runtime.view.rundown.id }, runtime.channel.id)
+          break
+        case 'seek':
+          if (!body.data.bus || body.data.frames === undefined) return reply.code(400).send({ error: 'Informe barramento e posição.' })
+          await runtime.transport.seek(body.data.bus, body.data.frames)
+          await logDecision(app, runtime.view.rundown.id, body.data.itemId ?? null, 'TRANSPORT_SEEK', { bus: body.data.bus, frames: body.data.frames }, await usernameOf(request))
+          break
+      }
+    } catch (error) {
+      const status = transportRefusalStatus(error, runtime.transport.health().ready)
+      if (status === null) throw error
+      request.log.warn({ action: body.data.action, channelId: id, err: error }, 'Comando de transporte recusado')
+      return reply.code(status).send({ error: error instanceof Error ? error.message : 'Comando recusado.', refused: true, action: body.data.action })
     }
 
     runtime.checkpoint(true)

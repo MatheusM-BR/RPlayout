@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { tmpdir } from 'node:os'
 import { openDatabase } from '../db/client.js'
-import { cpuUtilization, HostMetrics } from './host-metrics.js'
+import { cpuUtilization, HostIncidentTracker, HostMetrics } from './host-metrics.js'
 const values: ReturnType<typeof openDatabase>[] = []
 afterEach(() => { for (const value of values.splice(0)) value.sqlite.close() })
 describe('coleta histórica centralizada do host', () => {
@@ -18,7 +18,8 @@ describe('coleta histórica centralizada do host', () => {
       value.sqlite.exec('DROP TRIGGER qa_expiry_fail')
       const committed=await metrics.latest()
       expect(captures).toBe(2);expect(metrics.history('1999-01-01')).toEqual([committed]);expect((await metrics.latest())).toBe(committed)
-      expect(value.sqlite.prepare('SELECT COUNT(*) AS count FROM health_events').get()).toEqual({count:1})
+      // Partida saudável não registra "recuperado" (A5): nada a registrar.
+      expect(value.sqlite.prepare("SELECT COUNT(*) AS count FROM health_events WHERE state<>'degraded'").get()).toEqual({count:0})
     }finally{metrics.close()}
   },15000)
   it('pagina com cursor exclusivo e janela fixa sem repetir linhas ou incluir novas coletas',()=>{
@@ -76,5 +77,27 @@ describe('coleta histórica centralizada do host', () => {
     expect(history).toEqual([first])
     expect((await metrics.latest()).generatedAt).toBe(first.generatedAt)
     metrics.close()
+  })
+})
+
+describe('histerese dos alertas do host (A5)', () => {
+  const sample = (at: number, cpu: number | null, disk = 50, freeBytes = 19e9) => ({ generatedAt: new Date(at).toISOString(), cpu: { percent: cpu, cores: 8 }, memory: { totalBytes: 8e9, usedBytes: 2e9, freeBytes: 6e9, percent: 25 }, disk: { path: '/acervo', totalBytes: 252e9, freeBytes, percentUsed: disk, error: null } })
+  it('CPU oscilando 50–99% e disco cheio: um incidente por condição, fechado só quando normaliza', () => {
+    const tracker = new HostIncidentTracker(), opened: string[] = [], closed: string[] = []
+    let t = Date.UTC(2026, 9, 31, 7)
+    const feed = (cpu: number, disk = 93) => { t += 10_000; const changes = tracker.evaluate(sample(t, cpu, disk)); tracker.commit(changes, t); for (const c of changes) (c.kind === 'open' ? opened : closed).push(c.message) }
+    // 50 minutos alternando como no relatório (antes: 54 eventos).
+    for (let i = 0; i < 300; i++) feed(i % 3 === 0 ? 55 : 95)
+    expect(opened).toHaveLength(2) // CPU (2 amostras seguidas acima) + disco
+    expect(opened.some(m => m.startsWith('CPU acima de 90%'))).toBe(true)
+    expect(opened.some(m => m.includes('Volume do acervo acima de 90% (93% usado; 19 GB livres'))).toBe(true)
+    expect(closed).toEqual([])
+    for (let i = 0; i < 3; i++) feed(40, 50)
+    expect(closed).toHaveLength(2)
+    expect(closed.find(m => m.startsWith('CPU normalizada'))).toMatch(/após \d+ min\.$/)
+  })
+  it('sem leitura (null) não abre nem fecha', () => {
+    const tracker = new HostIncidentTracker()
+    expect(tracker.evaluate(sample(Date.now(), null, 50))).toEqual([])
   })
 })

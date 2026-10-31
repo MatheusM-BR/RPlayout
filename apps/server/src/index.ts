@@ -15,7 +15,8 @@ import { listRoots } from './domain/roots.js'
 import { registerRoutes } from './routes.js'
 import { healthEvents } from './db/schema.js'
 import { AlertNotifier } from './domain/alert-notifier.js'
-import { severityOf } from './domain/health.js'
+import { engineIncidentTransition, severityOf } from './domain/health.js'
+import { installTechnicalLogCapture } from './domain/technical-log.js'
 import { emitIntegrationEvent } from './domain/integrations.js'
 import {persistPgmSignalIncidents} from './domain/pgm-signal-incidents.js'
 import {captureIncidentContext} from './domain/incident-context.js'
@@ -62,6 +63,8 @@ async function main(): Promise<void> {
   const adoptionFile=process.env.RPLAYOUT_ADOPT_UPGRADE_PROFILE
   if(adoptionFile&&(!activated||!process.env.RPLAYOUT_INSTALL_ROOT))throw new Error('Adoção de perfil exige ativação restaurada explícita e instalação definida.')
   const adopt=adoptionFile?prepareUpgradeProfileAdoption(adoptionFile,process.env.RPLAYOUT_INSTALL_ROOT!,DB_FILE):null
+  // Últimas linhas do engine/servidor para a aba LOGS TÉCNICOS (memória, limitado).
+  installTechnicalLogCapture()
   if(!args.length){
     const recovery=await recoverInterruptedReservationAtStartup(DB_FILE)
     if(recovery.check==='RECOVER')console.log(recovery.recovered?'RPlayout · reserva do banco deixada por um encerramento anterior foi liberada pela recuperação oficial.':`RPlayout · reserva do banco preservada; recuperação recusada: ${recovery.detail??'sem detalhe'}`)
@@ -355,16 +358,22 @@ async function main(): Promise<void> {
       // Antes de qualquer coisa: o motor está de pé e produzindo?
       runtime.transport.watchdog()
       const health = runtime.transport.health()
-      const state = health.error ? 'error' : 'running'
       const key = `engine:${runtime.channel.id}`
-      const signature = `${state}|${health.error ?? ''}|${health.restarts}|${health.deaths}|${health.stalls}|${runtime.transport.processId() ?? ''}`
-      if (recorded.get(key) !== signature) {
-        void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'ENGINE', state, severity: severityOf('ENGINE', state, health.error), message: health.error, occurredAt: new Date().toISOString() }).run()
-        recorded.set(key, signature)
-        void emitIntegrationEvent(app.db, `engine.${state}`, { message: health.error, restarts: health.restarts }, runtime.channel.id)
+      // Um incidente por transição real de estado (pronto ⇄ erro). Reinício
+      // pelo watchdog troca PID e contador, mas a queda é a mesma: não
+      // registrar o SIGKILL duas vezes. "running" sai com mensagem legível.
+      const transition = engineIncidentTransition(recorded.get(key), health, runtime.transport.processId())
+      if (transition) {
+        recorded.set(key, transition.signature)
+        if (transition.record) {
+          void app.db.insert(healthEvents).values({ id: randomUUID(), channelId: runtime.channel.id, component: 'ENGINE', state: transition.state, severity: severityOf('ENGINE', transition.state, transition.state === 'error' ? transition.message : null), message: transition.message, occurredAt: new Date().toISOString() }).run()
+          void emitIntegrationEvent(app.db, `engine.${transition.state}`, { message: transition.state === 'error' ? health.error : null, restarts: health.restarts }, runtime.channel.id)
+        }
       }
       const videoHealthKey = `video-health:${runtime.channel.id}`
       const videoHealth = health.stalls > 0 ? 'stalled' : 'running'
+      // Na partida não houve perda: não registrar "Fluxo de vídeo recuperado".
+      if (!recorded.has(videoHealthKey) && videoHealth === 'running') recorded.set(videoHealthKey, videoHealth)
       if (recorded.get(videoHealthKey) !== videoHealth) {
         const message = videoHealth === 'stalled'
           ? `Engine detectou ${health.stalls} congelamento(s) de vídeo.`

@@ -1918,11 +1918,14 @@ async function createRuntime(app: App, channelId: string): Promise<ChannelRuntim
   }
 }
 
+export const PGM_RECOVERY_HOLD_MS = 15_000
 /** Sonda isolada por canal, criada cedo para a UI poder informar sem amostra. */
 export function pgmProbeFor(app: App, channelId: string): PgmProbe {
   const existing = app.pgmProbes.get(channelId)
   if (existing) return existing
-  const probe = new PgmProbe()
+  // 15 s de sinal limpo antes de "recuperado": freeze/silêncio intermitente
+  // vira um incidente com contador, não uma avalanche de pares no histórico.
+  const probe = new PgmProbe(undefined, undefined, { recoveryHoldMs: PGM_RECOVERY_HOLD_MS })
   const policy = app.sqlite.prepare('SELECT payload FROM channel_operational_policies WHERE channel_id=?').get(channelId) as { payload: string } | undefined
   if (policy) {
     const saved = JSON.parse(policy.payload) as { automaticActions: boolean; thresholds?: Parameters<PgmProbe['setThresholds']>[0]; loopRevisionId?: string | null }
