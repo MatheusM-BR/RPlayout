@@ -285,7 +285,7 @@ export class WatchdogMachine {
         }
         if (now - (this.returnSince ?? now) < policy.returnStableMs) break
         if (policy.returnMode === 'MANUAL' || this.holdContingency || !automatic) {
-          if (!this.awaitingOperator) this.emit({ kind: 'TRANSITION', severity: 'WARN', message: `${this.label}: sinal estável há ${(policy.returnStableMs / 1000).toFixed(0)} s; aguardando o operador voltar para a live.` }, now)
+          if (!this.awaitingOperator) this.emit({ kind: 'TRANSITION', severity: 'WARN', message: this.blindReturn && this.contingencyOnAir ? `${this.label}: sem PVW para medir a entrada; aguardando o operador voltar para a live.` : `${this.label}: sinal estável há ${(policy.returnStableMs / 1000).toFixed(0)} s; aguardando o operador voltar para a live.` }, now)
           this.awaitingOperator = true
           break
         }

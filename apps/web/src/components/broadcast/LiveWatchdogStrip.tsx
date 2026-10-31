@@ -23,7 +23,12 @@ export function watchdogDetail(input: WatchdogInputStatus): string {
   if (input.state === 'ESPERA') parts.push(input.waitArtOnAir ? `Arte de espera no ar · contingência em ${seconds(input.waitRemainingMs)}` : `Espera · contingência em ${seconds(input.waitRemainingMs)}`)
   if (input.state === 'CONTINGENCIA') parts.push(!input.contingencyOnAir ? (input.pendingAction === 'ENTER_CONTINGENCY' ? 'Acionando a contingência (vinheta + vídeos)' : 'Contingência sem conteúdo · arte de espera mantida')
     : input.blindReturn ? 'Contingência no PGM · canal sem PVW: retorno por tentativa (só corta com quadro real)' : 'Contingência no PGM · observando a entrada no PVW')
-  if (input.state === 'RETORNO') parts.push(input.awaitingOperator ? 'Sinal estável · aguardando "voltar para a live"' : `Sinal voltou · estável há ${seconds(input.stableMs)}`)
+  // Sem PVW a entrada não é medida durante a contingência: "sinal estável" era
+  // falso e aparecia ao lado de "Perda de sinal 35 s".
+  const blind = input.blindReturn && input.contingencyOnAir
+  if (input.state === 'RETORNO') parts.push(blind
+    ? (input.awaitingOperator ? 'Sem PVW: sinal da entrada não medido · aguardando "voltar para a live" (o TAKE só corta com quadro real)' : 'Sem PVW: tentando voltar para a live (o TAKE só corta com quadro real)')
+    : input.awaitingOperator ? 'Sinal estável · aguardando "voltar para a live"' : `Sinal voltou · estável há ${seconds(input.stableMs)}`)
   if (input.holdContingency) parts.push('contingência mantida pelo operador')
   if (input.pendingAction) parts.push('aguardando confirmação do engine…')
   if (conditions.length) parts.push(conditions.join(' · '))
