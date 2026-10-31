@@ -160,6 +160,13 @@ export function directTakePlan(publicationRequired:boolean,target:{id:string;tit
 /** Sinal do ao vivo de uma linha: LOST no PGM (caiu) ou FAILED (TAKE recusado
  * sem sinal). M3/M4: a grade não pode chamar de "EXIBIDO" o que nunca entrou,
  * nem mostrar "NO AR" limpo com a fonte caída. */
+/** Linha que a grade resolvida descartou (ex.: HORA FIXA de arquivo que já
+ * passou numa grade em loop): não está AGENDADA e não tem hora prevista. Devolve
+ * o motivo para o tooltip, ou null quando a linha vai mesmo ao ar. */
+export function skippedRowReason(row:{state?:string;adjustments?:readonly {kind:string;reason:string}[]}|undefined,onAir:boolean):string|null{
+  if(onAir||row?.state!=='DROPPED')return null
+  return row.adjustments?.filter(entry=>entry.kind==='SKIPPED'||entry.kind==='DROPPED').map(entry=>entry.reason).join(' ')||'A grade resolvida pula este item.'
+}
 export function liveLineSignal(itemId:string,sources:readonly {itemId:string;state:string;busItemIds?:Partial<Record<'pgm'|'pvw',string>>}[]):'LOST'|'FAILED'|null{
   const own=sources.filter(source=>source.itemId===itemId||source.busItemIds?.pgm===itemId)
   if(own.some(source=>source.state==='LOST'))return 'LOST'
@@ -1582,6 +1589,7 @@ export function MasterControlView({
                             const durationFrames = getItemDuration(item)
                             const isSelected = selectedItemIds.has(item.item.id)
                             const unavailable = Boolean(item.item.mediaId && (!item.asset || item.asset.probeError || item.asset.ignored || !qcApproved(item.asset.qcStatus ?? 'APPROVED')))
+                            const skipped = unavailable ? null : skippedRowReason(scheduleMap.get(item.item.id), isItemOnAir)
 
                             const eventType: ScheduleEventType =
                               item.item.eventType ??
@@ -1658,6 +1666,10 @@ export function MasterControlView({
                                     </span>
                                   ) : unavailable ? (
                                     <button type="button" onClick={(event) => { event.stopPropagation(); onNavigate('qc') }} className="px-2 py-0.5 rounded t-status text-on-air-crimson bg-on-air-crimson/10 hover:bg-on-air-crimson/25" title={`${!item.asset ? 'Arquivo não encontrado no acervo' : item.asset.probeError ? `Arquivo com problema: ${item.asset.probeError}` : item.asset.ignored ? 'Arquivo ignorado no QC' : 'Arquivo ainda não aprovado no QC'}. Clique para abrir o QC.`}>{!item.asset || item.asset.probeError ? 'SEM ARQUIVO' : item.asset.ignored ? 'IGNORADO' : 'QC PENDENTE'}</button>
+                                  ) : skipped ? (
+                                    <span className="px-2 py-0.5 rounded font-label-caps t-status text-outline bg-surface-container" title={skipped}>
+                                      PULADO
+                                    </span>
                                   ) : isItemPrepared ? (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-ok/20 text-status-ok-bright font-label-caps t-status">
                                       PRÓXIMO
@@ -1676,7 +1688,7 @@ export function MasterControlView({
                                 <td className={`py-1.5 px-3 t-time ${
                                   isItemOnAir ? 'text-on-surface font-bold' : isItemCued ? 'text-armed-amber font-bold' : 'text-on-surface-variant'
                                 }`}>
-                                  {scheduleMap.get(item.item.id)?.start != null
+                                  {skipped ? <span title={skipped}>—</span> : scheduleMap.get(item.item.id)?.start != null
                                     ? wallClock(scheduleMap.get(item.item.id)!.start, rate, view.rundown.date)
                                     : '--:--:--:--'}
                                 </td>

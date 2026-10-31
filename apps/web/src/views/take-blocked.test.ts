@@ -32,3 +32,12 @@ it('linha de ao vivo: recusado não é EXIBIDO e queda no PGM aparece (M3/M4)',a
   expect(liveLineSignal('live',[{itemId:'live',state:'ON_PGM'}])).toBeNull()
   expect(liveLineSignal('vt',[{itemId:'live',state:'FAILED'}])).toBeNull()
 })
+it('linha descartada pela grade (HORA FIXA vencida no loop) mostra PULADO com o motivo, não AGENDADO',async()=>{
+  const {skippedRowReason}=await import('./MasterControlView.js')
+  const row={state:'DROPPED',adjustments:[{kind:'SKIPPED',reason:'HORA FIXA 14:01:00 já passou: na grade em loop o arquivo só entra pelo TAKE da hora marcada.'}]}
+  expect(skippedRowReason(row,false)).toContain('14:01:00 já passou')
+  expect(skippedRowReason(row,true)).toBeNull()
+  expect(skippedRowReason({state:'SCHEDULED',adjustments:[]},false)).toBeNull()
+  expect(skippedRowReason(undefined,false)).toBeNull()
+  expect(skippedRowReason({state:'DROPPED',adjustments:[]},false)).toContain('pula')
+})
