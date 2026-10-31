@@ -290,7 +290,9 @@ describe('watchdog do canal com executor', () => {
     for (; now <= T0 + 60_000; now += 250) { watchdog.tick({ now, policy: p, channelFps: 29.97, program: null, preview: [] }, () => now); await new Promise(resolve => setImmediate(resolve)) }
     expect(calls).toEqual(['return', 'cancel'])
     expect(watchdog.status(now, p)[0]).toMatchObject({ contingencyOnAir: true, holdContingency: true })
-    expect(watchdog.drain().some(event => /cancelada para manter a contingência/.test(event.message))).toBe(true)
+    const events = watchdog.drain()
+    expect(events.some(event => /cancelada para manter a contingência/.test(event.message))).toBe(true)
+    expect(events.filter(event => event.kind === 'ACTION_FAILED').every(event => event.severity === 'INFO')).toBe(true)
     contingency = false
   })
   it('TAKE manual para outro item encerra o acompanhamento e retira a arte de espera', async () => {

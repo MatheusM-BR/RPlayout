@@ -329,7 +329,10 @@ export class WatchdogMachine {
     if (!ok) {
       this.lastError = message ?? 'Ação não confirmada.'
       this.retryAt = now + RETRY_MS
-      this.emit({ kind: 'ACTION_FAILED', severity: 'CRITICAL', message: `${this.label}: ${effectLabel[effect]} não confirmado — ${this.lastError}` }, now)
+      // Retorno cancelado pelo "manter contingência" não é falha: sem alarme crítico.
+      const cancelled = effect === 'RETURN_LIVE' && this.returnCancelRequested
+      this.returnCancelRequested = false
+      this.emit({ kind: 'ACTION_FAILED', severity: cancelled ? 'INFO' : 'CRITICAL', message: `${this.label}: ${effectLabel[effect]} não confirmado — ${this.lastError}` }, now)
       if (effect === 'RETURN_LIVE' && this.state === 'RETORNO') {
         this.go('CONTINGENCIA', now, 'retorno recusado'); this.returnSince = null
         // Sem PVW, a próxima tentativa espera de novo T2 (no mínimo 10 s).
@@ -379,8 +382,11 @@ export class WatchdogMachine {
     return effects
   }
   /** Operador: "manter contingência" (liga/desliga). */
+  /** O operador pediu "manter contingência" com o retorno já em andamento. */
+  returnCancelRequested = false
   operatorHold(now: number, hold: boolean, actor: string | null) {
     this.holdContingency = hold
+    if (hold && this.pending === 'RETURN_LIVE') this.returnCancelRequested = true
     this.emit({ kind: 'OPERATOR', severity: 'INFO', message: `${this.label}: operador${actor ? ` ${actor}` : ''} ${hold ? 'manteve a contingência (retorno só manual)' : 'liberou o retorno automático'}.` }, now)
   }
   noteReturnCancelled(now: number) {
