@@ -145,7 +145,7 @@ export function PastasPanel({ onMessage, onChanged }: Props) {
   return (
     <div className="field">
       <label>Pastas do acervo</label>
-      {scanDialog&&<ScanCommandDialog measure={false} onClose={()=>setScanDialog(false)} onRegistered={result=>{setVarrendo(['RUNNING','PENDING'].includes(result.state));onMessage(`Pedido de procura registrado: ${result.batchId} · ${result.state}.`)}}/>}
+      {scanDialog&&<div role="dialog" aria-modal="true" aria-label="Varredura das pastas" className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center p-4"><ScanCommandDialog measure={false} onClose={()=>setScanDialog(false)} onRegistered={result=>{setVarrendo(['RUNNING','PENDING'].includes(result.state));onMessage(`Pedido de procura registrado: ${result.batchId} · ${result.state}.`)}}/></div>}
       {!review&&<p role="status">Lista ainda não conferida; não é confirmação de acervo vazio.</p>}
       {error&&<p role="alert">{error} Campos preservados; reabra a conferência.</p>}
       <button className="btn small" disabled={busy} onClick={()=>guard(recarregar)}>CONFERIR LISTA DE PASTAS</button>
