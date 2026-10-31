@@ -421,6 +421,14 @@ pub struct MonitorBusSpec {
     pub source: MonitorSource,
     /// Sai com som em Opus (WHEP). Sem `opusenc`, o monitor sai mudo.
     pub opus: bool,
+    /// Endereço explícito por nível (testes e bancada); vazio = [`tier_url`].
+    pub url_overrides: BTreeMap<MonitorTier, String>,
+}
+
+impl MonitorBusSpec {
+    pub fn url_for(&self, tier: MonitorTier) -> String {
+        self.url_overrides.get(&tier).cloned().unwrap_or_else(|| tier_url(&self.url, tier))
+    }
 }
 
 /// Publica um monitor em até três níveis, cada um só enquanto é pedido.
@@ -723,21 +731,27 @@ impl MonitorBus {
         let aqueue = make("queue")?;
         aqueue.set_property("max-size-time", 1_000_000_000u64);
         aqueue.set_property_from_str("leaky", "downstream");
+        // Válvula fechada até o primeiro quadro de vídeo, deixando passar os
+        // eventos fixos (caps): a PMT já nasce com as duas trilhas.
+        let audio_gate = make("valve")?;
+        audio_gate.set_property_from_str("drop-mode", "forward-sticky-events");
+        audio_gate.set_property("drop", true);
         let mux = make("mpegtsmux")?;
         mux.set_property("alignment", 7i32);
         mux.set_property("latency", MONITOR_MUX_LATENCY);
         let sink = make("srtsink")?;
-        sink.set_property("uri", tier_url(&self.spec.url, tier));
+        sink.set_property("uri", self.spec.url_for(tier));
         sink.set_property("async", false);
         sink.set_property("sync", false);
         crate::output::set_if_exists(&sink, "auto-reconnect", false);
         crate::output::set_if_exists(&sink, "latency", MONITOR_SRT_LATENCY_MS);
         crate::output::set_if_exists(&sink, "wait-for-connection", false);
 
-        bin.add_many([&queue, &scale, &vrate, &conv, &i420, &conv2, &enc_caps, &venc, &parse, &h264caps, &aqueue, &mux, &sink])?;
+        bin.add_many([&queue, &scale, &vrate, &conv, &i420, &conv2, &enc_caps, &venc, &parse, &h264caps, &aqueue, &audio_gate, &mux, &sink])?;
         gst::Element::link_many([&queue, &scale, &vrate, &conv, &i420, &conv2, &enc_caps, &venc, &parse, &h264caps])?;
         h264caps.link(&mux)?;
-        aqueue.link(&mux)?;
+        aqueue.link(&audio_gate)?;
+        audio_gate.link(&mux)?;
         mux.link(&sink)?;
 
         // Relógio de teste: depois da geometria final, antes do encoder.
@@ -760,22 +774,11 @@ impl MonitorBus {
         // O áudio só entra depois do primeiro quadro codificado: assim a
         // primeira PMT já tem as duas trilhas sem o muxer precisar esperar
         // meio segundo por elas (o que virava meio segundo de atraso).
-        let video_started = Arc::new(AtomicBool::new(false));
         if let Some(pad) = h264caps.static_pad("src") {
-            let started = Arc::clone(&video_started);
+            let gate = audio_gate.clone();
             pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
-                started.store(true, Ordering::Release);
+                gate.set_property("drop", false);
                 gst::PadProbeReturn::Remove
-            });
-        }
-        if let Some(pad) = aqueue.static_pad("sink") {
-            let started = Arc::clone(&video_started);
-            pad.add_probe(gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST, move |_, _| {
-                if started.load(Ordering::Acquire) {
-                    gst::PadProbeReturn::Remove
-                } else {
-                    gst::PadProbeReturn::Drop
-                }
             });
         }
 

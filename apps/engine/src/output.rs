@@ -326,6 +326,7 @@ impl Publisher {
             url: spec.url.clone(),
             source,
             opus: spec.opus,
+            url_overrides: Default::default(),
         }
     }
 

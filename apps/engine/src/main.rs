@@ -12,6 +12,8 @@ mod limiter;
 mod limiter_element;
 mod output;
 mod monitor;
+#[cfg(test)]
+mod monitor_bench;
 mod omt;
 mod omt_runtime;
 mod protocol;
