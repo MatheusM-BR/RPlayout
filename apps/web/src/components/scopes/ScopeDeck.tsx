@@ -375,7 +375,7 @@ export function ScopeDeck({exact, live, note, storageKey, falseColorCanvas, onFa
       </select>
       <button type="button" title="Atalhos (?)" onClick={() => setHelp(value => !value)} className={`rounded border border-border-subtle ${btn(help)}`}>?</button>
     </div>}
-    <div ref={wrapper} className="relative flex-1 min-h-[160px] rounded border border-border-subtle/60 bg-[#05070E] overflow-hidden"
+    <div ref={wrapper} className={`relative flex-1 rounded border border-border-subtle/60 overflow-hidden ${compact ? "min-h-[80px] bg-black/25" : "min-h-[160px] bg-[#05070E]"}`}
       onPointerMove={onPointerMove} onPointerLeave={() => setCursor(null)} onWheel={onWheel} onDoubleClick={resetZoom}>
       <canvas ref={gpuCanvas} aria-hidden="true" className={`absolute inset-0 w-full h-full ${exactMode || backend !== 'webgpu' ? 'invisible' : ''}`}/>
       <canvas ref={glCanvas} aria-hidden="true" className={`absolute inset-0 w-full h-full ${exactMode || backend !== 'webgl2' ? 'invisible' : ''}`}/>

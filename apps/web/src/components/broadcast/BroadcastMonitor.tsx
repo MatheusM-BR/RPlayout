@@ -4,6 +4,7 @@ import { dur, formatStandardRate } from '../../format.js'
 import type { LibraryAsset } from '../../types.js'
 import { Whep } from '../Whep.js'
 import {lightweightPreviewUrl} from '../../domain/media-preview.js'
+import {ScopeDeck} from '../scopes/ScopeDeck.js'
 
 export interface BroadcastMonitorProps {
   bus: 'pgm' | 'pvw'
@@ -82,6 +83,16 @@ export function BroadcastMonitor({
   const [isScrubbing, setIsScrubbing] = useState(false)
   const [webrtcFailed, setWebrtcFailed] = useState(false)
   const failedMonitor=useCallback(()=>setWebrtcFailed(true),[])
+  // Scopes ao vivo do PGM (opcional): desligado, sobre a imagem ou em janela
+  // flutuante. Nenhum dos modos muda o tamanho do monitor nem da grade.
+  const [scopes, setScopesState] = useState<'off' | 'overlay' | 'window'>(() => {
+    try { const v = window.localStorage.getItem(`rplayout.scopes.monitor.${bus}`); return v === 'overlay' || v === 'window' ? v : 'off' } catch { return 'off' }
+  })
+  const setScopes = (value: 'off' | 'overlay' | 'window') => { setScopesState(value); try { window.localStorage.setItem(`rplayout.scopes.monitor.${bus}`, value) } catch { /* só não lembra */ } }
+  const [whepVideo, setWhepVideo] = useState<HTMLVideoElement | null>(null)
+  const [falseColorCanvas, setFalseColorCanvas] = useState<HTMLCanvasElement | null>(null)
+  const [falseColorOn, setFalseColorOn] = useState(false)
+  const onFalseColorChange = useCallback((mode: string | null) => setFalseColorOn(Boolean(mode)), [])
   const onWatchingRef=useRef(onWatching)
   useEffect(()=>{onWatchingRef.current=onWatching},[onWatching])
 
@@ -238,6 +249,11 @@ export function BroadcastMonitor({
         </div>
 
         <div className="flex items-center gap-1.5 flex-wrap">
+          {isPgm && webrtcPath && <button type="button" onClick={(event) => { event.stopPropagation(); setScopes(scopes === 'off' ? 'overlay' : scopes === 'overlay' ? 'window' : 'off') }}
+            className={`px-2 py-1 rounded border font-label-mono text-[11px] font-bold cursor-pointer ${scopes === 'off' ? 'bg-surface-panel text-outline border-border-subtle hover:text-on-surface' : 'bg-accent-ice/15 text-accent-ice border-accent-ice/50'}`}
+            title="Scopes ao vivo do PGM (indicativos, do WHEP): desligado → sobre a imagem → janela flutuante">
+            SCOPES{scopes === 'overlay' ? ' · SOBRE' : scopes === 'window' ? ' · JANELA' : ''}
+          </button>}
           {/* Botão de Monitoramento de Áudio Exclusivo (PGM ou PVW) em 2 linhas */}
           <button
             onClick={handleToggleAudio}
@@ -280,6 +296,7 @@ export function BroadcastMonitor({
             hideControls={true}
             muted={effectiveMuted}
             onErrorFallback={failedMonitor}
+            onVideoElement={isPgm ? setWhepVideo : undefined}
             onWatching={
               onWatching
                 ? () => {
@@ -447,6 +464,19 @@ export function BroadcastMonitor({
             </div>
           </div>
         )}
+
+        {/* Scopes do PGM: falsa cor e scopes sobre a imagem, ou janela flutuante. */}
+        {isPgm && scopes !== 'off' && whepVideo && !webrtcFailed && <>
+          <canvas ref={setFalseColorCanvas} aria-hidden="true" className={`absolute inset-0 w-full h-full pointer-events-none z-[5] ${falseColorOn ? '' : 'hidden'}`}/>
+          <div onClick={event => event.stopPropagation()}
+            className={scopes === 'overlay'
+              ? 'absolute inset-x-1 top-1 bottom-6 z-20 rounded bg-black/55 p-1'
+              : 'fixed right-3 bottom-3 z-50 w-[560px] h-[380px] min-w-[320px] min-h-[220px] resize overflow-hidden rounded-lg border border-border-strong bg-surface-card/95 shadow-2xl p-1.5'}>
+            <ScopeDeck storageKey={`monitor-${bus}-${scopes}`} compact={scopes === 'overlay'}
+              live={{element: whepVideo, label: 'PGM · WHEP decodificado pelo navegador', valid: true}}
+              falseColorCanvas={falseColorCanvas} onFalseColorChange={onFalseColorChange}/>
+          </div>
+        </>}
 
         {/* O frame do WHEP já vem do compositor do engine. Não há CG HTML
             adicional aqui: assim PGM, WebRTC e todas as saídas exibem a mesma

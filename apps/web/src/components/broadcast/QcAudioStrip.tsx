@@ -47,11 +47,12 @@ export function QcAudioStrip({loudness, hasAudio, profile, targetLufs, meter, li
   return <section aria-label="Áudio do QC" className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 font-label-mono text-[12px]">
     <div className="flex flex-col gap-0.5 min-w-0">
       <div className="flex items-center justify-between gap-2 font-label-caps text-[11px]">
-        <span className="text-armed-amber font-bold">ARQUIVO · ORIGINAL (servidor, EBU R128)</span>
+        <span className="text-armed-amber font-bold">ARQUIVO INTEIRO · ORIGINAL (servidor, BS.1770-4/EBU R128)</span>
         <span className="text-outline" title="Faixa do perfil de QC do canal">alvo {targetLufs} · faixa {profile.minLufs}…{profile.maxLufs} · TP ≤ {profile.maxTruePeakDbtp}</span>
       </div>
       {hasAudio === false ? <span className="text-outline">Arquivo sem áudio.</span> : <div className="flex flex-wrap gap-x-4 gap-y-0.5">
         <span><span className="text-outline">I </span><strong className={TONE_CLASS[iTone]} title={iTone === 'warn' ? 'Fora da faixa do perfil do canal' : undefined}>{loudness ? formatFileIntegrated(integrated) : 'não medido'}</strong></span>
+        {loudness && Number.isFinite(integrated) && <span title={`Diferença para a referência do canal (${targetLufs} LUFS). O nivelamento automático corrige isto no ar.`}><span className="text-outline">Δ ref </span><strong className={Math.abs((integrated as number) - targetLufs) > 1 ? 'text-armed-amber' : 'text-status-ok-bright'}>{`${(integrated as number) - targetLufs >= 0 ? '+' : '−'}${Math.abs((integrated as number) - targetLufs).toFixed(1).replace('.', ',')} LU`}</strong></span>}
         <span><span className="text-outline">TP </span><strong className={TONE_CLASS[tpTone]}>{loudness ? formatPeak(truePeak, 'dBTP') : '—'}</strong></span>
         <span><span className="text-outline">LRA </span><strong className="text-on-surface">{loudness && Number.isFinite(loudness.lra) ? `${loudness.lra.toFixed(1)} LU` : '—'}</strong></span>
       </div>}
