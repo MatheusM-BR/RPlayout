@@ -68,7 +68,7 @@ export function HeaderHealth({ channelId, onClick }: { channelId: string; onClic
       <span className="font-label-caps text-[11px] text-on-surface-variant">SAÚDE</span>
       <span className={`font-label-caps text-[11px] font-bold ${text[worst]}`}>{worstLabel}</span>
     </button>
-    <div onClick={onClick} className={`hidden 2xl:grid grid-cols-2 gap-1 bg-surface-panel p-1 rounded-lg border border-border-subtle ${onClick ? 'cursor-pointer hover:border-border-strong transition-colors' : ''}`} title="Saúde do canal. Detalhe no Monitor.">
+    <div onClick={onClick} className={`hidden 2xl:grid grid-cols-3 gap-1 bg-surface-panel p-1 rounded-lg border border-border-subtle ${onClick ? 'cursor-pointer hover:border-border-strong transition-colors' : ''}`} title="Saúde do canal. Detalhe no Monitor.">
       {tags.map(tag => (
         <div key={tag.label} title={tag.title} className="flex items-center gap-space-xs px-2 py-0.5 rounded bg-surface-container border border-border-subtle/50">
           <span className={`w-1.5 h-1.5 rounded-full ${dot[tag.level]}`}></span>
