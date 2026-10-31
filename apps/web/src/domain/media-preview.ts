@@ -39,3 +39,9 @@ export function qcInspectionFrameAtTime(seconds:number,duration:number,total=24,
   const index=original?Math.round(seconds/duration*(total-1)):Math.floor(seconds/duration*total)
   return Math.max(0,Math.min(total-1,index))
 }
+/** Quadro EXATO do original no índice de quadro do arquivo (o TC do QC).
+ * `.jpg` para exibir (RGB BT.709); `.ycc` com as amostras Y'CbCr dos scopes. */
+export function qcExactFrameUrl(asset:{id:string;contentHash:string},frame:number,kind:'jpg'|'ycc'):string{
+  const index=Number.isFinite(frame)?Math.max(0,Math.round(frame)):0
+  return `/api/assets/${encodeURIComponent(asset.id)}/qc-frame/${index}.${kind}?hash=${encodeURIComponent(asset.contentHash)}`
+}

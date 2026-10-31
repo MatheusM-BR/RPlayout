@@ -74,3 +74,10 @@ describe('preview econômico nunca seleciona o arquivo original',()=>{
     expect(qcQualityFrameUrl(asset,7)).toContain('/frame/7.jpg?total=24')
   })
 })
+
+import {qcExactFrameUrl} from './media-preview.js'
+import {it as itExact,expect as expectExact} from 'vitest'
+itExact('quadro exato do QC é endereçado pelo índice e preso à versão conferida',()=>{
+  expectExact(qcExactFrameUrl({id:'a b',contentHash:'h#1'},150.4,'jpg')).toBe('/api/assets/a%20b/qc-frame/150.jpg?hash=h%231')
+  expectExact(qcExactFrameUrl({id:'a',contentHash:'h'},-3,'ycc')).toBe('/api/assets/a/qc-frame/0.ycc?hash=h')
+})

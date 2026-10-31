@@ -1,10 +1,9 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { confirmAction } from '../domain/confirm.js'
-import { durationIn, qcApproved, type Channel, type ManagedLiveSource } from '@rplayout/protocol'
+import { durationIn, qcApproved, DEFAULT_QC_PROFILE, type Channel, type ManagedLiveSource, type Rate } from '@rplayout/protocol'
 import type { LibraryFolder, LibraryAsset, ScanStatus, Live } from '../types.js'
 import type { Monitors as MonitorFeeds } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
-import { dur } from '../format.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { Whep } from '../components/Whep.js'
 import { api } from '../api.js'
@@ -14,13 +13,17 @@ import { QcWorkflowPanel } from '../components/broadcast/QcWorkflowPanel.js'
 import { CutMarksPanel } from '../components/CutMarksPanel.js'
 import { QcInspectionControls } from '../components/broadcast/QcInspectionControls.js'
 import { QcSafeAreaOverlay } from '../components/broadcast/QcSafeAreaOverlay.js'
-import {qcOriginalUrl,qcQualityFrameUrl,qcQualitySelected,qcInspectionUsesFrames,qcMonitorLabels,qcInspectionFrameAtTime,qcInspectionVideoHasPicture,qcQualityFrameFailed} from '../domain/media-preview.js'
+import {qcOriginalUrl,qcExactFrameUrl,qcQualitySelected,qcInspectionUsesFrames,qcMonitorLabels,qcInspectionFrameAtTime,qcInspectionVideoHasPicture,qcQualityFrameFailed} from '../domain/media-preview.js'
 import {useQcLiveInspection} from '../domain/use-qc-live-inspection.js'
 import {qcLiveTuningFeedback} from '../domain/qc-live-preview.js'
 import {qcFrameProgress,qcLiveFrameRecent,qcScopePixels,qcStableMeasurements,type QcFrameProgress} from '../domain/qc-scope-sample.js'
 import {QcRenderCost} from '../domain/qc-render-cost.js'
-import {drawQcParade} from '../domain/qc-parade-draw.js'
-import {QcVectorColor} from '../domain/qc-vector-color.js'
+import {analyzeScopeSample,parseYcc,sampleFromRgba,type QcScopeSample} from '../domain/qc-colorimetry.js'
+import {kWeightingCoefficients,loudnessFromPower,meanSquare,ShortTermLoudness,loudnessTone,truePeakTone,formatFileIntegrated,formatPeak,TONE_CLASS} from '../domain/qc-loudness.js'
+import {qcFrameCount,qcParseTimecode,qcRateLabel,qcStepFrame,qcTimecode} from '../domain/qc-timecode.js'
+import {QcScopePanel,type QcScopeMode} from '../components/broadcast/QcScopePanel.js'
+import {QcAudioStrip,type QcListeningMeter} from '../components/broadcast/QcAudioStrip.js'
+import type {LevelUnit} from '../domain/qc-scope-draw.js'
 import {retryMediaJobs} from '../domain/media-job-retry.js'
 import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 import {QcMediaRetryControl} from '../components/broadcast/QcMediaRetryControl.js'
@@ -54,7 +57,10 @@ interface Props {
   onPreviewLiveSource?: (sourceRef: string, title: string) => void
 }
 
-type ScopeViewMode = 'QUAD' | 'VECTORSCOPE' | 'WAVEFORM' | 'PARADE'
+/** Amostra para os scopes lida do navegador (vídeo/WHEP/JPEG): 640×360 ≥ 480 pontos por linha. */
+const BROWSER_SAMPLE = {width: 640, height: 360} as const
+const IDLE_METER: QcListeningMeter = {active: false, momentary: null, shortTerm: null, peakL: -Infinity, peakR: -Infinity, phase: null, muted: null}
+const validRate = (rate: Rate | null | undefined): rate is Rate => Boolean(rate && rate.num > 0 && rate.den > 0)
 
 export function QualityControlView(props:Props){
   return <QualityControlSession key={props.channel.id} {...props}/>
@@ -118,10 +124,13 @@ function QualityControlSession({
   // É uma sobreposição de conferência, não parte do conteúdo. Nasce desligada
   // para que nunca esconda a primeira imagem que o operador precisa avaliar.
   const [safeAreaActive, setSafeAreaActive] = useState(false)
+  const [centerCut, setCenterCut] = useState(false)
+  const [listOpen, setListOpen] = useState(true)
+  const [scopeUnit, setScopeUnit] = useState<LevelUnit>('%')
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'OK' | 'PENDING' | 'ALERT' | 'IGNORED'>('ALL')
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'VIDEO' | 'AUDIO'>('ALL')
-  const [scopeMode, setScopeMode] = useState<ScopeViewMode>('QUAD')
+  const [scopeMode, setScopeMode] = useState<QcScopeMode>('COMBO')
   const liveCatalog=useQcLiveInputs(channel.id)
   const liveInputs=liveCatalog.sources,liveTelemetry=liveCatalog.telemetry
   const selectedLiveSource = liveInputs.find((source) => source.id === selectedLiveSourceId) ?? null
@@ -174,8 +183,34 @@ function QualityControlSession({
   const proxyGeneration=useRef(0)
   const workflowReads=useRef(new BoundedLatestRead())
   const mediaRetryGeneration=useRef<number|null>(null)
-  const [framePos, setFramePos] = useState(0)
-  const inspectionFrameUrl=selectedAsset?(qualityActive?qcQualityFrameUrl(selectedAsset,framePos):`/api/assets/${selectedAsset.id}/frame/${framePos}.jpg?total=24`):null
+  // Quadro corrente na cadência do PRÓPRIO arquivo: é o TC que o QC mostra e o
+  // índice que o servidor usa para buscar o quadro exato do original.
+  const fileRate: Rate = validRate(selectedAsset?.probe?.rate) ? selectedAsset!.probe!.rate : channel.rate
+  const fileFps = fileRate.num / fileRate.den
+  const [currentFrame, setCurrentFrame] = useState(0)
+  const currentFrameRef = useRef(0)
+  currentFrameRef.current = currentFrame
+  // Navegação por teclado gera vários passos por segundo; o quadro só é pedido
+  // ao servidor quando o operador para (custo limitado do lado de lá também).
+  const [settledFrame, setSettledFrame] = useState(0)
+  useEffect(() => {
+    if (settledFrame === currentFrame) return
+    const timer = window.setTimeout(() => setSettledFrame(currentFrame), 140)
+    return () => window.clearTimeout(timer)
+  }, [currentFrame, settledFrame])
+  const [shuttle, setShuttle] = useState(0)
+  const [videoDurationSec, setVideoDurationSec] = useState(0)
+  const totalDurationSec = useMemo(() => {
+    if (videoDurationSec > 0 && Number.isFinite(videoDurationSec)) return videoDurationSec
+    if (selectedAsset?.durationNs) return selectedAsset.durationNs / 1e9
+    if (selectedAsset?.durationFrames && selectedAsset.durationFrames > 0) return selectedAsset.durationFrames * channelRate.den / channelRate.num
+    return 10
+  }, [videoDurationSec, selectedAsset, channelRate])
+  const totalFrames = qcFrameCount(selectedAsset?.durationNs, fileRate) ?? Math.max(1, Math.round(totalDurationSec * fileFps))
+  const currentTimeSec = currentFrame / fileFps
+  // Sem proxy e sem qualidade: régua de 24 quadros de navegação (aproximado).
+  const stripIndex = qcInspectionFrameAtTime(settledFrame / fileFps, totalDurationSec, 24)
+  const inspectionFrameUrl=selectedAsset?(qualityActive?qcExactFrameUrl(selectedAsset,settledFrame,'jpg'):`/api/assets/${selectedAsset.id}/frame/${stripIndex}.jpg?total=24`):null
   const [failedQualityFrame,setFailedQualityFrame]=useState<string|null>(null)
   const qualityFrameUnavailable=qcQualityFrameFailed(Boolean(selectedLiveSourceId),qualityActive&&framesOnly,inspectionFrameUrl,failedQualityFrame)
   const inspectionFrameUrlRef=useRef(inspectionFrameUrl)
@@ -191,68 +226,59 @@ function QualityControlSession({
   const frameImgRef = useRef<HTMLImageElement>(null)
   const safeAreaMedia=useCallback(()=>selectedLiveSourceId?sharedPreviewVideo:framesOnly?(qualityFrameUnavailable?null:frameImgRef.current):videoRef.current,[selectedLiveSourceId,sharedPreviewVideo,framesOnly,qcSelectionKey,playbackUrl,inspectionFrameUrl,qualityFrameUnavailable])
   const [isPlaying, setIsPlaying] = useState(false)
-  const [currentTimeSec, setCurrentTimeSec] = useState(0)
-  const [videoDurationSec, setVideoDurationSec] = useState(0)
   const [isMuted, setIsMuted] = useState(false)
   const [volume, setVolume] = useState(0.8)
   const [qcStatusFeedback, setQcStatusFeedback] = useState<string | null>(null)
   const visibleQcStatusFeedback=qcStatusFeedback ?? qcLiveTuningFeedback(liveTuningKey,liveQualityKey,selectedLiveSource?.name,livePreviewReady)
 
-  // Telemetria dinâmica dos escopos
-  const [waveformStats, setWaveformStats] = useState<{ minIre: number; maxIre: number; avgIre: number; clipping: boolean } | null>(null)
-  const [vectorscopeStats, setVectorscopeStats] = useState<{ maxSat: number; legalGamut: boolean } | null>(null)
-  const [audioMeter, setAudioMeter] = useState<ReturnType<typeof monitorAudioStatistics>>({ peakL: -100, peakR: -100, phase: null, active: false })
-
-  // Canvas refs para os escopos técnicos
-  const vectorscopeCanvasRef = useRef<HTMLCanvasElement>(null)
-  const waveformCanvasRef = useRef<HTMLCanvasElement>(null)
-  const paradeCanvasRef = useRef<HTMLCanvasElement>(null)
-  const audioSpectrumCanvasRef = useRef<HTMLCanvasElement>(null)
-  const scopeAudioBuffersRef=useRef({frequency:new Uint8Array(0),left:new Float32Array(0),right:new Float32Array(0)})
+  // Amostras dos scopes. `browserSample`: o que o navegador decodificou (vídeo,
+  // WHEP ou JPEG) -- aproximado, recortado em 0..100%. `exact`: Y'CbCr do
+  // original no quadro exato (pausado em "Ver em qualidade").
+  const [browserSample, setBrowserSample] = useState<QcScopeSample | null>(null)
+  const [exact, setExact] = useState<{key: string; frame: number; sample: QcScopeSample} | null>(null)
+  const [exactState, setExactState] = useState<{key: string; status: 'loading' | 'error'; message?: string} | null>(null)
+  const [audioMeter, setAudioMeter] = useState<QcListeningMeter>(IDLE_METER)
   const scopeSampleReadyRef = useRef(false)
-  // WHEP pode expor um intervalo curto sem frame enquanto mantém o último
-  // quadro no player. Os scopes devem espelhar esse comportamento e jamais
-  // piscar para preto por uma leitura transitória que falhou.
+  const [scopeSampleReady, setScopeSampleReady] = useState(false)
   const lastScopePixelsRef = useRef<Uint8ClampedArray | null>(null)
+  const lastBrowserSampleKeyRef = useRef<string | null>(null)
   const liveScopeProgressRef = useRef<QcFrameProgress | null>(null)
-  // Desenhar quatro scopes é relativamente caro. A entrada pode entregar 60
-  // callbacks/s, mas atualizar os canvases nessa taxa disputa a thread da UI
-  // com o WHEP e produz justamente o sintoma de imagem presente com scope
-  // intermitente. Limitamos a análise a 10 Hz, suficiente para inspeção QC e
-  // sem perder o último quadro real.
+  // A entrada pode entregar 60 callbacks/s; amostrar a 10 Hz basta para QC e
+  // não disputa a thread da UI com o decoder.
   const lastScopeRenderAtRef = useRef(0)
   const scopeCostRef=useRef(new QcRenderCost())
   const lastScopeCostReportRef=useRef(0)
   const [scopeCost,setScopeCost]=useState<ReturnType<QcRenderCost['snapshot']>>(null)
+  const clearBrowserSample = useCallback(() => {
+    lastScopePixelsRef.current = null; lastBrowserSampleKeyRef.current = null; scopeSampleReadyRef.current = false
+    setScopeSampleReady(false); setBrowserSample(null)
+  }, [])
   useEffect(()=>{
     scopeCostRef.current.reset()
     lastScopeCostReportRef.current=0
     setScopeCost(null)
-  },[channel.id,selectedAsset?.id,selectedAsset?.contentHash,selectedLiveSource?.id,qualityActive,framesOnly,scopeMode])
-  const [scopeSampleReady, setScopeSampleReady] = useState(false)
+  },[channel.id,selectedAsset?.id,selectedAsset?.contentHash,selectedLiveSource?.id,qualityActive,framesOnly])
 
   // A different JPEG is a different sample. Do not retain the previous frame's
   // measurements while loading it, or present a failed quality request as QC.
   useEffect(()=>{
     if(!framesOnly)return
-    lastScopePixelsRef.current=null;scopeSampleReadyRef.current=false
-    setScopeSampleReady(false);setWaveformStats(null);setVectorscopeStats(null)
-  },[inspectionFrameUrl,framesOnly,qualityFrameUnavailable])
+    clearBrowserSample()
+  },[inspectionFrameUrl,framesOnly,qualityFrameUnavailable,clearBrowserSample])
 
   useEffect(()=>{
     if(!selectedLiveSourceId)return
     liveScopeProgressRef.current=null
-    lastScopePixelsRef.current=null;scopeSampleReadyRef.current=false
-    setScopeSampleReady(false);setWaveformStats(null);setVectorscopeStats(null)
-    setAudioMeter({peakL:-100,peakR:-100,phase:null,active:false})
-  },[selectedLiveSourceId,liveSourceRef,livePreviewReady,liveQualityActive,liveInspection.ready,sharedPreviewVideo])
+    clearBrowserSample()
+    setAudioMeter(IDLE_METER)
+  },[selectedLiveSourceId,liveSourceRef,livePreviewReady,liveQualityActive,liveInspection.ready,sharedPreviewVideo,clearBrowserSample])
 
   // Offscreen sampling canvas
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null)
   if (!sampleCanvasRef.current && typeof document !== 'undefined') {
     const c = document.createElement('canvas')
-    c.width = 160
-    c.height = 90
+    c.width = BROWSER_SAMPLE.width
+    c.height = BROWSER_SAMPLE.height
     sampleCanvasRef.current = c
   }
 
@@ -264,24 +290,13 @@ function QualityControlSession({
   const audioSourceRef = useRef<AudioNode | null>(null)
   const leftAnalyserRef = useRef<AnalyserNode | null>(null)
   const rightAnalyserRef = useRef<AnalyserNode | null>(null)
+  // Ramo com o filtro K da BS.1770 por canal (M/S da escuta).
+  const kLeftAnalyserRef = useRef<AnalyserNode | null>(null)
+  const kRightAnalyserRef = useRef<AnalyserNode | null>(null)
+  const shortTermRef = useRef(new ShortTermLoudness())
   const monitorLevelRef = useRef({ isMuted, volume })
   monitorLevelRef.current = { isMuted, volume }
 
-  // Duração real calculada
-  const totalDurationSec = useMemo(() => {
-    if (videoDurationSec > 0 && Number.isFinite(videoDurationSec)) return videoDurationSec
-    if (selectedAsset?.durationNs) return selectedAsset.durationNs / 1e9
-    if (selectedAsset?.durationFrames && selectedAsset.durationFrames > 0) return selectedAsset.durationFrames / fps
-    return 10
-  }, [videoDurationSec, selectedAsset, fps])
-
-  const totalDurationFrames = useMemo(() => {
-    if (selectedAsset) {
-      if (selectedAsset.durationFrames > 0) return selectedAsset.durationFrames
-      if (selectedAsset.durationNs) return durationIn(selectedAsset, channelRate)
-    }
-    return Math.max(1, Math.round(totalDurationSec * fps))
-  }, [selectedAsset, channelRate, totalDurationSec, fps])
 
   // Reset ao trocar de arquivo
   useEffect(() => {
@@ -289,21 +304,20 @@ function QualityControlSession({
     setLiveQualitySelection(null)
     pendingPositionRef.current=null
     setIsPlaying(false)
-    setCurrentTimeSec(0)
+    setShuttle(0)
+    setCurrentFrame(0)
+    setSettledFrame(0)
     setVideoDurationSec(0)
     setVideoError(false)
     setFailedQualityFrame(null)
-    setFramePos(0)
     if (videoRef.current) {
       videoRef.current.currentTime = 0
       videoRef.current.pause()
     }
-    lastScopePixelsRef.current = null
     liveScopeProgressRef.current = null
-    scopeSampleReadyRef.current = false
-    setScopeSampleReady(false)
-    setWaveformStats(null)
-    setVectorscopeStats(null)
+    clearBrowserSample()
+    setExact(null)
+    setExactState(null)
   }, [selectedAsset?.id, selectedAsset?.contentHash, selectedAsset?.probeError, selectedLiveSourceId, channel.id])
 
   useEffect(() => {
@@ -389,9 +403,20 @@ function QualityControlSession({
         const splitter = ctx.createChannelSplitter(2)
         source.connect(splitter)
         const left = ctx.createAnalyser(), right = ctx.createAnalyser()
-        left.fftSize = right.fftSize = 512
+        // ~85 ms em 48 kHz: lido a 10 Hz, quase todo pico entra na janela.
+        left.fftSize = right.fftSize = 4096
         splitter.connect(left, 0); splitter.connect(right, 1)
         leftAnalyserRef.current = left; rightAnalyserRef.current = right
+        // Filtro K (BS.1770) por canal; janela de 32768 amostras cobre os 400 ms da M.
+        const k = kWeightingCoefficients(ctx.sampleRate)
+        const weighted = [0, 1].map(channelIndex => {
+          const shelf = ctx.createIIRFilter(k.shelf.b, k.shelf.a), highpass = ctx.createIIRFilter(k.highpass.b, k.highpass.a)
+          const meter = ctx.createAnalyser(); meter.fftSize = 32768
+          splitter.connect(shelf, channelIndex); shelf.connect(highpass); highpass.connect(meter)
+          return meter
+        })
+        kLeftAnalyserRef.current = weighted[0]!; kRightAnalyserRef.current = weighted[1]!
+        shortTermRef.current.reset()
 
         // PÓS-FADER: Controle de escuta/monitor do operador via GainNode separado
         const gainNode = ctx.createGain()
@@ -461,10 +486,15 @@ function QualityControlSession({
     }
   }, [isMuted, volume])
 
-  // Função central de renderização dos escopos (Waveform, Vectorscope, Parade, Áudio)
+
+  // Amostra do que o navegador está mostrando (vídeo, WHEP ou JPEG). É a
+  // fonte dos scopes em reprodução, no proxy e ao vivo; no original pausado a
+  // amostra exata Y'CbCr (abaixo) tem precedência.
+  const exactWanted = Boolean(qualityActive && selectedAsset && !selectedLiveSourceId && !isPlaying)
+  const exactKey = selectedAsset ? `${selectedAsset.id}:${selectedAsset.contentHash}:${settledFrame}` : null
+  const exactFailed = exactWanted && exactState?.key === exactKey && exactState.status === 'error'
   const renderScopes = useCallback((force = false) => {
     // Hidden QC must not compete with decoding or the on-air controls.
-    // The next visible render recomputes freshness from the playback clock.
     if(document.hidden)return
     const now = performance.now()
     if (!force && now - lastScopeRenderAtRef.current < 100) return
@@ -472,450 +502,166 @@ function QualityControlSession({
     if(selectedLiveSource && sharedPreviewVideo){
       liveScopeProgressRef.current=qcFrameProgress(liveScopeProgressRef.current,sharedPreviewVideo.currentTime,now)
     }
+    // Em reprodução o TC acompanha o vídeo a 10 Hz (timeupdate é ~4 Hz).
+    if(!framesOnly && !selectedLiveSource && videoRef.current && !videoRef.current.paused){
+      const frame=Math.floor(videoRef.current.currentTime*fileFps+1e-3)
+      if(frame!==currentFrameRef.current)setCurrentFrame(frame)
+    }
+    // Exato pedido e ainda válido: não gaste CPU lendo o canvas.
+    if (exactWanted && !exactFailed) return
     const liveFrameValid=!selectedLiveSource || livePreviewReady && qcLiveFrameRecent(liveScopeProgressRef.current,now)
+    const sourceEl = selectedLiveSource ? sharedPreviewVideo
+      : selectedAsset?.probeError && !playbackUrl ? null
+      : framesOnly ? (qualityFrameUnavailable?null:frameImgRef.current) : videoRef.current
+    // Arquivo parado no mesmo quadro: a amostra não muda, não recalcule.
+    const sampleKey = !sourceEl ? null : sourceEl instanceof HTMLImageElement ? `img:${sourceEl.currentSrc}` : selectedLiveSource ? null : `video:${sourceEl.currentSrc}:${sourceEl.currentTime}`
+    if (sampleKey && sampleKey === lastBrowserSampleKeyRef.current && !force) return
     let pixels: Uint8ClampedArray | null = null
-    const sCanvas = sampleCanvasRef.current
-    if (sCanvas) {
-      const sCtx = sCanvas.getContext('2d', { willReadFrequently: true })
-      if (sCtx) {
-        const sourceEl = selectedLiveSource ? sharedPreviewVideo
-          : selectedAsset?.probeError && !playbackUrl ? null
-          : framesOnly ? (qualityFrameUnavailable?null:frameImgRef.current) : videoRef.current
-        if (sourceEl && liveFrameValid) {
-          try {
-            // Não aceite um canvas transparente/sem decoder como amostra. Em
-            // WHEP `loadedmetadata` pode anteceder o primeiro frame real.
-            if (sourceEl instanceof HTMLVideoElement && (sourceEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || sourceEl.videoWidth < 1 || sourceEl.videoHeight < 1)) {
-              throw new Error('WHEP ainda não entregou um frame decodificado')
-            }
-            if (sourceEl instanceof HTMLImageElement && (!sourceEl.complete || sourceEl.naturalWidth < 1)) throw new Error('Imagem ainda não decodificada')
-            // Não limpe antes de desenhar: durante uma reconfiguração WHEP o
-            // drawImage pode falhar entre callbacks; manter o bitmap anterior
-            // evita uma amostra preta transitória no waveform/parade.
-            sCtx.drawImage(sourceEl, 0, 0, 160, 90)
-            const imgData = sCtx.getImageData(0, 0, 160, 90)
-            pixels = imgData.data
-            // getImageData returns an independent snapshot; drawing into the
-            // canvas later does not mutate it. Retain it without another copy.
-            lastScopePixelsRef.current = pixels
-          } catch {
-            // Não apaga a última amostra durante uma lacuna do decoder.
-          }
-        }
+    const sCtx = sampleCanvasRef.current?.getContext('2d', { willReadFrequently: true })
+    if (sCtx && sourceEl && liveFrameValid) {
+      try {
+        // Não aceite um canvas transparente/sem decoder como amostra. Em WHEP
+        // `loadedmetadata` pode anteceder o primeiro frame real.
+        if (sourceEl instanceof HTMLVideoElement && (sourceEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || sourceEl.videoWidth < 1 || sourceEl.videoHeight < 1)) throw new Error('sem quadro decodificado')
+        if (sourceEl instanceof HTMLImageElement && (!sourceEl.complete || sourceEl.naturalWidth < 1)) throw new Error('imagem ainda não decodificada')
+        sCtx.drawImage(sourceEl, 0, 0, BROWSER_SAMPLE.width, BROWSER_SAMPLE.height)
+        pixels = sCtx.getImageData(0, 0, BROWSER_SAMPLE.width, BROWSER_SAMPLE.height).data
+        lastScopePixelsRef.current = pixels
+      } catch {
+        // Não apaga a última amostra durante uma lacuna do decoder.
       }
     }
-
-    // Sem frame novo, reutiliza o último RGBA real. Isto mantém waveform,
-    // vectorscope e parade estáveis durante jitter/reconfiguração do WHEP;
-    // ao trocar a fonte o efeito acima limpa explicitamente a amostra.
+    // Sem quadro novo, só o ao vivo reaproveita o último RGBA real (jitter do WHEP).
     const samplePixels = qcScopePixels(Boolean(selectedLiveSource),liveFrameValid && !qualityFrameUnavailable,pixels,lastScopePixelsRef.current)
     const hasPixels = samplePixels !== null
-    if (scopeSampleReadyRef.current !== hasPixels) {
-      scopeSampleReadyRef.current = hasPixels
-      setScopeSampleReady(hasPixels)
-      if(!hasPixels){setWaveformStats(null);setVectorscopeStats(null)}
+    if (scopeSampleReadyRef.current !== hasPixels) { scopeSampleReadyRef.current = hasPixels; setScopeSampleReady(hasPixels) }
+    if (!samplePixels) { setBrowserSample(null); lastBrowserSampleKeyRef.current = null }
+    else if (pixels || selectedLiveSource) {
+      lastBrowserSampleKeyRef.current = pixels ? sampleKey : null
+      setBrowserSample(sampleFromRgba(samplePixels, BROWSER_SAMPLE.width, BROWSER_SAMPLE.height))
     }
-
-    // 1. Renderiza Vectorscope de Alta Definição Digital (ITU-R BT.709)
-    const vCanvas = vectorscopeCanvasRef.current
-    if (vCanvas) {
-      const vCtx = vCanvas.getContext('2d')
-      if (vCtx) {
-        const w = vCanvas.width
-        const h = vCanvas.height
-        const cx = w / 2
-        const cy = h / 2
-        const rMax = Math.min(cx, cy) * 0.88
-        const r75 = rMax * 0.75
-        const r50 = rMax * 0.50
-        const r25 = rMax * 0.25
-
-        // Fundo ultra-escuro digital com contraste cirúrgico
-        vCtx.fillStyle = '#040711'
-        vCtx.fillRect(0, 0, w, h)
-
-        // Anéis polares graduados concêntricos (25%, 50%, 75% SMPTE Legal, 100% Gamut Limit)
-        vCtx.lineWidth = 1
-        vCtx.strokeStyle = 'rgba(28, 42, 65, 0.75)'
-        for (const ring of [r25, r50]) {
-          vCtx.beginPath()
-          vCtx.arc(cx, cy, ring, 0, Math.PI * 2)
-          vCtx.stroke()
-        }
-
-        // Anel 75% (SMPTE Target Legal)
-        vCtx.strokeStyle = 'rgba(56, 189, 248, 0.45)'
-        vCtx.setLineDash([2, 3])
-        vCtx.beginPath()
-        vCtx.arc(cx, cy, r75, 0, Math.PI * 2)
-        vCtx.stroke()
-        vCtx.setLineDash([])
-
-        // Anel 100% (Gamut Limit)
-        vCtx.strokeStyle = 'rgba(255, 59, 48, 0.35)'
-        vCtx.beginPath()
-        vCtx.arc(cx, cy, rMax, 0, Math.PI * 2)
-        vCtx.stroke()
-
-        // Eixos ortogonais principais com divisões milimétricas digitais
-        vCtx.strokeStyle = 'rgba(38, 56, 85, 0.7)'
-        vCtx.beginPath()
-        vCtx.moveTo(cx, cy - rMax)
-        vCtx.lineTo(cx, cy + rMax)
-        vCtx.moveTo(cx - rMax, cy)
-        vCtx.lineTo(cx + rMax, cy)
-        vCtx.stroke()
-
-        // Graduações angulares a cada 30 graus
-        vCtx.strokeStyle = 'rgba(28, 42, 65, 0.5)'
-        for (let deg = 0; deg < 360; deg += 30) {
-          const rad = (deg * Math.PI) / 180
-          vCtx.beginPath()
-          vCtx.moveTo(cx + Math.cos(rad) * (r75 - 4), cy - Math.sin(rad) * (r75 - 4))
-          vCtx.lineTo(cx + Math.cos(rad) * (r75 + 4), cy - Math.sin(rad) * (r75 + 4))
-          vCtx.stroke()
-        }
-
-        // Linha de tom de pele I-Axis (~123° com corredor de tolerância cromática)
-        const iRad = (123 * Math.PI) / 180
-        vCtx.strokeStyle = 'rgba(255, 170, 0, 0.75)'
-        vCtx.setLineDash([3, 2])
-        vCtx.beginPath()
-        vCtx.moveTo(cx, cy)
-        vCtx.lineTo(cx + Math.cos(iRad) * rMax, cy - Math.sin(iRad) * rMax)
-        vCtx.stroke()
-        vCtx.setLineDash([])
-
-        // Caixas de alvos cromáticos 75% BT.709 (R, Mg, B, Cy, G, Yl) com mira dupla e rótulo nítido
-        const targets = [
-          { name: 'R', angle: 104, color: '#FF334B' },
-          { name: 'Mg', angle: 61, color: '#F040FF' },
-          { name: 'B', angle: 347, color: '#389BFF' },
-          { name: 'Cy', angle: 284, color: '#00F0FF' },
-          { name: 'G', angle: 241, color: '#00E676' },
-          { name: 'Yl', angle: 167, color: '#FFD600' },
-        ]
-        const fontSize = Math.max(8, Math.min(11, w / 26))
-        vCtx.font = `bold ${fontSize}px monospace`
-        vCtx.textAlign = 'center'
-        vCtx.textBaseline = 'middle'
-        const boxSize = Math.max(6, w / 32)
-        for (const t of targets) {
-          const rad = (t.angle * Math.PI) / 180
-          const tx = cx + Math.cos(rad) * r75
-          const ty = cy - Math.sin(rad) * r75
-
-          vCtx.strokeStyle = t.color
-          vCtx.strokeRect(tx - boxSize / 2, ty - boxSize / 2, boxSize, boxSize)
-          vCtx.beginPath()
-          vCtx.moveTo(tx - 2, ty)
-          vCtx.lineTo(tx + 2, ty)
-          vCtx.moveTo(tx, ty - 2)
-          vCtx.lineTo(tx, ty + 2)
-          vCtx.stroke()
-
-          vCtx.fillStyle = t.color
-          vCtx.fillText(t.name, tx + Math.cos(rad) * (boxSize * 1.6), ty - Math.sin(rad) * (boxSize * 1.6))
-        }
-
-        // Renderização digital de alta definição dos pontos cromáticos reais amostrados
-        if (samplePixels) {
-          let maxDist = 0
-          const pointColor=new QcVectorColor(vCtx)
-          const dotSize = w > 240 ? 1.5 : 1.2
-          for (let i = 0; i < samplePixels.length; i += 8) {
-            const r = samplePixels[i] ?? 0
-            const g = samplePixels[i + 1] ?? 0
-            const b = samplePixels[i + 2] ?? 0
-            const cb = -0.1146 * r - 0.3854 * g + 0.5 * b
-            const cr = 0.5 * r - 0.4542 * g - 0.0458 * b
-            const dist = Math.hypot(cb, cr)
-            if (dist > maxDist) maxDist = dist
-            const px = cx + (cb / 128) * rMax
-            const py = cy - (cr / 128) * rMax
-
-            // Desenho com cor calibrada e luminescência digital nítida
-            pointColor.select(r,g,b)
-            vCtx.fillRect(px, py, dotSize, dotSize)
-          }
-
-          const satPercent = Math.round((maxDist / 128) * 100)
-          setVectorscopeStats(previous=>qcStableMeasurements(previous,{ maxSat: satPercent, legalGamut: satPercent <= 100 }))
-        } else {
-          setVectorscopeStats(null)
-        }
-      }
-    }
-
-    // 2. Renderiza Luma Waveform Digital (0-100 IRE + Gamut Limits)
-    const wCanvas = waveformCanvasRef.current
-    if (wCanvas) {
-      const wCtx = wCanvas.getContext('2d')
-      if (wCtx) {
-        const w = wCanvas.width
-        const h = wCanvas.height
-        wCtx.fillStyle = '#040711'
-        wCtx.fillRect(0, 0, w, h)
-
-        const y108 = h * 0.06
-        const y100 = h * 0.12
-        const y80 = h * 0.28
-        const y50 = h * 0.52
-        const y20 = h * 0.76
-        const y0 = h * 0.92
-        const hRange = y0 - y100
-
-        wCtx.lineWidth = 1
-
-        // 108 IRE (Clipping ceiling)
-        wCtx.strokeStyle = 'rgba(255, 59, 48, 0.4)'
-        wCtx.setLineDash([2, 4])
-        wCtx.beginPath()
-        wCtx.moveTo(0, y108)
-        wCtx.lineTo(w, y108)
-        wCtx.stroke()
-
-        // 100 IRE (Teto Legal Broadcast)
-        wCtx.strokeStyle = 'rgba(255, 59, 48, 0.8)'
-        wCtx.setLineDash([])
-        wCtx.beginPath()
-        wCtx.moveTo(0, y100)
-        wCtx.lineTo(w, y100)
-        wCtx.stroke()
-
-        // 80 e 20 IRE Linhas de referência
-        wCtx.strokeStyle = 'rgba(38, 56, 85, 0.5)'
-        wCtx.setLineDash([1, 4])
-        for (const yRef of [y80, y20]) {
-          wCtx.beginPath()
-          wCtx.moveTo(0, yRef)
-          wCtx.lineTo(w, yRef)
-          wCtx.stroke()
-        }
-
-        // 50 IRE (Cinza Médio 18%)
-        wCtx.strokeStyle = 'rgba(56, 189, 248, 0.5)'
-        wCtx.setLineDash([3, 3])
-        wCtx.beginPath()
-        wCtx.moveTo(0, y50)
-        wCtx.lineTo(w, y50)
-        wCtx.stroke()
-        wCtx.setLineDash([])
-
-        // 0 IRE (Piso Legal Broadcast)
-        wCtx.strokeStyle = 'rgba(0, 230, 118, 0.8)'
-        wCtx.beginPath()
-        wCtx.moveTo(0, y0)
-        wCtx.lineTo(w, y0)
-        wCtx.stroke()
-
-        // Régua graduada na borda esquerda
-        const labelSize = Math.max(8, Math.min(10, h / 20))
-        wCtx.font = `bold ${labelSize}px monospace`
-        wCtx.fillStyle = 'rgba(255, 59, 48, 0.9)'
-        wCtx.fillText('100', 4, y100 - 2)
-        wCtx.fillStyle = 'rgba(56, 189, 248, 0.8)'
-        wCtx.fillText('50', 4, y50 - 2)
-        wCtx.fillStyle = 'rgba(0, 230, 118, 0.9)'
-        wCtx.fillText('0', 4, y0 - 2)
-
-        if (samplePixels) {
-          let minI = 100
-          let maxI = 0
-          let sumI = 0
-          let cnt = 0
-
-          // Traço digital luminoso em ciano neon com alta definição
-          wCtx.fillStyle = 'rgba(56, 189, 248, 0.45)'
-          const dotSize = w > 400 ? 1.8 : 1.2
-          for (let sy = 0; sy < 90; sy += 2) {
-            for (let sx = 0; sx < 160; sx += 2) {
-              const idx = (sy * 160 + sx) * 4
-              const r = samplePixels[idx] ?? 0
-              const g = samplePixels[idx + 1] ?? 0
-              const b = samplePixels[idx + 2] ?? 0
-              const yVal = 0.2126 * r + 0.7152 * g + 0.0722 * b
-              const ire = (yVal / 255) * 100
-              if (ire < minI) minI = ire
-              if (ire > maxI) maxI = ire
-              sumI += ire
-              cnt++
-
-              const cx = (sx / 160) * w
-              const cy = y0 - (ire / 100) * hRange
-              wCtx.fillRect(cx, cy, dotSize, dotSize)
-            }
-          }
-
-          const avgI = cnt > 0 ? sumI / cnt : 0
-          setWaveformStats(previous=>qcStableMeasurements(previous,{
-            minIre: Math.round(minI * 10) / 10,
-            maxIre: Math.round(maxI * 10) / 10,
-            avgIre: Math.round(avgI * 10) / 10,
-            clipping: maxI > 100 || minI < 0,
-          }))
-        } else {
-          setWaveformStats(null)
-        }
-      }
-    }
-
-    // 3. Renderiza RGB Parade Digital
-    const pCanvas = paradeCanvasRef.current
-    if (pCanvas) {
-      const pCtx = pCanvas.getContext('2d')
-      if (pCtx) {
-        const w = pCanvas.width
-        const h = pCanvas.height
-        pCtx.fillStyle = '#040711'
-        pCtx.fillRect(0, 0, w, h)
-
-        const colW = w / 3
-        const y100 = h * 0.12
-        const y50 = h * 0.52
-        const y0 = h * 0.92
-        const hRange = y0 - y100
-
-        // Divisórias das colunas R, G, B
-        pCtx.strokeStyle = 'rgba(28, 42, 65, 0.85)'
-        pCtx.lineWidth = 1
-        pCtx.beginPath()
-        pCtx.moveTo(colW, 0)
-        pCtx.lineTo(colW, h)
-        pCtx.moveTo(colW * 2, 0)
-        pCtx.lineTo(colW * 2, h)
-        pCtx.stroke()
-
-        // Linhas de escala 0 e 100 IRE
-        pCtx.setLineDash([2, 3])
-        pCtx.strokeStyle = 'rgba(255, 59, 48, 0.4)'
-        pCtx.beginPath()
-        pCtx.moveTo(0, y100)
-        pCtx.lineTo(w, y100)
-        pCtx.stroke()
-
-        pCtx.strokeStyle = 'rgba(0, 230, 118, 0.4)'
-        pCtx.beginPath()
-        pCtx.moveTo(0, y0)
-        pCtx.lineTo(w, y0)
-        pCtx.stroke()
-        pCtx.setLineDash([])
-
-        const labelSize = Math.max(8, Math.min(10, h / 22))
-        pCtx.font = `bold ${labelSize}px monospace`
-        pCtx.fillStyle = '#FF334B'
-        pCtx.fillText('R • RED', 6, labelSize + 3)
-        pCtx.fillStyle = '#00E676'
-        pCtx.fillText('G • GREEN', colW + 6, labelSize + 3)
-        pCtx.fillStyle = '#389BFF'
-        pCtx.fillText('B • BLUE', colW * 2 + 6, labelSize + 3)
-
-        if (samplePixels) {
-          const dotSize = w > 400 ? 1.8 : 1.2
-          drawQcParade(pCtx,samplePixels,colW,y0,hRange,dotSize)
-        }
-      }
-    }
-
-    // 4. Renderiza Áudio EBU R128 Pré-Fader & RTA Spectrum
-    const aCanvas = audioSpectrumCanvasRef.current
-    if (aCanvas) {
-      const aCtx = aCanvas.getContext('2d')
-      if (aCtx) {
-        const w = aCanvas.width
-        const h = aCanvas.height
-        aCtx.fillStyle = '#040711'
-        aCtx.fillRect(0, 0, w, h)
-
-        let freqData: Uint8Array | null = null
-        if (analyserRef.current && isPlaying) {
-          if(scopeAudioBuffersRef.current.frequency.length!==analyserRef.current.frequencyBinCount)scopeAudioBuffersRef.current.frequency=new Uint8Array(analyserRef.current.frequencyBinCount)
-          const data = scopeAudioBuffersRef.current.frequency
-          analyserRef.current.getByteFrequencyData(data)
-          freqData = data
-        }
-
-        const bars = 24
-        const barW = (w - (bars - 1) * 1.5) / bars
-        // All bars share the same vertical scale: one gradient per canvas pass.
-        const spectrumGradient = aCtx.createLinearGradient(0, h, 0, 0)
-        spectrumGradient.addColorStop(0, '#00E676')
-        spectrumGradient.addColorStop(0.65, '#FFD600')
-        spectrumGradient.addColorStop(0.85, '#FF9500')
-        spectrumGradient.addColorStop(1, '#FF334B')
-
-        for (let b = 0; b < bars; b++) {
-          // Sem amostra real do analisador, não desenha um espectro falso.
-          const val = freqData ? freqData[b * 2] || 0 : 0
-          const barH = Math.max(2, (val / 255) * (h - 8))
-          const bx = b * (barW + 1.5)
-          const by = h - barH - 2
-
-          // Gradiente digital nítido: Verde (-60 a -18 dBFS) -> Amarelo (-18 a -9 dBFS) -> Vermelho (-9 a 0 dBFS)
-          aCtx.fillStyle = spectrumGradient
-          aCtx.fillRect(bx, by, barW, barH)
-
-          // Peak hold bar
-          aCtx.fillStyle = '#FFFFFF'
-          aCtx.fillRect(bx, by - 1.5, barW, 1)
-
-        }
-
-      }
-    }
-    if (isPlaying && leftAnalyserRef.current && rightAnalyserRef.current && audioCtxRef.current?.state === 'running') {
-      const buffers=scopeAudioBuffersRef.current
-      if(buffers.left.length!==leftAnalyserRef.current.fftSize)buffers.left=new Float32Array(leftAnalyserRef.current.fftSize)
-      if(buffers.right.length!==rightAnalyserRef.current.fftSize)buffers.right=new Float32Array(rightAnalyserRef.current.fftSize)
-      const {left,right}=buffers
-      leftAnalyserRef.current.getFloatTimeDomainData(left); rightAnalyserRef.current.getFloatTimeDomainData(right)
-      const nextAudioMeter = monitorAudioStatistics(left, right)
-      setAudioMeter(previous=>qcStableMeasurements(previous,nextAudioMeter))
-    } else setAudioMeter(previous=>qcStableMeasurements(previous,{ peakL: -100, peakR: -100, phase: null, active: false }))
     scopeCostRef.current.add(performance.now()-now)
     if(now-lastScopeCostReportRef.current>=1000){
       lastScopeCostReportRef.current=now
       const next=scopeCostRef.current.snapshot()
       if(next)setScopeCost(previous=>qcStableMeasurements(previous,next))
     }
-  }, [framesOnly, qualityFrameUnavailable, inspectionFrameUrl, isPlaying, sharedPreviewVideo, playbackUrl, selectedLiveSource, selectedAsset?.probeError,livePreviewReady])
+  }, [framesOnly, qualityFrameUnavailable, inspectionFrameUrl, sharedPreviewVideo, playbackUrl, selectedLiveSource, selectedAsset?.probeError, livePreviewReady, exactWanted, exactFailed, fileFps])
 
-  // O WHEP chama renderScopes em cada frame decodificado. Este pequeno
-  // fallback cobre navegadores sem requestVideoFrameCallback e mídia local,
-  // mas não mantém um loop a 60fps que possa atrasar o próprio decoder.
+  // O WHEP chama renderScopes em cada frame decodificado. Este fallback cobre
+  // mídia local sem manter um loop a 60 fps que atrase o próprio decoder.
   useEffect(() => {
     renderScopes(true)
-    // Also refresh paused first frames: loadeddata can precede GPU presentation.
-    // Once the player stops, 4 Hz keeps inspection responsive without full-rate decoding.
     const interval = window.setInterval(() => renderScopes(), isPlaying || selectedLiveSource ? 100 : 250)
     return () => window.clearInterval(interval)
-  }, [isPlaying, renderScopes, selectedAsset?.id, selectedLiveSource?.id, scopeMode])
+  }, [isPlaying, renderScopes, selectedAsset?.id, selectedLiveSource?.id])
 
-  // Atalho de teclado para Barra de Espaço (Play/Pause)
+  // Quadro exato do original para os scopes: Y'CbCr cru, sem o navegador no
+  // meio. Só em "Ver em qualidade" (opt-in de custo) e com a imagem parada.
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && (e.target as HTMLElement).tagName !== 'INPUT') {
-        e.preventDefault()
-        togglePlay()
+    if (!exactWanted || !selectedAsset || !exactKey) return
+    if (exact?.key === exactKey) return
+    const asset = selectedAsset, frame = settledFrame, key = exactKey
+    const controller = new AbortController()
+    let retry: number | undefined
+    setExactState({key, status: 'loading'})
+    const load = async (attempt: number) => {
+      try {
+        const response = await fetch(qcExactFrameUrl(asset, frame, 'ycc'), {signal: controller.signal})
+        // Servidor ocupado (limite de custo): tenta de novo quando ele liberar.
+        if (response.status === 503 && attempt < 8) { retry = window.setTimeout(() => void load(attempt + 1), 700); return }
+        if (!response.ok) {
+          let message = `HTTP ${response.status}`
+          try { message = ((await response.json()) as {error?: string}).error ?? message } catch { /* corpo não-JSON */ }
+          throw new Error(message)
+        }
+        const sample = parseYcc(await response.arrayBuffer())
+        if (controller.signal.aborted) return
+        setExact({key, frame, sample}); setExactState(null)
+      } catch (error) {
+        if (controller.signal.aborted) return
+        setExactState({key, status: 'error', message: error instanceof Error ? error.message : 'Amostra exata indisponível.'})
       }
     }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  })
+    void load(0)
+    return () => { controller.abort(); if (retry !== undefined) window.clearTimeout(retry) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exactWanted, exactKey])
+
+  const exactCurrent = exactWanted && exact?.key === exactKey ? exact.sample : null
+  // Enquanto o próximo quadro exato chega, mantém o anterior -- o cabeçalho diz qual é.
+  const exactShown = exactWanted ? (exactCurrent ?? (!exactFailed && exact?.key.startsWith(`${selectedAsset?.id}:${selectedAsset?.contentHash}:`) ? exact.sample : null)) : null
+  const scopeSample: QcScopeSample | null = exactShown ?? (exactWanted && !exactFailed ? null : browserSample)
+  const scopeStats = useMemo(() => scopeSample ? analyzeScopeSample(scopeSample) : null, [scopeSample])
+  const scopeStatus = (() => {
+    if (exactWanted) {
+      if (exactCurrent) return {text: `Y'CbCr DO ORIGINAL · EXATO · ${qcTimecode(exact!.frame, fileRate)} · 4:4:4 BT.709`, tone: 'exact' as const}
+      if (exactFailed) return {text: `Amostra exata indisponível (${exactState?.message}) · usando RGB do navegador (aprox.)`, tone: 'approx' as const}
+      return {text: exact && exactShown ? `Mostrando ${qcTimecode(exact.frame, fileRate)} · carregando ${qcTimecode(settledFrame, fileRate)}…` : `Carregando Y'CbCr de ${qcTimecode(settledFrame, fileRate)}…`, tone: 'approx' as const}
+    }
+    if (!browserSample) return {text: 'AGUARDANDO FRAME', tone: 'idle' as const}
+    return {text: `RGB DECODIFICADO PELO NAVEGADOR · ${monitorLabels.image} · aproximado`, tone: 'approx' as const}
+  })()
+
+  // Escuta: M (400 ms) e S (3 s) com filtro K, picos L/R e correlação a 10 Hz.
+  useEffect(() => {
+    if (!isPlaying) { setAudioMeter(IDLE_METER); shortTermRef.current.reset(); return }
+    const buffers = {left: new Float32Array(4096), right: new Float32Array(4096), kLeft: new Float32Array(32768), kRight: new Float32Array(32768)}
+    const timer = window.setInterval(() => {
+      const ctx = audioCtxRef.current, left = leftAnalyserRef.current, right = rightAnalyserRef.current
+      if (!ctx || ctx.state !== 'running' || !left || !right) return
+      left.getFloatTimeDomainData(buffers.left); right.getFloatTimeDomainData(buffers.right)
+      const stats = monitorAudioStatistics(buffers.left, buffers.right)
+      let momentary: number | null = null, shortTerm: number | null = null
+      if (kLeftAnalyserRef.current && kRightAnalyserRef.current) {
+        kLeftAnalyserRef.current.getFloatTimeDomainData(buffers.kLeft); kRightAnalyserRef.current.getFloatTimeDomainData(buffers.kRight)
+        const window400 = Math.round(ctx.sampleRate * 0.4)
+        const power = meanSquare(buffers.kLeft, window400) + meanSquare(buffers.kRight, window400)
+        momentary = loudnessFromPower(power)
+        shortTermRef.current.push(performance.now(), power)
+        shortTerm = shortTermRef.current.value()
+      }
+      setAudioMeter({active: stats.active, momentary, shortTerm, peakL: stats.peakL, peakR: stats.peakR, phase: stats.phase, muted: stats.muted})
+    }, 100)
+    return () => window.clearInterval(timer)
+  }, [isPlaying])
+
+  const seekToFrame = useCallback((frame: number) => {
+    const target = qcStepFrame(frame, 0, totalFrames)
+    setCurrentFrame(target)
+    if (!framesOnly && videoRef.current) {
+      // Mira o meio do quadro: o decoder mostra exatamente este quadro.
+      const duration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : Infinity
+      videoRef.current.currentTime = Math.min((target + 0.5) / fileFps, Math.max(0, duration - 0.5 / fileFps))
+    }
+  }, [totalFrames, framesOnly, fileFps])
+
+  const pauseVideo = () => {
+    if (videoRef.current && !videoRef.current.paused) videoRef.current.pause()
+    if (videoRef.current) videoRef.current.playbackRate = 1
+    setIsPlaying(false)
+  }
+
+  const stepFrames = useCallback((delta: number) => {
+    if (selectedLiveSourceId || !selectedAsset) return
+    if (videoRef.current && !videoRef.current.paused) { videoRef.current.pause(); setIsPlaying(false) }
+    seekToFrame(currentFrameRef.current + delta)
+  }, [selectedLiveSourceId, selectedAsset, seekToFrame])
 
   const togglePlay = () => {
     initAudio()
     if (audioCtxRef.current?.state === 'suspended') {
       void audioCtxRef.current.resume().catch(() => {})
     }
-
+    setShuttle(0)
     if (framesOnly) {
       setIsPlaying(false)
-      setQcStatusFeedback('Inspeção por quadros: use a régua para navegar. Este modo não reproduz vídeo contínuo nem áudio.')
+      setQcStatusFeedback('Inspeção por quadros: use ←/→ (quadro), Shift+←/→ (1 s) ou J/L. Este modo não reproduz vídeo contínuo nem áudio.')
       return
     }
     if (!videoRef.current) return
     if (videoRef.current.paused) {
+      videoRef.current.playbackRate = 1
       videoRef.current
         .play()
         .then(() => setIsPlaying(true))
@@ -925,59 +671,84 @@ function QualityControlSession({
           setQcStatusFeedback('Não foi possível reproduzir. Inspeção por quadros disponível; sem vídeo contínuo ou conferência de áudio.')
         })
     } else {
-      videoRef.current.pause()
-      setIsPlaying(false)
+      pauseVideo()
     }
   }
 
-  const handleFrameStep = (frames: number) => {
-    const stepSec = frames / fps
-    const newTime = Math.max(0, Math.min(totalDurationSec, currentTimeSec + stepSec))
-    setCurrentTimeSec(newTime)
-
-    if (framesOnly) {
-      setFramePos((prev) => {
-        const next = prev + (frames > 0 ? 1 : -1)
-        if (next < 0) return 23
-        if (next > 23) return 0
-        return next
-      })
-      renderScopes()
-      return
-    }
-
-    if (videoRef.current) {
-      videoRef.current.pause()
-      setIsPlaying(false)
-      videoRef.current.currentTime = newTime
+  // J/K/L: L avança (repetir dobra até 4×), K para, J volta (repetir dobra).
+  const shuttleKey = (key: 'J' | 'K' | 'L') => {
+    if (selectedLiveSourceId || !selectedAsset) return
+    if (key === 'K') { setShuttle(0); pauseVideo(); return }
+    const direction = key === 'L' ? 1 : -1
+    const next = Math.sign(shuttle) === direction ? Math.max(-4, Math.min(4, shuttle * 2)) : direction
+    setShuttle(next)
+    if (!framesOnly && videoRef.current && direction > 0) {
+      initAudio()
+      videoRef.current.playbackRate = next
+      void videoRef.current.play().then(() => setIsPlaying(true)).catch(() => setShuttle(0))
+    } else if (!framesOnly && videoRef.current) {
+      pauseVideo()
+    } else if (framesOnly) {
+      // Por quadros: dá o primeiro passo; os seguintes saem quando cada quadro carregar.
+      seekToFrame(currentFrameRef.current + next)
     }
   }
+  // Ré no vídeo (o navegador não toca para trás) e shuttle no modo por quadros.
+  useEffect(() => {
+    if (!shuttle || (!framesOnly && shuttle > 0)) return
+    if (framesOnly) return
+    const timer = window.setInterval(() => {
+      if (currentFrameRef.current <= 0) { setShuttle(0); return }
+      seekToFrame(currentFrameRef.current - Math.max(1, Math.round(fileFps * 0.1 * Math.abs(shuttle))))
+    }, 100)
+    return () => window.clearInterval(timer)
+  }, [shuttle, framesOnly, fileFps, seekToFrame])
+  const advanceShuttleAfterLoad = () => {
+    if (!framesOnly || !shuttle) return
+    const next = qcStepFrame(currentFrameRef.current, shuttle, totalFrames)
+    if (next === currentFrameRef.current) { setShuttle(0); return }
+    window.setTimeout(() => seekToFrame(next), 0)
+  }
+
+  // Teclado do QC: ←/→ ±1 quadro, Shift ±1 s, Home/End, J/K/L, Espaço.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
+      if (e.code === 'Space') { e.preventDefault(); togglePlay(); return }
+      if (selectedLiveSourceId || !selectedAsset) return
+      const second = Math.max(1, Math.round(fileFps))
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault(); setShuttle(0)
+        stepFrames((e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? second : 1))
+      } else if (e.key === 'Home') { e.preventDefault(); setShuttle(0); stepFrames(-totalFrames) }
+      else if (e.key === 'End') { e.preventDefault(); setShuttle(0); stepFrames(totalFrames) }
+      else if (['j', 'k', 'l', 'J', 'K', 'L'].includes(e.key)) { e.preventDefault(); shuttleKey(e.key.toUpperCase() as 'J' | 'K' | 'L') }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  })
 
   const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Number(e.target.value)
-    setCurrentTimeSec(val)
-
-    if (framesOnly) {
-      const normalized = Math.min(23, Math.max(0, Math.floor((val / (totalDurationSec || 1)) * 24)))
-      setFramePos(normalized)
-      renderScopes()
-      return
-    }
-
-    if (videoRef.current && Number.isFinite(val)) {
-      videoRef.current.currentTime = val
-      renderScopes()
-    }
+    setShuttle(0)
+    seekToFrame(Number(e.target.value))
   }
 
-  const handleJumpToFrame = (frameIndex: number) => {
-    setFramePos(frameIndex)
-    const targetSec = (frameIndex / 23) * totalDurationSec
-    setCurrentTimeSec(targetSec)
-    if (videoRef.current && Number.isFinite(targetSec)) {
-      videoRef.current.currentTime = targetSec
-    }
-    renderScopes()
+  // Régua de navegação: cada miniatura vem do meio da sua fatia (proxy).
+  const handleJumpToFrame = (stripPosition: number) => {
+    setShuttle(0)
+    if (videoRef.current && !videoRef.current.paused) pauseVideo()
+    seekToFrame(Math.floor((stripPosition + 0.5) / 24 * totalFrames))
+  }
+
+  const [tcDraft, setTcDraft] = useState<string | null>(null)
+  const commitTimecode = () => {
+    if (tcDraft === null) return
+    const frame = qcParseTimecode(tcDraft, fileRate)
+    if (frame === null) { setQcStatusFeedback(`TC inválido para ${qcRateLabel(fileRate)}: use HH:MM:SS:FF${fileRate.den === 1001 ? ' (;FF em drop-frame)' : ''}.`); return }
+    setTcDraft(null); setShuttle(0); stepFrames(frame - currentFrameRef.current)
   }
 
   const toggleMute = () => {
@@ -1004,6 +775,9 @@ function QualityControlSession({
       )
     }
   }
+
+  const qcProfile = channel.qcProfile ?? DEFAULT_QC_PROFILE
+
 
   // Decision from the row buttons: fetch this asset's own server review (same
   // version/channel binding the inspection panel uses) instead of demanding a
@@ -1080,6 +854,12 @@ function QualityControlSession({
     })
   }, [assets, statusFilter, categoryFilter, searchQuery, quickDecided])
 
+
+  const selectedLoudness = selectedAsset?.loudnessFile ?? null
+  const listening = selectedLiveSource ? monitorLabels.audio : framesOnly ? null : monitorLabels.audio
+  const navDisabled = !selectedAsset || Boolean(selectedLiveSource)
+  const navButton = 'flex items-center justify-center min-w-[32px] hit-btn px-1.5 rounded border border-border-subtle bg-surface-base text-on-surface hover:border-primary hover:text-primary cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed font-label-mono text-[11px]'
+
   return (
     <div className="w-full h-full bg-surface-base text-on-surface antialiased select-none flex flex-col overflow-hidden font-body-md text-body-md">
       {/* 1. CABEÇALHO PADRÃO RPLAYOUT */}
@@ -1097,7 +877,7 @@ function QualityControlSession({
 
       <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-hidden">
         {/* 2. BARRA DE STATUS TÁTICO & FERRAMENTAS */}
-        <div className="w-full bg-surface-card border-b border-border-subtle px-margin py-2 flex flex-wrap items-center justify-between gap-gutter shadow-sm shrink-0">
+        <div className="w-full bg-surface-card border-b border-border-subtle px-margin py-1.5 flex flex-wrap items-center justify-between gap-gutter shadow-sm shrink-0">
           <div className="flex items-center gap-space-md">
             <div className="w-7 h-7 rounded bg-primary-container flex items-center justify-center text-on-primary-container shadow-sm">
               <span className="material-symbols-outlined text-[18px]">rule</span>
@@ -1166,18 +946,37 @@ function QualityControlSession({
                   ? 'bg-status-ok/20 border-status-ok text-status-ok-bright font-bold'
                   : 'bg-surface-panel border-border-subtle text-outline hover:text-on-surface'
               }`}
-              title="Alternar retículo de Safe Areas (Title 80% / Action 90%)"
+              title="Safe areas HD (SMPTE ST 2046-1 / EBU R95): action 93%, graphics 90%"
             >
               <span className="material-symbols-outlined text-[15px]">crop_free</span>
               <span>SAFE AREAS</span>
             </button>
+            <button
+              onClick={() => { setCenterCut(!centerCut); if (!centerCut) setSafeAreaActive(true) }}
+              aria-pressed={centerCut}
+              className={`flex items-center gap-1 px-2 py-1 rounded border transition-colors cursor-pointer font-label-caps text-[11px] ${
+                centerCut ? 'bg-armed-amber/20 border-armed-amber text-armed-amber font-bold' : 'bg-surface-panel border-border-subtle text-outline hover:text-on-surface'
+              }`}
+              title="Área de proteção 4:3 (center cut) para material que também vai a SD 4:3"
+            >
+              4:3
+            </button>
+            <button
+              onClick={() => setListOpen(!listOpen)}
+              aria-pressed={listOpen}
+              className="hidden lg:flex items-center gap-1 px-2 py-1 rounded border bg-surface-panel border-border-subtle text-outline hover:text-on-surface cursor-pointer font-label-caps text-[11px]"
+              title={listOpen ? 'Recolher a lista do acervo e ampliar a inspeção' : 'Mostrar a lista do acervo'}
+            >
+              <span className="material-symbols-outlined text-[15px]">{listOpen ? 'left_panel_close' : 'left_panel_open'}</span>
+              <span>ACERVO</span>
+            </button>
           </div>
         </div>
 
-        {/* 3. WORKSPACE OPERACIONAL DE 2 COLUNAS */}
-        <div className="w-full flex-1 min-h-0 p-space-md grid grid-cols-12 lg:grid-rows-1 gap-space-md overflow-y-auto lg:overflow-hidden">
-          {/* COLUNA ESQUERDA: LISTAGEM DE ARQUIVOS (Cols 1 a 5) */}
-          <div className="col-span-12 lg:col-span-4 flex flex-col h-[60vh] lg:h-full min-h-0 bg-surface-card rounded-xl border border-border-subtle overflow-hidden shadow-md">
+        {/* 3. WORKSPACE: acervo (recolhível) | inspeção (player + scopes, áudio, decisão) */}
+        <div className="w-full flex-1 min-h-0 p-2 flex flex-col lg:flex-row gap-2 overflow-y-auto lg:overflow-hidden">
+          {/* COLUNA ESQUERDA: LISTAGEM DE ARQUIVOS (recolhível em telas largas) */}
+          <div className={`${listOpen ? 'lg:flex' : 'lg:hidden'} w-full lg:w-[290px] xl:w-[330px] 2xl:w-[380px] shrink-0 flex flex-col h-[60vh] lg:h-full min-h-0 bg-surface-card rounded-xl border border-border-subtle overflow-hidden shadow-md`}>
             {/* Barra de Filtros e Busca do Acervo */}
             <div className="p-2.5 border-b border-border-subtle bg-surface-panel/50 flex flex-col gap-2 shrink-0">
               <div className="relative">
@@ -1342,9 +1141,12 @@ function QualityControlSession({
                     >
                       {/* Thumbnail ou Ícone */}
                       <div className="relative w-12 h-8 rounded bg-surface-container-lowest overflow-hidden flex-shrink-0 border border-border-subtle">
+                        {/* Quadro real do meio do arquivo (régua do proxy, sob demanda);
+                            sem proxy pronto o servidor devolve a miniatura de sempre. */}
                         <img
-                          src={`/api/assets/${asset.id}/thumbnail.svg`}
+                          src={`/api/assets/${asset.id}/frame/12.jpg?total=24`}
                           alt=""
+                          loading="lazy"
                           className="w-full h-full object-cover"
                           onError={(e) => {
                             ;(e.target as HTMLImageElement).style.display = 'none'
@@ -1367,33 +1169,33 @@ function QualityControlSession({
                             {asset.title}
                           </span>
                           {isIgnored ? (
-                            <span className="font-label-caps text-[11px] px-1 py-0.2 rounded bg-surface-container text-outline border border-border-subtle">
+                            <span className="shrink-0 whitespace-nowrap font-label-caps text-[11px] px-1 py-0.2 rounded bg-surface-container text-outline border border-border-subtle">
                               IGNORADO
                             </span>
                           ) : hasAlert ? (
-                            <span className="font-label-caps text-[11px] px-1 py-0.2 rounded bg-armed-amber/20 text-armed-amber border border-armed-amber/40">
+                            <span className="shrink-0 whitespace-nowrap font-label-caps text-[11px] px-1 py-0.2 rounded bg-armed-amber/20 text-armed-amber border border-armed-amber/40">
                               ALERTA
                             </span>
                           ) : isPending ? (
-                            <span className="font-label-caps text-[11px] px-1 py-0.2 rounded bg-primary/15 text-primary border border-primary/40">
+                            <span className="shrink-0 whitespace-nowrap font-label-caps text-[11px] px-1 py-0.2 rounded bg-primary/15 text-primary border border-primary/40">
                               PENDENTE QC
                             </span>
                           ) : (
-                            <span className="font-label-caps text-[11px] px-1 py-0.2 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40">
+                            <span className="shrink-0 whitespace-nowrap font-label-caps text-[11px] px-1 py-0.2 rounded bg-status-ok/20 text-status-ok-bright border border-status-ok/40">
                               APROVADO
                             </span>
                           )}
                         </div>
 
-                        <div className="flex items-center gap-2 font-label-mono text-[12px] text-outline">
-                          <span className="text-on-surface">
-                            {dur(itemDurationFrames, channelRate)}
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0 font-label-mono text-[12px] text-outline [&>span]:whitespace-nowrap">
+                          <span className="text-on-surface" title={`Duração · ${asset.kind}`}>
+                            {qcTimecode(itemDurationFrames, channelRate)}
                           </span>
-                          <span>•</span>
-                          <span>{asset.kind}</span>
-                          <span>•</span>
                           {typeof asset.loudnessFile?.integratedLufs === 'number'
-                            ? <span>{asset.loudnessFile.integratedLufs.toFixed(1)} LUFS</span>
+                            ? <span title={`Faixa do perfil: ${qcProfile.minLufs}…${qcProfile.maxLufs} LUFS · TP ≤ ${qcProfile.maxTruePeakDbtp} dBTP`}>
+                                <span className={TONE_CLASS[loudnessTone(asset.loudnessFile.integratedLufs, qcProfile)]}>{formatFileIntegrated(asset.loudnessFile.integratedLufs, true)}</span>
+                                {' · '}<span className={TONE_CLASS[truePeakTone(asset.loudnessFile.truePeakDbtp, qcProfile)]}>{formatPeak(asset.loudnessFile.truePeakDbtp, 'dBTP')}</span>
+                              </span>
                             : asset.probe?.hasAudio === false
                             ? <span>SEM ÁUDIO</span>
                             : <span className="text-armed-amber" title="Loudness não medida. Use MEDIR LOUDNESS.">LUFS não medido</span>}
@@ -1401,7 +1203,7 @@ function QualityControlSession({
                       </div>
 
                       {/* Ações Rápidas por linha */}
-                      <div className="flex items-center gap-2 flex-shrink-0">
+                      <div className="flex flex-col 2xl:flex-row items-stretch gap-1 flex-shrink-0">
                         {!isApproved && <button
                           onClick={(e) => {
                             e.stopPropagation()
@@ -1438,12 +1240,13 @@ function QualityControlSession({
             </div>
           </div>
 
-          {/* COLUNA DIREITA: INSPEÇÃO TÉCNICA (PLAYER FRAME-ACCURATE + SCOPES) (Cols 6 a 12) */}
-          <div className="col-span-12 lg:col-span-8 flex flex-col lg:h-full min-h-0 gap-2.5 lg:overflow-y-auto">
-            {/* 1. PLAYER DE VÍDEO & RÉGUA DE 24 QUADROS */}
-            <div className="bg-surface-card rounded-xl border border-border-subtle flex flex-col overflow-hidden shadow-md shrink-0">
+          {/* INSPEÇÃO TÉCNICA: imagem e scopes lado a lado, áudio e decisão sempre visíveis */}
+          <section aria-label="Inspeção técnica" className="flex-1 min-w-0 flex flex-col gap-2 lg:h-full min-h-0">
+            <div className="lg:flex-1 lg:min-h-0 grid grid-cols-1 lg:grid-cols-2 gap-2">
+            {/* 1. PLAYER DE VÍDEO */}
+            <div className="bg-surface-card rounded-xl border border-border-subtle flex flex-col min-h-0 overflow-hidden shadow-md">
               {/* Barra de Título do Player */}
-              <div className="px-3 py-1.5 border-b border-border-subtle flex items-center justify-between bg-surface-panel/40">
+              <div className="px-3 py-1.5 border-b border-border-subtle flex flex-wrap items-center justify-between gap-x-2 bg-surface-panel/40 shrink-0">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="material-symbols-outlined text-primary text-[16px]">play_circle</span>
                   <span className="font-headline-md text-[13px] text-on-surface font-bold truncate">
@@ -1454,23 +1257,22 @@ function QualityControlSession({
                   </span>
                 </div>
 
-                {/* Timecode Header Display */}
+                {/* Timecode do arquivo, com quadros (;FF em drop-frame) */}
                 <div className="flex items-center gap-2 font-label-mono text-[12px]">
                   {selectedLiveSource ? (
                     <span className="px-1.5 py-0.5 rounded bg-on-air-crimson/15 text-on-air-crimson border border-on-air-crimson/35 font-label-caps text-[11px]">AO VIVO · PVW</span>
-                  ) : <>
-                    <span className="text-outline">TC:</span>
-                    <span className="text-primary font-bold">
-                      {dur(Math.floor(currentTimeSec * fps), channelRate)}
-                    </span>
+                  ) : selectedAsset ? <>
+                    <span className="text-outline">TC</span>
+                    <input aria-label="Timecode atual (digite e Enter para ir)" value={tcDraft ?? qcTimecode(currentFrame, fileRate)}
+                      onChange={event => setTcDraft(event.target.value)} onFocus={event => { setTcDraft(qcTimecode(currentFrame, fileRate)); event.currentTarget.select() }}
+                      onBlur={() => setTcDraft(null)} onKeyDown={event => { if (event.key === 'Enter') { commitTimecode(); event.currentTarget.blur() } else if (event.key === 'Escape') { setTcDraft(null); event.currentTarget.blur() } }}
+                      className="w-[104px] bg-surface-base border border-border-subtle rounded px-1 py-0.5 text-primary font-bold text-center focus:border-primary outline-none"/>
                     <span className="text-outline">/</span>
-                    <span className="text-on-surface-variant font-medium">
-                      {dur(totalDurationFrames, channelRate)}
+                    <span className="text-on-surface-variant font-medium" title="Duração">{qcTimecode(totalFrames, fileRate)}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-surface-panel text-[11px] text-outline border border-border-subtle" title="Quadro atual / total, na cadência do arquivo">
+                      Q {currentFrame}/{totalFrames} · {qcRateLabel(fileRate)}
                     </span>
-                    <span className="px-1.5 py-0.5 rounded bg-surface-panel text-[11px] text-outline border border-border-subtle">
-                      Q: {Math.floor(currentTimeSec * fps)}/{totalDurationFrames}
-                    </span>
-                  </>}
+                  </> : null}
                 </div>
               </div>
 
@@ -1481,20 +1283,19 @@ function QualityControlSession({
                     if(!monitors?.inspection){setQcStatusFeedback('Inspeção ao vivo em qualidade exige engine e servidor de mídia ativos.');return}
                     setLiveQualitySelection(liveQualityActive?null:{key:liveQualityKey,id:commandRequestId()})
                     setQcStatusFeedback(null)
-                    lastScopePixelsRef.current=null;scopeSampleReadyRef.current=false;setScopeSampleReady(false)
-                    setWaveformStats(null);setVectorscopeStats(null)
-                    setAudioMeter({peakL:-100,peakR:-100,phase:null,active:false})
+                    clearBrowserSample()
+                    setAudioMeter(IDLE_METER)
                     return
                   }
                   if(!selectedAsset)return
-                  videoRef.current?.pause();setIsPlaying(false);setVideoError(false)
+                  videoRef.current?.pause();setIsPlaying(false);setVideoError(false);setShuttle(0)
                   setQcStatusFeedback(null)
-                  pendingPositionRef.current=currentTimeSec
-                  setFramePos(qcInspectionFrameAtTime(currentTimeSec,totalDurationSec,24,!qualityActive))
+                  // O original abre no MESMO quadro (TC) em que o operador estava.
+                  pendingPositionRef.current=(currentFrameRef.current+0.5)/fileFps
+                  setSettledFrame(currentFrameRef.current)
                   setQualitySelection(qualityActive?null:{id:selectedAsset.id,hash:selectedAsset.contentHash,channelId:channel.id})
-                  lastScopePixelsRef.current=null;scopeSampleReadyRef.current=false;setScopeSampleReady(false)
-                  setWaveformStats(null);setVectorscopeStats(null)
-                  setAudioMeter({peakL:-100,peakR:-100,phase:null,active:false})
+                  clearBrowserSample()
+                  setAudioMeter(IDLE_METER)
                 }}
                 onFullscreen={()=>{void playerFrameRef.current?.requestFullscreen().catch(()=>setQcStatusFeedback('Não foi possível abrir tela cheia neste navegador.'))}}
               />
@@ -1507,7 +1308,7 @@ function QualityControlSession({
               <div
                 ref={playerFrameRef}
                 onClick={togglePlay}
-                className="relative w-full max-w-[calc(46vh*16/9)] mx-auto [&:fullscreen]:max-w-none aspect-video shrink-0 bg-black flex items-center justify-center overflow-hidden cursor-pointer group [&:fullscreen_.qc-fullscreen-exit]:flex"
+                className="relative w-full max-w-[calc(50vh*16/9)] mx-auto [&:fullscreen]:max-w-none aspect-video shrink-0 bg-black flex items-center justify-center overflow-hidden cursor-pointer group [&:fullscreen_.qc-fullscreen-exit]:flex"
               >
                 <button type="button" aria-label="Sair da tela cheia" title="Sair da tela cheia"
                   className="qc-fullscreen-exit hidden absolute top-3 right-3 z-50 items-center gap-2 rounded bg-black/80 text-white border border-white/30 px-3 py-2"
@@ -1552,24 +1353,26 @@ function QualityControlSession({
                         onError={(event) => {
                           // A detached rendition must not fail the newly selected player.
                           if(event.currentTarget!==videoRef.current)return
-                          setFramePos(qcInspectionFrameAtTime(event.currentTarget.currentTime,totalDurationSec,24,qualityActive))
+                          setSettledFrame(currentFrameRef.current)
                           setVideoError(true)
                           setIsPlaying(false)
-                          if(qualityActive)setQcStatusFeedback('O navegador não decodificou o original. Inspeção por quadros em resolução até 4K (JPEG); não é playback contínuo nem prova de áudio.')
+                          if(qualityActive)setQcStatusFeedback('O navegador não decodificou o original. Inspeção pelo quadro exato do original no TC (←/→, Shift, J/K/L); sem playback contínuo nem áudio.')
                         }}
                         onTimeUpdate={() => {
                           if (videoRef.current) {
-                            setCurrentTimeSec(videoRef.current.currentTime)
+                            const frame=Math.floor(videoRef.current.currentTime*fileFps+1e-3)
+                            if(frame!==currentFrameRef.current)setCurrentFrame(frame)
                             renderScopes()
                           }
                         }}
+                        onSeeked={() => renderScopes(true)}
                         onLoadedMetadata={(event) => {
                           if(event.currentTarget!==videoRef.current)return
                           if(!qcInspectionVideoHasPicture(event.currentTarget.videoWidth,event.currentTarget.videoHeight)){
                             event.currentTarget.pause()
-                            setFramePos(qcInspectionFrameAtTime(currentTimeSec,totalDurationSec,24,qualityActive))
+                            setSettledFrame(currentFrameRef.current)
                             setVideoError(true);setIsPlaying(false)
-                            if(qualityActive)setQcStatusFeedback('O navegador abriu o original sem imagem decodificável. Inspeção por quadros do original; sem reprodução contínua nem conferência de áudio.')
+                            if(qualityActive)setQcStatusFeedback('O navegador abriu o original sem imagem decodificável. Inspeção pelo quadro exato do original; sem reprodução contínua nem conferência de áudio.')
                             return
                           }
                           if (videoRef.current) {
@@ -1585,7 +1388,7 @@ function QualityControlSession({
                           setIsPlaying(true)
                         }}
                         onPause={() => setIsPlaying(false)}
-                        onEnded={() => setIsPlaying(false)}
+                        onEnded={() => { setIsPlaying(false); setShuttle(0) }}
                       />
                     ) : qualityFrameUnavailable ? (
                       <div role="status" className="w-full h-full flex flex-col items-center justify-center gap-3 text-center text-outline text-[11px] px-6">
@@ -1600,10 +1403,11 @@ function QualityControlSession({
                         key={inspectionFrameUrl}
                         ref={frameImgRef}
                         src={inspectionFrameUrl!}
-                        onLoad={() => {if(inspectionFrameUrlRef.current===inspectionFrameUrl)renderScopes(true)}}
+                        onLoad={() => {if(inspectionFrameUrlRef.current===inspectionFrameUrl){renderScopes(true);advanceShuttleAfterLoad()}}}
                         onError={(e) => {
                           if(inspectionFrameUrlRef.current!==inspectionFrameUrl)return
-                          if(qualityActive){setFailedQualityFrame(inspectionFrameUrl);lastScopePixelsRef.current=null;scopeSampleReadyRef.current=false;setScopeSampleReady(false);setWaveformStats(null);setVectorscopeStats(null);setQcStatusFeedback('Quadro em qualidade indisponível. A miniatura não substitui a conferência em qualidade.');return}
+                          setShuttle(0)
+                          if(qualityActive){setFailedQualityFrame(inspectionFrameUrl);clearBrowserSample();setQcStatusFeedback('Quadro em qualidade indisponível. A miniatura não substitui a conferência em qualidade.');return}
                           ;(e.target as HTMLImageElement).src = `/api/assets/${selectedAsset.id}/thumbnail.svg`
                         }}
                         alt=""
@@ -1627,51 +1431,51 @@ function QualityControlSession({
 
                   {/* Match actual object-contain picture, including fullscreen. */}
                   {safeAreaActive && (selectedAsset || selectedLiveSource) && (
-                    <QcSafeAreaOverlay container={playerFrameRef} getMedia={safeAreaMedia}/>
+                    <QcSafeAreaOverlay container={playerFrameRef} getMedia={safeAreaMedia} centerCut={centerCut}/>
                   )}
                 </div>
               </div>
 
-              {/* Controles de Transporte e Scrubber */}
-              {selectedAsset && !selectedLiveSource && <div className="px-3 py-2 border-t border-border-subtle text-[11px] text-outline flex gap-2 items-center">
-                <span className="flex-1">{qualityActive?(framesOnly?'Inspeção por quadros JPEG do original · até 4K. Sem playback contínuo.':'Qualidade original · maior consumo de rede/CPU. Reprodução depende dos codecs do navegador.'):proxyMessage}</span>
-                {failedMediaJobs.length > 0 && <QcMediaRetryControl key={JSON.stringify([selectedAsset.id,selectedAsset.contentHash,failedMediaJobs])} pending={retryingMedia} requiresConfirmation={failedMediaJobs.some(job=>job.retryRequiresConfirmation)} onRetry={confirmed => {
-                  if(retryingMedia||mediaRetryGeneration.current===proxyGeneration.current)return
-                  const requiresConfirmation=failedMediaJobs.some(job=>job.retryRequiresConfirmation)
-                  if(requiresConfirmation&&!confirmed)return
-                  const started=proxyGeneration.current
-                  mediaRetryGeneration.current=started
-                  workflowReads.current.cancel()
-                  setRetryingMedia(true)
-                  void retryMediaJobs(failedMediaJobs,(id,confirmed)=>api.retryMediaJob(id,confirmed)).then(result => { if(proxyGeneration.current===started){setFailedMediaJobs(result.unresolved); setProxyMessage(result.message)} })
-                    .catch(error => {if(proxyGeneration.current===started)setProxyMessage(error instanceof Error ? error.message : 'Não foi possível reexecutar.')})
-                    .finally(()=>{if(proxyGeneration.current===started){mediaRetryGeneration.current=null;setRetryingMedia(false)}})
-                }}/>}
-              </div>}
-              <div className="p-2 bg-surface-panel flex flex-col gap-1.5 border-t border-border-subtle">
-                <div className="flex items-center gap-2">
-                  {!selectedLiveSource && <button
-                    onClick={togglePlay}
-                    disabled={!selectedAsset || framesOnly}
-                    className="p-1 rounded bg-primary-container text-on-primary-container hover:bg-accent-ice transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
-                    title={framesOnly ? 'Inspeção por quadros — use a régua' : isPlaying ? 'Pausar (Espaço)' : 'Reproduzir (Espaço)'}
-                  >
-                    <span className="material-symbols-outlined text-[17px]">
-                      {isPlaying ? 'pause' : 'play_arrow'}
-                    </span>
-                  </button>}
+              {/* Transporte: quadro a quadro, ±1 s, J/K/L, régua e escuta */}
+              <div className="p-2 bg-surface-panel flex flex-col gap-1.5 border-t border-border-subtle shrink-0">
+                <div className="flex flex-wrap items-center gap-1">
+                  {!selectedLiveSource && <>
+                    <button type="button" className={navButton} disabled={navDisabled} onClick={() => { setShuttle(0); stepFrames(-totalFrames) }} title="Primeiro quadro (Home)" aria-label="Primeiro quadro">
+                      <span className="material-symbols-outlined text-[16px]">first_page</span></button>
+                    <button type="button" className={navButton} disabled={navDisabled} onClick={() => { setShuttle(0); stepFrames(-Math.max(1, Math.round(fileFps))) }} title="Voltar 1 segundo (Shift+←)">−1s</button>
+                    <button type="button" className={navButton} disabled={navDisabled} onClick={() => { setShuttle(0); stepFrames(-1) }} title="Quadro anterior (←)" aria-label="Quadro anterior">
+                      <span className="material-symbols-outlined text-[16px]">navigate_before</span></button>
+                    <button
+                      onClick={togglePlay}
+                      disabled={!selectedAsset || framesOnly}
+                      className="p-1 rounded bg-primary-container text-on-primary-container hover:bg-accent-ice transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center min-w-[32px] hit-btn"
+                      title={framesOnly ? 'Inspeção por quadros — use a régua' : isPlaying ? 'Pausar (Espaço / K)' : 'Reproduzir (Espaço / L)'}
+                    >
+                      <span className="material-symbols-outlined text-[17px]">
+                        {isPlaying ? 'pause' : 'play_arrow'}
+                      </span>
+                    </button>
+                    <button type="button" className={navButton} disabled={navDisabled} onClick={() => { setShuttle(0); stepFrames(1) }} title="Próximo quadro (→)" aria-label="Próximo quadro">
+                      <span className="material-symbols-outlined text-[16px]">navigate_next</span></button>
+                    <button type="button" className={navButton} disabled={navDisabled} onClick={() => { setShuttle(0); stepFrames(Math.max(1, Math.round(fileFps))) }} title="Avançar 1 segundo (Shift+→)">+1s</button>
+                    <button type="button" className={navButton} disabled={navDisabled} onClick={() => { setShuttle(0); stepFrames(totalFrames) }} title="Último quadro (End)" aria-label="Último quadro">
+                      <span className="material-symbols-outlined text-[16px]">last_page</span></button>
+                    {shuttle !== 0 && <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary border border-primary/40 font-label-mono text-[11px]" role="status">{shuttle > 0 ? '▶' : '◀'} {Math.abs(shuttle)}×{framesOnly ? ' quadros' : ''}</span>}
+                  </>}
 
-                  {/* Scrubber Slider Dinâmico */}
+                  {/* Scrubber por quadro */}
                   {!selectedLiveSource && <input
                     type="range"
+                    aria-label="Posição (quadro)"
                     min={0}
-                    max={totalDurationSec || 1}
-                    step={1 / fps}
-                    value={currentTimeSec}
+                    max={Math.max(0, totalFrames - 1)}
+                    step={1}
+                    value={currentFrame}
                     onChange={handleScrub}
-                    className="flex-1 h-2 rounded appearance-none cursor-pointer accent-primary"
+                    disabled={!selectedAsset}
+                    className="flex-1 min-w-[120px] h-2 rounded appearance-none cursor-pointer accent-primary"
                     style={{
-                      background: `linear-gradient(to right, #3B82F6 0%, #3B82F6 ${(currentTimeSec / (totalDurationSec || 1)) * 100}%, #1E293B ${(currentTimeSec / (totalDurationSec || 1)) * 100}%, #1E293B 100%)`,
+                      background: `linear-gradient(to right, #3B82F6 0%, #3B82F6 ${(currentFrame / Math.max(1, totalFrames - 1)) * 100}%, #1E293B ${(currentFrame / Math.max(1, totalFrames - 1)) * 100}%, #1E293B 100%)`,
                     }}
                   />}
 
@@ -1702,8 +1506,92 @@ function QualityControlSession({
                       Decodificador próprio do QC · não usa o PVW do Master
                     </span>
                   )}
+                </div>
+                {selectedAsset && !selectedLiveSource && <p className="font-label-mono text-[11px] text-outline">
+                  ←/→ quadro · Shift+←/→ 1 s · J/K/L shuttle · Home/End · Espaço play{qualityActive ? ' · em qualidade, cada passo busca o quadro exato do original' : ''}
+                </p>}
+              </div>
 
-                  {/* Botões Grandes de Homologação */}
+              {/* Detalhes do arquivo: rolam sem empurrar imagem, scopes e decisão */}
+              <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto broadcast-scrollbar p-2 flex flex-col gap-1.5">
+              {selectedAsset && !selectedLiveSource && <div className="text-[11px] text-outline flex gap-2 items-center">
+                <span className="flex-1">{qualityActive?(framesOnly?'Quadro exato do original no TC · imagem RGB BT.709 · scopes no Y\'CbCr cru. Sem playback contínuo.':'Qualidade original · maior consumo de rede/CPU. Pausado, os scopes usam o Y\'CbCr exato do quadro.'):proxyMessage}</span>
+                {failedMediaJobs.length > 0 && <QcMediaRetryControl key={JSON.stringify([selectedAsset.id,selectedAsset.contentHash,failedMediaJobs])} pending={retryingMedia} requiresConfirmation={failedMediaJobs.some(job=>job.retryRequiresConfirmation)} onRetry={confirmed => {
+                  if(retryingMedia||mediaRetryGeneration.current===proxyGeneration.current)return
+                  const requiresConfirmation=failedMediaJobs.some(job=>job.retryRequiresConfirmation)
+                  if(requiresConfirmation&&!confirmed)return
+                  const started=proxyGeneration.current
+                  mediaRetryGeneration.current=started
+                  workflowReads.current.cancel()
+                  setRetryingMedia(true)
+                  void retryMediaJobs(failedMediaJobs,(id,confirmed)=>api.retryMediaJob(id,confirmed)).then(result => { if(proxyGeneration.current===started){setFailedMediaJobs(result.unresolved); setProxyMessage(result.message)} })
+                    .catch(error => {if(proxyGeneration.current===started)setProxyMessage(error instanceof Error ? error.message : 'Não foi possível reexecutar.')})
+                    .finally(()=>{if(proxyGeneration.current===started){mediaRetryGeneration.current=null;setRetryingMedia(false)}})
+                }}/>}
+              </div>}
+                {/* Régua de 24 quadros de navegação (proxy) */}
+                {selectedAsset && (
+                  <div className="flex items-center gap-1 overflow-x-auto py-0.5 broadcast-scrollbar shrink-0">
+                    {Array.from({ length: 24 }).map((_, i) => {
+                      const stripFrame = Math.floor((i + 0.5) / 24 * totalFrames)
+                      const isCurrent = Math.floor(currentFrame * 24 / Math.max(1, totalFrames)) === i
+                      return (
+                        <button
+                          key={i}
+                          onClick={() => handleJumpToFrame(i)}
+                          className={`flex-shrink-0 w-10 aspect-video bg-black rounded overflow-hidden border cursor-pointer transition-all ${
+                            isCurrent
+                              ? 'ring-2 ring-primary border-primary scale-105 shadow-md z-10'
+                              : 'border-border-subtle opacity-65 hover:opacity-100 hover:scale-105'
+                          }`}
+                          title={`Régua ${i + 1}/24 · ${qcTimecode(stripFrame, fileRate)}`}
+                        >
+                          <img
+                            src={`/api/assets/${selectedAsset.id}/frame/${i}.jpg?total=24`}
+                            onError={(e) => {
+                              ;(e.target as HTMLImageElement).src = `/api/assets/${selectedAsset.id}/thumbnail.svg`
+                            }}
+                            alt=""
+                            className="w-full h-full object-cover pointer-events-none"
+                            loading="lazy"
+                          />
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+                {selectedAsset && <QcWorkflowPanel key={JSON.stringify([selectedAsset.id,selectedAsset.contentHash,channel.id])} assetId={selectedAsset.id} contentHash={selectedAsset.contentHash} channel={channel} onChanged={onMediaChanged} onReview={reportQcReview} refreshKey={qcReviewRefresh} externalBusy={qcDecisionBusy} />}
+                {selectedAsset && !selectedLiveSourceId && totalDurationSec > 0 && <CutMarksPanel key={`${selectedAsset.id}:${selectedAsset.contentHash}`} assetId={selectedAsset.id} contentHash={selectedAsset.contentHash} durationMs={Math.round(totalDurationSec * 1000)} channelId={channel.id} currentTimeSec={currentTimeSec} onSeek={seconds => { setShuttle(0); seekToFrame(Math.floor(seconds * fileFps + 1e-3)) }} />}
+              </div>
+            </div>
+
+            {/* 2. SCOPES (waveform, vectorscope, parade) */}
+            <div className="bg-surface-card rounded-xl border border-border-subtle p-2 flex flex-col gap-1.5 shadow-md min-h-[460px] lg:min-h-0 overflow-hidden">
+              <div className="flex items-center gap-2 border-b border-border-subtle pb-1 shrink-0">
+                <span className="material-symbols-outlined text-accent-ice text-[16px]">query_stats</span>
+                <span className="font-headline-md text-[12px] uppercase text-on-surface font-bold truncate">Scopes · {monitorLabels.image}</span>
+                <span className="ml-auto font-label-mono text-[11px] text-outline shrink-0">SMPTE RP 219 · BT.709 · EBU R103</span>
+              </div>
+              <div className="flex-1 min-h-0">
+                <QcScopePanel sample={scopeSample} stats={scopeStats} status={scopeStatus.text} statusTone={scopeStatus.tone}
+                  mode={scopeMode} onModeChange={setScopeMode} unit={scopeUnit} onUnitChange={setScopeUnit}
+                  costLabel={scopeCost && !exactWanted ? `amostra p95 ${scopeCost.p95Ms.toFixed(1)} ms` : null}/>
+              </div>
+            </div>
+            </div>
+
+            {/* 3. ÁUDIO: arquivo (servidor) × escuta (navegador) */}
+            <div className="bg-surface-card rounded-xl border border-border-subtle px-3 py-2 shadow-md shrink-0">
+              <QcAudioStrip loudness={selectedLoudness} hasAudio={selectedAsset?.probe ? selectedAsset.probe.hasAudio : null} profile={qcProfile} targetLufs={channel.targetLufs}
+                meter={audioMeter} listening={listening}/>
+            </div>
+
+            {/* 4. DECISÃO: sempre visível */}
+            <div className="bg-surface-card rounded-xl border border-border-subtle px-3 py-1.5 shadow-md shrink-0 flex flex-wrap items-center gap-2">
+              <span className="font-label-caps text-[11px] text-outline">DECISÃO QC</span>
+              <span className="flex-1 min-w-[160px] font-label-mono text-[12px] text-on-surface truncate">
+                {selectedLiveSource ? 'Entrada ao vivo: inspeção sem decisão de acervo.' : selectedAsset ? `${selectedAsset.title} · ${qcDecisionReady ? 'versão conferida neste canal' : 'conferindo versão…'}` : 'Nenhum arquivo selecionado'}
+              </span>
                   <button
                     onClick={() => void handleApprove()}
                     disabled={!qcDecisionReady||qcDecisionBusy}
@@ -1722,218 +1610,10 @@ function QualityControlSession({
                     <span className="material-symbols-outlined text-[14px]">cancel</span>
                     <span>REJEITAR</span>
                   </button>
-                </div>
-
-                {/* Scrubber Filmstrip 24 Quadros GStreamer */}
-                {selectedAsset && <QcWorkflowPanel key={JSON.stringify([selectedAsset.id,selectedAsset.contentHash,channel.id])} assetId={selectedAsset.id} contentHash={selectedAsset.contentHash} channel={channel} onChanged={onMediaChanged} onReview={reportQcReview} refreshKey={qcReviewRefresh} externalBusy={qcDecisionBusy} />}
-                {selectedAsset && !selectedLiveSourceId && totalDurationSec > 0 && <CutMarksPanel key={`${selectedAsset.id}:${selectedAsset.contentHash}`} assetId={selectedAsset.id} contentHash={selectedAsset.contentHash} durationMs={Math.round(totalDurationSec * 1000)} channelId={channel.id} currentTimeSec={currentTimeSec} onSeek={seconds => { setCurrentTimeSec(seconds); if (videoRef.current && Number.isFinite(seconds)) videoRef.current.currentTime = seconds }} />}
-                {selectedAsset && (
-                  <div className="flex items-center gap-1 overflow-x-auto py-0.5 broadcast-scrollbar">
-                    {Array.from({ length: 24 }).map((_, i) => {
-                      const frameSec = (i / 23) * totalDurationSec
-                      const isCurrent = Math.abs(currentTimeSec - frameSec) < totalDurationSec / 24
-                      return (
-                        <button
-                          key={i}
-                          onClick={() => handleJumpToFrame(i)}
-                          className={`flex-shrink-0 w-10 aspect-video bg-black rounded overflow-hidden border cursor-pointer transition-all ${
-                            isCurrent
-                              ? 'ring-2 ring-primary border-primary scale-105 shadow-md z-10'
-                              : 'border-border-subtle opacity-65 hover:opacity-100 hover:scale-105'
-                          }`}
-                          title={`Quadro ${i + 1} de 24 (${dur(Math.round(frameSec * fps), channelRate)})`}
-                        >
-                          <img
-                            src={`/api/assets/${selectedAsset.id}/frame/${i}.jpg?total=24`}
-                            onError={(e) => {
-                              ;(e.target as HTMLImageElement).src = `/api/assets/${selectedAsset.id}/thumbnail.svg`
-                            }}
-                            alt=""
-                            className="w-full h-full object-cover pointer-events-none"
-                            loading="lazy"
-                          />
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
             </div>
-
-            {/* 2. ESCOPOS TÉCNICOS BROADCAST (VECTORSCOPE, WAVEFORM, PARADE, ÁUDIO) */}
-            <div className="flex-1 min-h-64 shrink-0 bg-surface-card rounded-xl border border-border-subtle p-2.5 flex flex-col gap-2 shadow-md overflow-hidden">
-              <div className="flex items-center justify-between border-b border-border-subtle pb-1 shrink-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-headline-md text-[12px] uppercase text-on-surface font-bold flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-accent-ice text-[16px]">query_stats</span>
-                    Scopes · {monitorLabels.image} · inspeção visual aproximada
-                  </span>
-                  <span className="font-label-mono text-[12px] px-1.5 py-0.2 rounded bg-surface-panel border border-border-subtle text-status-ok-bright">
-                    MONITORAMENTO {isPlaying||selectedLiveSource?10:4} Hz
-                    {scopeCost && <span title="Custo local do desenho dos scopes; não mede decoder, CPU do servidor ou rede. Últimas até 120 amostras."> · DESENHO p95 {scopeCost.p95Ms.toFixed(1)} ms</span>}
-                  </span>
-                </div>
-
-                {/* Seletor de Modo de Visualização dos Escopos */}
-                <div className="flex items-center gap-1 bg-surface-base p-0.5 rounded border border-border-subtle font-label-caps text-[11px]">
-                  {(['QUAD', 'VECTORSCOPE', 'WAVEFORM', 'PARADE'] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      onClick={() => setScopeMode(mode)}
-                      className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
-                        scopeMode === mode
-                          ? 'bg-primary text-on-primary font-bold shadow-sm'
-                          : 'text-outline hover:text-on-surface'
-                      }`}
-                    >
-                      {mode === 'QUAD' ? '4 EM 1' : mode}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Área Gráfica dos Escopos */}
-              <div className="flex-1 min-h-0 overflow-hidden">
-                {/* Visualização QUAD (4 em 1) */}
-                {scopeMode === 'QUAD' && (
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 h-full">
-                    {/* Scope 1: Vectorscope BT.709 */}
-                    <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
-                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[11px]">
-                        <span className="text-accent-ice font-bold">1. VECTORSCOPE</span>
-                        <span className={`font-mono text-[12px] font-bold ${!vectorscopeStats ? 'text-outline' : vectorscopeStats.legalGamut ? 'text-status-ok' : 'text-on-air-crimson'}`}>
-                            {!vectorscopeStats ? 'AGUARDANDO FRAME' : 'AMOSTRA DO PLAYER'}
-                        </span>
-                      </div>
-                      <div className="relative w-full flex-1 bg-[#05070E] rounded border border-border-subtle/60 flex items-center justify-center overflow-hidden my-1">
-                        <canvas ref={vectorscopeCanvasRef} width={180} height={180} className="w-full h-full object-contain" />
-                      </div>
-                      <div className="flex items-center justify-between font-label-mono text-[12px] text-outline">
-                        <span>I-LINE PELE</span>
-                        <span className="text-accent-ice font-bold">SAT: {vectorscopeStats ? `${vectorscopeStats.maxSat}%` : '—'}</span>
-                      </div>
-                    </div>
-
-                    {/* Scope 2: Luma Waveform (0-100 IRE) */}
-                    <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
-                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[11px]">
-                        <span className="text-status-ok-bright font-bold">2. LUMA WAVEFORM</span>
-                        <span className={`font-mono text-[12px] font-bold ${!waveformStats ? 'text-outline' : waveformStats.clipping ? 'text-on-air-crimson' : 'text-status-ok'}`}>
-                            {!waveformStats ? 'AGUARDANDO FRAME' : 'LUMA DO PLAYER'}
-                        </span>
-                      </div>
-                      <div className="relative w-full flex-1 bg-[#05070E] rounded border border-border-subtle/60 overflow-hidden my-1">
-                        <canvas ref={waveformCanvasRef} width={260} height={140} className="w-full h-full" />
-                      </div>
-                      <div className="flex items-center justify-between font-label-mono text-[12px] text-outline">
-                        <span>MIN: {waveformStats?.minIre ?? '—'}</span>
-                        <span className="text-status-ok-bright font-bold">MAX: {waveformStats ? `${waveformStats.maxIre} IRE` : '—'}</span>
-                      </div>
-                    </div>
-
-                    {/* Scope 3: RGB Parade */}
-                    <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
-                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[11px]">
-                        <span className="text-primary font-bold">3. RGB PARADE</span>
-                        <span className={`font-mono text-[12px] ${scopeSampleReady ? 'text-status-ok' : 'text-outline'}`}>{scopeSampleReady ? 'RGB DO PLAYER' : 'AGUARDANDO FRAME'}</span>
-                      </div>
-                      <div className="relative w-full flex-1 bg-[#05070E] rounded border border-border-subtle/60 overflow-hidden my-1">
-                        <canvas ref={paradeCanvasRef} width={260} height={140} className="w-full h-full" />
-                      </div>
-                      <div className="flex items-center justify-between font-label-mono text-[12px] text-outline">
-                        <span>BALANÇO RGB</span>
-                        <span className="text-outline font-bold">{scopeSampleReady ? 'AMOSTRADO' : 'SEM AMOSTRA'}</span>
-                      </div>
-                    </div>
-
-                    {/* Scope 4: Áudio EBU R128 & Spectrum (Pré-Fader) */}
-                    <div className="bg-surface-panel rounded border border-border-subtle p-2 flex flex-col justify-between overflow-hidden">
-                      <div className="flex items-center justify-between border-b border-border-subtle/50 pb-0.5 font-label-caps text-[11px]">
-                        <div className="flex items-center gap-1">
-                          <span className="text-armed-amber font-bold">4. ÁUDIO ORIGINAL / MONITOR</span>
-                          <span className="text-[11px] px-1 py-0.2 rounded bg-status-ok/20 text-status-ok-bright font-bold">{monitorLabels.audio}</span>
-                        </div>
-                        <span className="text-status-ok font-mono text-[12px]">ALVO: {channel.targetLufs} LUFS</span>
-                      </div>
-
-                      {/* Espectrograma Real em Canvas */}
-                      <div className="relative w-full h-14 bg-[#040711] rounded border border-border-subtle/60 overflow-hidden my-1">
-                        <canvas ref={audioSpectrumCanvasRef} width={180} height={70} className="w-full h-full" />
-                      </div>
-
-                      {/* Métricas e VU Meters */}
-                      <div className="flex flex-col gap-0.5 font-label-mono text-[12px]">
-                        <div className="flex justify-between">
-                          <span className="text-outline">Integrated:</span>
-                          <span className="text-status-ok font-bold">
-                            {typeof selectedAsset?.loudnessFile?.integratedLufs === 'number'
-                              ? `${selectedAsset.loudnessFile.integratedLufs.toFixed(1)} LUFS`
-                              : '—'}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-outline">True Peak:</span>
-                          <span className="text-status-ok font-bold">
-                            {typeof selectedAsset?.loudnessFile?.truePeakDbtp === 'number'
-                              ? `${selectedAsset.loudnessFile.truePeakDbtp.toFixed(1)} dBTP`
-                              : '—'}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-outline">LRA / Pico:</span>
-                          <span className="text-accent-ice font-bold">
-                            {typeof selectedAsset?.loudnessFile?.lra === 'number' ? `${selectedAsset.loudnessFile.lra.toFixed(1)} LU` : '—'} • {audioMeter.active ? `${audioMeter.peakL.toFixed(0)} dB` : '—'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Visualização Expandida: Vectorscope */}
-                {scopeMode === 'VECTORSCOPE' && (
-                  <div className="w-full h-full bg-[#05070E] rounded-lg border border-border-subtle flex items-center justify-center p-3 relative">
-                    <canvas ref={vectorscopeCanvasRef} width={380} height={380} className="h-full aspect-square" />
-                    <div className="absolute top-3 right-3 bg-surface-panel/90 border border-border-subtle p-2 rounded font-label-mono text-[12px] flex flex-col gap-1">
-                      <span className="text-accent-ice font-bold">ITU-R BT.709 VECTORSCOPE</span>
-                      <span className="text-outline">Saturação Máx: <strong className="text-on-surface">{vectorscopeStats ? `${vectorscopeStats.maxSat}%` : '—'}</strong></span>
-                      <span className="text-outline">Gamut original: <strong>NÃO CERTIFICADO NESTA TELA</strong></span>
-                      <span className="text-outline">Eixo I: <strong className="text-armed-amber">123° TRAVADO</strong></span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Visualização Expandida: Luma Waveform */}
-                {scopeMode === 'WAVEFORM' && (
-                  <div className="w-full h-full bg-[#05070E] rounded-lg border border-border-subtle flex flex-col p-2 relative">
-                    <canvas ref={waveformCanvasRef} width={800} height={280} className="w-full h-full" />
-                    <div className="absolute top-3 right-3 bg-surface-panel/90 border border-border-subtle p-2 rounded font-label-mono text-[12px] flex gap-4">
-                      <span>Mínimo: <strong className="text-status-ok">{waveformStats ? `${waveformStats.minIre} IRE` : '—'}</strong></span>
-                      <span>Médio: <strong className="text-accent-ice">{waveformStats ? `${waveformStats.avgIre} IRE` : '—'}</strong></span>
-                      <span>Máximo: <strong className={waveformStats?.clipping ? 'text-on-air-crimson' : 'text-status-ok'}>{waveformStats ? `${waveformStats.maxIre} IRE` : '—'}</strong></span>
-                      <span>Status: <strong className="text-outline">{waveformStats ? 'LUMA DO PLAYER' : 'AGUARDANDO FRAME'}</strong></span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Visualização Expandida: RGB Parade */}
-                {scopeMode === 'PARADE' && (
-                  <div className="w-full h-full bg-[#05070E] rounded-lg border border-border-subtle flex flex-col p-2 relative">
-                    <canvas ref={paradeCanvasRef} width={800} height={280} className="w-full h-full" />
-                    <div className="absolute top-3 right-3 bg-surface-panel/90 border border-border-subtle p-2 rounded font-label-mono text-[12px] flex gap-4">
-                      <span className="text-[#FF3B30] font-bold">CANAL RED</span>
-                      <span className="text-[#34C759] font-bold">CANAL GREEN</span>
-                      <span className="text-[#5B9BFF] font-bold">CANAL BLUE</span>
-                      <span className="text-outline font-bold">{scopeSampleReady ? 'RGB DO PLAYER' : 'AGUARDANDO FRAME'}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+          </section>
         </div>
       </main>
     </div>
   )
 }
-
