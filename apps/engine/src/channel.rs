@@ -1041,6 +1041,24 @@ pub fn monitor_size(width: i32, height: i32) -> (i32, i32) {
     (escalada + escalada % 2, TETO)
 }
 
+/// Conversão entre um `interaudiosrc` de slot e o capsfilter da casa.
+///
+/// O `interaudiosrc` publica as caps que encontrar na superfície, e o
+/// `interaudiosink` aceita qualquer PCM. Com o capsfilter F32LE ligado direto
+/// na fonte, um item que publicasse S24LE (MOV ProRes) parava a fonte do slot
+/// com not-negotiated -- e fonte de `basesrc` parada não volta sozinha: o
+/// barramento do PGM ficava mudo para todos os itens seguintes até reiniciar
+/// o engine. O ramo do item já entrega o formato da casa; isto é a segunda
+/// barreira, para que nenhum formato vindo de um item consiga matar o slot.
+/// Com caps iguais os dois elementos ficam em passthrough.
+fn conversor_de_slot(audio_channels: usize) -> Result<[gst::Element; 2]> {
+    let convert = make("audioconvert")?;
+    crate::audio_bus::numbered_channels(&convert, audio_channels)?;
+    let resample = make("audioresample")?;
+    resample.set_property("quality", 8i32);
+    Ok([convert, resample])
+}
+
 /// Fixa a latência de uma fonte `interaudiosrc`.
 ///
 /// O padrão dela é 100 ms anunciados sobre um anel de um segundo. Os dois
@@ -1262,7 +1280,10 @@ impl Channel {
         slot_audio_caps.set_property("caps",&audio_caps);
         let next_audio_caps=make("capsfilter")?;
         next_audio_caps.set_property("caps",&audio_caps);
+        let [program_slot_convert, program_slot_resample] = conversor_de_slot(config.audio_channels)?;
+        let [next_slot_convert, next_slot_resample] = conversor_de_slot(config.audio_channels)?;
         pipeline.add_many([&video_selector, &audio_selector, &next_video, &next_audio, &slot_audio_caps, &next_audio_caps])?;
+        pipeline.add_many([&program_slot_convert, &program_slot_resample, &next_slot_convert, &next_slot_resample])?;
 
         let compositor = make_named("compositor", "pgm")?;
         compositor.set_property_from_str("background", "black");
@@ -1378,6 +1399,8 @@ impl Channel {
         ])?;
         gst::Element::link_many([
             &program_audio,
+            &program_slot_convert,
+            &program_slot_resample,
             &slot_audio_caps,
             &audio_selector,
             &program_audio_convert,
@@ -1386,7 +1409,7 @@ impl Channel {
             &program_audio_queue,
         ])?;
         next_video.link(&video_selector)?;
-        gst::Element::link_many([&next_audio,&next_audio_caps,&audio_selector])?;
+        gst::Element::link_many([&next_audio,&next_slot_convert,&next_slot_resample,&next_audio_caps,&audio_selector])?;
         // Reserved capacity for same-occurrence live replacement, not a third
         // editorial item. Keep house audio caps even while this slot is idle.
         let replacement_video = make("intervideosrc")?;
@@ -1397,9 +1420,10 @@ impl Channel {
         aplicar_latencia_de_audio(&replacement_audio);
         let replacement_audio_caps = make("capsfilter")?;
         replacement_audio_caps.set_property("caps", &audio_caps);
-        pipeline.add_many([&replacement_video, &replacement_audio, &replacement_audio_caps])?;
+        let [replacement_convert, replacement_resample] = conversor_de_slot(config.audio_channels)?;
+        pipeline.add_many([&replacement_video, &replacement_audio, &replacement_convert, &replacement_resample, &replacement_audio_caps])?;
         replacement_video.link(&video_selector)?;
-        gst::Element::link_many([&replacement_audio, &replacement_audio_caps, &audio_selector])?;
+        gst::Element::link_many([&replacement_audio, &replacement_convert, &replacement_resample, &replacement_audio_caps, &audio_selector])?;
         gst::Element::link_many([
             &compositor,
             &vconv,
@@ -4016,6 +4040,65 @@ mod embedded_audio_tests {
             panic!("sem amostras reais: etapa={stage}, canais={channels}, frames={count}, cutoff={cutoff:?}, first_pts={first_pts:?}, last_pts={last_pts:?}, skipped={skipped}, running_end={:?}, estado={:?}, mensagens={messages:?}",pipeline.current_running_time(),pipeline.current_state());
         }
         peaks
+    }
+    /// Arquivo de entrega de comercial: MOV com PCM inteiro (s24le/s16le).
+    fn pcm_mov(path:&std::path::Path,format:&str,volume:f64) {
+        let location=serde_json::to_string(&path.to_string_lossy().replace('\\',"/")).unwrap();
+        let producer=gst::parse::launch(&format!("qtmux name=m ! filesink location={location} videotestsrc num-buffers=100 ! video/x-raw,width=160,height=90,framerate=25/1 ! videoconvert ! jpegenc ! queue ! m.video_0 audiotestsrc num-buffers=188 wave=sine freq=1000 volume={volume} ! audio/x-raw,format={format},rate=48000,channels=2,layout=interleaved ! queue ! m.audio_0")).unwrap();
+        producer.set_state(gst::State::Playing).unwrap();
+        let result=producer.bus().unwrap().timed_pop_filtered(gst::ClockTime::from_seconds(15),&[gst::MessageType::Eos,gst::MessageType::Error]);
+        producer.set_state(gst::State::Null).unwrap();
+        assert!(matches!(result.as_ref().map(|message|message.view()),Some(gst::MessageView::Eos(_))),"fixture MOV {format}: {result:?}");
+    }
+    fn faults(bus:&gst::Bus)->Vec<String> {
+        let mut faults=Vec::new();
+        while let Some(message)=bus.pop(){if let gst::MessageView::Error(error)=message.view(){faults.push(format!("{} {:?}",error.error(),error.debug()));}}
+        faults
+    }
+    /// C1 do QA de engenharia: MOV com PCM deixava o PGM mudo (not-negotiated
+    /// no `interaudiosrc` do slot) e envenenava o barramento até reiniciar --
+    /// inclusive quando o PCM só entrava como próximo. Aqui: PCM24 no ar, PCM16
+    /// pré-carregado como próximo e no ar, depois um codec comprimido (F32 do
+    /// decoder) na sequência; e um formato estranho jogado direto na superfície
+    /// do slot livre não pode matar o slot para o item seguinte.
+    #[test]
+    fn pcm_mov_reaches_program_and_never_poisons_the_bus() {
+        gst::init().unwrap();
+        if gst::ElementFactory::find(crate::limiter_element::FACTORY).is_none() {crate::limiter_element::register().unwrap();}
+        let unique=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory=FixtureDirectory(std::env::temp_dir().join(format!("rplayout-pcm-mov-{}-{unique}",std::process::id())));
+        std::fs::create_dir(&directory.0).unwrap();
+        let pcm24=directory.0.join("Comercial ProRes s24.mov");let pcm16=directory.0.join("Comercial s16.mov");let compressed=directory.0.join("VT vorbis.mkv");
+        pcm_mov(&pcm24,"S24LE",0.25);pcm_mov(&pcm16,"S16LE",0.5);
+        let location=serde_json::to_string(&compressed.to_string_lossy().replace('\\',"/")).unwrap();
+        let producer=gst::parse::launch(&format!("matroskamux name=m ! filesink location={location} videotestsrc num-buffers=100 ! video/x-raw,width=160,height=90,framerate=25/1 ! videoconvert ! vp8enc deadline=1 ! queue ! m.video_0 audiotestsrc num-buffers=188 wave=sine freq=1000 volume=0.125 ! audio/x-raw,rate=48000,channels=2 ! audioconvert ! vorbisenc ! queue ! m.audio_0")).unwrap();
+        producer.set_state(gst::State::Playing).unwrap();let result=producer.bus().unwrap().timed_pop_filtered(gst::ClockTime::from_seconds(15),&[gst::MessageType::Eos,gst::MessageType::Error]);producer.set_state(gst::State::Null).unwrap();
+        assert!(matches!(result.as_ref().map(|message|message.view()),Some(gst::MessageView::Eos(_))),"fixture vorbis: {result:?}");
+        let mut channel=RunningChannel(Channel::new(Config{channel_id:format!("pcm-mov-{unique}"),width:320,height:180,fps_n:25,fps_d:1,bitrate_kbps:450,ceiling_dbtp:-1.,audio_channels:2,scan:Scan::Progressive,top_field_first:true,outputs:vec![Output::Null],preview:None}).unwrap());
+        let sink=capture(&channel.0);channel.0.start().unwrap();let bus=channel.0.pipeline.bus().unwrap();
+        let spec=|id:&str,path:&std::path::Path|->ItemSpec{serde_json::from_value(serde_json::json!({"itemId":id,"path":path.to_string_lossy(),"trimIn":0,"trimOut":100,"gainDb":0})).unwrap()};
+        let near=|measured:&[f32],expected:f32,stage:&str|{for (index,value) in measured.iter().enumerate(){assert!((value-expected).abs()<0.01,"{stage}: canal {index} = {value}, esperado {expected}; falhas do canal: {:?}",faults(&bus));}};
+
+        channel.0.load(spec("pcm24",&pcm24)).unwrap();channel.0.take().unwrap();
+        near(&peaks(&sink,2,500,"PCM24 no ar"),0.25,"PCM24 no ar");
+        // PCM como PRÓXIMO: a pré-carga publica no slot livre antes do TAKE.
+        channel.0.load(spec("pcm16",&pcm16)).unwrap();
+        near(&peaks(&sink,2,300,"PCM16 pré-carregado"),0.25,"PCM24 com PCM16 como próximo");
+        channel.0.take().unwrap();
+        near(&peaks(&sink,2,500,"PCM16 no ar"),0.5,"PCM16 no ar");
+        channel.0.load(spec("vorbis",&compressed)).unwrap();channel.0.take().unwrap();
+        near(&peaks(&sink,2,500,"comprimido após PCM"),0.125,"comprimido após PCM");
+        let faults_now=faults(&bus);assert!(faults_now.is_empty(),"barramento do canal acusou erro: {faults_now:?}");
+
+        // Segunda barreira: um formato fora da casa direto na superfície do
+        // slot livre (o que um ramo de item com defeito publicaria) não pode
+        // derrubar a fonte do slot. O item seguinte, nesse slot, tem que tocar.
+        let free=1-channel.0.on_air.as_ref().unwrap().slot;
+        let foreign=gst::parse::launch(&format!("audiotestsrc is-live=true wave=sine volume=0.9 ! audio/x-raw,format=S24LE,rate=44100,channels=1 ! interaudiosink channel={}-{free}",channel.0.audio_channel)).unwrap();
+        foreign.set_state(gst::State::Playing).unwrap();std::thread::sleep(Duration::from_millis(400));foreign.set_state(gst::State::Null).unwrap();
+        channel.0.load(spec("pcm24-de-novo",&pcm24)).unwrap();assert_eq!(channel.0.armed.as_ref().unwrap().slot,free);channel.0.take().unwrap();
+        near(&peaks(&sink,2,500,"PCM24 após formato estranho no slot"),0.25,"PCM24 após formato estranho no slot");
+        let faults_now=faults(&bus);assert!(faults_now.is_empty(),"formato estranho no slot envenenou o barramento: {faults_now:?}");
     }
     #[test]
     fn cue_take_preserves_auxiliary_identity_gain_and_silence_in_eight_and_sixteen_channels() {
