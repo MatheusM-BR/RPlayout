@@ -122,8 +122,15 @@ pub fn item_audio_branches(channels:usize,master_gain:f64,pairs:&[AuxiliaryPair]
     let make=|factory:&str|->Result<gst::Element>{Ok(gst::ElementFactory::make(factory).build()?)};
     let convert=make("audioconvert")?;let resample=make("audioresample")?;resample.set_property("quality",8i32);
     let volume=make("volume")?;volume.set_property("volume",master_gain);
+    // Formato fixo da casa, não só taxa e canais. Sem `format`/`layout` o
+    // audioconvert repassava o PCM do arquivo (s24le/s16le de MOV ProRes) e o
+    // `interaudiosink`, que aceita qualquer PCM, publicava S24LE na superfície;
+    // o capsfilter F32LE do slot do canal recusava com not-negotiated, o PGM
+    // ficava mudo e a fonte do slot morria até reiniciar o engine. Tudo que
+    // for decodificável vira F32LE intercalado 48 kHz AQUI, dentro do pipeline
+    // do item: se alguma conversão falhar, o erro fica no item.
     let filter=make("capsfilter")?;
-    filter.set_property("caps",gst::Caps::builder("audio/x-raw").field("rate",48000i32).field("channels",2i32).build());
+    filter.set_property("caps",caps(2));
     let mut main=vec![convert,resample,volume.clone(),filter];let mut raw_tee=None;let mut auxiliary=Vec::new();let mut auxiliary_routing=None;
     if channels>2{
         let expand=make("audioconvert")?;expand_master(&expand,channels);
@@ -176,6 +183,44 @@ pub fn link_item_audio_branches(main:&[gst::Element],raw_tee:Option<&gst::Elemen
                 assert_eq!(route.channels,channels);assert!(route.coefficients(2).is_err());assert!(route.coefficients(4).is_ok());
                 assert_eq!(branches.auxiliary[3].property::<f64>("volume"),route.gain());
             }else{assert_eq!(factories.len(),4);assert!(branches.auxiliary.is_empty());assert!(branches.auxiliary_routing.is_none());}
+        }
+    }
+    /// Comercial chega em PCM inteiro (MOV ProRes + s24le/s16le), não em F32.
+    /// O ramo do item precisa entregar ao `interaudiosink` exatamente o formato
+    /// da casa: o `interaudiosrc` do canal repassa o formato que encontrar na
+    /// superfície, e o capsfilter F32LE do slot recusava S24LE com
+    /// not-negotiated -- PGM mudo e a fonte do slot morta até reiniciar.
+    #[test] fn item_branch_delivers_house_format_for_any_decoded_pcm(){
+        gst::init().unwrap();
+        let entradas:[(&str,i32,i32,Option<u64>);7]=[("S24LE",48000,2,None),("S16LE",48000,2,None),("S32LE",48000,2,None),("F64LE",48000,2,None),("S16LE",44100,1,None),("S24LE",44100,2,None),("S24LE",48000,6,Some(0x3f))];
+        // Barramento de 2 canais, o do PGM do QA. A expansão 8/16 tem teste
+        // próprio de ponta a ponta no canal.
+        let channels=2usize;
+        for (format,rate,input_channels,mask) in entradas {
+            let pipeline=gst::Pipeline::new();
+            let source=gst::ElementFactory::make("audiotestsrc").property("num-buffers",20i32).build().unwrap();
+            let mut input=gst::Caps::builder("audio/x-raw").field("format",format).field("layout","interleaved").field("rate",rate).field("channels",input_channels);
+            if let Some(mask)=mask {input=input.field("channel-mask",gst::Bitmask::new(mask));}
+            let input_caps=gst::ElementFactory::make("capsfilter").property("caps",input.build()).build().unwrap();
+            let branches=item_audio_branches(channels,1.0,&[]).unwrap();
+            // O mesmo contrato do sink real: aceita qualquer PCM. É o
+            // ramo que precisa fixar o formato, não o consumidor.
+            let sink=gst::ElementFactory::make("appsink").property("sync",false).build().unwrap().downcast::<gstreamer_app::AppSink>().unwrap();
+            pipeline.add_many([&source,&input_caps]).unwrap();pipeline.add_many(branches.main.iter()).unwrap();pipeline.add(&sink).unwrap();
+            gst::Element::link_many([&source,&input_caps,&branches.main[0]]).unwrap();
+            link_item_audio_branches(&branches.main,None,&[]).unwrap();
+            branches.main.last().unwrap().link(&sink).unwrap();
+            pipeline.set_state(gst::State::Playing).unwrap();
+            let sample=sink.try_pull_sample(gst::ClockTime::from_seconds(5));
+            pipeline.set_state(gst::State::Null).unwrap();
+            let sample=sample.unwrap_or_else(||panic!("{format}/{rate}/{input_channels}ch não chegou ao inter do barramento {channels}"));
+            let caps=sample.caps().unwrap();
+            assert!(caps.can_intersect(&super::caps(channels)) && caps.is_fixed(),"{format}/{rate}/{input_channels}ch saiu como {caps} no barramento {channels}");
+            let structure=caps.structure(0).unwrap();
+            assert_eq!(structure.get::<String>("format").unwrap(),"F32LE","{format}: {caps}");
+            assert_eq!(structure.get::<String>("layout").unwrap(),"interleaved","{format}: {caps}");
+            assert_eq!(structure.get::<i32>("rate").unwrap(),48000,"{format}: {caps}");
+            assert_eq!(structure.get::<i32>("channels").unwrap(),channels as i32,"{format}: {caps}");
         }
     }
     #[test] fn explicit_contract_no_invented_feed() {
