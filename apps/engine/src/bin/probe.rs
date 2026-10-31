@@ -518,6 +518,9 @@ fn main() -> Result<()> {
         receipt["requestedPositionNs"] = serde_json::json!(alvo_ns);
         let pts = captured_pts.load(Ordering::Acquire);
         receipt["framePtsNs"] = if pts == u64::MAX { serde_json::Value::Null } else { serde_json::json!(pts) };
+        if let Some(stats) = args.thumbnail.as_deref().and_then(|prefixo| scope_stats_json(&format!("{prefixo}.ycc"))) {
+            receipt["scopeStats"] = stats;
+        }
         println!("{}", receipt);
         return Ok(());
     }
@@ -827,19 +830,28 @@ fn attach_video(
     Ok(())
 }
 
-/// Cabeçalho do arquivo `.ycc` (16 bytes): `RPYC`, versão 1, matriz 1 =
-/// BT.709, faixa 0 = limitada (16–235/240), 8 bits, largura e altura em u16
-/// LE e 4 bytes reservados. Seguem os planos Y, Cb e Cr completos (4:4:4).
+/// Cabeçalho do arquivo `.ycc` (16 bytes). O formato é do crate
+/// `rplayout-scopes`, que também o lê -- aqui e no WASM da interface.
+/// O ramo de scopes força `colorimetry=bt709` no Y444, então a matriz é
+/// BT.709 e a faixa é a limitada.
 fn ycc_header(width: u16, height: u16) -> [u8; 16] {
-    let mut header = [0u8; 16];
-    header[0..4].copy_from_slice(b"RPYC");
-    header[4] = 1;
-    header[5] = 1;
-    header[6] = 0;
-    header[7] = 8;
-    header[8..10].copy_from_slice(&width.to_le_bytes());
-    header[10..12].copy_from_slice(&height.to_le_bytes());
-    header
+    rplayout_scopes::ycc_header(rplayout_scopes::YccHeader {
+        width,
+        height,
+        matrix: rplayout_scopes::Matrix::Bt709,
+        range: rplayout_scopes::Range::Limited,
+    })
+}
+
+/// Mede o `.ycc` recém-escrito com a mesma matemática da interface. Vai no
+/// recibo (`scopeStats`) e no cabeçalho HTTP do quadro: a interface confere
+/// que o WASM dela chegou nos mesmos números (paridade em produção).
+fn scope_stats_json(path: &str) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(path).ok()?;
+    let (_, frame) = rplayout_scopes::parse_ycc(&bytes).ok()?;
+    let mut scopes = rplayout_scopes::Scopes::new(rplayout_scopes::Config::default());
+    scopes.accumulate(&frame).ok()?;
+    serde_json::from_str(&scopes.stats.to_json()).ok()
 }
 
 /// Grava uma única amostra de um appsink no destino `<alvo><sufixo>`.

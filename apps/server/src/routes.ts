@@ -2202,6 +2202,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .header('x-rplayout-frame-pts-ns', extracted.ptsNs === null ? '' : String(extracted.ptsNs))
     if (match[2] === 'jpg') return reply.type('image/jpeg').header('x-rplayout-rendition', `qc-rgb709-${largura}`).send(extracted.jpg)
     reply.type('application/octet-stream').header('x-rplayout-rendition', 'qc-ycbcr444-bt709-limited-8bit').header('vary', 'accept-encoding')
+    // Medição Rust nativa do mesmo quadro: a interface confere o WASM contra ela.
+    if (extracted.scopeStats) reply.header('x-rplayout-scope-stats', JSON.stringify(extracted.scopeStats))
     if (/\bgzip\b/.test(String(request.headers['accept-encoding'] ?? ''))) return reply.header('content-encoding', 'gzip').send(extracted.yccGzip)
     return reply.send(extracted.ycc)
   })
