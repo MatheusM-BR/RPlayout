@@ -58,10 +58,16 @@ function encode(input, name, codec) {
   execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '0.5', '-i', out, '-frames:v', '1', '-vf', 'scale=flags=neighbor,format=yuv444p', '-f', 'rawvideo', raw])
   const header = Buffer.alloc(16); header.write('RPYC', 0, 'latin1'); header[4] = 1; header[5] = 1; header[6] = 0; header[7] = 8; header.writeUInt16LE(W, 8); header.writeUInt16LE(H, 10)
   writeFileSync(join(work, `${name}.ycc`), Buffer.concat([header, readFileSync(raw)]))
+  if (asImages) {
+    // SwiftShader derruba o processo da GPU ao tocar vídeo: entrega o quadro
+    // decodificado pelo ffmpeg (Y'CbCr BT.709 limitado → R'G'B') como PNG.
+    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '0.5', '-i', out, '-frames:v', '1', '-vf', 'scale=in_color_matrix=bt709:in_range=tv:out_range=pc:flags=bilinear+accurate_rnd+full_chroma_int,format=rgb24', join(work, `${name}.png`)])
+    return `/${name}.png`
+  }
   return `/${name}.${codec === 'h264' ? 'mp4' : 'webm'}`
 }
 
-const mime = {'.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.webm': 'video/webm', '.mp4': 'video/mp4', '.ycc': 'application/octet-stream'}
+const mime = {'.png': 'image/png', '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.webm': 'video/webm', '.mp4': 'video/mp4', '.ycc': 'application/octet-stream'}
 const server = createServer((request, response) => {
   try {
     const file = join(work, decodeURIComponent(new URL(request.url, 'http://x').pathname).replace(/^\/+/, '') || 'index.html')
@@ -86,15 +92,17 @@ const h264 = await page.evaluate(() => document.createElement('video').canPlayTy
 const codec = option('--codec', h264 ? 'h264' : 'vp9')
 ebuPpm(0.75, join(work, 'ebu75.ppm')); ebuPpm(1, join(work, 'ebu100.ppm'))
 const quick = args.includes('--quick')
+const asImages = args.includes('--images') || swiftshader
 const allMedia = [
   {name: 'ebu-75', video: encode(['-loop', '1', '-i', join(work, 'ebu75.ppm')], 'ebu-75', codec), ycc: '/ebu-75.ycc', bars: 8},
   {name: 'ebu-100', video: encode(['-loop', '1', '-i', join(work, 'ebu100.ppm')], 'ebu-100', codec), ycc: '/ebu-100.ycc', bars: 8},
   {name: 'natural-perf', video: encode(['-f', 'lavfi', '-i', `testsrc2=size=${W}x${H}:rate=25`], 'natural-perf', codec)},
 ]
 const media = quick ? allMedia.filter(m => m.name !== 'ebu-100') : allMedia
-const results = await page.evaluate(([items, n]) => window.scopesBench.run(items, n), [media, iterations])
+const results = await page.evaluate(([items, n, mode]) => window.scopesBench.run(items, n, mode), [media, iterations, swiftshader ? 'copy' : 'external'])
 results.codec = codec
 results.size = `${W}x${H}`
+results.source = asImages ? 'PNG do quadro decodificado pelo ffmpeg (sem vídeo no navegador)' : 'vídeo no navegador'
 results.mode = swiftshader ? 'swiftshader (sem GPU; tempos só relativos)' : `navegador ${channel ?? 'chromium'} com GPU`
 const text = JSON.stringify(results, null, 2)
 console.log(text)

@@ -10,7 +10,7 @@
  */
 import {accumulateRgbaJs} from '../cpu-js.js'
 import {scopeLayout, accumulationConfig} from '../layout.js'
-import type {LiveView} from '../live.js'
+import type {LiveSource, LiveView} from '../live.js'
 import {WebGpuScopes} from '../webgpu.js'
 import {WebGl2Scopes} from '../webgl2.js'
 import {CH_ALL, DEFAULT_SCOPE_CONFIG, MATRIX, ScopesWasm, type ScopeConfig, type ScopeResult, type ScopeStats} from '../wasm.js'
@@ -22,19 +22,38 @@ function median(values: number[]): number {
   return sorted.length ? sorted[Math.floor(sorted.length / 2)]! : NaN
 }
 
+const dims = (s: LiveSource) => s instanceof HTMLVideoElement ? {w: s.videoWidth, h: s.videoHeight} : {w: s.naturalWidth, h: s.naturalHeight}
+/** Modo do WebGPU: 'copy' no SwiftShader (que cai com texture_external). */
+let gpuMode: 'external' | 'copy' = 'external'
+
+async function loadSource(url: string, at: number): Promise<LiveSource> {
+  if (url.endsWith('.png')) {
+    const image = new Image()
+    image.src = url
+    await image.decode()
+    document.body.appendChild(image)
+    return image
+  }
+  return loadVideo(url, at)
+}
+
 async function loadVideo(url: string, at: number): Promise<HTMLVideoElement> {
   const video = document.createElement('video')
   video.muted = true; video.playsInline = true; video.crossOrigin = 'anonymous'; video.preload = 'auto'
   video.src = url
   document.body.appendChild(video)
-  await new Promise<void>((resolve, reject) => { video.onloadeddata = () => resolve(); video.onerror = () => reject(new Error(`vídeo ${url}: ${video.error?.message}`)) })
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`vídeo ${url}: sem quadro em 30 s (codec?)`)), 30_000)
+    video.onloadeddata = () => { window.clearTimeout(timer); resolve() }
+    video.onerror = () => { window.clearTimeout(timer); reject(new Error(`vídeo ${url}: ${video.error?.message}`)) }
+  })
   video.currentTime = at
-  await new Promise<void>(resolve => { video.onseeked = () => resolve() })
-  await new Promise<void>(resolve => { if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(() => resolve()); else resolve() })
+  await new Promise<void>(resolve => { video.onseeked = () => resolve(); window.setTimeout(resolve, 5000) })
+  await new Promise<void>(resolve => { if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(() => resolve()); window.setTimeout(resolve, 1000) })
   return video
 }
 
-function rgbaOf(source: HTMLVideoElement, width: number, height: number): Uint8ClampedArray {
+function rgbaOf(source: LiveSource, width: number, height: number): Uint8ClampedArray {
   const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height
   const ctx = canvas.getContext('2d', {willReadFrequently: true})!
   ctx.drawImage(source, 0, 0, width, height)
@@ -61,9 +80,9 @@ function compareStats(gpu: ScopeStats, cpu: ScopeStats) {
   return {lumaMin: gpu.lumaMin - cpu.lumaMin, lumaMax: gpu.lumaMax - cpu.lumaMax, lumaAvg: gpu.lumaAvg - cpu.lumaAvg, count: gpu.count - cpu.count, gamutR103: gpu.gamutR103 - cpu.gamutR103}
 }
 
-async function barErrors(wasm: ScopesWasm, video: HTMLVideoElement, yccUrl: string, bars: number, gpu: WebGpuScopes | null, canvas: HTMLCanvasElement) {
+async function barErrors(wasm: ScopesWasm, video: LiveSource, yccUrl: string, bars: number, gpu: WebGpuScopes | null, canvas: HTMLCanvasElement) {
   const ycc = new Uint8Array(await (await fetch(yccUrl)).arrayBuffer())
-  const width = video.videoWidth, height = video.videoHeight
+  const width = dims(video).w, height = dims(video).h
   const rgba = rgbaOf(video, width, height)
   const rows: Array<Record<string, number | string>> = []
   for (let bar = 0; bar < bars; bar++) {
@@ -96,14 +115,14 @@ async function barErrors(wasm: ScopesWasm, video: HTMLVideoElement, yccUrl: stri
   return rows
 }
 
-async function timeBackends(wasm: ScopesWasm, video: HTMLVideoElement, iterations: number) {
+async function timeBackends(wasm: ScopesWasm, video: LiveSource, iterations: number) {
   const out: Record<string, unknown> = {}
   const width = 960, height = 540, scale = 1
   const panels = scopeLayout('QUAD', width, height, {waveChannel: 'Y', parade: 'RGB', scale})
-  const config = accumulationConfig(panels, {levelMin: -8, levelMax: 110, vectorScale: 1.3, roi: [0, 0, 1, 1]}, video.videoWidth)
+  const config = accumulationConfig(panels, {levelMin: -8, levelMax: 110, vectorScale: 1.3, roi: [0, 0, 1, 1]}, dims(video).w)
   const view = (stride: number): LiveView => ({panels, config, width, height, intensity: 1, matrix: MATRIX.bt709, frozen: false, showReference: false, stride})
   const canvasGpu = document.createElement('canvas'); document.body.appendChild(canvasGpu)
-  const gpu = await WebGpuScopes.create(canvasGpu)
+  const gpu = await WebGpuScopes.create(canvasGpu, gpuMode)
   if (gpu) {
     for (let i = 0; i < 5; i++) { gpu.render(video, view(1)); await gpu.idle() }
     const cpu: number[] = [], total: number[] = [], gpuMs: number[] = []
@@ -146,8 +165,8 @@ async function timeBackends(wasm: ScopesWasm, video: HTMLVideoElement, iteration
   return out
 }
 
-async function parity(wasm: ScopesWasm, video: HTMLVideoElement) {
-  const width = video.videoWidth, height = video.videoHeight
+async function parity(wasm: ScopesWasm, video: LiveSource) {
+  const width = dims(video).w, height = dims(video).h
   const rgba = rgbaOf(video, width, height)
   const config: ScopeConfig = {...DEFAULT_SCOPE_CONFIG, channels: CH_ALL}
   const cpu = wasm.runRgba(rgba, width, height, config)
@@ -155,10 +174,14 @@ async function parity(wasm: ScopesWasm, video: HTMLVideoElement) {
   const view: LiveView = {panels, config, width: 960, height: 540, intensity: 1, matrix: MATRIX.bt709, frozen: false, showReference: false, stride: 1}
   const out: Record<string, unknown> = {}
   const gpuCanvas = document.createElement('canvas'); document.body.appendChild(gpuCanvas)
-  const gpu = await WebGpuScopes.create(gpuCanvas)
+  console.warn('[bench] paridade: criando WebGPU')
+  const gpu = await WebGpuScopes.create(gpuCanvas, gpuMode)
+  console.warn(`[bench] WebGPU ${gpu ? 'ok' : 'indisponível'}`)
   if (gpu) {
     gpu.render(video, view)
+    console.warn('[bench] WebGPU render enviado')
     const read = await gpu.debugRead()
+    console.warn('[bench] WebGPU lido')
     if (read) out.webgpu = {
       histL1: ['Y', 'Cb', 'Cr', 'R', 'G', 'B'].map((_, ch) => +histDistance(read.hist, cpu.hist, config.histBins, ch).toFixed(5)),
       waveL1: +histDistance(read.wave, cpu.wave, config.waveColumns * config.waveRows * 6, 0).toFixed(5),
@@ -170,9 +193,12 @@ async function parity(wasm: ScopesWasm, video: HTMLVideoElement) {
   }
   const glCanvas = document.createElement('canvas'); document.body.appendChild(glCanvas)
   const gl = WebGl2Scopes.create(glCanvas)
+  console.warn(`[bench] WebGL2 ${gl ? 'ok' : 'indisponível'}`)
   if (gl) {
     gl.render(video, view)
+    console.warn('[bench] WebGL2 render')
     const read = gl.debugRead()
+    console.warn('[bench] WebGL2 lido')
     if (read) out.webgl2 = {
       histL1: ['Y', 'Cb', 'Cr', 'R', 'G', 'B'].map((_, ch) => +histDistance(read.hist, cpu.hist, config.histBins, ch).toFixed(5)),
       waveL1: +histDistance(read.wave, cpu.wave, config.waveColumns * config.waveRows * 6, 0).toFixed(5),
@@ -185,7 +211,8 @@ async function parity(wasm: ScopesWasm, video: HTMLVideoElement) {
   return out
 }
 
-async function run(media: Media[], iterations = 30) {
+async function run(media: Media[], iterations = 30, mode: 'external' | 'copy' = 'external') {
+  gpuMode = mode
   const wasm = await ScopesWasm.load('/rplayout_scopes.wasm')
   const results: Record<string, unknown> = {userAgent: navigator.userAgent}
   const adapter = await (navigator as unknown as {gpu?: {requestAdapter(): Promise<{info?: Record<string, string>} | null>}}).gpu?.requestAdapter()
@@ -195,13 +222,14 @@ async function run(media: Media[], iterations = 30) {
   results.webglRenderer = glInfo && debug ? glInfo.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null
   for (const item of media) {
     console.warn(`[bench] ${item.name}`)
-    const video = await loadVideo(item.video, 0.5)
-    const entry: Record<string, unknown> = {size: `${video.videoWidth}x${video.videoHeight}`}
+    const video = await loadSource(item.video, 0.5)
+    console.warn(`[bench] ${item.name} fonte ${dims(video).w}x${dims(video).h}`)
+    const entry: Record<string, unknown> = {size: `${dims(video).w}x${dims(video).h}`, source: video instanceof HTMLVideoElement ? 'video' : 'png'}
     entry.parity = await parity(wasm, video)
     console.warn(`[bench] ${item.name} paridade ok`)
     if (item.ycc && item.bars) {
       const canvas = document.createElement('canvas')
-      const gpu = await WebGpuScopes.create(canvas)
+      const gpu = await WebGpuScopes.create(canvas, gpuMode)
       entry.bars = await barErrors(wasm, video, item.ycc, item.bars, gpu, canvas)
       gpu?.destroy()
     }

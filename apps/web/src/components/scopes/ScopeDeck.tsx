@@ -195,7 +195,14 @@ export function ScopeDeck({exact, live, note, storageKey, falseColorCanvas, onFa
     const v = view()
     if (!v) return
     const element = live?.valid ? liveElement : null
-    const scopes = liveScopes.current
+    let scopes = liveScopes.current
+    // GPU perdida (driver reiniciou, TDR): cai para WebGL2 sem intervenção.
+    if (scopes instanceof WebGpuScopes && scopes.lost) {
+      scopes.destroy()
+      scopes = glCanvas.current ? WebGl2Scopes.create(glCanvas.current) : null
+      liveScopes.current = scopes
+      setBackend(scopes ? 'webgl2' : wasm.current ? 'wasm' : 'js')
+    }
     if (scopes) {
       scopes.render(element, v)
     } else if (backend === 'wasm' || backend === 'js') {

@@ -177,6 +177,16 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocati
 }
 `
 
+/**
+ * Mesma acumulação lendo uma textura comum (cópia do quadro com
+ * `copyExternalImageToTexture`). Usada para `<img>` e quando a textura
+ * externa não existe ou falha (o SwiftShader do CI derruba o processo da GPU
+ * com texture_external; em GPU real o caminho padrão é o externo, sem cópia).
+ */
+export const WGSL_ACCUMULATE_COPY = WGSL_ACCUMULATE
+  .replace('var src: texture_external;', 'var src: texture_2d<f32>;')
+  .replace('textureLoad(src, vec2u(x, y)).rgb', 'textureLoad(src, vec2u(x, y), 0).rgb')
+
 /** Exibição das densidades: um triângulo por painel, viewport = área do painel. */
 export const WGSL_DISPLAY = /* wgsl */`
 struct Draw {
@@ -303,3 +313,8 @@ fn fs(v: VOut) -> @location(0) vec4f {
   return false_color_exposure(p);
 }
 `
+
+/** Falsa cor lendo a cópia do quadro (imagens, ou sem textura externa). */
+export const WGSL_FALSE_COLOR_COPY = WGSL_FALSE_COLOR
+  .replace('var src: texture_external;', 'var src: texture_2d<f32>;')
+  .replace('textureSampleBaseClampToEdge(src, samp, v.uv)', 'textureSampleLevel(src, samp, v.uv, 0.0)')

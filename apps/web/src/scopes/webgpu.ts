@@ -13,7 +13,7 @@
  * globais justamente onde ela seria pior (todos os pixels no mesmo contador).
  */
 import {BufferUsage, MapMode, navigatorGpu, type GpuBuffer, type GpuCanvasContext, type GpuDevice, type GpuQuerySet} from './gpu-types.js'
-import {WGSL_ACCUMULATE, WGSL_DISPLAY, WGSL_FALSE_COLOR} from './shaders.js'
+import {WGSL_ACCUMULATE, WGSL_ACCUMULATE_COPY, WGSL_DISPLAY, WGSL_FALSE_COLOR, WGSL_FALSE_COLOR_COPY} from './shaders.js'
 import {drawSpecs, sampledArea, statsFromGpu, type LiveScopes, type LiveSource, type LiveTiming, type LiveView} from './live.js'
 import {MATRIX, type FalseColorMode, type MatrixCode, type ScopeConfig, type ScopeStats} from './wasm.js'
 
@@ -76,8 +76,13 @@ export class WebGpuScopes implements LiveScopes {
   private falseParams: GpuBuffer
   private sampler: unknown
   private destroyed = false
+  private copyPipeline: ReturnType<GpuDevice['createComputePipeline']> | null = null
+  private copyTexture: {texture: {createView(): unknown; destroy(): void}; width: number; height: number} | null = null
+  /** Dispositivo perdido: quem usa deve trocar de backend. */
+  lost = false
 
-  private constructor(private readonly device: GpuDevice, private readonly canvas: HTMLCanvasElement) {
+  private constructor(private readonly device: GpuDevice, private readonly canvas: HTMLCanvasElement, private readonly sourceMode: 'external' | 'copy') {
+    void device.lost.then(() => { this.lost = true })
     const gpu = navigatorGpu()!
     this.format = gpu.getPreferredCanvasFormat()
     this.context = canvas.getContext('webgpu') as unknown as GpuCanvasContext
@@ -99,12 +104,12 @@ export class WebGpuScopes implements LiveScopes {
   }
 
   /** Cria o backend ou devolve null se não houver WebGPU utilizável. */
-  static async create(canvas: HTMLCanvasElement): Promise<WebGpuScopes | null> {
+  static async create(canvas: HTMLCanvasElement, sourceMode: 'external' | 'copy' = 'external'): Promise<WebGpuScopes | null> {
     const device = await sharedGpuDevice()
     if (!device) return null
     device.pushErrorScope('validation')
     let scopes: WebGpuScopes | null = null
-    try { scopes = new WebGpuScopes(device, canvas) } catch { scopes = null }
+    try { scopes = new WebGpuScopes(device, canvas, sourceMode) } catch { scopes = null }
     const error = await device.popErrorScope()
     if (error || !scopes) { if (error) console.warn('[scopes] WebGPU recusado:', error.message); return null }
     return scopes
@@ -158,14 +163,25 @@ export class WebGpuScopes implements LiveScopes {
     return specs.length
   }
 
-  private importSource(source: LiveSource): {texture: unknown; width: number; height: number; close?: () => void} | null {
-    if (source instanceof HTMLVideoElement) {
-      if (source.readyState < 2 || source.videoWidth < 1 || source.videoHeight < 1) return null
-      return {texture: this.device.importExternalTexture({source}), width: source.videoWidth, height: source.videoHeight}
+  private importSource(source: LiveSource): {texture: unknown; width: number; height: number; copy: boolean} | null {
+    const video = source instanceof HTMLVideoElement
+    const width = video ? source.videoWidth : source.naturalWidth, height = video ? source.videoHeight : source.naturalHeight
+    if (width < 1 || height < 1) return null
+    if (video && source.readyState < 2) return null
+    if (!video && !source.complete) return null
+    if (video && this.sourceMode === 'external') {
+      try { return {texture: this.device.importExternalTexture({source}), width, height, copy: false} } catch { /* cai na cópia */ }
     }
-    if (!source.complete || source.naturalWidth < 1 || typeof VideoFrame === 'undefined') return null
-    const frame = new VideoFrame(source, {timestamp: 0})
-    return {texture: this.device.importExternalTexture({source: frame}), width: frame.displayWidth, height: frame.displayHeight, close: () => frame.close()}
+    // Cópia GPU→GPU do quadro para uma textura comum (imagem, ou sem textura externa).
+    if (!this.copyTexture || this.copyTexture.width !== width || this.copyTexture.height !== height) {
+      this.copyTexture?.texture.destroy()
+      const device = this.device as unknown as {createTexture(d: unknown): {createView(): unknown; destroy(): void}}
+      this.copyTexture = {texture: device.createTexture({size: [width, height], format: 'rgba8unorm', usage: 0x01 | 0x02 | 0x04 | 0x10}), width, height}
+    }
+    const queue = this.device.queue as unknown as {copyExternalImageToTexture(s: unknown, d: unknown, size: number[]): void}
+    queue.copyExternalImageToTexture({source}, {texture: this.copyTexture.texture}, [width, height])
+    if (!this.copyPipeline) this.copyPipeline = this.device.createComputePipeline({layout: 'auto', compute: {module: this.device.createShaderModule({code: WGSL_ACCUMULATE_COPY, label: 'scopes-accumulate-copy'}), entryPoint: 'accumulate'}})
+    return {texture: this.copyTexture.texture.createView(), width, height, copy: true}
   }
 
   render(source: LiveSource | null, view: LiveView): boolean {
@@ -187,7 +203,8 @@ export class WebGpuScopes implements LiveScopes {
         this.writeParams(view.config, area.roi, stride, imported.width, view.matrix)
         this.device.queue.writeBuffer(accumulators.stats, 0, this.statsInit)
         encoder.clearBuffer(accumulators.wave); encoder.clearBuffer(accumulators.vect); encoder.clearBuffer(accumulators.hist); encoder.clearBuffer(accumulators.diam)
-        const bind = this.device.createBindGroup({layout: this.accumulate.getBindGroupLayout(0), entries: [
+        const pipeline = imported.copy ? this.copyPipeline : this.accumulate
+        const bind = this.device.createBindGroup({layout: pipeline.getBindGroupLayout(0), entries: [
           {binding: 0, resource: {buffer: this.params}}, {binding: 1, resource: imported.texture},
           {binding: 2, resource: {buffer: accumulators.wave}}, {binding: 3, resource: {buffer: accumulators.vect}},
           {binding: 4, resource: {buffer: accumulators.hist}}, {binding: 5, resource: {buffer: accumulators.diam}},
@@ -195,12 +212,12 @@ export class WebGpuScopes implements LiveScopes {
         ]})
         const timestamps = this.query ? {querySet: this.query, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1} : undefined
         const pass = encoder.beginComputePass(timestamps ? {timestampWrites: timestamps} : {})
-        pass.setPipeline(this.accumulate)
+        pass.setPipeline(pipeline)
         pass.setBindGroup(0, bind)
         pass.dispatchWorkgroups(Math.ceil(area.columns / 16), Math.ceil(area.rows / 16))
         pass.end()
         accumulated = true
-        if (this.falseContext && this.falsePipeline) this.encodeFalseColor(encoder, imported.texture, view.matrix)
+        if (this.falseContext && this.falsePipeline) this.encodeFalseColor(encoder, imported.texture, view.matrix, imported.copy)
       }
     }
     const liveCount = this.writeDraws(view, 0, this.samples, false)
@@ -231,7 +248,6 @@ export class WebGpuScopes implements LiveScopes {
       encoder.copyBufferToBuffer(this.queryResolve!, 0, this.queryRead!, 0, 16)
     }
     this.device.queue.submit([encoder.finish()])
-    imported?.close?.()
     if (readStats) {
       this.statsPending = true; this.lastStatsAt = now
       this.statsRead.mapAsync(MapMode.READ).then(() => {
@@ -280,7 +296,13 @@ export class WebGpuScopes implements LiveScopes {
     this.display = this.device.createRenderPipeline({layout: device.createPipelineLayout({bindGroupLayouts: [this.dynamicLayout]}), vertex: {module, entryPoint: 'vs'}, fragment: {module, entryPoint: 'fs', targets: [{format: this.format, blend: additive}]}, primitive: {topology: 'triangle-list'}})
   }
 
-  private encodeFalseColor(encoder: ReturnType<GpuDevice['createCommandEncoder']>, texture: unknown, matrix: MatrixCode) {
+  private falseCopyPipeline: ReturnType<GpuDevice['createRenderPipeline']> | null = null
+  private encodeFalseColor(encoder: ReturnType<GpuDevice['createCommandEncoder']>, texture: unknown, matrix: MatrixCode, copy: boolean) {
+    if (copy && !this.falseCopyPipeline) {
+      const module = this.device.createShaderModule({code: WGSL_FALSE_COLOR_COPY, label: 'scopes-false-color-copy'})
+      this.falseCopyPipeline = this.device.createRenderPipeline({layout: 'auto', vertex: {module, entryPoint: 'vs'}, fragment: {module, entryPoint: 'fs', targets: [{format: this.format}]}, primitive: {topology: 'triangle-list'}})
+    }
+    const pipeline = copy ? this.falseCopyPipeline : this.falsePipeline
     const canvas = this.falseCanvas!, context = this.falseContext!
     const box = canvas.getBoundingClientRect(), scale = Math.min(2, window.devicePixelRatio || 1)
     const w = Math.max(1, Math.round(box.width * scale)), h = Math.max(1, Math.round(box.height * scale))
@@ -290,11 +312,11 @@ export class WebGpuScopes implements LiveScopes {
     const data = new ArrayBuffer(32)
     new Float32Array(data, 0, 4).set([r, b, g, 0]); new Uint32Array(data, 16, 4).set([this.falseMode === 'gamut' ? 1 : 0, 0, 0, 0])
     this.device.queue.writeBuffer(this.falseParams, 0, data)
-    const bind = this.device.createBindGroup({layout: this.falsePipeline.getBindGroupLayout(0), entries: [
+    const bind = this.device.createBindGroup({layout: pipeline.getBindGroupLayout(0), entries: [
       {binding: 0, resource: {buffer: this.falseParams}}, {binding: 1, resource: texture}, {binding: 2, resource: this.sampler},
     ]})
     const pass = encoder.beginRenderPass({colorAttachments: [{view: context.getCurrentTexture().createView(), clearValue: {r: 0, g: 0, b: 0, a: 0}, loadOp: 'clear', storeOp: 'store'}]})
-    pass.setPipeline(this.falsePipeline); pass.setBindGroup(0, bind); pass.draw(3); pass.end()
+    pass.setPipeline(pipeline); pass.setBindGroup(0, bind); pass.draw(3); pass.end()
   }
 
   setFalseColor(canvas: HTMLCanvasElement | null, mode: FalseColorMode) {
@@ -362,6 +384,7 @@ export class WebGpuScopes implements LiveScopes {
     if (this.destroyed) return
     this.destroyed = true
     this.release(this.live); this.release(this.reference)
+    this.copyTexture?.texture.destroy()
     this.params.destroy(); this.draws.destroy(); this.statsRead.destroy(); this.falseParams.destroy()
     this.query?.destroy(); this.queryResolve?.destroy(); this.queryRead?.destroy()
     try { this.context.unconfigure() } catch { /* canvas já removido */ }
