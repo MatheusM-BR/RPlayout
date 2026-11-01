@@ -99,7 +99,8 @@ O operador pode deixar o perfil de PREVIEW/MONITOR em branco (automático) ou
 definir teto. A validação (`validateOutputProfile`) recusa só o que faria de
 um monitor uma saída de programa disfarçada:
 
-* acima do raster do canal ou de 1920×1080; largura e altura juntas, pares;
+* acima do raster do canal ou de 1920×1080; largura e altura juntas, pares,
+  na proporção do canal (±2 %: monitor esticado engana enquadramento);
 * acima da cadência do canal (a de campo, no entrelaçado);
 * entrelaçado;
 * bitrate fora de 300–8000 kbps.
