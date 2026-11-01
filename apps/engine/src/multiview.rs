@@ -367,6 +367,9 @@ struct Cell {
 pub struct Hooks {
     /// Atraso artificial por quadro composto (prova de que o PGM não sente).
     pub slow_per_frame: Option<Duration>,
+    /// Atraso artificial em cada volta da thread de cadência (prova de que
+    /// desmontar o multiview não segura o laço principal do engine).
+    pub cadence_stall: Option<Duration>,
 }
 
 struct Runner {
@@ -377,11 +380,30 @@ struct Runner {
     frames: Arc<AtomicU64>,
 }
 
+/// Quanto a desmontagem espera a thread de cadência antes de soltar o
+/// pipeline mesmo assim (ela só empurra em `appsrc` que não bloqueia).
+const RUNNER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+
 impl Drop for Runner {
+    /// Desmonta sem segurar quem chama (o laço principal do engine, que serve
+    /// o programa): sinaliza a thread de cadência e entrega a espera, com
+    /// tempo limite, e o pipeline indo a NULL a uma thread própria.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() { let _ = thread.join(); }
-        let _ = self.pipeline.set_state(gst::State::Null);
+        let thread = self.thread.take();
+        let pipeline = self.pipeline.clone();
+        let reap = move || {
+            if let Some(thread) = thread {
+                let until = Instant::now() + RUNNER_STOP_TIMEOUT;
+                while !thread.is_finished() && Instant::now() < until { std::thread::sleep(Duration::from_millis(5)); }
+                if thread.is_finished() { let _ = thread.join(); } else { eprintln!("[engine] multiview: a thread de cadência não parou em {RUNNER_STOP_TIMEOUT:?}; pipeline solto mesmo assim"); }
+            }
+            let _ = pipeline.set_state(gst::State::Null);
+        };
+        if std::thread::Builder::new().name("multiview-fim".into()).spawn(reap).is_err() {
+            // Sem thread nova (recurso esgotado): pelo menos solta o pipeline.
+            let _ = self.pipeline.set_state(gst::State::Null);
+        }
     }
 }
 
@@ -494,7 +516,11 @@ impl Runner {
             let stop = Arc::clone(&stop);
             let signals = Arc::clone(&signals);
             let period = Duration::from_nanos(period);
-            std::thread::Builder::new().name("multiview".into()).spawn(move || cadence(sources, taps, stop, signals, period))?
+            let stall = hooks.cadence_stall;
+            std::thread::Builder::new().name("multiview".into()).spawn(move || {
+                if let Some(stall) = stall { while !stop.load(Ordering::Acquire) { std::thread::sleep(stall); } }
+                cadence(sources, taps, stop, signals, period)
+            })?
         };
         Ok(Runner { pipeline, stop, thread: Some(thread), signals, frames })
     }
@@ -1042,6 +1068,25 @@ mod tests {
         assert_eq!(built(), before + 1);
     }
 
+    /// Item 11: desmontar o multiview não faz join no laço principal. Com a
+    /// thread de cadência atrasada 1 s, o drop volta na hora; a thread e o
+    /// pipeline terminam sozinhos logo depois.
+    #[test]
+    fn desmontar_o_multiview_nao_segura_o_laco_principal() {
+        gst::init().unwrap();
+        let profile = Quality::Leve.profile(25, 1);
+        let hooks = Hooks { cadence_stall: Some(Duration::from_millis(1000)), ..Hooks::default() };
+        let runner = Runner::start("mv-drop-test", Layout::Grid2x2, profile, vec![None; 4], &hooks).unwrap();
+        let pipeline = runner.pipeline.clone();
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        drop(runner);
+        assert!(started.elapsed() < Duration::from_millis(100), "drop levou {:?}", started.elapsed());
+        let until = Instant::now() + Duration::from_secs(4);
+        while pipeline.current_state() != gst::State::Null && Instant::now() < until { std::thread::sleep(Duration::from_millis(20)); }
+        assert_eq!(pipeline.current_state(), gst::State::Null, "o pipeline foi solto pela thread de desmontagem");
+    }
+
     // ---- GStreamer --------------------------------------------------------
 
     struct Source { pipeline: gst::Pipeline, pad: gst::Pad }
@@ -1424,7 +1469,7 @@ mod tests {
         let (baseline, baseline_gap) = measure(&mut channel, 2.0);
 
         let multiview = channel.0.attach_multiview_for_test();
-        multiview.set_hooks(Hooks { slow_per_frame: Some(Duration::from_millis(500)) });
+        multiview.set_hooks(Hooks { slow_per_frame: Some(Duration::from_millis(500)), ..Hooks::default() });
         multiview.configure(Composition { layout: Layout::Grid2x2, cells: vec![CellSource::Pgm; 4], quality: Quality::Padrao }).unwrap();
         assert!(channel.0.set_monitor(BUS, true), "monitor mv deveria existir");
         let (slow, slow_gap) = measure(&mut channel, 3.0);
