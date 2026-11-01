@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { availableParallelism } from 'node:os'
 import type { MonitorTier } from '@rplayout/protocol'
 import type { PublisherState } from './transport.js'
 
@@ -43,6 +44,27 @@ export function probeEncoders(binary: string | null | undefined, timeoutMs = 30_
 export interface MonitorKey { readonly channelId: string; readonly bus: string; readonly tier: MonitorTier }
 const keyOf = (key: MonitorKey) => `${key.channelId}|${key.bus}|${key.tier}`
 
+/**
+ * Orçamento de CPU da máquina para monitores em software, em Mpx/s.
+ *
+ * `RPLAYOUT_MONITOR_SW_MPX` ajusta; o padrão é 30 Mpx/s por núcleo lógico (o
+ * x264 veryfast/zerolatency faz cerca de 60 por núcleo: metade fica para o
+ * resto da máquina). É da máquina, não do canal: com N canais (N processos de
+ * engine) o total continua o mesmo.
+ */
+export function machineSoftwareBudgetMpx(env: NodeJS.ProcessEnv = process.env): number {
+  const forced = Number(env.RPLAYOUT_MONITOR_SW_MPX)
+  if (env.RPLAYOUT_MONITOR_SW_MPX !== undefined && env.RPLAYOUT_MONITOR_SW_MPX !== '' && Number.isFinite(forced)) return Math.max(0, forced)
+  return Math.max(30, availableParallelism() * 30)
+}
+
+/** Custo de um perfil relatado pelo engine, em Mpx/s. */
+export function profileMpx(profile: { width: number; height: number; fpsN: number; fpsD: number }): number {
+  return profile.width * profile.height * profile.fpsN / Math.max(1, profile.fpsD) / 1e6
+}
+
+interface SoftwareGrant { readonly key: MonitorKey; mpx: number }
+
 /** Situação exposta na tela técnica. */
 export interface EncoderSessionStatus {
   readonly hardware: string | null
@@ -58,6 +80,12 @@ export interface EncoderSessionStatus {
   readonly encoders: EncoderProbe['encoders']
   /** Por que a capacidade diminuiu desde a sonda, se diminuiu. */
   readonly learned: string | null
+  /** Orçamento de CPU dos monitores em software, somado sobre todos os canais. */
+  readonly software: {
+    readonly budgetMpx: number
+    readonly inUseMpx: number
+    readonly grants: readonly (MonitorKey & { readonly mpx: number })[]
+  }
 }
 
 /**
@@ -75,11 +103,46 @@ export interface EncoderSessionStatus {
  */
 export class EncoderSessions {
   private readonly grants = new Map<string, MonitorKey>()
+  private readonly software = new Map<string, SoftwareGrant>()
   private capacity: number | null
   private learnedReason: string | null = null
 
-  constructor(private probe: EncoderProbe, private readonly programSessions: () => number) {
+  constructor(private probe: EncoderProbe, private readonly programSessions: () => number, readonly softwareBudgetMpx: number = machineSoftwareBudgetMpx()) {
     this.capacity = probe.hardware ? probe.hardwareSessions : 0
+  }
+
+  private softwareInUse(except?: string): number {
+    let sum = 0
+    for (const [id, grant] of this.software) if (id !== except) sum += grant.mpx
+    return sum
+  }
+
+  /**
+   * Quanto um nível pode gastar em software (Mpx/s), descontado o que os
+   * monitores de **todos** os canais já gastam. Com a escada do engine
+   * (`ladder`, do pedido ao LEVE), concede o primeiro degrau que cabe e
+   * reserva exatamente ele; o LEVE sempre cabe (e conta). Sem escada ainda
+   * (engine acabou de subir), reserva tudo o que sobra até o relatório dizer
+   * o perfil real (`observe`). `reserve: false` só consulta (nível na placa:
+   * é o que ele usa se a placa cair). Devolve o valor a mandar ao engine.
+   */
+  requestSoftware(key: MonitorKey, ladder: readonly number[] | null | undefined, reserve = true): number {
+    const id = keyOf(key)
+    const existing = this.software.get(id)
+    if (existing) return existing.mpx
+    const remaining = Math.max(0, this.softwareBudgetMpx - this.softwareInUse(id))
+    let granted = remaining
+    if (ladder?.length) granted = ladder.find((cost) => cost <= remaining) ?? ladder[ladder.length - 1]!
+    if (reserve) this.software.set(id, { key, mpx: granted })
+    return granted
+  }
+
+  releaseSoftware(key: MonitorKey): void {
+    this.software.delete(keyOf(key))
+  }
+
+  hasSoftware(key: MonitorKey): boolean {
+    return this.software.has(keyOf(key))
   }
 
   /** Troca a sonda (ex.: a sonda terminou depois de os canais subirem). */
@@ -114,6 +177,7 @@ export class EncoderSessions {
 
   releaseChannel(channelId: string): void {
     for (const [id, key] of this.grants) if (key.channelId === channelId) this.grants.delete(id)
+    for (const [id, grant] of this.software) if (grant.key.channelId === channelId) this.software.delete(id)
   }
 
   has(key: MonitorKey): boolean {
@@ -131,6 +195,11 @@ export class EncoderSessions {
   observe(channelId: string, bus: string, report: PublisherState): void {
     for (const tier of report.tiers ?? []) {
       const key = { channelId, bus, tier: tier.tier }
+      const id = keyOf(key)
+      // CPU: o que o engine relata aberto em software é a verdade da conta
+      // (troca a quente da placa, degrau escolhido com reserva provisória).
+      if (tier.encoder && !tier.hardware && tier.profile && (this.software.has(id) || this.has(key))) this.software.set(id, { key, mpx: profileMpx(tier.profile) })
+      else if (tier.encoder && tier.hardware) this.software.delete(id)
       if (!this.has(key) || !tier.encoder || tier.hardware) continue
       // Conta a ocupação ANTES de devolver: a recusa veio com esta sessão aberta.
       const inUse = this.programSessions() + this.grants.size - 1
@@ -164,6 +233,11 @@ export class EncoderSessions {
       grants: [...this.grants.values()],
       encoders: this.probe.encoders,
       learned: this.learnedReason,
+      software: {
+        budgetMpx: this.softwareBudgetMpx,
+        inUseMpx: Math.round(this.softwareInUse() * 1000) / 1000,
+        grants: [...this.software.values()].map(({ key, mpx }) => ({ ...key, mpx: Math.round(mpx * 1000) / 1000 })),
+      },
     }
   }
 }

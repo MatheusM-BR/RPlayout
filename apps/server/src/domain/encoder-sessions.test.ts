@@ -152,8 +152,8 @@ describe('runtime: um pedido por nível, concessão de placa e desligamento', ()
     const set = vi.spyOn(runtime.transport, 'setMonitor').mockImplementation(() => {})
     runtime.watching('mon', 'ref')
     runtime.watching('mon', 'std')
-    expect(set).toHaveBeenNthCalledWith(1, 'mon', true, 'ref', true)
-    expect(set).toHaveBeenNthCalledWith(2, 'mon', true, 'std', false)
+    expect(set).toHaveBeenNthCalledWith(1, 'mon', true, 'ref', true, expect.any(Number))
+    expect(set).toHaveBeenNthCalledWith(2, 'mon', true, 'std', false, expect.any(Number))
     expect(runtime.monitorTiersWatched().map((t) => `${t.tier}:${t.hardware}`).sort()).toEqual(['ref:true', 'std:false'])
     vi.setSystemTime(Date.now() + 21_000)
     ;(runtime as unknown as { podarMonitores(): void }).podarMonitores()
@@ -170,14 +170,14 @@ describe('runtime: um pedido por nível, concessão de placa e desligamento', ()
     app.encoderSessions!.setProbe(geforce)
     const setA = vi.spyOn(a.transport, 'setMonitor').mockImplementation(() => {})
     a.watching('mon', 'ref')
-    expect(setA).toHaveBeenLastCalledWith('mon', true, 'ref', true)
+    expect(setA).toHaveBeenLastCalledWith('mon', true, 'ref', true, expect.any(Number))
     const retry = vi.fn()
     ;(b.transport as unknown as { retryHardware: () => void }).retryHardware = retry
     const [, program] = engineFixture()
     expect(program!.hardwareRefusals).toBe(1)
     vi.spyOn(b.transport, 'publishers').mockReturnValue([program!])
     serviceMonitorHardware(app)
-    expect(setA).toHaveBeenLastCalledWith('mon', true, 'ref', false)
+    expect(setA).toHaveBeenLastCalledWith('mon', true, 'ref', false, expect.any(Number))
     expect(app.encoderSessions!.status().monitorsInUse).toBe(0)
     expect(retry).toHaveBeenCalledTimes(1)
     expect(a.monitorTiersWatched().find((t) => t.tier === 'ref')?.hardware).toBe(false)
@@ -204,12 +204,12 @@ describe('runtime: um pedido por nível, concessão de placa e desligamento', ()
     // Teto padrão do mosaico: PADRÃO. Quem pede REF recebe PADRÃO.
     expect(runtime.multiviewCeiling()).toBe('std')
     expect(runtime.watching('mv', 'ref')).toBe('std')
-    expect(set).toHaveBeenLastCalledWith('mv', true, 'std', true)
+    expect(set).toHaveBeenLastCalledWith('mv', true, 'std', true, expect.any(Number))
     expect(app.encoderSessions!.status().grants).toEqual([{ channelId: 'ch', bus: 'mv', tier: 'std' }])
     // A sessão do mosaico conta no orçamento da placa: o PGM em PADRÃO fica em x264.
     ;(runtime as unknown as { monitores: Set<string> }).monitores.add('mon')
     runtime.watching('mon', 'std')
-    expect(set).toHaveBeenLastCalledWith('mon', true, 'std', false)
+    expect(set).toHaveBeenLastCalledWith('mon', true, 'std', false, expect.any(Number))
     // O engine relatou o nível do mosaico em software (placa recusou): a sessão volta.
     vi.spyOn(runtime.transport, 'publishers').mockReturnValue([{ url: 'srt://127.0.0.1:8890?streamid=publish:ch/mv', health: 'onAir', attempts: 0, delivered: 1,
       tiers: [{ tier: 'std', health: 'onAir', encoder: 'x264enc', hardware: false, delivered: 1, uptimeMs: 1 }] }])
@@ -220,5 +220,85 @@ describe('runtime: um pedido por nível, concessão de placa e desligamento', ()
     expect(runtime.watching('mv', 'std')).toBe('lite')
     expect(set).toHaveBeenLastCalledWith('mv', true)
     expect(runtime.monitorTiersWatched().some((t) => t.bus === 'mv' && t.tier === 'lite')).toBe(true)
+  })
+})
+
+describe('orçamento de CPU dos monitores em software: da máquina, não do processo', () => {
+  // Escada que o engine publica (`ladders`) para um canal 1080p25: REF cheio,
+  // geometria do PADRÃO e o LEVE (Mpx/s).
+  const ladders = [
+    { tier: 'ref' as const, mpx: [51.84, 23.04, 2.568] },
+    { tier: 'std' as const, mpx: [23.04, 2.568] },
+    { tier: 'lite' as const, mpx: [2.568] },
+  ]
+  const publisher = (channel: string, bus: string): PublisherState => ({ url: `srt://127.0.0.1:8890?streamid=publish:${channel}/${bus}`, health: 'idle', attempts: 0, delivered: 0, ladders })
+
+  it('soma os Mpx/s de todos os canais: o segundo canal recebe o degrau que cabe no que sobra', () => {
+    const sessions = new EncoderSessions(none, () => 0, 60)
+    expect(sessions.requestSoftware(key('a', 'mon', 'ref'), ladders[0]!.mpx)).toBe(51.84)
+    expect(sessions.requestSoftware(key('b', 'mon', 'ref'), ladders[0]!.mpx)).toBe(2.568)
+    expect(sessions.requestSoftware(key('b', 'mv', 'std'), ladders[1]!.mpx)).toBe(2.568)
+    expect(sessions.status().software.inUseMpx).toBeCloseTo(51.84 + 2 * 2.568)
+    // O mesmo nível pedido de novo não reserva duas vezes.
+    expect(sessions.requestSoftware(key('a', 'mon', 'ref'), ladders[0]!.mpx)).toBe(51.84)
+    sessions.releaseSoftware(key('a', 'mon', 'ref'))
+    expect(sessions.requestSoftware(key('c', 'pvw', 'std'), ladders[1]!.mpx)).toBe(23.04)
+    // Na placa só consulta: não reserva.
+    expect(sessions.requestSoftware(key('c', 'pvw', 'ref'), ladders[0]!.mpx, false)).toBe(23.04)
+    expect(sessions.hasSoftware(key('c', 'pvw', 'ref'))).toBe(false)
+  })
+
+  it('sem escada (engine acabou de subir) reserva o que sobra até o relatório dizer o perfil real', () => {
+    const sessions = new EncoderSessions(none, () => 0, 60)
+    expect(sessions.requestSoftware(key('a', 'mon', 'ref'), null)).toBe(60)
+    expect(sessions.requestSoftware(key('b', 'mon', 'std'), ladders[1]!.mpx)).toBe(2.568)
+    sessions.observe('a', 'mon', { ...publisher('a', 'mon'), health: 'onAir', tiers: [{ tier: 'ref', health: 'onAir', encoder: 'x264enc', hardware: false, delivered: 1, uptimeMs: 1, profile: { width: 1280, height: 720, fpsN: 25, fpsD: 1, bitrateKbps: 2000, quality: 20 } }] })
+    expect(sessions.status().software.inUseMpx).toBeCloseTo(23.04 + 2.568)
+  })
+
+  it('placa que cai para x264 passa a contar o perfil real em software', () => {
+    const sessions = new EncoderSessions(geforce, () => 0, 60)
+    sessions.request(key('a', 'mon', 'ref'))
+    sessions.observe('a', 'mon', { ...publisher('a', 'mon'), health: 'onAir', tiers: [{ tier: 'ref', health: 'onAir', encoder: 'x264enc', hardware: false, delivered: 1, uptimeMs: 1, hardwareFailed: 'session', profile: { width: 1920, height: 1080, fpsN: 25, fpsD: 1, bitrateKbps: 4000, quality: 20 } }] })
+    expect(sessions.status().software.grants).toEqual([{ channelId: 'a', bus: 'mon', tier: 'ref', mpx: 51.84 }])
+  })
+
+  describe('runtime: dois canais, um orçamento', () => {
+    let app: App
+    beforeEach(async () => {
+      vi.stubEnv('RPLAYOUT_MONITOR_SW_MPX', '60')
+      vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(2026, 9, 20, 19, 0, 0))
+      app = await createApp(':memory:')
+      for (const id of ['ca', 'cb']) app.db.insert(channels).values({ id, name: `Canal ${id}`, rateNum: 25, rateDen: 1, width: 1920, height: 1080, targetLufs: -23, ceilingDbtp: -1, limiterLookaheadMs: 5, createdAt: new Date().toISOString() }).run()
+    })
+    afterEach(() => { app.close(); vi.useRealTimers(); vi.unstubAllEnvs() })
+
+    it('REF de dois canais em software: o primeiro abre cheio, o segundo desce; o mv entra na conta; o desligamento devolve', async () => {
+      const a = (await runtimeFor(app, 'ca'))!, b = (await runtimeFor(app, 'cb'))!
+      expect(app.encoderSessions!.softwareBudgetMpx).toBe(60)
+      for (const runtime of [a, b]) {
+        ;(runtime as unknown as { monitores: Set<string> }).monitores.add('mon').add('mv')
+        vi.spyOn(runtime.transport, 'publishers').mockReturnValue([publisher(runtime.channel.id, 'mon'), publisher(runtime.channel.id, 'mv')])
+      }
+      const setA = vi.spyOn(a.transport, 'setMonitor').mockImplementation(() => {})
+      const setB = vi.spyOn(b.transport, 'setMonitor').mockImplementation(() => {})
+      a.watching('mon', 'ref')
+      expect(setA).toHaveBeenLastCalledWith('mon', true, 'ref', false, 51.84)
+      b.watching('mon', 'ref')
+      expect(setB).toHaveBeenLastCalledWith('mon', true, 'ref', false, 2.568)
+      // Multiview (teto PADRÃO) do canal B: conta no mesmo orçamento.
+      b.watching('mv', 'std')
+      expect(setB).toHaveBeenLastCalledWith('mv', true, 'std', false, 2.568)
+      expect(app.encoderSessions!.status().software.inUseMpx).toBeLessThanOrEqual(60)
+      // A reafirmação a cada 5 s repete o mesmo orçamento (o engine não reabre).
+      vi.setSystemTime(Date.now() + 6_000)
+      b.watching('mon', 'ref')
+      expect(setB).toHaveBeenLastCalledWith('mon', true, 'ref', false, 2.568)
+      // 20 s sem olhar o REF do canal A: devolve os 51,84 Mpx/s.
+      vi.setSystemTime(Date.now() + 15_000)
+      b.watching('mon', 'ref'); b.watching('mv', 'std')
+      ;(a as unknown as { podarMonitores(): void }).podarMonitores()
+      expect(app.encoderSessions!.status().software.inUseMpx).toBeCloseTo(2 * 2.568)
+    })
   })
 })

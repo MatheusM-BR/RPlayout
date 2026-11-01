@@ -419,7 +419,10 @@ fn run_command(channel: &mut Channel, command: Command, request_id:u64) -> Resul
             crate::monitor::TEST_CLOCK.store(on, std::sync::atomic::Ordering::Relaxed);
             Ok(true)
         }
-        Command::Monitor { bus, on, tier, hardware } => {
+        Command::Monitor { bus, on, tier, hardware, budget_mpx } => {
+            if let (Some(tier), true) = (tier, on) {
+                channel.set_monitor_budget(&bus, tier, budget_mpx);
+            }
             if !channel.set_monitor_tier(&bus, tier, on, hardware) {
                 if bus == "mv" {
                     if channel.multiview_held() { return Err(anyhow::anyhow!("multiview retido até a admissão do canal")); }

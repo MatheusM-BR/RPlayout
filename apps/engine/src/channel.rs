@@ -2674,6 +2674,19 @@ impl Channel {
         }
     }
 
+    /// Orçamento de CPU (Mpx/s) concedido pelo servidor a um nível de monitor.
+    pub fn set_monitor_budget(&mut self, bus: &str, tier: crate::monitor::MonitorTier, budget: Option<f64>) {
+        if bus == multiview::BUS {
+            self.set_multiview_budget(tier, budget);
+            return;
+        }
+        for publisher in &mut self.publishers {
+            if publisher.role() == bus {
+                publisher.set_tier_budget(tier, budget);
+            }
+        }
+    }
+
     /// Liga ou desliga um nível de um monitor. Sem nível, o legado (leve).
     pub fn set_monitor_tier(&mut self, bus: &str, tier: Option<crate::monitor::MonitorTier>, on: bool, hardware: bool) -> bool {
         let Some(tier) = tier else { return self.set_monitor(bus, on) };

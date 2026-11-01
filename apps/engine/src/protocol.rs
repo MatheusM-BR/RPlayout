@@ -230,6 +230,11 @@ pub enum Command {
         /// Concessão de sessão de placa feita pelo servidor.
         #[serde(default)]
         hardware: bool,
+        /// Quanto este nível pode gastar em software (Mpx/s), concedido pelo
+        /// servidor a partir do orçamento de CPU da máquina (todos os canais).
+        /// Ausente: o engine usa a conta local (engine sozinho).
+        #[serde(default)]
+        budget_mpx: Option<f64>,
     },
     /// Liga o relógio de teste gravado na imagem dos monitores (medição de
     /// atraso de vidro a vidro). Nunca toca o programa.

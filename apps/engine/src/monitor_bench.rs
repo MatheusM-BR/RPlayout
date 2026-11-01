@@ -471,6 +471,7 @@ fn relatorio_real_de_falha_de_placa_vira_fixture_do_servidor() {
     pump(&mut bus, 1.0);
     let mut tiers = bus.tier_reports();
     assert!(tiers[0].hardware_failed.is_some(), "nada sobrescreve hardwareFailed: {tiers:?}");
+    let ladders = bus.ladders();
     bus.shutdown();
     for tier in &mut tiers {
         tier.delivered = 0;
@@ -488,6 +489,7 @@ fn relatorio_real_de_falha_de_placa_vira_fixture_do_servidor() {
         tiers,
         hardware_refusals: 0,
         hardware_failed: None,
+        ladders,
     };
 
     // Programa do canal B: recusa da placa sem monitor local para tomar de volta.
@@ -519,4 +521,32 @@ fn relatorio_real_de_falha_de_placa_vira_fixture_do_servidor() {
     }
     let saved = std::fs::read_to_string(&path).unwrap_or_default();
     assert_eq!(saved, lines, "fixture do servidor desatualizada: RPLAYOUT_UPDATE_FIXTURES=1 cargo test relatorio_real_de_falha_de_placa");
+}
+
+/// Concessão de placa sem elemento de placa criável: o nível sai em x264 com
+/// o perfil e o orçamento de software (não com o perfil cheio da placa) e o
+/// relatório diz por quê.
+#[test]
+fn placa_concedida_sem_elemento_usa_perfil_e_orcamento_de_software() {
+    let _placa = PLACA.lock().unwrap_or_else(|e| e.into_inner());
+    gst::init().unwrap();
+    let id = format!("mbnohw-{}", std::process::id());
+    let _source = source(&id, 1280, 720, 50, 1);
+    let port = free_port();
+    let _receiver = Receiver::new(port);
+    let src = MonitorSource { width: 1280, height: 720, fps_n: 50, fps_d: 1, frame_n: 50, frame_d: 1, bitrate_ceiling_kbps: 8000, mosaic: false };
+    let mut bus = MonitorBus::new(spec(&id, src, &[(MonitorTier::Ref, port)]));
+    bus.set_hardware_encoder(Some("rplayout-placa-que-nao-existe"));
+    // O servidor concedeu placa e, para o caso de ela cair, 10 Mpx/s de CPU:
+    // 1280×720 a 50 (46 Mpx/s) não cabe; o LEVE cabe.
+    bus.set_software_budget(MonitorTier::Ref, Some(10.0));
+    bus.set_tier(MonitorTier::Ref, true, true);
+    bus.service();
+    let report = bus.tier_reports()[0].clone();
+    assert_eq!(report.encoder.as_deref(), Some("x264enc"), "{report:?}");
+    assert!(!report.hardware);
+    let profile = report.profile.unwrap();
+    assert!(profile.width as f64 * profile.height as f64 * profile.fps_n as f64 / profile.fps_d as f64 / 1e6 <= 10.0, "{profile:?}");
+    assert!(report.degraded.as_deref().is_some_and(|d| d.contains("placa indisponível")), "{report:?}");
+    bus.shutdown();
 }

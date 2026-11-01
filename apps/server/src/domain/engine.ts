@@ -446,7 +446,7 @@ export class EngineTransport implements Transport {
   }>()
   private readonly desiredMonitors = new Map<MonitorBus, boolean>()
   /** Níveis de monitor pedidos (`bus|tier`), reenviados quando o engine volta. */
-  private readonly desiredMonitorTiers = new Map<string, { bus: MonitorBus; tier: MonitorTier; on: boolean; hardware: boolean }>()
+  private readonly desiredMonitorTiers = new Map<string, { bus: MonitorBus; tier: MonitorTier; on: boolean; hardware: boolean; budgetMpx?: number }>()
   private desiredMonitorClock = false
   private desiredMultiview: MultiviewComposition | null = null
   private multiviewEngineState: MultiviewEngineState | null = null
@@ -1061,6 +1061,7 @@ export class EngineTransport implements Transport {
           ...(Array.isArray(event.tiers) && event.tiers.length ? { tiers: event.tiers.map((tier) => ({ ...tier, ...(tier.error ? { error: sanitizeDiagnostic(tier.error) } : {}), ...(tier.hardwareFailed ? { hardwareFailed: sanitizeDiagnostic(tier.hardwareFailed) } : {}) })) } : {}),
           ...(Number.isSafeInteger(event.hardwareRefusals) && event.hardwareRefusals! > 0 ? { hardwareRefusals: event.hardwareRefusals } : {}),
           ...(typeof event.hardwareFailed === 'string' ? { hardwareFailed: sanitizeDiagnostic(event.hardwareFailed) } : {}),
+          ...(Array.isArray(event.ladders) && event.ladders.length ? { ladders: event.ladders } : {}),
         })
         this.notifySignalObservation()
         break
@@ -1288,7 +1289,7 @@ export class EngineTransport implements Transport {
     if(this.nativeReportedSelectionUncertain||this.stopAwaitingDurable||this.nativeSelectionUncertain&&!canRecoverBound||this.replacementWire?.health().selectionUncertain&&!canRecoverBound){this.fail('PGM nativo inconclusivo preservado; não retomar silenciosamente a fonte anterior. Confirme STOP antes de outro corte.');return}
     if (this.desiredMultiview && this.options.multiview) this.send({ cmd: 'multiview', composition: this.desiredMultiview })
     for (const [bus, on] of this.desiredMonitors) this.send({ cmd: 'monitor', bus, on })
-    for (const { bus, tier, on, hardware } of this.desiredMonitorTiers.values()) this.send({ cmd: 'monitor', bus, on, tier, hardware })
+    for (const { bus, tier, on, hardware, budgetMpx } of this.desiredMonitorTiers.values()) this.send({ cmd: 'monitor', bus, on, tier, hardware, ...(budgetMpx !== undefined ? { budgetMpx } : {}) })
     if (this.desiredMonitorClock) this.send({ cmd: 'monitorClock', on: true })
     if (this.desiredGraphic) this.send({ cmd: 'graphic', ...this.desiredGraphic })
     for (const [slot, overlay] of this.desiredOverlays) this.send({ cmd: 'overlay', slot, action: 'cut', svg: overlay.svg, animation: overlay.animation })
@@ -2716,10 +2717,11 @@ export class EngineTransport implements Transport {
   }
 
   /** Liga ou desliga um monitor. O engine faz isso sem tocar no programa. */
-  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware = false): void {
+  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware = false, budgetMpx?: number): void {
     if (tier) {
-      this.desiredMonitorTiers.set(`${bus}|${tier}`, { bus, tier, on, hardware })
-      this.send({ cmd: 'monitor', bus, on, tier, hardware })
+      const budget = on && budgetMpx !== undefined && Number.isFinite(budgetMpx) ? { budgetMpx: Math.max(0, budgetMpx) } : {}
+      this.desiredMonitorTiers.set(`${bus}|${tier}`, { bus, tier, on, hardware, ...budget })
+      this.send({ cmd: 'monitor', bus, on, tier, hardware, ...budget })
       return
     }
     this.desiredMonitors.set(bus, on)

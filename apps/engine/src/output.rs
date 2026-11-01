@@ -175,6 +175,11 @@ pub struct Report {
     /// Motivo da última recusa da placa nesta saída.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hardware_failed: Option<String>,
+    /// Monitor com níveis: custo (Mpx/s) de cada degrau de cada nível em
+    /// software. O servidor soma o orçamento de CPU da máquina inteira (todos
+    /// os canais) e concede a cada nível o primeiro degrau que cabe.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ladders: Vec<crate::monitor::TierLadder>,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -385,6 +390,13 @@ impl Publisher {
         }
     }
 
+    /// Orçamento de CPU (Mpx/s) concedido pelo servidor a um nível.
+    pub fn set_tier_budget(&mut self, tier: crate::monitor::MonitorTier, budget: Option<f64>) {
+        if let Some(bus) = self.tiered.as_mut() {
+            bus.set_software_budget(tier, budget);
+        }
+    }
+
     /// Nome pelo qual esta saída é comandada de fora.
     pub fn role(&self) -> &str {
         &self.spec.role
@@ -506,6 +518,7 @@ impl Publisher {
                 tiers: bus.tier_reports(),
                 hardware_refusals: 0,
                 hardware_failed: None,
+                ladders: bus.ladders(),
             };
         }
         Report {
@@ -520,6 +533,7 @@ impl Publisher {
             error: self.error.clone(),
             hardware_refusals: self.hardware_refusals,
             hardware_failed: self.hardware_failed.clone(),
+            ladders: Vec::new(),
         }
     }
 

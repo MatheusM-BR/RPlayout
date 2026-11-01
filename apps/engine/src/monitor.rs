@@ -247,14 +247,16 @@ pub fn above(tier: MonitorTier, ceiling: MonitorTier) -> bool {
     (tier as u8) < (ceiling as u8)
 }
 
-/// Orçamento de CPU para monitores codificados em software, em Mpx/s.
+/// Orçamento de CPU para monitores codificados em software, em Mpx/s, **só
+/// para o engine rodando sozinho** (testes, bancada, engine sem servidor).
 ///
-/// É a trava que impede uma janela de navegador de tirar CPU do programa:
-/// passou do orçamento, o nível pedido é servido mais barato (primeiro sem a
-/// cadência de campo, depois na geometria de baixo) e o relatório diz por quê.
-/// Codificação por placa não entra na conta. `RPLAYOUT_MONITOR_SW_MPX` ajusta;
-/// o padrão é 30 Mpx/s por núcleo lógico -- o x264 veryfast/zerolatency faz
-/// cerca de 60 Mpx/s por núcleo, então metade fica para o resto da máquina.
+/// O orçamento de verdade é da máquina e é contado pelo servidor
+/// (`EncoderSessions`), somando os Mpx/s de todos os canais -- cada canal é um
+/// processo, e um orçamento por processo ficava N vezes maior com N canais.
+/// O servidor manda a cada nível o quanto ele pode gastar (`budgetMpx` no
+/// comando `monitor`); só sem isso o engine cai nesta conta local.
+/// `RPLAYOUT_MONITOR_SW_MPX` ajusta; o padrão é 30 Mpx/s por núcleo lógico --
+/// o x264 veryfast/zerolatency faz cerca de 60 Mpx/s por núcleo.
 pub fn software_budget_mpx() -> f64 {
     if let Some(value) = std::env::var("RPLAYOUT_MONITOR_SW_MPX").ok().and_then(|v| v.parse::<f64>().ok()) {
         return value.max(0.0);
@@ -264,7 +266,8 @@ pub fn software_budget_mpx() -> f64 {
 }
 
 /// Custo, em milésimos de Mpx/s, das codificações de monitor em software
-/// abertas neste processo. Compartilhado por todos os monitores do canal.
+/// abertas neste processo. Só decide o perfil quando o servidor não mandou
+/// orçamento (veja [`software_budget_mpx`]).
 static SOFTWARE_LOAD_MILLI: AtomicU64 = AtomicU64::new(0);
 /// Sessões de placa ocupadas por monitores neste processo.
 pub static MONITOR_HW_SESSIONS: AtomicU32 = AtomicU32::new(0);
@@ -301,7 +304,21 @@ pub fn resolve_profile(
     if hardware {
         return (tier_profile(tier, source, true), None);
     }
-    let fits = |p: &TierProfile| load_mpx + p.mpx_per_second() <= budget_mpx;
+    let ladder = software_ladder(tier, source);
+    let last = ladder.len() - 1;
+    for (index, (profile, reason)) in ladder.iter().enumerate() {
+        // O último degrau (o LEVE) sempre cabe.
+        if index == last || load_mpx + profile.mpx_per_second() <= budget_mpx {
+            return (*profile, reason.clone());
+        }
+    }
+    unreachable!("a escada sempre termina no LEVE")
+}
+
+/// Degraus de um nível em software, do pedido ao LEVE (que sempre cabe), com
+/// o motivo de cada um. É a mesma escada que o servidor usa para conceder o
+/// orçamento da máquina: o engine a publica no relatório (`ladders`).
+pub fn software_ladder(tier: MonitorTier, source: &MonitorSource) -> Vec<(TierProfile, Option<String>)> {
     let mut steps: Vec<(TierProfile, Option<&str>)> = Vec::new();
     match tier {
         MonitorTier::Ref => {
@@ -316,15 +333,53 @@ pub fn resolve_profile(
         }
         MonitorTier::Lite => {}
     }
+    let lite = tier_profile(MonitorTier::Lite, source, false);
+    steps.push((lite, (tier != MonitorTier::Lite).then_some("geometria do LEVE (CPU no limite)")));
     steps.dedup_by(|a, b| a.0 == b.0);
-    for (profile, reason) in steps {
-        if fits(&profile) {
-            return (profile, reason.map(str::to_string));
+    steps.into_iter().map(|(profile, reason)| (profile, reason.map(str::to_string))).collect()
+}
+
+/// Custo de cada degrau de um nível, em Mpx/s, para o servidor.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierLadder {
+    pub tier: MonitorTier,
+    /// Do pedido ao LEVE; o servidor concede o primeiro que cabe no que sobra.
+    pub mpx: Vec<f64>,
+}
+
+/// Abaixa a prioridade da thread atual (`true`) ou devolve a que ela tinha.
+///
+/// Só no Windows: lá a prioridade de thread volta ao normal sem privilégio,
+/// então uma thread do pool do GStreamer que serviu um monitor e depois serve
+/// o programa não fica rebaixada. No Linux o "nice" de uma thread não volta a
+/// subir sem `CAP_SYS_NICE` e as threads de tarefa do GStreamer são de um pool
+/// compartilhado pelo processo (o programa inclusive): rebaixar ali poderia
+/// prender o programa numa thread lenta. Por isso no Linux não se mexe (veja
+/// docs/MONITORES-NAVEGADOR.md). As threads internas do x264 (criadas pelo
+/// libx264) não herdam a prioridade no Windows; o efeito vale para a thread
+/// do ramo (escala, conversão e alimentação do codificador).
+fn lower_thread_priority(lower: bool) {
+    #[cfg(windows)]
+    {
+        use std::cell::Cell;
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadPriority, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
+        thread_local! { static ANTES: Cell<Option<i32>> = const { Cell::new(None) }; }
+        // SAFETY: GetCurrentThread devolve um pseudo-handle da própria thread.
+        unsafe {
+            let thread = GetCurrentThread();
+            if lower {
+                if ANTES.with(|antes| antes.get()).is_none() {
+                    ANTES.with(|antes| antes.set(Some(GetThreadPriority(thread))));
+                    SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL);
+                }
+            } else if let Some(previous) = ANTES.with(|antes| antes.take()) {
+                SetThreadPriority(thread, previous);
+            }
         }
     }
-    let lite = tier_profile(MonitorTier::Lite, source, false);
-    let reason = (tier != MonitorTier::Lite).then(|| "geometria do LEVE (CPU no limite)".to_string());
-    (lite, reason)
+    #[cfg(not(windows))]
+    let _ = lower;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +476,9 @@ struct Branch {
 /// Estado de um nível, ativo ou não.
 struct TierState {
     wanted: bool,
+    /// Quanto este nível pode gastar em software (Mpx/s), concedido pelo
+    /// servidor a partir do orçamento da máquina. `None`: engine sozinho.
+    budget_mpx: Option<f64>,
     /// O servidor concedeu sessão de placa para este nível.
     hardware_granted: bool,
     /// A placa falhou neste nível (ou foi devolvida ao programa); até o
@@ -445,6 +503,7 @@ impl TierState {
     fn new() -> Self {
         Self {
             wanted: false,
+            budget_mpx: None,
             hardware_granted: false,
             hardware_failed: false,
             hardware_failure: None,
@@ -600,6 +659,37 @@ impl MonitorBus {
         }
     }
 
+    /// Orçamento de CPU concedido pelo servidor a um nível (Mpx/s). Um ramo em
+    /// software que não caiba mais (ou que agora caiba melhor) é reaberto no
+    /// degrau novo; os outros níveis não piscam.
+    pub fn set_software_budget(&mut self, tier: MonitorTier, budget: Option<f64>) {
+        let source = self.spec.source;
+        let Some(state) = self.tiers.get_mut(&tier) else { return };
+        if state.budget_mpx == budget {
+            return;
+        }
+        state.budget_mpx = budget;
+        let Some(budget) = budget else { return };
+        let reopen = state.branch.as_ref().is_some_and(|branch| {
+            !branch.hardware && resolve_profile(tier, &source, false, 0.0, budget).0 != branch.profile
+        });
+        if reopen {
+            state.retry_at = Some(Instant::now());
+            self.drop_branch(tier);
+        }
+    }
+
+    /// Escada de custo de cada nível, para o servidor conceder o orçamento.
+    pub fn ladders(&self) -> Vec<TierLadder> {
+        MonitorTier::ALL
+            .iter()
+            .map(|tier| TierLadder {
+                tier: *tier,
+                mpx: software_ladder(*tier, &self.spec.source).iter().map(|(p, _)| p.mpx_per_second()).collect(),
+            })
+            .collect()
+    }
+
     /// Para tudo (reconfiguração ou fim do canal).
     pub fn shutdown(&mut self) {
         for tier in MonitorTier::ALL {
@@ -737,6 +827,23 @@ impl MonitorBus {
         gst::Element::link_many([&asrc, &aconv, &ares, &acaps, &aenc, &aparse, &atee])?;
         crate::fencing::guard_pipeline(&pipeline)?;
         pipeline.set_latency(gst::ClockTime::from_mseconds(100));
+        // Monitor nunca disputa CPU de igual para igual com o programa: as
+        // threads de streaming deste pipeline entram com prioridade abaixo do
+        // normal e saem devolvendo a que tinham (só onde isso é seguro; veja
+        // `lower_thread_priority`). STREAM_STATUS ENTER/LEAVE é postado pela
+        // própria thread, e o sync handler roda nela.
+        if let Some(bus) = pipeline.bus() {
+            bus.set_sync_handler(|_, message| {
+                if let gst::MessageView::StreamStatus(status) = message.view() {
+                    match status.get().0 {
+                        gst::StreamStatusType::Enter => lower_thread_priority(true),
+                        gst::StreamStatusType::Leave => lower_thread_priority(false),
+                        _ => {}
+                    }
+                }
+                gst::BusSyncReply::Pass
+            });
+        }
         pipeline.set_state(gst::State::Playing).context("o monitor não entrou em execução")?;
         self.bus = pipeline.bus();
         self.video_tee = Some(vtee);
@@ -753,8 +860,27 @@ impl MonitorBus {
         let state = self.tiers.get(&tier).ok_or_else(|| anyhow!("nível desconhecido"))?;
         let forced = self.hardware_encoder.clone().or_else(|| std::env::var("RPLAYOUT_MONITOR_ENCODER").ok());
         let hardware = state.hardware_granted && !state.hardware_failed && (forced.is_some() || crate::output::hardware_available());
-        let (profile, degraded) = resolve_profile(tier, &self.spec.source, hardware, software_load(), software_budget_mpx());
-        let (venc, encoder) = crate::output::monitor_encoder_with(&profile, hardware, forced.as_deref())?;
+        let budget = state.budget_mpx;
+        let software = |source: &MonitorSource| match budget {
+            // Orçamento da máquina, concedido pelo servidor a este nível.
+            Some(budget) => resolve_profile(tier, source, false, 0.0, budget),
+            // Engine sozinho: conta local do processo.
+            None => resolve_profile(tier, source, false, software_load(), software_budget_mpx()),
+        };
+        let (mut profile, mut degraded) = if hardware { resolve_profile(tier, &self.spec.source, true, 0.0, 0.0) } else { software(&self.spec.source) };
+        let (mut venc, encoder) = crate::output::monitor_encoder_with(&profile, hardware, forced.as_deref())?;
+        if hardware && encoder == "x264enc" {
+            // Concessão de placa sem elemento de placa criável: o nível sai em
+            // x264 com o perfil e o orçamento de software, não com o perfil
+            // cheio da placa (que estouraria a CPU).
+            let (soft_profile, soft_degraded) = software(&self.spec.source);
+            profile = soft_profile;
+            degraded = Some(match soft_degraded {
+                Some(reason) => format!("placa indisponível; {reason}"),
+                None => "placa indisponível".to_string(),
+            });
+            venc = crate::output::monitor_encoder_with(&profile, false, None)?.0;
+        }
         let hardware = encoder != "x264enc";
 
         // Antes de reabrir, solta o que já pode ser solto; e o nome é único por
@@ -1212,6 +1338,31 @@ mod tests {
         assert!(why.is_some());
         let (p, why) = resolve_profile(MonitorTier::Lite, &s, false, 1e9, 0.0);
         assert_eq!((p.height, why), (240, None), "leve sempre cabe");
+    }
+
+    /// Achado 1: o servidor concede o orçamento da máquina pela escada que o
+    /// engine publica; o engine, com o valor concedido, abre exatamente o
+    /// degrau que o servidor reservou -- qualquer que seja a carga do processo.
+    #[test]
+    fn concessao_do_servidor_abre_o_degrau_reservado() {
+        let s = src(1920, 1080, 50, 1, 25, 1);
+        for tier in MonitorTier::ALL {
+            let ladder = software_ladder(tier, &s);
+            assert!(ladder.last().unwrap().0.height == 240, "a escada termina no LEVE");
+            // O que o servidor faz com a escada serializada (JSON, f64 exato).
+            let json = serde_json::to_string(&TierLadder { tier, mpx: ladder.iter().map(|(p, _)| p.mpx_per_second()).collect() }).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let mpx: Vec<f64> = parsed["mpx"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            for remaining in [0.0, 1.0, 10.0, 26.0, 52.0, 60.0, 104.0, 500.0] {
+                let index = mpx.iter().position(|cost| *cost <= remaining).unwrap_or(mpx.len() - 1);
+                let granted = mpx[index];
+                // Carga local enorme não importa: o orçamento é o concedido.
+                SOFTWARE_LOAD_MILLI.store(1_000_000_000, Ordering::Release);
+                let (profile, _) = resolve_profile(tier, &s, false, 0.0, granted);
+                SOFTWARE_LOAD_MILLI.store(0, Ordering::Release);
+                assert_eq!(profile, ladder[index].0, "{tier:?} com {remaining} Mpx/s livres");
+            }
+        }
     }
 
     #[test]

@@ -576,6 +576,9 @@ pub struct Multiview {
     /// Níveis pedidos agora (e a concessão de placa de cada um). O mosaico só
     /// é composto enquanto houver algum.
     tiers: std::collections::BTreeMap<MonitorTier, bool>,
+    /// Orçamento de CPU concedido pelo servidor a cada nível (Mpx/s); volta a
+    /// ser aplicado quando o publicador é recriado (troca de teto).
+    budgets: std::collections::BTreeMap<MonitorTier, f64>,
     hooks: Hooks,
 }
 
@@ -608,7 +611,7 @@ impl Multiview {
         });
         let mut multiview = Multiview {
             video_channel, audio_channel, fps: (fps_n, fps_d), composition: composition.clone(), cells: Vec::new(),
-            runner: None, publisher: publisher_spec.clone().map(Publisher::new), publisher_spec, tiers: Default::default(), hooks: Hooks::default(),
+            runner: None, publisher: publisher_spec.clone().map(Publisher::new), publisher_spec, tiers: Default::default(), budgets: Default::default(), hooks: Hooks::default(),
         };
         multiview.set_cells(&composition);
         multiview
@@ -650,6 +653,7 @@ impl Multiview {
                 if spec.monitor.is_some() { spec.monitor = Some(self.composition.quality.monitor_source(self.fps.0, self.fps.1)); }
                 if let Some(mut old) = self.publisher.take() { old.shutdown(); }
                 let mut publisher = Publisher::new(spec.clone());
+                for (tier, budget) in &self.budgets { publisher.set_tier_budget(*tier, Some(*budget)); }
                 for (tier, hardware) in &self.tiers { Self::apply_tier(&mut publisher, *tier, true, *hardware); }
                 self.publisher = Some(publisher);
             }
@@ -675,6 +679,12 @@ impl Multiview {
         if on { self.tiers.insert(tier, hardware); } else { self.tiers.remove(&tier); }
         if let Some(publisher) = self.publisher.as_mut() { Self::apply_tier(publisher, tier, on, hardware); }
         true
+    }
+
+    /// Orçamento de CPU concedido pelo servidor a um nível do mosaico.
+    pub fn set_tier_budget(&mut self, tier: MonitorTier, budget: Option<f64>) {
+        match budget { Some(value) => { self.budgets.insert(tier, value); } None => { self.budgets.remove(&tier); } }
+        if let Some(publisher) = self.publisher.as_mut() { publisher.set_tier_budget(tier, budget); }
     }
 
     /// Teto do mosaico (o nível em que ele é composto).
@@ -818,6 +828,10 @@ impl Channel {
 
     pub(crate) fn set_multiview_wanted(&mut self, on: bool) -> bool {
         match self.multiview.as_mut() { Some(multiview) => { multiview.set_wanted(on); true } None => false }
+    }
+
+    pub(crate) fn set_multiview_budget(&mut self, tier: MonitorTier, budget: Option<f64>) {
+        if let Some(multiview) = self.multiview.as_mut() { multiview.set_tier_budget(tier, budget); }
     }
 
     pub(crate) fn set_multiview_tier(&mut self, tier: MonitorTier, on: bool, hardware: bool) -> bool {

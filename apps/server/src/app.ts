@@ -1536,7 +1536,7 @@ export class ChannelRuntime {
    * acima, que são o caminho histórico (e o que o HA e os testes antigos usam).
    * O multiview composto (`mv`) entra aqui como os outros monitores.
    */
-  private readonly nivelOlhado = new Map<string, { bus: MonitorBus; tier: MonitorTier; at: number; reafirmado: number; hardware: boolean }>()
+  private readonly nivelOlhado = new Map<string, { bus: MonitorBus; tier: MonitorTier; at: number; reafirmado: number; hardware: boolean; budgetMpx?: number }>()
   /** Contador global de sessões de placa, injetado pela aplicação. */
   encoderSessions: EncoderSessions | null = null
 
@@ -1587,6 +1587,10 @@ export class ChannelRuntime {
     if (this.monitorLigado.get(bus) !== true) {
       this.monitorLigado.set(bus, true)
       this.monitorReafirmado.set(bus, agora)
+      // O LEVE sempre cabe, mas conta no orçamento de CPU da máquina (o do
+      // multiview, 960×540, não é desprezível).
+      const ladder = this.monitorLadder(bus, 'lite')
+      this.encoderSessions?.requestSoftware({ channelId: this.channel.id, bus, tier: 'lite' }, ladder ?? [0])
       console.info(`[monitor] ligando ${bus}: alguém abriu a janela`)
       this.transport.setMonitor(bus, true)
       return 'lite'
@@ -1610,19 +1614,35 @@ export class ChannelRuntime {
     if (!current) {
       // Concessão de placa decidida aqui, uma vez por abertura do nível.
       const hardware = this.encoderSessions?.request(sessionKey) ?? false
-      this.nivelOlhado.set(key, { bus, tier, at: agora, reafirmado: agora, hardware })
-      console.info(`[monitor] ligando ${bus} ${tier}${hardware ? ' (placa)' : ''}: alguém abriu a janela`)
-      this.transport.setMonitor(bus, true, tier, hardware)
+      // CPU: em software, reserva no orçamento da máquina o degrau que cabe;
+      // na placa, só consulta (é o que o nível usa se a placa cair).
+      const budgetMpx = this.encoderSessions?.requestSoftware(sessionKey, this.monitorLadder(bus, tier), !hardware)
+      this.nivelOlhado.set(key, { bus, tier, at: agora, reafirmado: agora, hardware, budgetMpx })
+      console.info(`[monitor] ligando ${bus} ${tier}${hardware ? ' (placa)' : budgetMpx !== undefined ? ` (CPU: ${budgetMpx.toFixed(1)} Mpx/s)` : ''}: alguém abriu a janela`)
+      this.transport.setMonitor(bus, true, tier, hardware, budgetMpx)
       return
     }
     current.at = agora
     // A sessão voltou ao contador (placa falhou ou o programa a pediu): o
     // pedido seguinte já sai sem concessão, para o engine não tentar de novo.
-    if (current.hardware && this.encoderSessions && !this.encoderSessions.has(sessionKey)) current.hardware = false
+    if (current.hardware && this.encoderSessions && !this.encoderSessions.has(sessionKey)) {
+      current.hardware = false
+      current.budgetMpx = this.encoderSessions.requestSoftware(sessionKey, this.monitorLadder(bus, tier))
+    }
     if (agora - current.reafirmado >= MONITOR_REAFIRMAR_MS) {
       current.reafirmado = agora
-      this.transport.setMonitor(bus, true, tier, current.hardware)
+      this.transport.setMonitor(bus, true, tier, current.hardware, current.budgetMpx)
     }
+  }
+
+  /** Escada de custo (Mpx/s) de um nível, como o engine a publicou. */
+  private monitorLadder(bus: MonitorBus, tier: MonitorTier): readonly number[] | null {
+    for (const publisher of this.transport.publishers()) {
+      if (/\/(pvw|mon|mv)(?:[&?]|$)/.exec(publisher.url)?.[1] !== bus) continue
+      const ladder = publisher.ladders?.find((entry) => entry.tier === tier)?.mpx
+      if (ladder?.length) return ladder
+    }
+    return null
   }
 
   /**
@@ -1634,8 +1654,9 @@ export class ChannelRuntime {
     if (!current?.hardware) return
     current.hardware = false
     current.reafirmado = Date.now()
+    current.budgetMpx = this.encoderSessions?.requestSoftware({ channelId: this.channel.id, bus, tier }, this.monitorLadder(bus, tier))
     console.info(`[monitor] ${bus} ${tier}: placa devolvida ao programa; segue em x264`)
-    this.transport.setMonitor(bus, true, tier, false)
+    this.transport.setMonitor(bus, true, tier, false, current.budgetMpx)
   }
 
   private readonly recusasDePlacaVistas = new Map<string, number>()
@@ -1676,6 +1697,7 @@ export class ChannelRuntime {
       if (this.monitorLigado.get(bus) !== true) continue
       if ((this.olhando.get(bus) ?? 0) > limite) continue
       this.monitorLigado.set(bus, false)
+      this.encoderSessions?.releaseSoftware({ channelId: this.channel.id, bus, tier: 'lite' })
       console.info(`[monitor] desligando ${bus}: ninguém olhando há mais de 20s`)
       this.transport.setMonitor(bus, false)
     }
@@ -1683,6 +1705,7 @@ export class ChannelRuntime {
       if (entry.at > limite) continue
       this.nivelOlhado.delete(key)
       this.encoderSessions?.release({ channelId: this.channel.id, bus: entry.bus, tier: entry.tier })
+      this.encoderSessions?.releaseSoftware({ channelId: this.channel.id, bus: entry.bus, tier: entry.tier })
       console.info(`[monitor] desligando ${entry.bus} ${entry.tier}: ninguém olhando há mais de 20s`)
       this.transport.setMonitor(entry.bus, false, entry.tier, false)
     }

@@ -38,6 +38,12 @@ export interface PublisherState {
   readonly hardwareRefusals?: number
   /** Motivo da última recusa da placa nesta saída. */
   readonly hardwareFailed?: string
+  /**
+   * Monitor com níveis: custo (Mpx/s) de cada degrau de cada nível em
+   * software, do pedido ao LEVE. É por ela que o servidor concede o orçamento
+   * de CPU da máquina (`EncoderSessions.requestSoftware`).
+   */
+  readonly ladders?: readonly { readonly tier: MonitorTier; readonly mpx: readonly number[] }[]
 }
 
 /** Um nível de monitor, como o engine reporta. */
@@ -153,7 +159,7 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware?: boolean): void
+  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware?: boolean, budgetMpx?: number): void
   /** Relógio de teste gravado na imagem dos monitores (medição de atraso). */
   setMonitorClock?(on: boolean): void
   /**
@@ -178,7 +184,7 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware?: boolean): void
+  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware?: boolean, budgetMpx?: number): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */
