@@ -18,6 +18,13 @@ Monitores do navegador, multiview composto e scopes. Um commit por achado, cada 
 | 10 | — | Selo do scope ao vivo sem o nível do WHEP | Feito: `onTierChange` opcional no `Whep`; rótulo `PGM · REF/PAD/LEV` ao lado de INDICATIVO | `monitor-tier-markup.test.ts` |
 | 11 | — | Plausíveis | Feito: `Runner::drop` do multiview sem join no laço; concessão de placa sem elemento criável usa perfil/orçamento de software | `desmontar_o_multiview_nao_segura_o_laco_principal`, `placa_concedida_sem_elemento_*` |
 
+| 12 | ALTO (no ar, r88-35) | `transport` com `{action:'stop', bus:'pvw'}` parava o PGM (19,5 s fora do ar) e suspendia continuidade e publicação | Feito: STOP no PVW só limpa o preview (recusa com TAKE/CUE pendente); TAKE/PARK com `pvw` e CUE com `pgm` recusados; controle externo recusa STOP com `pvw` (antes o zod descartava o `bus`) | `transport-bus-routes.test.ts` |
+| 13 | BAIXO (no ar) | Versão "desconhecida" e build nulo no Windows instalado | Feito: edição do `installation-receipt.json` e commit do `package-manifest.json` (scripts de pacote gravam o commit) | `software-version-install.test.ts` |
+| 14 | MÉDIO (no ar) | Avalanche: VT mudo em loop gerava 2460 críticos pendentes | Feito: mesma condição com pendente vira repetição agrupada (INFO, contador e última vez no pendente); tarja **SEM ÁUDIO** no QC (decisão `ASSET_INTENTIONAL_SILENCE`, quem e quando), selo na Biblioteca e na Grade; a sonda do PGM não alerta silêncio/falta de áudio no arquivo marcado (preto, congelado e queda continuam). O watchdog das entradas observa só fontes ao vivo, que já têm "áudio esperado: não" por fonte | `alert-avalanche.test.ts`, `intentional-silence-routes.test.ts` |
+| 15 | BAIXO (no ar) | "Nome indisponível" nas mensagens de saúde | Feito: perfil pelo id, monitor conhecido, item no barramento ou o id | `runtime-signal-names.test.ts` |
+
+Pendente da produção (item 14): os 2460 críticos já gravados continuam pendentes até alguém reconhecer; o agrupamento vale daqui em diante.
+
 Só no Windows de produção: prioridade de thread (`SetThreadPriority`), sonda real e cache com driver NVIDIA/Intel, recusa real de sessão NVENC entre canais (`hardwareRetry`), HA com reserva na r88-35 de verdade.
 
 ## Estado atual — r88-34 (30/10 23:24, D:\RPlayout Atual, dados r88-34b)
