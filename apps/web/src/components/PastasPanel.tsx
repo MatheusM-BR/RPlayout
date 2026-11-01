@@ -6,6 +6,7 @@ import type { MediaRoot, ServerFolderBrowser } from '../types.js'
 import {rootSelectionReady,rootListingMatches} from '../domain/root-selection.js'
 import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 import {ReviewedOperationConfirm} from './broadcast/ReviewedOperationConfirm.js'
+import { documentHidden } from '../domain/live-topics.js'
 
 interface Props {
   onMessage: (text: string) => void
@@ -58,6 +59,7 @@ export function PastasPanel({ onMessage, onChanged }: Props) {
     if (!varrendo) return undefined
     let cancelled=false
     const relogio = window.setInterval(() => {
+      if (documentHidden()) return
       void scanReads.current.read(signal=>api.scanStatus(signal),'A consulta do scanner demorou demais; conclusão não confirmada.',false)
         .then((reading) => {
           if(!reading.current||cancelled||!live.current)return

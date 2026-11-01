@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react'
 import {api,type HostMetricHistory} from '../../api.js'
+import { whenVisible } from '../../domain/live-topics.js'
 
 const pct=(value:number|null|undefined)=>value==null?'N/D':`${value.toFixed(1)}%`
 const traffic=(value:number|null|undefined)=>value==null?'N/D':`${(value*8/1_000_000).toFixed(2)} Mbps`
@@ -32,7 +33,7 @@ function HostMetricHistoryQuery({hours}:{hours:number}){
       catch(failure){if(active)setError(timedOut?'A consulta excedeu 10 segundos. Tente novamente.':failure instanceof Error?failure.message:'Histórico global indisponível.')}
       finally{window.clearTimeout(timeout);pending=false;if(active)setLoading(false)}
     }
-    void refresh();const timer=page?null:window.setInterval(()=>void refresh(),15000)
+    void refresh();const timer=page?null:window.setInterval(whenVisible(()=>void refresh()),15000)
     return()=>{active=false;controller?.abort();if(timer!==null)window.clearInterval(timer)}
   },[hours,page,retry])
   return <>

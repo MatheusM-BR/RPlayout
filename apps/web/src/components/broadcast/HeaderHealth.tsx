@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { liveEngineStateOf } from '../../domain/engine-indicator.js'
 import { api, type ClockStatusView, type EngineState, type HostMetricSample } from '../../api.js'
+import { useTopicRefresh, useVisiblePolling } from '../../domain/live-topics.js'
 
 type Level = 'ok' | 'warn' | 'bad' | 'unknown'
 interface Tag { label: string; value: string; level: Level; title: string }
@@ -75,24 +76,31 @@ export function HeaderHealth({ channelId, onClick }: { channelId: string; onClic
   const [pending, setPending] = useState<{ critical: number; warn: number } | null>(null)
   const [clock, setClock] = useState<ClockStatusView | null>(null)
   const [liveEngine, setLiveEngine] = useState<EngineState | null>(null)
+  // Cada leitura só quando o que ela mostra muda (tópicos do WebSocket):
+  // engine e saídas (`engine`), pendências (`health`), relógio (`clock`). O
+  // disco vem da amostra do host, que muda devagar: 60 s com a aba visível.
+  const readers = useRef({ host: () => {}, clock: () => {}, pending: () => {}, engine: () => {} })
   useEffect(() => {
     let alive = true
-    const read = () => {
-      void api.hostMetrics().then(value => { if (alive) setSample(value) }).catch(() => { if (alive) setSample(null) })
-      void api.clock().then(value => { if (alive) setClock(value) }).catch(() => { if (alive) setClock(null) })
-      void api.healthEvents(channelId, { acknowledgement: 'PENDING', includeHost: '1' }).then(value => { if (alive) setPending(value.pending) }).catch(() => { if (alive) setPending(null) })
+    readers.current = {
+      host: () => { void api.hostMetrics().then(value => { if (alive) setSample(value) }).catch(() => { if (alive) setSample(null) }) },
+      clock: () => { void api.clock().then(value => { if (alive) setClock(value) }).catch(() => { if (alive) setClock(null) }) },
+      pending: () => { void api.healthEvents(channelId, { acknowledgement: 'PENDING', includeHost: '1' }, undefined, 1).then(value => { if (alive) setPending(value.pending) }).catch(() => { if (alive) setPending(null) }) },
+      engine: () => {
+        void api.processes(undefined, false).then(value => {
+          if (!alive) return
+          setLiveEngine(liveEngineStateOf(value.processes, channelId))
+        }).catch(() => { if (alive) setLiveEngine(null) })
+      },
     }
-    const readEngine = () => {
-      void api.processes().then(value => {
-        if (!alive) return
-        setLiveEngine(liveEngineStateOf(value.processes, channelId))
-      }).catch(() => { if (alive) setLiveEngine(null) })
-    }
-    read(); readEngine()
-    const timer = window.setInterval(read, 10_000)
-    const engineTimer = window.setInterval(readEngine, 3_000)
-    return () => { alive = false; window.clearInterval(timer); window.clearInterval(engineTimer) }
+    const all = readers.current
+    all.host(); all.clock(); all.pending(); all.engine()
+    return () => { alive = false }
   }, [channelId])
+  useTopicRefresh('engine', channelId, () => { readers.current.engine(); readers.current.host() }, { fallbackMs: 60_000, degradedMs: 3_000 })
+  useTopicRefresh('health', null, () => readers.current.pending(), { fallbackMs: 60_000, degradedMs: 10_000 })
+  useTopicRefresh('clock', null, () => readers.current.clock(), { fallbackMs: 120_000, degradedMs: 10_000 })
+  useVisiblePolling(() => readers.current.host(), 60_000)
   const tags = [...headerHealthTags(sample, channelId, pending, liveEngine), clockTag(clock)]
   const rank: Record<Level, number> = { ok: 0, unknown: 1, warn: 2, bad: 3 }
   const worst = tags.reduce<Level>((level, tag) => rank[tag.level] > rank[level] ? tag.level : level, 'ok')

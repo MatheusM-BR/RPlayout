@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react'
 import {api} from '../../api.js'
+import { whenVisible } from '../../domain/live-topics.js'
 
 export function StorageStatusPanel(){
   const [status,setStatus]=useState<Awaited<ReturnType<typeof api.storageStatus>>|null>(null)
@@ -12,7 +13,7 @@ export function StorageStatusPanel(){
       catch(failure){if(active)setError(failure instanceof Error?failure.message:'Diagnóstico do banco indisponível.')}
       finally{pending=false}
     }
-    void refresh();const timer=window.setInterval(()=>void refresh(),15_000)
+    void refresh();const timer=window.setInterval(whenVisible(()=>void refresh()),15_000)
     return ()=>{active=false;window.clearInterval(timer)}
   },[])
   return <section aria-label="Saúde do banco operacional" className="rounded border border-border-subtle bg-surface-base p-3 mb-3 text-sm">

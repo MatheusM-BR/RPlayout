@@ -1,7 +1,7 @@
 import { confirmAction } from '../domain/confirm.js'
 import { liveEngineStateOf } from '../domain/engine-indicator.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Channel, ManagedLiveSource, RedundantStreamPair, SrtTelemetry } from '@rplayout/protocol'
 import type { Live, Monitors } from '../types.js'
 import { api, type ClockStatusView } from '../api.js'
@@ -23,6 +23,7 @@ import { StudioAutomationPanel } from '../components/broadcast/StudioAutomationP
 import { HostResourcesPanel } from '../components/broadcast/HostResourcesPanel.js'
 import { MonitorEngineeringPanel } from '../components/broadcast/MonitorEngineeringPanel.js'
 import {liveSourceMonitor} from '../domain/live-source-monitor.js'
+import { useTopicRefresh, useVisiblePolling } from '../domain/live-topics.js'
 
 interface Props {
   channel: Channel
@@ -85,30 +86,45 @@ export function EngineeringDistributionView({
   const [serverStatus, setServerStatus] = useState<Awaited<ReturnType<typeof api.engineeringStatus>> | null>(null)
   const [clock, setClock] = useState<ClockStatusView | null>(null)
 
+  // Leituras do Monitoramento em três ritmos, todas paradas com a aba oculta:
+  // - entradas, SRT, processos e saídas: 5 s (e na hora, quando o engine ou
+  //   uma saída muda de estado -- tópico `engine`);
+  // - amostra do host: 10 s (é o intervalo de amostragem do servidor);
+  // - versão/uptime e relógio: 60 s (relógio também pelo tópico `clock`).
+  const readers = useRef({ fast: () => {}, host: () => {}, slow: () => {} })
   useEffect(() => {
     let active = true
-    const refresh = async () => {
-      try {
-        const [sources, telemetry, metrics, processSnapshot, outputSnapshot] = await Promise.all([api.liveSources(channel.id), api.srtTelemetry(), api.hostMetrics(), api.processes(), api.outputs(channel.id)])
-        if (!active) return
-        setLiveSources(sources)
-        setSrtTelemetry(telemetry)
-        setHostMetrics(metrics)
-        setProcesses(processSnapshot.processes)
-        setOutputs(outputSnapshot.outputs)
-        setMonitorLoadError(null)
-        setMonitorLoaded(true)
-        // Versão/uptime/relógio: leitura à parte, a falha não esconde o resto.
+    let fastBusy = false
+    readers.current = {
+      fast: () => {
+        if (fastBusy) return
+        fastBusy = true
+        void Promise.all([api.liveSources(channel.id), api.srtTelemetry(), api.processes(), api.outputs(channel.id)]).then(([sources, telemetry, processSnapshot, outputSnapshot]) => {
+          if (!active) return
+          setLiveSources(sources)
+          setSrtTelemetry(telemetry)
+          setProcesses(processSnapshot.processes)
+          setOutputs(outputSnapshot.outputs)
+          setMonitorLoadError(null)
+          setMonitorLoaded(true)
+        }).catch(error => { if (active) setMonitorLoadError(error instanceof Error ? error.message : 'Não foi possível ler as fontes de entrada.') })
+          .finally(() => { fastBusy = false })
+      },
+      host: () => { void api.hostMetrics().then(value => { if (active) setHostMetrics(value) }).catch(() => undefined) },
+      // Versão/uptime/relógio: leitura à parte, a falha não esconde o resto.
+      slow: () => {
         void api.engineeringStatus().then(value => { if (active) setServerStatus(value) }).catch(() => { if (active) setServerStatus(null) })
         void api.clock().then(value => { if (active) setClock(value) }).catch(() => { if (active) setClock(null) })
-      } catch (error) {
-        if (active) setMonitorLoadError(error instanceof Error ? error.message : 'Não foi possível ler as fontes de entrada.')
-      }
+      },
     }
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), 3000)
-    return () => { active = false; window.clearInterval(timer) }
+    readers.current.fast(); readers.current.host(); readers.current.slow()
+    return () => { active = false }
   }, [channel.id])
+  useVisiblePolling(() => readers.current.fast(), 5_000)
+  useVisiblePolling(() => readers.current.host(), 10_000)
+  useVisiblePolling(() => readers.current.slow(), 60_000)
+  useTopicRefresh('engine', channel.id, () => readers.current.fast(), { fallbackMs: null })
+  useTopicRefresh('clock', null, () => readers.current.slow(), { fallbackMs: null })
 
   const gpu = hostMetrics?.gpu ?? null
   const engineProcess = processes.find((process) => process.kind === 'ENGINE' && process.channelId === channel.id)

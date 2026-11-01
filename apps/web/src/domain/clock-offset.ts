@@ -20,6 +20,9 @@ let current: ClockOffset | null = null
 const listeners = new Set<(value: ClockOffset | null) => void>()
 let timer: number | null = null
 async function measure(): Promise<void> {
+  // Aba oculta não mede: ninguém lê o relógio dela, e a medida volta no
+  // próximo minuto com a aba visível.
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && current) return
   try {
     const sent = Date.now()
     const response = await fetch('/api/health', { cache: 'no-store', credentials: 'same-origin' })

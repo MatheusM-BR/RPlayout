@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api.js'
+import { useTopicRefresh } from '../../domain/live-topics.js'
 import type { GraphicLayerState, GraphicsLayer } from '@rplayout/protocol'
 
 interface Props { className?: string; onMessage?: (message: string) => void; compact?: boolean; channelId?: string }
@@ -20,21 +21,37 @@ export function DynamicCgSecondaryBar({className='',onMessage,channelId}: Props)
   const [subtitle,setSubtitle] = useState('')
   const [cueStatus,setCueStatus] = useState<string|null>(null)
   const generation = useRef(0)
+  // Hora local da leitura: a contagem regressiva da tarja anda sozinha entre
+  // uma leitura e outra, sem reconsultar o servidor a cada segundo.
+  const fetchedAt = useRef(Date.now())
+  const [,setTick] = useState(0)
   const refresh = useCallback(async (expected:number) => {
     if (!channelId) return
     const result = await api.graphicLayers(channelId)
     if (generation.current !== expected) return
-    setSnapshot(result);setError(null)
+    fetchedAt.current=Date.now();setSnapshot(result);setError(null)
   },[channelId])
-  useEffect(() => {
-    const expected = ++generation.current
-    setSnapshot(null);setBusy(false);setError(null);setCueStatus(null)
-    const poll = () => {void refresh(expected).catch(error => {
+  const poll = useCallback(() => {
+    const expected = generation.current
+    void refresh(expected).catch(error => {
       if (generation.current === expected) {setSnapshot(null);setError(error instanceof Error ? error.message : 'Grafismos indisponíveis.')}
-    })}
-    poll();const timer=setInterval(poll,1000)
-    return () => {++generation.current;clearInterval(timer)}
+    })
   },[refresh])
+  useEffect(() => {
+    ++generation.current
+    setSnapshot(null);setBusy(false);setError(null);setCueStatus(null)
+    poll()
+    return () => {++generation.current}
+  },[poll])
+  // O servidor avisa quando as camadas mudam (tópico `graphics`); sem
+  // WebSocket, volta a leitura de 1 s.
+  useTopicRefresh('graphics', channelId ?? null, poll, { fallbackMs: 60_000, degradedMs: 1000, enabled: Boolean(channelId) })
+  const counting = Boolean(snapshot && Object.values(snapshot.layers).some(layer => layer.active && layer.expiresAtFrames))
+  useEffect(() => {
+    if (!counting) return undefined
+    const timer = window.setInterval(() => setTick(value => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [counting])
   const perform = async (work:()=>Promise<unknown>,message:string) => {
     if (busy || !channelId) return
     const expected=generation.current
@@ -54,7 +71,7 @@ export function DynamicCgSecondaryBar({className='',onMessage,channelId}: Props)
     }),'Comando de grafismo aceito pelo servidor; confira a imagem no PGM.')
   }
   const remaining = (state?:GraphicLayerState) => state?.active && state.expiresAtFrames && snapshot
-    ? Math.max(0,Math.ceil((state.expiresAtFrames-snapshot.nowFrames)*snapshot.rate.den/snapshot.rate.num)) : null
+    ? Math.max(0,Math.ceil((state.expiresAtFrames-snapshot.nowFrames)*snapshot.rate.den/snapshot.rate.num-(Date.now()-fetchedAt.current)/1000)) : null
   return <div id="cg-secondary-events-bar" className={`bg-surface-panel border border-border-subtle rounded-xl p-3 ${className}`}>
     <div className="flex flex-wrap items-center justify-between gap-2">
       <span className="font-headline-md font-bold">GRAFISMOS & EVENTOS</span>
