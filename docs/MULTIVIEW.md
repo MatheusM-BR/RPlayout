@@ -28,7 +28,8 @@ Pedido: o multiview de entradas abria um WHEP por fonte. Eram N codificações n
 | LEVE | 960×540 | 15 q/s | 1,2 Mbps |
 
   - Pedido acima do teto é rebaixado pelo servidor (`clampTier`); o engine recusa nível acima do teto. Baixar o teto derruba os níveis acima dele.
-  - **Orçamento de CPU:** os ramos do `mv` em software entram no mesmo `RPLAYOUT_MONITOR_SW_MPX` dos monitores e descem um degrau por vez, dizendo o motivo. O custo da composição (escala das células e compositor) não entra na conta: é fixo e foi medido abaixo.
+  - **Orçamento de CPU:** os ramos do `mv` em software entram no mesmo orçamento da máquina dos monitores (`RPLAYOUT_MONITOR_SW_MPX`, contado no servidor sobre todos os canais, o LEVE incluído) e descem um degrau por vez, dizendo o motivo. O custo da composição (escala das células e compositor) não entra na conta: é fixo e foi medido abaixo.
+  - **Sem espectador**, o serviço do multiview nem monta os pontos de sonda (antes: a ~50 Hz). **Desmontar** o mosaico (troca de teto, último espectador saindo) não faz join no laço principal do engine: a espera da thread de cadência (até 2 s) e o NULL do pipeline vão para uma thread própria.
   - **Placa:** REF/PADRÃO do `mv` pedem sessão ao `EncoderSessions`, como PGM/PVW, depois da reserva do programa. O LEVE fica em x264.
   - **HA/restauração:** como o QC, o destino do `mv` fica retido até a admissão do preview (`release_preview_output`). A composição pedida nesse intervalo é guardada e aplicada na liberação. Um nó em preparação não publica o mosaico do próprio PGM/PVW.
 

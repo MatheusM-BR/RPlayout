@@ -39,7 +39,10 @@ apps/web/src/components/scopes/ScopeDeck.tsx   painel (QC e PGM)
   (Y'CbCr 4:4:4 do original, sem o navegador). O ao vivo (WHEP, proxy, JPEG)
   leva INDICATIVO: o navegador entrega o quadro comprimido, reduzido e
   convertido para RGB com conversão de cor não garantida; o painel reconverte
-  para Y'CbCr BT.709. No EXATO o painel mostra **Rust=WASM** quando a medição
+  para Y'CbCr BT.709. No monitor de PGM do Master o rótulo ao lado do
+  INDICATIVO diz também o **nível do WHEP em uso** (`PGM · REF/PAD/LEV ·
+  WHEP…`, pelo `onTierChange` do `Whep`): o scope de um LEVE de 240 linhas a
+  450 kbps não é o de uma REFERÊNCIA. No EXATO o painel mostra **Rust=WASM** quando a medição
   da sonda (Rust nativo, cabeçalho HTTP) bate com a do WASM no mesmo quadro.
 - **Ao vivo na GPU, sem readback.** Por quadro decodificado
   (`requestVideoFrameCallback`): `importExternalTexture` → um dispatch que

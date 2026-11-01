@@ -137,21 +137,56 @@ não restauraria. Por isso:
 
 Que um monitor não tire recurso do programa é garantido em dois lugares:
 
-* **CPU (engine):** orçamento de codificação de monitor em software,
-  `RPLAYOUT_MONITOR_SW_MPX` (padrão 30 Mpx/s por núcleo lógico — o x264
-  veryfast faz ≈60, metade fica para o resto). Passou do orçamento, o nível
-  desce um degrau por vez (REF campo → REF quadro → geometria PADRÃO → …) e o
-  relatório diz por quê; o LEVE sempre cabe. Na placa não conta.
+* **CPU (servidor, da máquina):** orçamento de codificação de monitor em
+  software, `RPLAYOUT_MONITOR_SW_MPX` no **servidor** (padrão 30 Mpx/s por
+  núcleo lógico da máquina — o x264 veryfast faz ≈60, metade fica para o
+  resto). Cada canal é um processo de engine; até a r88-36 inicial a conta
+  era por processo, e com N canais o orçamento ficava N vezes maior. Agora o
+  `EncoderSessions` soma os Mpx/s de **todos os canais** (PGM, PVW e o
+  multiview `mv`, o LEVE incluído), como soma as sessões de placa:
+  * o engine publica no relatório a **escada** de cada nível (`ladders`:
+    Mpx/s de cada degrau, REF campo → REF quadro → geometria PADRÃO → … →
+    LEVE);
+  * o servidor concede, por nível, o primeiro degrau que cabe no que sobra
+    (`budgetMpx` no comando `monitor`) e o reserva; o engine abre exatamente
+    esse degrau (`resolve_profile` com o valor concedido, sem olhar a carga
+    local) e o relatório diz por quê desceu; o LEVE sempre cabe (e conta);
+  * sem escada ainda (engine recém-subido), o servidor reserva o que sobra
+    até o relatório dizer o perfil real; o que o engine relata aberto em
+    software é sempre a verdade da conta (`observe`);
+  * nível na placa não consome orçamento: só consulta o que usaria se a placa
+    caísse; caindo para x264, passa a contar o perfil real;
+  * a conta local do engine (`software_budget_mpx`) só vale para o engine
+    rodando sozinho (bancada, testes).
+  A tela técnica mostra "CPU dos monitores em x264 (todos os canais): X de Y
+  Mpx/s".
+* **Prioridade das threads:** no **Windows**, as threads de streaming do
+  pipeline de monitor entram abaixo do normal (`THREAD_PRIORITY_BELOW_NORMAL`
+  no STREAM_STATUS ENTER, postado pela própria thread) e devolvem a prioridade
+  anterior no LEAVE — o pool de threads do GStreamer é compartilhado com o
+  programa, então a devolução é obrigatória. As threads internas do x264 não
+  herdam a prioridade no Windows. No **Linux** não se mexe: o "nice" de uma
+  thread não volta a subir sem `CAP_SYS_NICE`, e uma thread do pool rebaixada
+  poderia depois servir o programa. Ali vale só o orçamento.
 * **Placa (servidor):** sessões contadas para todos os canais (abaixo).
 
 ### Codificação por placa
 
-* **Detecção na partida:** `rplayout-encoders` (novo binário, entra no
+* **Detecção:** `rplayout-encoders` (novo binário, entra no
   pacote e no launcher) abre sessões reais de `nvh264enc`, `qsvh264enc` e
   `mfh264enc` até a placa recusar (teto 12). GeForce aparece com o limite do
-  driver (3/5/8); Quadro/RTX A chega ao teto = "sem limite". Roda **antes**
-  dos canais subirem, para não contar as sessões do próprio programa.
+  driver (3/5/8); Quadro/RTX A chega ao teto = "sem limite".
   `mfh264enc` numa NVIDIA usa a mesma NVENC: conta-se só o melhor codificador.
+  **A partida não espera a sonda** (antes: até 30 s de atraso para os canais
+  subirem): `startEncoderProbe` roda em segundo plano; até terminar, a
+  capacidade de placa dos monitores é 0 (saem em x264) — o programa nunca
+  depende dela. O resultado fica em cache entre partidas
+  (`RPLAYOUT_ENCODERS_CACHE`, padrão `rplayout-encoders-cache.json` ao lado do
+  banco), invalidado pela impressão digital do binário da sonda (sha256), do
+  GStreamer (biblioteca central e caminhos de plugin) e do driver de vídeo
+  (data/tamanho das DLLs/.so de NVENC, CUDA, QSV, MF); com cache válido a
+  sonda nem roda. Como os canais sobem junto, sessões que o programa abriu na
+  placa durante a sonda são somadas de volta.
 * **Reserva:** `EncoderSessions` (servidor) desconta primeiro uma sessão por
   saída codificada que não é monitor (PGM e destinos RTMP/SRT/arquivo; NDI,
   OMT e SDI não codificam), recontada a cada pedido a partir do que os
@@ -159,13 +194,30 @@ Que um monitor não tire recurso do programa é garantido em dois lugares:
   pede: 240p em x264 custa menos que uma sessão). Acabou → x264
   veryfast/zerolatency, sem derrubar nada.
 * **Troca a quente:** se a placa falha num ramo, o mesmo nível volta em x264
-  na hora (sem espera); o servidor vê o nível concedido em software, devolve
-  a sessão e, se a causa foi recusa da placa, aprende a capacidade real
-  (outro programa — vMix, OBS — pode estar usando a mesma placa).
+  **na mesma volta** do serviço (cada ramo tem nome por geração, `tier-std-7`:
+  o ramo retirado que ainda está no pipeline não impede o novo, e o erro dele
+  não derruba o novo); o servidor vê o nível concedido em software, devolve
+  a sessão e, se a placa **falhou**, aprende a capacidade real (outro
+  programa — vMix, OBS — pode estar usando a mesma placa). O engine diz isso
+  num campo próprio do relatório do nível, `hardwareFailed` (motivo), que
+  `degraded`/`error` não sobrescrevem; devolução ao programa não ensina nada.
+* **Concessão sem elemento de placa criável:** o nível sai em x264 com o
+  perfil e o orçamento de software (não com o perfil cheio da placa) e o
+  motivo `placa indisponível`.
 * **Prioridade absoluta do programa:** se uma saída de programa recebe recusa
   da placa e há monitores do mesmo processo em sessão de placa, eles são
   trocados para x264 (`revoke_monitor_hardware`) e o programa tenta a placa de
-  novo em 250 ms; só sem nada a tomar de volta o processo desiste da placa.
+  novo em 250 ms. Sem nada a tomar de volta no próprio processo, o relatório
+  da saída sobe `hardwareRefusals`: o servidor (`serviceMonitorHardware`, no
+  laço) revoga as sessões de monitores de **todos os canais** (cada engine é
+  avisado, o nível segue em x264) e manda `{"cmd":"hardwareRetry"}` ao engine
+  que recusou — a placa volta a valer no processo e a saída tenta de novo em
+  250 ms. Antes o canal ficava em x264 para sempre.
+* **Desligamento sem navegador:** a poda (20 s sem heartbeat) e a leitura dos
+  relatórios rodam no laço do servidor (`serviceMonitors`), com ou sem
+  navegador conectado. Antes rodavam só em `live()`, que só roda com alguém
+  conectado: fechado o último navegador, REF/PADRÃO seguiam codificando e as
+  sessões de placa ficavam presas.
 * **Parâmetros:** sem B-frames, GOP de 1 s, sem lookahead, `zerolatency`
   (x264) / `low-latency-hq` + `zerolatency` (NVENC) / `low-latency` (QSV/MF),
   qualidade constante com teto de bitrate (x264 `pass=qual` + VBV de 500 ms;
@@ -281,8 +333,17 @@ nível (`placa_ausente_cai_para_x264_sem_derrubar`).
 * **Reserva pessimista:** toda saída codificada conta uma sessão, mesmo em
   software. Em placa GeForce com muitas saídas pode sobrar zero para
   monitores — eles saem em x264, nunca pretos.
-* **Sonda abre sessões na partida** (até 12, ≈0,2 s cada). Se outro programa
-  usa a placa depois, a capacidade é corrigida na primeira recusa.
+* **Sonda abre sessões** (até 12, ≈0,2 s cada) em segundo plano, junto com a
+  subida dos canais; as sessões que o programa abriu durante a sonda são
+  somadas de volta (estimativa: placa recusando depois corrige na primeira
+  recusa). Se outro programa usa a placa depois, idem.
+* **Orçamento de CPU por Mpx/s** é estimativa de custo (x264 veryfast), não
+  medida de CPU: um canal pesado em decodificação não reduz o orçamento dos
+  monitores. Ajuste com `RPLAYOUT_MONITOR_SW_MPX` no servidor.
+* **Prioridade de thread** só no Windows (veja acima); no Linux, só o
+  orçamento.
+* **Tela de Distribuição** ainda limita o bitrate de monitor a 50–450 kbps
+  (r88-35): um teto acima do perfil leve só se grava pela API.
 * **QC** continua sendo um publicador único na REFERÊNCIA (o perfil já segue
   a fonte até 4K/60, `inspection_profile`), ainda em x264: o empréstimo de
   sessão de placa para o QC não foi ligado ao fluxo de concessão do QC.
