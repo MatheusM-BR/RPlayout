@@ -845,6 +845,8 @@ impl Channel {
     pub fn multiview_held(&self) -> bool { self.held_multiview.is_some() }
 
     pub fn multiview_tap_points(&self) -> TapPoints {
+        #[cfg(test)]
+        TAP_POINTS_BUILT.with(|count| count.set(count.get() + 1));
         let qc = self.qc_video_channel.as_deref();
         let pgm = self.pipeline.by_name("tee-video").and_then(|tee| tee.static_pad("sink"))
             .map(|pad| TapPoint { pad, identity: 0, bus: "pgm" });
@@ -870,7 +872,11 @@ impl Channel {
     }
 
     pub(crate) fn service_multiview(&mut self) -> Option<Report> {
-        if self.multiview.is_none() { return None; }
+        let multiview = self.multiview.as_mut()?;
+        // Sem espectador não há o que sondar: o laço roda a ~50 Hz e montar os
+        // pontos (procurar o tee, os itens e as fontes) era trabalho jogado fora.
+        // O serviço ainda roda, com pontos vazios, para desligar o que sobrou.
+        if !multiview.wanted() { return multiview.service(&TapPoints::default()); }
         let points = self.multiview_tap_points();
         self.multiview.as_mut().and_then(|multiview| multiview.service(&points))
     }
@@ -880,6 +886,12 @@ impl Channel {
     }
 }
 
+
+#[cfg(test)]
+thread_local! {
+    /// Quantas vezes o canal montou os pontos de sonda nesta thread (teste).
+    static TAP_POINTS_BUILT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 #[cfg(test)]
 impl Multiview {
@@ -1005,6 +1017,29 @@ mod tests {
         assert_eq!((state.layout, state.quality), (Layout::Grid3x3, Quality::Leve), "composição pedida durante a retenção aplicada");
         assert!(channel.0.set_monitor(BUS, true));
         assert_eq!(channel.0.multiview_ceiling(), Some(MonitorTier::Lite));
+    }
+
+    /// Achado 8: sem espectador, o serviço do multiview não monta os pontos de
+    /// sonda a cada volta do laço (~50 Hz).
+    #[test]
+    fn sem_espectador_nao_monta_pontos_de_sonda() {
+        gst::init().unwrap();
+        if gst::ElementFactory::find("rplayoutlimiter").is_none() { crate::limiter_element::register().unwrap(); }
+        struct Running(Channel);
+        impl Drop for Running { fn drop(&mut self) { self.0.shutdown(); } }
+        let mut channel = Running(Channel::new_with_program_hold(Config { channel_id: "mv-idle".into(), width: 320, height: 180, fps_n: 25, fps_d: 1, bitrate_kbps: 450,
+            ceiling_dbtp: -1.0, audio_channels: 2, scan: Scan::Progressive, top_field_first: true, outputs: vec![Output::Null], preview: None }, false).unwrap());
+        channel.0.attach_multiview_for_test();
+        let built = || TAP_POINTS_BUILT.with(|count| count.get());
+        let before = built();
+        for _ in 0..50 { channel.0.service_multiview(); }
+        assert_eq!(built(), before, "sem espectador, nenhum ponto montado");
+        assert!(channel.0.set_monitor(BUS, true));
+        channel.0.service_multiview();
+        assert_eq!(built(), before + 1, "com espectador, um por volta");
+        assert!(channel.0.set_monitor(BUS, false));
+        channel.0.service_multiview();
+        assert_eq!(built(), before + 1);
     }
 
     // ---- GStreamer --------------------------------------------------------
