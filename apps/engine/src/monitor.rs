@@ -497,6 +497,14 @@ pub struct MonitorBus {
     shared_error: Option<String>,
     shared_retry_at: Option<Instant>,
     shared_attempts: u32,
+    /// Geração dos ramos: cada ramo nasce com nome próprio (`tier-ref-7`).
+    /// O ramo retirado continua no pipeline até a sonda IDLE soltá-lo; com o
+    /// mesmo nome, reabrir o nível na mesma volta dava "Failed to add element"
+    /// e mais um backoff -- era o que atrasava a troca a quente placa → x264.
+    branch_generation: u64,
+    /// Codificador que faz o papel de "placa" (testes); sem ele, o de
+    /// `RPLAYOUT_MONITOR_ENCODER` ou a lista de placas conhecidas.
+    hardware_encoder: Option<String>,
 }
 
 const RETRY_CAP: Duration = Duration::from_secs(15);
@@ -522,7 +530,14 @@ impl MonitorBus {
             shared_error: None,
             shared_retry_at: None,
             shared_attempts: 0,
+            branch_generation: 0,
+            hardware_encoder: None,
         }
+    }
+
+    /// Injeta o codificador que faz o papel de placa (testes e diagnóstico).
+    pub fn set_hardware_encoder(&mut self, name: Option<&str>) {
+        self.hardware_encoder = name.map(str::to_string);
     }
 
     pub fn spec(&self) -> &MonitorBusSpec {
@@ -727,12 +742,17 @@ impl MonitorBus {
             return Err(anyhow!("monitor sem pipeline compartilhado"));
         };
         let state = self.tiers.get(&tier).ok_or_else(|| anyhow!("nível desconhecido"))?;
-        let hardware = state.hardware_granted && !state.hardware_failed && crate::output::hardware_available();
+        let forced = self.hardware_encoder.clone().or_else(|| std::env::var("RPLAYOUT_MONITOR_ENCODER").ok());
+        let hardware = state.hardware_granted && !state.hardware_failed && (forced.is_some() || crate::output::hardware_available());
         let (profile, degraded) = resolve_profile(tier, &self.spec.source, hardware, software_load(), software_budget_mpx());
-        let (venc, encoder) = crate::output::monitor_encoder(&profile, hardware)?;
+        let (venc, encoder) = crate::output::monitor_encoder_with(&profile, hardware, forced.as_deref())?;
         let hardware = encoder != "x264enc";
 
-        let bin = gst::Bin::with_name(&format!("tier-{}", tier.name()));
+        // Antes de reabrir, solta o que já pode ser solto; e o nome é único por
+        // geração, então um ramo retirado que ainda não saiu não atrapalha.
+        self.dispose_retired();
+        self.branch_generation += 1;
+        let bin = gst::Bin::with_name(&format!("tier-{}-{}", tier.name(), self.branch_generation));
         let queue = make("queue")?;
         // Ramo lento perde quadro, não segura os outros níveis.
         queue.set_property_from_str("leaky", "downstream");
@@ -918,15 +938,21 @@ impl MonitorBus {
         }
     }
 
-    /// Qual nível contém este elemento, se algum.
-    fn tier_of(object: &gst::Object) -> Option<MonitorTier> {
+    /// Qual nível contém este elemento, se algum, e se o ramo é o atual.
+    ///
+    /// `Some(None)`: o elemento é de um ramo retirado (geração antiga) -- o
+    /// erro dele não pode derrubar o ramo novo do mesmo nível.
+    fn tier_of(&self, object: &gst::Object) -> Option<Option<MonitorTier>> {
         let mut current = Some(object.clone());
         while let Some(item) = current {
             let name = item.name();
-            for tier in MonitorTier::ALL {
-                if name == format!("tier-{}", tier.name()) {
-                    return Some(tier);
+            if name.starts_with("tier-") {
+                for (tier, state) in &self.tiers {
+                    if state.branch.as_ref().is_some_and(|b| b.bin.name() == name) {
+                        return Some(Some(*tier));
+                    }
                 }
+                return Some(None);
             }
             current = item.parent();
         }
@@ -959,8 +985,9 @@ impl MonitorBus {
                 match message.view() {
                     gst::MessageView::Error(error) => {
                         let text = format!("{} ({})", error.error(), error.debug().unwrap_or_else(|| "sem detalhe".into()));
-                        match message.src().and_then(Self::tier_of) {
-                            Some(tier) => self.fall_tier(tier, text),
+                        match message.src().and_then(|src| self.tier_of(src)) {
+                            Some(Some(tier)) => self.fall_tier(tier, text),
+                            Some(None) => eprintln!("[monitor] {}: erro de ramo retirado ignorado: {}", self.spec.video_channel, crate::output::short_error(&text)),
                             None => {
                                 self.fall_shared(text);
                                 break;
@@ -968,8 +995,9 @@ impl MonitorBus {
                         }
                     }
                     gst::MessageView::Eos(_) => {
-                        match message.src().and_then(Self::tier_of) {
-                            Some(tier) => self.fall_tier(tier, "o destino encerrou o fluxo".into()),
+                        match message.src().and_then(|src| self.tier_of(src)) {
+                            Some(Some(tier)) => self.fall_tier(tier, "o destino encerrou o fluxo".into()),
+                            Some(None) => {}
                             None => {
                                 self.fall_shared("o destino encerrou o fluxo".into());
                                 break;

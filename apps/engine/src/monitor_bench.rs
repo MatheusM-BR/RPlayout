@@ -363,3 +363,61 @@ fn bench_monitor_niveis() {
     match &mut sut { Sut::Bus(bus) => bus.shutdown(), Sut::Legacy(p) => p.shutdown() }
     TEST_CLOCK.store(false, Ordering::Relaxed);
 }
+
+/// Achado 3 da revisão da r88-36: a troca a quente placa → x264 falhava na
+/// primeira tentativa ("Failed to add element", o ramo retirado continuava no
+/// pipeline com o mesmo nome) e só voltava depois de 2,11 s de backoff.
+/// `openh264enc` faz o papel de placa. Não é `#[ignore]`: é curto e local.
+#[test]
+fn troca_a_quente_da_placa_para_x264_na_mesma_volta() {
+    gst::init().unwrap();
+    if gst::ElementFactory::find("openh264enc").is_none() {
+        eprintln!("openh264enc ausente; teste pulado");
+        return;
+    }
+    let id = format!("mbswap-{}", std::process::id());
+    let _source = source(&id, 640, 360, 25, 1);
+    let port = free_port();
+    let receiver = Receiver::new(port);
+    let src = MonitorSource { width: 640, height: 360, fps_n: 25, fps_d: 1, frame_n: 25, frame_d: 1, bitrate_ceiling_kbps: 8000, mosaic: false };
+    let mut bus = MonitorBus::new(spec(&id, src, &[(MonitorTier::Std, port)]));
+    bus.set_hardware_encoder(Some("openh264enc"));
+    bus.set_tier(MonitorTier::Std, true, true);
+    let until = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < until && !bus.tier_reports().first().is_some_and(|r| r.health == crate::output::Health::OnAir) {
+        bus.service();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let report = bus.tier_reports()[0].clone();
+    assert_eq!(report.encoder.as_deref(), Some("openh264enc"));
+    assert!(report.hardware, "começa na \"placa\"");
+    assert_eq!(report.health, crate::output::Health::OnAir);
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until && receiver.snapshot().frames == 0 {
+        bus.service();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(receiver.snapshot().frames > 0, "a \"placa\" publicou de verdade");
+
+    assert!(crate::monitor::revoke_monitor_hardware(), "havia sessão de placa a devolver");
+    let started = Instant::now();
+    bus.service();
+    let elapsed = started.elapsed();
+    let report = bus.tier_reports()[0].clone();
+    assert!(elapsed < Duration::from_millis(500), "a troca levou {elapsed:?}");
+    assert_eq!(report.encoder.as_deref(), Some("x264enc"), "volta em x264 na mesma volta: {report:?}");
+    assert!(!report.hardware);
+    assert_eq!(report.error, None, "sem erro na troca: {report:?}");
+    assert_eq!(report.health, crate::output::Health::Connecting);
+
+    // O receptor de teste (srtsrc em modo listener) não aceita um segundo
+    // chamador depois que o primeiro desconecta -- o MediaMTX aceita. Daqui em
+    // diante a prova é a entrega no srtsink do ramo novo, sem erro.
+    pump(&mut bus, 2.0);
+    let report = bus.tier_reports()[0].clone();
+    assert_eq!(report.health, crate::output::Health::OnAir, "{report:?}");
+    assert_eq!(report.encoder.as_deref(), Some("x264enc"));
+    assert_eq!(report.error, None);
+    assert!(report.delivered > 0, "o ramo x264 entrega: {report:?}");
+    bus.shutdown();
+}
