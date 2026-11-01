@@ -5127,7 +5127,9 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const path = app.paths.find((entry) => entry.channelId === id)
     const busOf = (url: string) => /\/(pvw|mon|mv)(?:[&?]|$)/.exec(url)?.[1] ?? (/\/qc(?:[&?]|$)/.test(url) ? 'qc' : null)
     return {
-      sessions: app.encoderSessions?.status() ?? null,
+      // Totais da máquina; concessões só deste canal (as de outros canais
+      // não são assunto desta tela nem de quem só tem acesso a este canal).
+      sessions: app.encoderSessions?.status(id) ?? null,
       watched: runtime.monitorTiersWatched(),
       clock: monitorClock.has(id),
       paths: path ? { program: path.monitor, preview: path.preview, multiview: path.multiview ?? null } : null,

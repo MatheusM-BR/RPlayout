@@ -334,7 +334,19 @@ export class EncoderSessions {
     return revoked
   }
 
-  status(): EncoderSessionStatus {
+  /**
+   * Situação para a tela técnica. Com `channelId`, a lista de concessões
+   * (placa e CPU) é só a deste canal; os totais continuam sendo da máquina,
+   * que é o que a placa e a CPU são.
+   */
+  status(channelId?: string): EncoderSessionStatus {
+    const all = this.statusAll()
+    if (channelId === undefined) return all
+    return { ...all, grants: all.grants.filter((key) => key.channelId === channelId),
+      software: { ...all.software, grants: all.software.grants.filter((key) => key.channelId === channelId) } }
+  }
+
+  private statusAll(): EncoderSessionStatus {
     return {
       hardware: this.probe.hardware,
       total: this.capacity,
