@@ -20,7 +20,9 @@ export const QC_FRAME_CONCURRENCY=2
 export const QC_FRAME_QUEUE=6
 export const QC_FRAME_CACHE_BYTES=64*1024*1024
 
-export interface QcFrame {jpg:Buffer;ycc:Buffer;yccGzip:Buffer;ptsNs:number|null;bytes:number}
+export interface QcFrame {jpg:Buffer;ycc:Buffer;yccGzip:Buffer;ptsNs:number|null;bytes:number
+  /** Medição do `.ycc` feita na sonda pelo crate rplayout-scopes (Rust nativo). */
+  scopeStats?:Record<string,number>|null}
 
 /** Mira o MEIO do quadro: a busca ACCURATE cai nele, nunca no vizinho por
  * arredondamento de nanossegundo na borda. */
@@ -44,7 +46,7 @@ export class QcFrames {
   private waiting:Array<()=>void>=[]
   constructor(private readonly tempDir:string,private readonly limitBytes=QC_FRAME_CACHE_BYTES){}
 
-  get(key:string,run:(prefixo:string)=>Promise<{ptsNs:number|null}|null>):Promise<QcFrame|null>{
+  get(key:string,run:(prefixo:string)=>Promise<{ptsNs:number|null;scopeStats?:Record<string,number>|null}|null>):Promise<QcFrame|null>{
     const cached=this.cache.get(key)
     if(cached){this.cache.delete(key);this.cache.set(key,cached);return Promise.resolve(cached)}
     const pending=this.inflight.get(key)
@@ -58,7 +60,7 @@ export class QcFrames {
         if(!result)return null
         const [jpg,ycc]=await Promise.all([readFile(`${prefixo}.jpg`),readFile(`${prefixo}.ycc`)])
         const yccGzip=gzipSync(ycc,{level:1})
-        const frame:QcFrame={jpg,ycc,yccGzip,ptsNs:result.ptsNs,bytes:jpg.length+ycc.length+yccGzip.length}
+        const frame:QcFrame={jpg,ycc,yccGzip,ptsNs:result.ptsNs,scopeStats:result.scopeStats??null,bytes:jpg.length+ycc.length+yccGzip.length}
         this.remember(key,frame)
         return frame
       }catch{return null}

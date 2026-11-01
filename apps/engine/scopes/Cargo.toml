@@ -1,0 +1,12 @@
+[package]
+name = "rplayout-scopes"
+version = "0.1.0"
+edition = "2021"
+description = "Matemática única dos scopes do RPlayout (BT.709/BT.2020): waveform, parade, vectorscope, histograma, diamante, gamut e falsa cor. Sem GStreamer; compila para wasm32."
+license = "UNLICENSED"
+publish = false
+
+# O .wasm sai de `cargo rustc --crate-type cdylib` (scripts/build-scopes-wasm.mjs);
+# como dependência do engine o crate é só rlib.
+
+[dependencies]

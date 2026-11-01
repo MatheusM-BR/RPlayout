@@ -74,6 +74,11 @@ Step '04 testes JS do nucleo da troca' {
   if ($LASTEXITCODE -ne 0 -or $parsed.numFailedTests -gt 0) { throw "vitest: $($parsed.numPassedTests) PASS / $($parsed.numFailedTests) FAIL" }
   "$($parsed.numPassedTests) PASS / 0 FAIL em $($parsed.numTotalTestSuites) suites"
 }
+Step '04b scopes WASM em dia com o crate' {
+  # O .wasm dos scopes vai versionado; so recompila se as fontes do crate mudaram
+  # (precisa do alvo wasm32-unknown-unknown nesse caso: rustup target add wasm32-unknown-unknown).
+  Run 'node' @('scripts/build-scopes-wasm.mjs','--if-stale') 'scopes wasm'; 'ok'
+}
 Step '05 build web e servidor' { Run 'pnpm.cmd' @('build') 'pnpm build'; 'ok' }
 Step '06 build release do engine' {
   Push-Location (Join-Path $workspace 'apps\engine'); try { Run 'cargo' @('build','--release','--bins') 'cargo build' } finally { Pop-Location }
