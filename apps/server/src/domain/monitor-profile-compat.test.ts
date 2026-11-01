@@ -11,17 +11,18 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
+import type * as Outputs from './outputs.js'
 
 const r8835 = vi.hoisted(() => ({ on: false }))
 vi.mock('./outputs.js', async (original) => {
-  const real = await original<typeof import('./outputs.js')>()
+  const real = await original<typeof Outputs>()
   const { monitorSize } = await import('@rplayout/protocol')
   // ---- r88-35 (ddd7b8b), literal ----
   function lowBandwidthMonitor(channel: { width: number; height: number }) {
     const [width, height] = monitorSize(channel.width, channel.height)
     return { width, height, rateNum: 15, rateDen: 1, scan: 'PROGRESSIVE', bitrateKbps: 450 }
   }
-  function validateOutputProfile(row: import('./outputs.js').OutputProfileRow, channel?: { width: number; height: number }): void {
+  function validateOutputProfile(row: Outputs.OutputProfileRow, channel?: { width: number; height: number }): void {
     if (row.role === 'EXTRA') {
       if (row.kind === 'RTMP' || row.kind === 'SRT') {
         let url: URL
@@ -38,7 +39,7 @@ vi.mock('./outputs.js', async (original) => {
     }
   }
   // ---- fim da cópia ----
-  return { ...real, validateOutputProfile: (row: import('./outputs.js').OutputProfileRow, channel?: { width: number; height: number }) => r8835.on ? validateOutputProfile(row, channel) : real.validateOutputProfile(row, channel) }
+  return { ...real, validateOutputProfile: (row: Outputs.OutputProfileRow, channel?: { width: number; height: number }) => r8835.on ? validateOutputProfile(row, channel) : real.validateOutputProfile(row, channel) }
 })
 
 import { openDatabase } from '../db/client.js'

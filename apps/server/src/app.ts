@@ -47,6 +47,7 @@ import {
   MEDIAMTX_BIND,
   DEVICES_BINARY,
   ENCODERS_BINARY,
+  ENCODERS_CACHE_FILE,
   MEDIAMTX_LOGLEVEL,
   PGM_RECORD_DIR,
   PGM_RECORD_HOURS,
@@ -81,7 +82,7 @@ import {assertPersistedLiveReplacementReceipt,unresolvedNativeReplacementJournal
 import {createNativeReplacementSession,resolveStoppedPredecessorJournals,type NativeReplacementActor,type NativeReplacementAuthorization,type NativeReplacementRuntimePort,type NativeReplacementSession} from './domain/native-live-replacement-session.js'
 import {assertProgramTrim} from './domain/program-trim.js'
 import {programDurationFrames,clampTier,MULTIVIEW_QUALITY_TIER,type MonitorTier} from '@rplayout/protocol'
-import {EncoderSessions,probeEncoders,programEncodedOutputs,NO_HARDWARE} from './domain/encoder-sessions.js'
+import {EncoderSessions,programEncodedOutputs,programHardwareSessions,startEncoderProbe,NO_HARDWARE} from './domain/encoder-sessions.js'
 import {ExecutionOwnership,type ExecutionLease} from './domain/execution-ownership.js'
 import {endPreviousPgmObservation} from './domain/pgm-signal-incidents.js'
 import {persistRuntimeSignalIncidents,runtimeObservationKey,runtimeObservationSnapshot,RuntimeIncidentRecorder} from './domain/runtime-signal-incidents.js'
@@ -2122,12 +2123,15 @@ export async function createApp(file: string,options:{restoredAdmission?:Restore
 
   const historicalProcessMetrics=new ProcessMetrics()
   app.hostMetrics.onCapture=()=>captureOperationalMetrics(app.runtimes,historicalProcessMetrics,runtime=>operationalMetricLabels(app.db,runtime.channel.id,app.paths.find(path=>path.channelId===runtime.channel.id),app.runtimes.get(runtime.channel.id)?.executionView??null))
-  // Sessões de placa contadas antes de qualquer canal subir: depois, o
-  // programa já estaria ocupando parte delas e a conta sairia dobrada.
-  if(!haAdmission&&ENCODERS_BINARY){
-    const probe=await probeEncoders(ENCODERS_BINARY)
-    app.encoderSessions?.setProbe(probe)
-    console.info(`[monitor] codificadores: ${probe.encoders.filter(e=>e.available).map(e=>e.hardware?`${e.name} (${e.unlimited?'sem limite':`${e.sessions} sessões`})`:e.name).join(', ')||'nenhum'}`)
+  // Sessões de placa: a sonda roda em segundo plano (ou nem roda, com cache
+  // válido) e a partida não a espera -- antes, até 30 s de atraso para os
+  // canais subirem. Até ela terminar, a capacidade de placa dos monitores é 0
+  // (saem em x264); o programa nunca depende dela.
+  if(!haAdmission&&ENCODERS_BINARY&&app.encoderSessions){
+    const sessions=app.encoderSessions
+    void startEncoderProbe({binary:ENCODERS_BINARY,cacheFile:ENCODERS_CACHE_FILE,sessions,
+      programHardwareSessions:()=>[...app.runtimes.values()].reduce((sum,runtime)=>sum+programHardwareSessions(runtime.transport.publishers()),0)})
+      .catch(error=>console.warn(`[monitor] sonda de codificadores falhou: ${error instanceof Error?error.message:String(error)}; monitores em x264`))
   }
   startupTrace('application construction completed')
   return app

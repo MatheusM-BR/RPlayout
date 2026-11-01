@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { readFile, realpath, stat, writeFile, rename, mkdir } from 'node:fs/promises'
 import { availableParallelism } from 'node:os'
+import { dirname, join } from 'node:path'
 import type { MonitorTier } from '@rplayout/protocol'
 import type { PublisherState } from './transport.js'
 
@@ -39,6 +42,114 @@ export function probeEncoders(binary: string | null | undefined, timeoutMs = 30_
       })
     } catch { finish(NO_HARDWARE) }
   })
+}
+
+/**
+ * Impressão digital do que decide o resultado da sonda: o binário da sonda,
+ * o GStreamer (biblioteca central e caminhos de plugin) e o driver de vídeo
+ * (bibliotecas de NVENC/CUDA/QSV/MF). Mudou qualquer um, o cache não vale.
+ * Só lê metadados (e o binário da sonda, para o hash): não abre sessão.
+ */
+export async function encoderProbeFingerprint(binary: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): Promise<string> {
+  const hash = createHash('sha256')
+  hash.update(`v1|${platform}|${process.arch}\n`)
+  try { hash.update(await readFile(binary)) } catch { hash.update('sem-binario') }
+  const describe = async (file: string): Promise<string> => {
+    try {
+      const real = await realpath(file)
+      const info = await stat(real)
+      return `${file}->${real}:${info.size}:${Math.round(info.mtimeMs)}`
+    } catch { return `${file}:ausente` }
+  }
+  const files: string[] = []
+  for (const name of ['GSTREAMER_1_0_ROOT_MSVC_X86_64', 'GSTREAMER_1_0_ROOT_X86_64', 'GST_PLUGIN_PATH', 'GST_PLUGIN_SYSTEM_PATH', 'GST_PLUGIN_PATH_1_0', 'GST_PLUGIN_SYSTEM_PATH_1_0']) hash.update(`${name}=${env[name] ?? ''}\n`)
+  if (platform === 'win32') {
+    for (const root of [env.GSTREAMER_1_0_ROOT_MSVC_X86_64, env.GSTREAMER_1_0_ROOT_X86_64, dirname(binary)]) if (root) files.push(join(root, 'bin', 'gstreamer-1.0-0.dll'), join(root, 'gstreamer-1.0-0.dll'))
+    const system = join(env.SystemRoot ?? 'C:\\Windows', 'System32')
+    for (const dll of ['nvEncodeAPI64.dll', 'nvcuda.dll', 'libmfxhw64.dll', 'libvpl.dll', 'intel_gfx_api-x64.dll', 'mfplat.dll', 'amfrt64.dll']) files.push(join(system, dll))
+  } else {
+    for (const lib of ['/usr/lib/x86_64-linux-gnu', '/usr/lib64', '/usr/lib', '/usr/local/lib']) {
+      files.push(join(lib, 'libgstreamer-1.0.so.0'), join(lib, 'libnvidia-encode.so.1'), join(lib, 'libcuda.so.1'), join(lib, 'dri', 'iHD_drv_video.so'), join(lib, 'libmfx-gen.so.1.2'), join(lib, 'libvpl.so.2'))
+    }
+    files.push('/proc/driver/nvidia/version')
+  }
+  for (const file of files) hash.update(`${await describe(file)}\n`)
+  try { hash.update(await readFile('/proc/driver/nvidia/version')) } catch { /* sem NVIDIA */ }
+  return hash.digest('hex')
+}
+
+interface ProbeCache { readonly fingerprint: string; readonly probe: EncoderProbe; readonly savedAt: string; readonly programSessionsDuringProbe: number }
+
+/** Lê o cache; nulo se ausente, corrompido ou de outra impressão digital. */
+export async function readProbeCache(file: string, fingerprint: string): Promise<EncoderProbe | null> {
+  try {
+    const cache = JSON.parse(await readFile(file, 'utf8')) as Partial<ProbeCache>
+    if (cache.fingerprint !== fingerprint || !cache.probe || !Array.isArray(cache.probe.encoders)) return null
+    const sessions = cache.probe.hardwareSessions
+    if (sessions !== null && !(Number.isInteger(sessions) && sessions! >= 0)) return null
+    return { encoders: cache.probe.encoders, hardware: typeof cache.probe.hardware === 'string' ? cache.probe.hardware : null, hardwareSessions: sessions ?? null }
+  } catch { return null }
+}
+
+async function writeProbeCache(file: string, cache: ProbeCache): Promise<void> {
+  await mkdir(dirname(file), { recursive: true })
+  const temporary = `${file}.${process.pid}.tmp`
+  await writeFile(temporary, JSON.stringify(cache, null, 2))
+  await rename(temporary, file)
+}
+
+/**
+ * Sonda de codificadores sem atrasar a partida.
+ *
+ * Com cache válido, a capacidade de placa vale já e a sonda nem roda. Sem
+ * cache, a sonda roda em segundo plano: até ela terminar, monitores não ganham
+ * sessão de placa (capacidade 0, saem em x264) -- o programa nunca depende
+ * dela. Como os canais sobem junto, a sonda pode encontrar sessões já
+ * ocupadas pelo programa: elas são somadas de volta (`programHardwareSessions`
+ * no fim da sonda). Quem chama não espera: a promessa só serve a testes.
+ */
+export async function startEncoderProbe(options: {
+  readonly binary: string
+  readonly cacheFile: string
+  readonly sessions: EncoderSessions
+  /** Sessões de placa que as saídas de programa ocupam agora. */
+  readonly programHardwareSessions: () => number
+  readonly probe?: (binary: string) => Promise<EncoderProbe>
+  readonly fingerprint?: (binary: string) => Promise<string>
+  readonly log?: (message: string) => void
+}): Promise<'cache' | 'probe'> {
+  const log = options.log ?? ((message: string) => console.info(message))
+  const fingerprint = await (options.fingerprint ?? encoderProbeFingerprint)(options.binary)
+  const cached = await readProbeCache(options.cacheFile, fingerprint)
+  if (cached) {
+    options.sessions.setProbe(cached)
+    log(`[monitor] codificadores (cache): ${describeProbe(cached)}`)
+    return 'cache'
+  }
+  const before = options.programHardwareSessions()
+  const raw = await (options.probe ?? probeEncoders)(options.binary)
+  const during = Math.max(before, options.programHardwareSessions())
+  const probe: EncoderProbe = raw.hardware && raw.hardwareSessions !== null && during > 0 ? { ...raw, hardwareSessions: raw.hardwareSessions + during } : raw
+  options.sessions.setProbe(probe)
+  log(`[monitor] codificadores: ${describeProbe(probe)}${during ? ` (somadas ${during} sessões do programa abertas durante a sonda)` : ''}`)
+  // Sonda que falhou ou expirou (NO_HARDWARE sem nenhum codificador) não vira cache.
+  if (raw.encoders.length) {
+    try { await writeProbeCache(options.cacheFile, { fingerprint, probe, savedAt: new Date().toISOString(), programSessionsDuringProbe: during }) }
+    catch (error) { log(`[monitor] cache da sonda não gravado: ${error instanceof Error ? error.message : String(error)}`) }
+  }
+  return 'probe'
+}
+
+function describeProbe(probe: EncoderProbe): string {
+  return probe.encoders.filter((e) => e.available).map((e) => e.hardware ? `${e.name} (${e.unlimited ? 'sem limite' : `${e.sessions} sessões`})` : e.name).join(', ') || 'nenhum'
+}
+
+/** Saídas de programa que estão codificando na placa agora. */
+export function programHardwareSessions(publishers: readonly PublisherState[]): number {
+  return publishers.filter((publisher) =>
+    !(publisher.tiers && publisher.tiers.length) && publisher.health !== 'idle' &&
+    typeof publisher.encoder === 'string' && /^(nv|qsv|mf|amf|va)/i.test(publisher.encoder),
+  ).length
 }
 
 export interface MonitorKey { readonly channelId: string; readonly bus: string; readonly tier: MonitorTier }
