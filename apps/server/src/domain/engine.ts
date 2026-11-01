@@ -1058,7 +1058,9 @@ export class EngineTransport implements Transport {
           ...(Number.isSafeInteger(event.generation)&&event.generation!>=0?{generation:event.generation}:{}),
           error: event.error == null ? event.error : sanitizeDiagnostic(event.error),
           ...(typeof event.encoder === 'string' ? { encoder: event.encoder } : {}),
-          ...(Array.isArray(event.tiers) && event.tiers.length ? { tiers: event.tiers.map((tier) => ({ ...tier, ...(tier.error ? { error: sanitizeDiagnostic(tier.error) } : {}) })) } : {}),
+          ...(Array.isArray(event.tiers) && event.tiers.length ? { tiers: event.tiers.map((tier) => ({ ...tier, ...(tier.error ? { error: sanitizeDiagnostic(tier.error) } : {}), ...(tier.hardwareFailed ? { hardwareFailed: sanitizeDiagnostic(tier.hardwareFailed) } : {}) })) } : {}),
+          ...(Number.isSafeInteger(event.hardwareRefusals) && event.hardwareRefusals! > 0 ? { hardwareRefusals: event.hardwareRefusals } : {}),
+          ...(typeof event.hardwareFailed === 'string' ? { hardwareFailed: sanitizeDiagnostic(event.hardwareFailed) } : {}),
         })
         this.notifySignalObservation()
         break
@@ -2726,6 +2728,10 @@ export class EngineTransport implements Transport {
   setMonitorClock(on: boolean): void {
     this.desiredMonitorClock = on
     this.send({ cmd: 'monitorClock', on })
+  }
+  /** A placa volta a valer neste engine (sessões de monitores revogadas). */
+  retryHardware(): void {
+    this.send({ cmd: 'hardwareRetry' })
   }
   /** Layout/células/teto do multiview composto. Só o pipeline do multiview muda. */
   configureMultiview(composition: MultiviewComposition): void {

@@ -7,7 +7,7 @@ import cors from '@fastify/cors'
 import fastifyStatic from '@fastify/static'
 import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
-import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation } from './app.js'
+import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation, serviceMonitorHardware } from './app.js'
 import {EngineTransport} from './domain/engine.js'
 import { sealAudit, verifyAudit } from './domain/audit-seal.js'
 import { BACKUP_EVERY_HOURS, BACKUP_MIRROR_DIR, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS, HTTP_AUDIT_RETENTION_DAYS } from './config.js'
@@ -348,6 +348,8 @@ async function main(): Promise<void> {
         for (const channel of await listChannels(app.db)) await warmChannelCache(app,channel.id)
       }).finally(() => {cacheWarming=false})
     }
+    // Placa recusada ao programa de um canal: revoga monitores de todos.
+    try{serviceMonitorHardware(app)}catch(error){server.log.warn({err:error},'Revogação de placa dos monitores não concluída; nova tentativa no próximo ciclo.')}
     for (const runtime of app.runtimes.values()) {
       app.continuityCache.replaceProtection(`runtime:${runtime.channel.id}`,runtime.cachePins())
       try{runtime.reconcileSignalIncidents(false,app.paths.find(path=>path.channelId===runtime.channel.id))}

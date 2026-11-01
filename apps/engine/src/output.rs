@@ -166,6 +166,19 @@ pub struct Report {
     /// Níveis de um monitor, só os pedidos ou ainda abertos.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tiers: Vec<TierReport>,
+    /// Quantas vezes esta saída de programa teve a placa recusada sem ter
+    /// monitor deste processo para tomar de volta. Cresce a cada recusa; o
+    /// servidor revoga as sessões de monitores dos **outros** canais e manda
+    /// este engine tentar a placa de novo (`hardwareRetry`).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub hardware_refusals: u32,
+    /// Motivo da última recusa da placa nesta saída.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hardware_failed: Option<String>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Situação de um nível de monitor.
@@ -186,6 +199,11 @@ pub struct TierReport {
     pub degraded: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// A placa falhou num ramo aberto nela, e por quê. Campo próprio, que
+    /// `degraded`/`error` não sobrescrevem: o servidor devolve a sessão e
+    /// aprende a capacidade real da placa por ele.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hardware_failed: Option<String>,
 }
 
 /// Para onde a saída empurra, e em que container.
@@ -295,11 +313,16 @@ pub struct Publisher {
     attempts: u32,
     retry_at: Option<Instant>,
     error: Option<String>,
+    /// Recusas da placa sem monitor local para tomar de volta (veja `Report`).
+    hardware_refusals: u32,
+    hardware_failed: Option<String>,
 }
 
 #[cfg(test)]
 impl Publisher {
     pub(crate) fn audio_channel(&self)->&str { &self.spec.audio_channel }
+    /// Faz a saída cair com este motivo, como se o pipeline tivesse dado erro.
+    pub(crate) fn fail_for_test(&mut self, reason: &str) { self.fall(reason.to_string()); }
 }
 
 impl Publisher {
@@ -316,6 +339,8 @@ impl Publisher {
             attempts: 0,
             retry_at: if spec.on_demand { None } else { Some(Instant::now()) },
             error: None,
+            hardware_refusals: 0,
+            hardware_failed: None,
             spec,
         }
     }
@@ -479,6 +504,8 @@ impl Publisher {
                 error: bus.error(),
                 encoder: None,
                 tiers: bus.tier_reports(),
+                hardware_refusals: 0,
+                hardware_failed: None,
             };
         }
         Report {
@@ -491,6 +518,23 @@ impl Publisher {
             delivered: self.delivered.load(Ordering::Relaxed),
             generation: self.generation,
             error: self.error.clone(),
+            hardware_refusals: self.hardware_refusals,
+            hardware_failed: self.hardware_failed.clone(),
+        }
+    }
+
+    /// O servidor tomou de volta as sessões de placa dos monitores de outros
+    /// canais: se esta saída caiu por recusa da placa e está esperando, tenta
+    /// de novo já (a placa volta a valer no processo, `retomar_hardware`).
+    pub fn retry_hardware_soon(&mut self) {
+        if self.tiered.is_some() || self.spec.prefer_software || self.health != Health::Retrying {
+            return;
+        }
+        if self.error.as_deref().is_some_and(e_do_hardware) {
+            let soon = Instant::now() + Duration::from_millis(250);
+            if self.retry_at.map_or(true, |at| at > soon) {
+                self.retry_at = Some(soon);
+            }
         }
     }
 
@@ -566,6 +610,14 @@ impl Publisher {
                 retry_now = true;
             } else {
                 desistir_do_hardware(&reason);
+                if !self.spec.prefer_software {
+                    // Nada a tomar de volta aqui: quem pode ter as sessões são
+                    // os monitores de outros canais (outros processos). O
+                    // relatório avisa o servidor, que as revoga e manda tentar
+                    // a placa de novo.
+                    self.hardware_refusals = self.hardware_refusals.saturating_add(1);
+                    self.hardware_failed = Some(short_error(&reason));
+                }
             }
         }
         self.close();
@@ -932,6 +984,17 @@ const ENCODERS: &[&str] = &["nvh264enc", "qsvh264enc", "mfh264enc", "x264enc"];
 /// tempestade de reconexões.
 static HARDWARE_DISPONIVEL: AtomicBool = AtomicBool::new(true);
 
+/// A placa volta a valer neste processo: o servidor revogou sessões de
+/// monitores de outros canais para o programa daqui. Devolve se estava
+/// desligada.
+pub fn retomar_hardware() -> bool {
+    let estava_desligada = !HARDWARE_DISPONIVEL.swap(true, Ordering::Relaxed);
+    if estava_desligada {
+        eprintln!("[engine] o servidor liberou sessões de placa de outros canais; o programa tenta a placa de novo");
+    }
+    estava_desligada
+}
+
 /// Marca a placa como indisponível. Devolve `true` se foi a primeira vez.
 pub fn desistir_do_hardware(motivo: &str) -> bool {
     if !HARDWARE_DISPONIVEL.swap(false, Ordering::Relaxed) {
@@ -1048,14 +1111,11 @@ fn set_enum_if_exists(element: &gst::Element, name: &str, value: &str) {
 ///
 /// `hardware` vem da concessão do servidor. Sem ela, x264 veryfast/
 /// zerolatency. `RPLAYOUT_MONITOR_ENCODER` força um (teste e diagnóstico).
-pub fn monitor_encoder(profile: &crate::monitor::TierProfile, hardware: bool) -> Result<(gst::Element, String)> {
-    let forced = std::env::var("RPLAYOUT_MONITOR_ENCODER").ok();
-    monitor_encoder_with(profile, hardware, forced.as_deref())
-}
-
-/// [`monitor_encoder`] com o codificador "de placa" injetado (testes). O
-/// forçado só vale com concessão de placa: sem ela (ou depois de a placa ser
-/// devolvida ao programa) o nível é sempre x264.
+///
+/// `forced` é o codificador que faz o papel de placa (o `MonitorBus` passa o
+/// injetado nos testes ou o de `RPLAYOUT_MONITOR_ENCODER`). Ele só vale com
+/// concessão de placa: sem ela (ou depois de a placa ser devolvida ao
+/// programa) o nível é sempre x264.
 pub fn monitor_encoder_with(profile: &crate::monitor::TierProfile, hardware: bool, forced: Option<&str>) -> Result<(gst::Element, String)> {
     let candidates: Vec<&str> = match forced {
         Some(name) if hardware => vec![name, "x264enc"],

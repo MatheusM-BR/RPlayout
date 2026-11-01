@@ -423,8 +423,14 @@ struct TierState {
     wanted: bool,
     /// O servidor concedeu sessão de placa para este nível.
     hardware_granted: bool,
-    /// A placa falhou neste nível; até o próximo pedido, só software.
+    /// A placa falhou neste nível (ou foi devolvida ao programa); até o
+    /// próximo pedido, só software.
     hardware_failed: bool,
+    /// Motivo de a placa ter **falhado** num ramo aberto nela (não a
+    /// devolução ao programa). Vai no relatório em campo próprio, que nada
+    /// sobrescreve até um pedido novo: é por ele que o servidor aprende a
+    /// capacidade real da placa.
+    hardware_failure: Option<String>,
     health: Health,
     attempts: u32,
     retry_at: Option<Instant>,
@@ -441,6 +447,7 @@ impl TierState {
             wanted: false,
             hardware_granted: false,
             hardware_failed: false,
+            hardware_failure: None,
             health: Health::Idle,
             attempts: 0,
             retry_at: None,
@@ -536,6 +543,7 @@ impl MonitorBus {
     }
 
     /// Injeta o codificador que faz o papel de placa (testes e diagnóstico).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_hardware_encoder(&mut self, name: Option<&str>) {
         self.hardware_encoder = name.map(str::to_string);
     }
@@ -574,6 +582,7 @@ impl MonitorBus {
             }
             state.wanted = true;
             state.hardware_failed = false;
+            state.hardware_failure = None;
             state.health = Health::Retrying;
             state.attempts = 0;
             state.error = None;
@@ -915,6 +924,7 @@ impl MonitorBus {
         if was_hardware {
             // Troca a quente: a placa falhou, o mesmo nível volta já em x264.
             state.hardware_failed = true;
+            state.hardware_failure = Some(crate::output::short_error(&reason));
             state.retry_at = Some(Instant::now());
             eprintln!("[monitor] {} {}: placa falhou ({reason}); trocando para x264", self.spec.video_channel, tier.name());
             return;
@@ -1103,9 +1113,21 @@ impl MonitorBus {
                     uptime_ms: s.branch.as_ref().map(|b| b.opened_at.elapsed().as_millis() as u64).unwrap_or(0),
                     degraded: s.degraded.clone(),
                     error: s.error.clone(),
+                    hardware_failed: s.hardware_failure.clone(),
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+impl MonitorBus {
+    /// O elemento codificador do ramo aberto de um nível (para simular falha).
+    pub fn branch_encoder(&self, tier: MonitorTier) -> Option<gst::Element> {
+        let branch = self.tiers.get(&tier)?.branch.as_ref()?;
+        branch.bin.iterate_recurse().into_iter().flatten().find(|element| {
+            element.factory().is_some_and(|factory| factory.name() == branch.encoder.as_str())
+        })
     }
 }
 

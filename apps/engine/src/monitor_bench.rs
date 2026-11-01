@@ -368,8 +368,13 @@ fn bench_monitor_niveis() {
 /// primeira tentativa ("Failed to add element", o ramo retirado continuava no
 /// pipeline com o mesmo nome) e só voltava depois de 2,11 s de backoff.
 /// `openh264enc` faz o papel de placa. Não é `#[ignore]`: é curto e local.
+/// Os testes que abrem "placa" (openh264enc) mexem em contadores globais do
+/// processo (sessões de monitor, revogação, placa desistida): um de cada vez.
+static PLACA: Mutex<()> = Mutex::new(());
+
 #[test]
 fn troca_a_quente_da_placa_para_x264_na_mesma_volta() {
+    let _placa = PLACA.lock().unwrap_or_else(|e| e.into_inner());
     gst::init().unwrap();
     if gst::ElementFactory::find("openh264enc").is_none() {
         eprintln!("openh264enc ausente; teste pulado");
@@ -420,4 +425,98 @@ fn troca_a_quente_da_placa_para_x264_na_mesma_volta() {
     assert_eq!(report.error, None);
     assert!(report.delivered > 0, "o ramo x264 entrega: {report:?}");
     bus.shutdown();
+}
+
+/// Achado 4: o relatório REAL do engine (serialização do Rust) quando a placa
+/// falha num nível de monitor e quando o programa recebe recusa da placa sem
+/// monitor local para tomar de volta. Grava a fixture que o teste do servidor
+/// (`encoder-sessions.test.ts`) consome; com a fixture desatualizada, este
+/// teste falha (regenerar com `RPLAYOUT_UPDATE_FIXTURES=1`).
+#[test]
+fn relatorio_real_de_falha_de_placa_vira_fixture_do_servidor() {
+    use crate::output::{Kind, Publisher, PublisherSpec, Report};
+    use crate::protocol::Event;
+    let _placa = PLACA.lock().unwrap_or_else(|e| e.into_inner());
+    gst::init().unwrap();
+    if gst::ElementFactory::find("openh264enc").is_none() {
+        eprintln!("openh264enc ausente; teste pulado");
+        return;
+    }
+    let id = format!("mbfail-{}", std::process::id());
+    let _source = source(&id, 640, 360, 25, 1);
+    let port = free_port();
+    let _receiver = Receiver::new(port);
+    let src = MonitorSource { width: 640, height: 360, fps_n: 25, fps_d: 1, frame_n: 25, frame_d: 1, bitrate_ceiling_kbps: 8000, mosaic: false };
+    let mut bus = MonitorBus::new(spec(&id, src, &[(MonitorTier::Std, port)]));
+    bus.set_hardware_encoder(Some("openh264enc"));
+    bus.set_tier(MonitorTier::Std, true, true);
+    let until = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < until && !bus.tier_reports().first().is_some_and(|r| r.health == crate::output::Health::OnAir) {
+        bus.service();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(bus.tier_reports()[0].hardware);
+    // A "placa" recusa no meio: erro vindo do próprio codificador do ramo.
+    let encoder = bus.branch_encoder(MonitorTier::Std).expect("ramo com codificador");
+    let message = gst::message::Error::builder(gst::CoreError::Failed, "openh264enc: session limit reached (NV_ENC_ERR_OUT_OF_MEMORY)")
+        .src(&encoder)
+        .build();
+    encoder.post_message(message).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    bus.service();
+    let tiers = bus.tier_reports();
+    assert_eq!(tiers[0].encoder.as_deref(), Some("x264enc"), "{tiers:?}");
+    assert!(tiers[0].hardware_failed.as_deref().is_some_and(|m| m.contains("session")), "{tiers:?}");
+    // `degraded` e `error` podem mudar (reabertura, CPU); o campo próprio fica.
+    pump(&mut bus, 1.0);
+    let mut tiers = bus.tier_reports();
+    assert!(tiers[0].hardware_failed.is_some(), "nada sobrescreve hardwareFailed: {tiers:?}");
+    bus.shutdown();
+    for tier in &mut tiers {
+        tier.delivered = 0;
+        tier.uptime_ms = 0;
+    }
+    let monitor = Report {
+        output_id: "monitor-pgm".into(),
+        url: "srt://127.0.0.1:8890?streamid=publish:canal-a/mon".into(),
+        health: crate::output::Health::OnAir,
+        attempts: 0,
+        delivered: 0,
+        generation: 0,
+        error: None,
+        encoder: None,
+        tiers,
+        hardware_refusals: 0,
+        hardware_failed: None,
+    };
+
+    // Programa do canal B: recusa da placa sem monitor local para tomar de volta.
+    let mut program = Publisher::new(PublisherSpec {
+        output_id: "pgm-rtmp".into(), kind: Kind::Rtmp, url: "rtmp://127.0.0.1:1/canal-b/pgm".into(),
+        video_channel: format!("{id}-v"), audio_channel: format!("{id}-a"),
+        width: 640, height: 360, fps_n: 25, fps_d: 1, bitrate_kbps: 3000, interlaced: false, top_field_first: true,
+        prefer_software: false, role: "pgm".into(), on_demand: true, opus: false, monitor: None,
+    });
+    assert_eq!(crate::monitor::MONITOR_HW_SESSIONS.load(Ordering::Acquire), 0);
+    program.fail_for_test("nvh264enc0: Could not open encoding session (NV_ENC_ERR_OUT_OF_MEMORY)");
+    let mut program_report = program.report();
+    assert_eq!(program_report.hardware_refusals, 1);
+    assert!(!crate::output::hardware_available(), "o processo desistiu da placa");
+    assert!(crate::output::retomar_hardware(), "hardwareRetry devolve a placa ao processo");
+    program.shutdown();
+    program_report.generation = 0;
+
+    let lines = [Event::Publisher { report: monitor }, Event::Publisher { report: program_report }]
+        .iter()
+        .map(|event| serde_json::to_string(event).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../server/src/domain/__fixtures__/engine-hardware-failed.jsonl");
+    if std::env::var("RPLAYOUT_UPDATE_FIXTURES").is_ok() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &lines).unwrap();
+    }
+    let saved = std::fs::read_to_string(&path).unwrap_or_default();
+    assert_eq!(saved, lines, "fixture do servidor desatualizada: RPLAYOUT_UPDATE_FIXTURES=1 cargo test relatorio_real_de_falha_de_placa");
 }

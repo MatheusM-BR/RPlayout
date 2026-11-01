@@ -234,6 +234,10 @@ pub enum Command {
     /// Liga o relógio de teste gravado na imagem dos monitores (medição de
     /// atraso de vidro a vidro). Nunca toca o programa.
     MonitorClock { on: bool },
+    /// O servidor tomou de volta sessões de placa de monitores de outros
+    /// canais depois de uma recusa da placa no programa deste: a placa volta a
+    /// valer neste processo e a saída que caiu tenta de novo já.
+    HardwareRetry,
     /// Layout, células e qualidade do multiview composto. Recria só o pipeline
     /// do multiview; PGM e saídas não são tocados.
     Multiview { composition: crate::channel::multiview::Composition },

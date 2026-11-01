@@ -410,6 +410,11 @@ fn run_command(channel: &mut Channel, command: Command, request_id:u64) -> Resul
             channel.seek(&bus, frames)?;
             Ok(true)
         }
+        Command::HardwareRetry => {
+            crate::output::retomar_hardware();
+            channel.retry_hardware_outputs();
+            Ok(true)
+        }
         Command::MonitorClock { on } => {
             crate::monitor::TEST_CLOCK.store(on, std::sync::atomic::Ordering::Relaxed);
             Ok(true)

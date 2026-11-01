@@ -30,6 +30,14 @@ export interface PublisherState {
   readonly encoder?: string
   /** Níveis de um monitor (só os pedidos ou abertos). */
   readonly tiers?: readonly MonitorTierState[]
+  /**
+   * Saída de programa: recusas da placa sem monitor local para tomar de volta
+   * (cresce a cada uma). O servidor revoga as sessões de monitores dos outros
+   * canais e manda este engine tentar a placa de novo.
+   */
+  readonly hardwareRefusals?: number
+  /** Motivo da última recusa da placa nesta saída. */
+  readonly hardwareFailed?: string
 }
 
 /** Um nível de monitor, como o engine reporta. */
@@ -43,6 +51,12 @@ export interface MonitorTierState {
   readonly uptimeMs: number
   readonly degraded?: string
   readonly error?: string
+  /**
+   * A placa falhou num ramo aberto nela, e por quê. Campo próprio do engine,
+   * que `degraded`/`error` não sobrescrevem: é por ele que o servidor aprende
+   * a capacidade real da placa.
+   */
+  readonly hardwareFailed?: string
 }
 
 /** Estado de uma entrada viva que o engine de fato abriu nesta sessão. */
@@ -142,6 +156,12 @@ export interface Transport {
   setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware?: boolean): void
   /** Relógio de teste gravado na imagem dos monitores (medição de atraso). */
   setMonitorClock?(on: boolean): void
+  /**
+   * Sessões de placa de monitores de outros canais foram revogadas para o
+   * programa deste: a placa volta a valer no engine e a saída que caiu por
+   * recusa tenta de novo.
+   */
+  retryHardware?(): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   graphicConfirmed?(svg: string | null, fadeMs: number, authorize?:()=>void): Promise<void>

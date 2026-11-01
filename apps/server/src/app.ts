@@ -1625,6 +1625,36 @@ export class ChannelRuntime {
     }
   }
 
+  /**
+   * O servidor tomou de volta a sessão de placa deste nível para o programa
+   * de algum canal: o nível segue aberto, em x264.
+   */
+  placaRevogada(bus: MonitorBus, tier: MonitorTier): void {
+    const current = this.nivelOlhado.get(`${bus}|${tier}`)
+    if (!current?.hardware) return
+    current.hardware = false
+    current.reafirmado = Date.now()
+    console.info(`[monitor] ${bus} ${tier}: placa devolvida ao programa; segue em x264`)
+    this.transport.setMonitor(bus, true, tier, false)
+  }
+
+  private readonly recusasDePlacaVistas = new Map<string, number>()
+  /**
+   * Alguma saída de programa deste canal relatou recusa nova da placa sem
+   * monitor local para tomar de volta? (O contador do engine só cresce.)
+   */
+  recusaNovaDePlaca(): string | null {
+    let nova: string | null = null
+    for (const publisher of this.transport.publishers()) {
+      const count = publisher.hardwareRefusals ?? 0
+      if (!count || publisher.tiers?.length) continue
+      const key = publisher.outputId ?? publisher.url
+      if (count > (this.recusasDePlacaVistas.get(key) ?? 0)) nova = publisher.hardwareFailed ?? 'placa recusou a sessão'
+      this.recusasDePlacaVistas.set(key, count)
+    }
+    return nova
+  }
+
   /** Liga/desliga o relógio de teste nos monitores deste canal. */
   setMonitorClock(on: boolean): boolean {
     if (!this.transport.setMonitorClock) return false
@@ -2074,6 +2104,30 @@ export async function createApp(file: string,options:{restoredAdmission?:Restore
   }
   startupTrace('application construction completed')
   return app
+}
+
+/**
+ * Prioridade absoluta do programa entre processos. Cada canal é um engine; a
+ * revogação local (`revoke_monitor_hardware`) só alcança os monitores do
+ * próprio processo. Quando o programa de um canal recebe recusa da placa e não
+ * tinha monitor local para devolver, o servidor -- que conta as sessões de
+ * todos -- revoga os empréstimos de todos os canais e manda o engine que
+ * recusou tentar a placa de novo. Sem isto o canal ficava em x264 para sempre
+ * (`desistir_do_hardware`) enquanto monitores de outro canal seguiam na placa.
+ */
+export function serviceMonitorHardware(app: App): void {
+  const sessions = app.encoderSessions
+  if (!sessions) return
+  for (const runtime of app.runtimes.values()) {
+    const motivo = runtime.recusaNovaDePlaca()
+    if (!motivo) continue
+    const revoked = sessions.revokeAll()
+    for (const key of revoked) app.runtimes.get(key.channelId)?.placaRevogada(key.bus as MonitorBus, key.tier)
+    if (revoked.length) {
+      console.info(`[monitor] programa de ${runtime.channel.name} recebeu recusa da placa (${motivo}); ${revoked.length} sessão(ões) de monitor devolvida(s), placa liberada para o programa`)
+      runtime.transport.retryHardware?.()
+    }
+  }
 }
 
 export async function runtimeFor(app: App, channelId: string): Promise<ChannelRuntime | null> {

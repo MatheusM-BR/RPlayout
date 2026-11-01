@@ -123,23 +123,35 @@ export class EncoderSessions {
   /**
    * Lê o que o engine relatou. Um nível concedido que está em software
    * perdeu a placa (falha no meio ou programa pediu de volta): a sessão
-   * volta ao contador e, se foi a placa que recusou, a capacidade aprende o
-   * limite real -- o número da sonda pode ter mudado por outro programa
-   * (vMix, OBS) usando a mesma placa.
+   * volta ao contador e, se a placa **falhou** (`hardwareFailed`, campo
+   * próprio do engine que nada sobrescreve), a capacidade aprende o limite
+   * real -- o número da sonda pode ter mudado por outro programa (vMix, OBS)
+   * usando a mesma placa. Devolução ao programa não ensina nada.
    */
   observe(channelId: string, bus: string, report: PublisherState): void {
     for (const tier of report.tiers ?? []) {
       const key = { channelId, bus, tier: tier.tier }
       if (!this.has(key) || !tier.encoder || tier.hardware) continue
+      // Conta a ocupação ANTES de devolver: a recusa veio com esta sessão aberta.
+      const inUse = this.programSessions() + this.grants.size - 1
       this.release(key)
-      if (tier.degraded && /placa falhou|recus|session/i.test(`${tier.degraded} ${tier.error ?? ''}`) && this.capacity !== null) {
-        const inUse = this.programSessions() + this.grants.size
-        if (inUse < this.capacity) {
-          this.capacity = inUse
-          this.learnedReason = `a placa recusou a sessão ${inUse + 1}; capacidade ajustada para ${inUse}`
-        }
+      if (tier.hardwareFailed && this.capacity !== null && inUse < this.capacity) {
+        this.capacity = inUse
+        this.learnedReason = `a placa recusou a sessão ${inUse + 1} (${tier.hardwareFailed}); capacidade ajustada para ${inUse}`
       }
     }
+  }
+
+  /**
+   * O programa de algum canal recebeu recusa da placa e não tinha monitor no
+   * próprio processo para tomar de volta: todas as sessões emprestadas a
+   * monitores, de qualquer canal, voltam ao programa. Devolve as revogadas,
+   * para o servidor avisar cada engine (o nível segue em x264).
+   */
+  revokeAll(): MonitorKey[] {
+    const revoked = [...this.grants.values()]
+    this.grants.clear()
+    return revoked
   }
 
   status(): EncoderSessionStatus {

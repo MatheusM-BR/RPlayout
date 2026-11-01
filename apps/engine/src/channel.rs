@@ -2667,6 +2667,13 @@ impl Channel {
         Ok(())
     }
 
+    /// Saídas de programa que caíram por recusa da placa tentam de novo já.
+    pub fn retry_hardware_outputs(&mut self) {
+        for publisher in &mut self.publishers {
+            publisher.retry_hardware_soon();
+        }
+    }
+
     /// Liga ou desliga um nível de um monitor. Sem nível, o legado (leve).
     pub fn set_monitor_tier(&mut self, bus: &str, tier: Option<crate::monitor::MonitorTier>, on: bool, hardware: bool) -> bool {
         let Some(tier) = tier else { return self.set_monitor(bus, on) };

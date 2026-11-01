@@ -1,8 +1,9 @@
+import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EncoderSessions, probeEncoders, programEncodedOutputs, type EncoderProbe } from './encoder-sessions.js'
 import { validateOutputProfile, monitorProfilePatch, type OutputProfileRow } from './outputs.js'
 import type { PublisherState } from './transport.js'
-import { createApp, runtimeFor, type App } from '../app.js'
+import { createApp, runtimeFor, serviceMonitorHardware, type App } from '../app.js'
 import { channels } from '../db/schema.js'
 
 vi.mock('../config.js', async original => ({ ...await original<Record<string, unknown>>(), ENGINE_BINARY: '', MEDIAMTX_BINARY: '', DEVICES_BINARY: '', ENCODERS_BINARY: '' }))
@@ -11,6 +12,9 @@ const geforce: EncoderProbe = { encoders: [{ name: 'nvh264enc', hardware: true, 
 const quadro: EncoderProbe = { encoders: [{ name: 'nvh264enc', hardware: true, available: true, sessions: 12, unlimited: true }], hardware: 'nvh264enc', hardwareSessions: null }
 const none: EncoderProbe = { encoders: [{ name: 'x264enc', hardware: false, available: true, sessions: null, unlimited: true }], hardware: null, hardwareSessions: 0 }
 const key = (channelId: string, bus: string, tier: 'ref' | 'std' | 'lite') => ({ channelId, bus, tier })
+/** Linhas `publisher` exatamente como o engine Rust as serializa. */
+const engineFixture = (): PublisherState[] => readFileSync(new URL('./__fixtures__/engine-hardware-failed.jsonl', import.meta.url), 'utf8')
+  .trim().split('\n').map((line) => { const { event, ...report } = JSON.parse(line) as { event: string } & PublisherState; expect(event).toBe('publisher'); return report })
 
 describe('sessões de placa: programa primeiro, monitores com o que sobra', () => {
   it('GeForce com 8 sessões e 6 saídas de programa empresta só 2 aos monitores', () => {
@@ -40,6 +44,32 @@ describe('sessões de placa: programa primeiro, monitores com o que sobra', () =
     expect(unlimited.status().free).toBeNull()
   })
 
+  it('relatório REAL do engine (fixture gerada pelo Rust): hardwareFailed ensina a capacidade', () => {
+    // Gerada por monitor_bench::relatorio_real_de_falha_de_placa_vira_fixture_do_servidor.
+    // O engine não põe nada em `degraded` quando a placa falha: o servidor antigo
+    // dependia de casar texto em `degraded` e nunca aprendia.
+    const [monitor] = engineFixture()
+    expect(monitor!.tiers![0]!.degraded).toBeUndefined()
+    expect(monitor!.tiers![0]!.hardwareFailed).toMatch(/session/)
+    const sessions = new EncoderSessions(geforce, () => 6)
+    sessions.request(key('canal-a', 'mon', 'std'))
+    sessions.request(key('canal-a', 'mon', 'ref'))
+    sessions.observe('canal-a', 'mon', monitor!)
+    expect(sessions.has(key('canal-a', 'mon', 'std'))).toBe(false)
+    expect(sessions.has(key('canal-a', 'mon', 'ref'))).toBe(true)
+    expect(sessions.status()).toMatchObject({ total: 7, monitorsInUse: 1, free: 0 })
+    expect(sessions.status().learned).toMatch(/capacidade ajustada para 7/)
+  })
+
+  it('devolução ao programa (sem hardwareFailed) devolve a sessão mas não ensina capacidade', () => {
+    const sessions = new EncoderSessions(geforce, () => 6)
+    sessions.request(key('a', 'mon', 'ref'))
+    sessions.observe('a', 'mon', { url: 'srt://x/a/mon', health: 'onAir', attempts: 0, delivered: 1,
+      tiers: [{ tier: 'ref', health: 'onAir', encoder: 'x264enc', hardware: false, delivered: 1, uptimeMs: 1, degraded: 'placa devolvida ao programa' }] })
+    expect(sessions.has(key('a', 'mon', 'ref'))).toBe(false)
+    expect(sessions.status().total).toBe(8)
+  })
+
   it('nível concedido que o engine relata em x264 devolve a sessão e ensina o limite real', () => {
     const sessions = new EncoderSessions(geforce, () => 6)
     sessions.request(key('a', 'mon', 'ref'))
@@ -51,7 +81,7 @@ describe('sessões de placa: programa primeiro, monitores com o que sobra', () =
         { tier: 'std', health: 'onAir', encoder: 'nvh264enc', hardware: true, delivered: 1, uptimeMs: 10 },
       ],
     }
-    sessions.observe('a', 'mon', { ...report, tiers: [{ ...report.tiers![0]!, degraded: 'placa falhou' }, report.tiers![1]!] })
+    sessions.observe('a', 'mon', { ...report, tiers: [{ ...report.tiers![0]!, hardwareFailed: 'nvh264enc: session' }, report.tiers![1]!] })
     expect(sessions.has(key('a', 'mon', 'ref'))).toBe(false)
     expect(sessions.has(key('a', 'mon', 'std'))).toBe(true)
     expect(sessions.status().total).toBe(7)
@@ -130,6 +160,32 @@ describe('runtime: um pedido por nível, concessão de placa e desligamento', ()
     expect(set).toHaveBeenCalledWith('mon', false, 'ref', false)
     expect(set).toHaveBeenCalledWith('mon', false, 'std', false)
     expect(app.encoderSessions!.status().monitorsInUse).toBe(0)
+  })
+
+  it('recusa da placa no programa do canal B (relatório real) revoga a placa dos monitores do canal A, via servidor', async () => {
+    app.db.insert(channels).values({ id: 'chb', name: 'Canal B', rateNum: 25, rateDen: 1, width: 1920, height: 1080, targetLufs: -23, ceilingDbtp: -1, limiterLookaheadMs: 5, createdAt: new Date().toISOString() }).run()
+    const a = (await runtimeFor(app, 'ch'))!
+    const b = (await runtimeFor(app, 'chb'))!
+    ;(a as unknown as { monitores: Set<string> }).monitores.add('mon')
+    app.encoderSessions!.setProbe(geforce)
+    const setA = vi.spyOn(a.transport, 'setMonitor').mockImplementation(() => {})
+    a.watching('mon', 'ref')
+    expect(setA).toHaveBeenLastCalledWith('mon', true, 'ref', true)
+    const retry = vi.fn()
+    ;(b.transport as unknown as { retryHardware: () => void }).retryHardware = retry
+    const [, program] = engineFixture()
+    expect(program!.hardwareRefusals).toBe(1)
+    vi.spyOn(b.transport, 'publishers').mockReturnValue([program!])
+    serviceMonitorHardware(app)
+    expect(setA).toHaveBeenLastCalledWith('mon', true, 'ref', false)
+    expect(app.encoderSessions!.status().monitorsInUse).toBe(0)
+    expect(retry).toHaveBeenCalledTimes(1)
+    expect(a.monitorTiersWatched().find((t) => t.tier === 'ref')?.hardware).toBe(false)
+    // A mesma recusa não revoga de novo; uma nova, sem nada a revogar, não pede retry inútil.
+    serviceMonitorHardware(app)
+    vi.spyOn(b.transport, 'publishers').mockReturnValue([{ ...program!, hardwareRefusals: 2 }])
+    serviceMonitorHardware(app)
+    expect(retry).toHaveBeenCalledTimes(1)
   })
 
   it('pedido sem nível continua sendo o leve no caminho histórico', async () => {
