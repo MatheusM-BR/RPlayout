@@ -85,7 +85,7 @@ export function HeaderHealth({ channelId, onClick }: { channelId: string; onClic
     readers.current = {
       host: () => { void api.hostMetrics().then(value => { if (alive) setSample(value) }).catch(() => { if (alive) setSample(null) }) },
       clock: () => { void api.clock().then(value => { if (alive) setClock(value) }).catch(() => { if (alive) setClock(null) }) },
-      pending: () => { void api.healthEvents(channelId, { acknowledgement: 'PENDING', includeHost: '1' }, undefined, 1).then(value => { if (alive) setPending(value.pending) }).catch(() => { if (alive) setPending(null) }) },
+      pending: () => { void api.healthPending(channelId).then(value => { if (alive) setPending(value.pending) }).catch(() => { if (alive) setPending(null) }) },
       engine: () => {
         void api.processes(undefined, false).then(value => {
           if (!alive) return

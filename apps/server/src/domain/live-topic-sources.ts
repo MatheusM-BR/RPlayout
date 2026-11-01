@@ -5,6 +5,7 @@ import { engineStatusOf } from './engine-status.js'
 import { Interruptions } from './interruptions.js'
 import { readScanDiagnostics } from './scan-diagnostic.js'
 import type { TopicSignature } from './live-topics.js'
+import { HEALTH_CHANGE_SIGNATURE_SQL } from '../db/health-query-indexes.js'
 
 /**
  * O que, de cada tela, conta como "mudou" -- e o que não conta.
@@ -73,10 +74,7 @@ export function probeSummary(app: App, channelId: string): unknown {
 
 /** Tópicos do servidor, sem canal: scanner, alertas (cabeçalho e pendências) e relógio. */
 export function serverTopics(app: App, sqlite: Database.Database): Record<string, TopicSignature> {
-  const pendingHealth = sqlite.prepare(`SELECT max(rowid) AS last,
-    (SELECT count(*) FROM health_events WHERE acknowledged_at IS NULL) AS pending,
-    (SELECT count(*) FROM health_events WHERE acknowledged_at IS NULL AND resolved_at IS NULL) AS open
-    FROM health_events`)
+  const pendingHealth = sqlite.prepare(HEALTH_CHANGE_SIGNATURE_SQL)
   return {
     // GET /api/library/scan (e, por tabela, a releitura do acervo).
     scan: () => [app.ingest.status(), readScanDiagnostics(sqlite).map(batch => [batch.id, batch.state])],

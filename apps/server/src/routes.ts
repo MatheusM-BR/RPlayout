@@ -1,3 +1,4 @@
+import {readHealthPending} from './domain/health-pending.js'
 import { randomUUID } from 'node:crypto'
 import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
 import { transportRefusalStatus } from './domain/transport-refusal.js'
@@ -870,7 +871,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
   server.get('/api/health-events', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar saúde.' })
-    const query = request.query as Omit<IncidentPageQuery,'limit'> & {limit?:string}
+    const query = request.query as Omit<IncidentPageQuery,'limit'> & {limit?:string;view?:string}
+    // ?view=pending: só as contagens do selo ALERTAS (sem página, riscos nem mensagens).
+    if(query.view==='pending')try{return reply.header('Cache-Control','private, no-store').send(readHealthPending(app.db,access.identity(request)?.channelIds??null,query))}
+    catch(error){if(error instanceof IncidentError)return reply.code(error.status).send({error:error.message});throw error}
     try{return reply.header('Cache-Control','private, no-store').send(readHealthIncidentPage(app.db,access.identity(request)?.channelIds??null,{...query,limit:Number(query.limit??200)}))}
     catch(error){if(error instanceof IncidentError)return reply.code(error.status).send({error:error.message});throw error}
   })
