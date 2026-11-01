@@ -113,3 +113,12 @@ describe('monitorSize', () => {
     }
   })
 })
+
+import { monitorTierPath } from './channel.js'
+describe('monitorTierPath', () => {
+  it('mantém o leve no caminho histórico e sufixa os outros', () => {
+    expect(monitorTierPath('canal-1/mon', 'lite')).toBe('canal-1/mon')
+    expect(monitorTierPath('canal-1/pvw', 'ref')).toBe('canal-1/pvw-ref')
+    expect(monitorTierPath('canal-1/pvw', 'std')).toBe('canal-1/pvw-std')
+  })
+})

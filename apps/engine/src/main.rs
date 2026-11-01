@@ -11,6 +11,9 @@ mod loudness;
 mod limiter;
 mod limiter_element;
 mod output;
+mod monitor;
+#[cfg(test)]
+mod monitor_bench;
 mod omt;
 mod omt_runtime;
 mod protocol;
@@ -403,8 +406,12 @@ fn run_command(channel: &mut Channel, command: Command, request_id:u64) -> Resul
             channel.seek(&bus, frames)?;
             Ok(true)
         }
-        Command::Monitor { bus, on } => {
-            if !channel.set_monitor(&bus, on) {
+        Command::MonitorClock { on } => {
+            crate::monitor::TEST_CLOCK.store(on, std::sync::atomic::Ordering::Relaxed);
+            Ok(true)
+        }
+        Command::Monitor { bus, on, tier, hardware } => {
+            if !channel.set_monitor_tier(&bus, tier, on, hardware) {
                 return Err(anyhow::anyhow!("não existe monitor chamado {bus}"));
             }
             // O relatório sai daqui, e não do laço de serviço: ligar e desligar

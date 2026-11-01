@@ -38,6 +38,7 @@ import {
   type Frames,
   type OnAirState,
   type PreviewTarget,
+  type MonitorTier,
 } from '@rplayout/protocol'
 import { MediaMtx } from './mediamtx.js'
 import type { MeterReading } from './meters.js'
@@ -439,6 +440,9 @@ export class EngineTransport implements Transport {
     programHoldRestore?:{expected:ProgramHoldRestoreExpected;receipt?:ProgramHoldReceipt}
   }>()
   private readonly desiredMonitors = new Map<'pvw' | 'mon', boolean>()
+  /** Níveis de monitor pedidos (`bus|tier`), reenviados quando o engine volta. */
+  private readonly desiredMonitorTiers = new Map<string, { bus: 'pvw' | 'mon'; tier: MonitorTier; on: boolean; hardware: boolean }>()
+  private desiredMonitorClock = false
   private recoveryCursor: { itemId: string; frames: Frames;programTrim?:ProgramTrim;programHold?:'HELD'|'UNCONFIRMED';liveProgramBinding?:LiveProgramBinding } | null = null
   private programEndReason = 'STOP'
   private pendingProgramExit: {itemId:string;frames:number;reason:string;targetItemId:string} | null = null
@@ -1040,6 +1044,8 @@ export class EngineTransport implements Transport {
           delivered: event.delivered,
           ...(Number.isSafeInteger(event.generation)&&event.generation!>=0?{generation:event.generation}:{}),
           error: event.error == null ? event.error : sanitizeDiagnostic(event.error),
+          ...(typeof event.encoder === 'string' ? { encoder: event.encoder } : {}),
+          ...(Array.isArray(event.tiers) && event.tiers.length ? { tiers: event.tiers.map((tier) => ({ ...tier, ...(tier.error ? { error: sanitizeDiagnostic(tier.error) } : {}) })) } : {}),
         })
         this.notifySignalObservation()
         break
@@ -1266,6 +1272,8 @@ export class EngineTransport implements Transport {
     const binding=this.recoveryCursor?.liveProgramBinding,canRecoverBound=Boolean(binding&&this.replacementWire?.canRecoverBinding(binding.receipt))
     if(this.nativeReportedSelectionUncertain||this.stopAwaitingDurable||this.nativeSelectionUncertain&&!canRecoverBound||this.replacementWire?.health().selectionUncertain&&!canRecoverBound){this.fail('PGM nativo inconclusivo preservado; não retomar silenciosamente a fonte anterior. Confirme STOP antes de outro corte.');return}
     for (const [bus, on] of this.desiredMonitors) this.send({ cmd: 'monitor', bus, on })
+    for (const { bus, tier, on, hardware } of this.desiredMonitorTiers.values()) this.send({ cmd: 'monitor', bus, on, tier, hardware })
+    if (this.desiredMonitorClock) this.send({ cmd: 'monitorClock', on: true })
     if (this.desiredGraphic) this.send({ cmd: 'graphic', ...this.desiredGraphic })
     for (const [slot, overlay] of this.desiredOverlays) this.send({ cmd: 'overlay', slot, action: 'cut', svg: overlay.svg, animation: overlay.animation })
     const cursor = this.recoveryCursor
@@ -2692,9 +2700,18 @@ export class EngineTransport implements Transport {
   }
 
   /** Liga ou desliga um monitor. O engine faz isso sem tocar no programa. */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean): void {
+  setMonitor(bus: 'pvw' | 'mon', on: boolean, tier?: MonitorTier, hardware = false): void {
+    if (tier) {
+      this.desiredMonitorTiers.set(`${bus}|${tier}`, { bus, tier, on, hardware })
+      this.send({ cmd: 'monitor', bus, on, tier, hardware })
+      return
+    }
     this.desiredMonitors.set(bus, on)
     this.send({ cmd: 'monitor', bus, on })
+  }
+  setMonitorClock(on: boolean): void {
+    this.desiredMonitorClock = on
+    this.send({ cmd: 'monitorClock', on })
   }
   setMonitorConfirmed(bus:'pvw'|'mon',on:boolean,authorize:()=>Promise<void>):Promise<void>{
     return this.enqueue(async()=>{

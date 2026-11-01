@@ -1982,6 +1982,7 @@ export function MasterControlView({
                   title="PGM • Monitor Principal"
                   badgeText="NO AR"
                   webrtcPath={monitors?.program ?? null}
+                  tiers={monitors?.tiers?.program ?? null}
                   port={monitors?.port ?? 8889}
                   asset={onAirItem?.asset ?? null}
                   rate={channel.rate}
@@ -1993,7 +1994,7 @@ export function MasterControlView({
                   isAudioMonitored={activeAudioBus === 'pgm'}
                   onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pgm' ? null : 'pgm'))}
                   onSeek={(frames) => onSeek('pgm', frames)}
-                  onWatching={(_bus, watching) => { void api.setWatching(channel.id, 'mon', watching).catch(() => {}) }}
+                  onWatching={(_bus, watching, tier) => { void api.setWatching(channel.id, 'mon', watching, tier).catch(() => {}) }}
                 />
               </div>
 
@@ -2004,6 +2005,7 @@ export function MasterControlView({
                   title="PVW • CUE Selecionado"
                   badgeText={selectedPreviewAsset ? 'MAM CUED' : 'CUED'}
                   webrtcPath={monitors?.preview ?? null}
+                  tiers={monitors?.tiers?.preview ?? null}
                   port={monitors?.port ?? 8889}
                   asset={activePreviewAsset}
                   rate={channel.rate}
@@ -2016,8 +2018,8 @@ export function MasterControlView({
                   isAudioMonitored={activeAudioBus === 'pvw'}
                   onToggleAudioMonitor={() => setActiveAudioBus((prev) => (prev === 'pvw' ? null : 'pvw'))}
                   onSeek={(frames) => onSeek('pvw', frames)}
-                  onWatching={(bus, watching) => {
-                    void api.setWatching(channel.id, 'pvw', watching).catch(() => {})
+                  onWatching={(bus, watching, tier) => {
+                    void api.setWatching(channel.id, 'pvw', watching, tier).catch(() => {})
                   }}
                 />
                 <button

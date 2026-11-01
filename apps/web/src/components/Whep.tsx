@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {postWhepOffer} from '../domain/whep-offer.js'
+import { MONITOR_TIER_LABEL, type MonitorTier } from '@rplayout/protocol'
+import { TierController, deriveStats, glassToGlassMs, initialTier, readClockRgba, readRawStats, clockBlock, CLOCK_BLOCKS, type MonitorRole, type RawStats } from '../domain/monitor-tier.js'
+import { monitorStatsStore, useClockTest } from '../domain/monitor-stats-store.js'
 
 interface Props {
   /** Caminho no servidor de mídia, ex. `canal-1/pgm`. Nulo apaga a tela. */
@@ -13,7 +16,15 @@ interface Props {
    * deve custar uma codificação, e numa máquina com quatro canais isso são
    * quatro codificações que passam a existir só quando há alguém olhando.
    */
-  onWatching?: () => void
+  onWatching?: (tier?: MonitorTier) => void
+  /**
+   * Caminho de cada nível (REFERÊNCIA, PADRÃO, LEVE). Com eles, quem assiste
+   * escolhe o nível no próprio monitor (ou deixa no automático, que começa
+   * pelo contexto e cai/sobe pela qualidade da conexão). Sem eles, `path`.
+   */
+  tiers?: Partial<Record<MonitorTier, string>> | null
+  /** Papel do monitor: decide o nível inicial e aparece na tela técnica. */
+  role?: MonitorRole
   /** Cadência do canal para avanço quadro a quadro no material pesquisável. */
   frameRate?: number
   /** Posição real reportada pelo engine, em frames desde o Mark In. */
@@ -69,8 +80,46 @@ export function Whep({
   muted,
   onVideoElement,
   onVideoFrame,
+  tiers,
+  role = 'pgm',
 }: Props) {
   const video = useRef<HTMLVideoElement | null>(null)
+  const monitorId = useRef(`mon-${Math.random().toString(36).slice(2, 10)}`).current
+  const clockTest = useClockTest()
+  const clockTestRef = useRef(clockTest)
+  clockTestRef.current = clockTest
+  // Nível: automático (teto pelo contexto, queda/subida pela conexão) ou
+  // fixado por quem assiste. A escolha manual fica guardada por papel.
+  const modeKey = `rplayout.monitorTier.${role}`
+  const [mode, setMode] = useState<'auto' | MonitorTier>(() => {
+    try { const saved = window.localStorage.getItem(modeKey); return saved === 'ref' || saved === 'std' || saved === 'lite' ? saved : 'auto' } catch { return 'auto' }
+  })
+  const [ceiling, setCeiling] = useState<MonitorTier>(role === 'qc' ? 'ref' : 'std')
+  const [autoTier, setAutoTier] = useState<MonitorTier>(ceiling)
+  const controller = useRef(new TierController(ceiling))
+  const hasTiers = Boolean(tiers && Object.values(tiers).some(Boolean))
+  const tier: MonitorTier | null = hasTiers ? (mode === 'auto' ? autoTier : mode) : null
+  const effectivePath = hasTiers && tier ? (tiers?.[tier] ?? path) : path
+  const tierRef = useRef(tier)
+  tierRef.current = tier
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  useEffect(() => {
+    if (!hasTiers) return
+    const element = video.current?.parentElement
+    const nav = navigator as Navigator & { connection?: { effectiveType?: string; saveData?: boolean; downlink?: number } }
+    const mobile = (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
+    const next = initialTier({ role, elementWidth: element?.clientWidth || window.innerWidth, mobile, effectiveType: nav.connection?.effectiveType ?? null, saveData: nav.connection?.saveData ?? false, downlinkMbps: nav.connection?.downlink ?? null })
+    setCeiling(next)
+    controller.current.setCeiling(next)
+    setAutoTier(next)
+  }, [hasTiers, role])
+  const chooseMode = (next: 'auto' | MonitorTier) => {
+    setMode(next)
+    try { window.localStorage.setItem(modeKey, next) } catch { /* sem armazenamento: vale só nesta aba */ }
+    if (next === 'auto') { controller.current.setCeiling(ceiling); setAutoTier(ceiling) }
+  }
+  useEffect(() => () => monitorStatsStore.remove(monitorId), [monitorId])
   const [status, setStatus] = useState<Status>('off')
   const [reason, setReason] = useState<string | null>(null)
   /**
@@ -112,12 +161,33 @@ export function Whep({
     if (!element || typeof element.requestVideoFrameCallback !== 'function') return undefined
     let active = true
     let callbackId = 0
+    let canvas: HTMLCanvasElement | null = null
+    let frames = 0
     const next = () => {
       if (!active) return
-      callbackId = element.requestVideoFrameCallback(() => {
+      callbackId = element.requestVideoFrameCallback((_now, metadata) => {
         if (!active) return
         confirmVideoRef.current?.()
         onVideoFrameRef.current?.()
+        // Relógio de teste: lê a faixa gravada pelo engine no quadro que vai
+        // para a tela e compara com o relógio desta página.
+        if (clockTestRef.current && (frames++ % 3 === 0)) {
+          try {
+            const w = metadata?.width || element.videoWidth, h = metadata?.height || element.videoHeight
+            if (w && h) {
+              const rows = clockBlock(w, h)
+              canvas ??= document.createElement('canvas')
+              canvas.width = Math.min(w, rows * (CLOCK_BLOCKS + 1)); canvas.height = rows
+              const context = canvas.getContext('2d', { willReadFrequently: true })
+              if (context) {
+                context.drawImage(element, 0, 0, canvas.width, rows, 0, 0, canvas.width, rows)
+                const stamp = readClockRgba(context.getImageData(0, 0, canvas.width, rows).data, canvas.width, w, h)
+                const shown = metadata?.expectedDisplayTime ? Date.now() + (metadata.expectedDisplayTime - performance.now()) : Date.now()
+                if (stamp !== null) monitorStatsStore.pushGlass(monitorId, glassToGlassMs(stamp, shown))
+              }
+            }
+          } catch { /* vídeo sem quadro ainda */ }
+        }
         next()
       })
     }
@@ -126,7 +196,7 @@ export function Whep({
       active = false
       if (callbackId) element.cancelVideoFrameCallback(callbackId)
     }
-  }, [path])
+  }, [effectivePath, monitorId])
 
   /** Sobe a cada falha e é o que faz o monitor tentar de novo. */
   const [attempt, setAttempt] = useState(0)
@@ -153,14 +223,16 @@ export function Whep({
   onWatchingRef.current = onWatching
   const watches = Boolean(onWatching)
   useEffect(() => {
-    if (!path || !watches) return undefined
-    const beat = () => onWatchingRef.current?.()
+    if (!effectivePath || !watches) return undefined
+    // O aviso diz o nível: o engine só codifica os níveis que alguém assiste.
+    const beat = () => onWatchingRef.current?.(tierRef.current ?? undefined)
     beat()
     const relogio = window.setInterval(beat, 5_000)
     return () => window.clearInterval(relogio)
-  }, [path, watches])
+  }, [effectivePath, watches])
 
   useEffect(() => {
+    const path = effectivePath
     setTemSom(false)
     setReason(null)
     if (!path) {
@@ -207,6 +279,17 @@ export function Whep({
     confirmVideoRef.current=confirmVideo
     peer.ontrack = (event) => {
       if (cancelled) return
+      // Atraso mínimo no navegador: sem alvo extra no jitter buffer, o Chrome
+      // fica no mínimo que a variação medida exige (continua adaptativo, só
+      // não guarda folga a mais). No LEVE, que é a conexão ruim, o padrão.
+      try {
+        const receiver = event.receiver as RTCRtpReceiver & { jitterBufferTarget?: number | null; playoutDelayHint?: number | null }
+        if (tierRef.current !== 'lite') {
+          const hints = receiver as { jitterBufferTarget?: number | null; playoutDelayHint?: number | null }
+          if ('jitterBufferTarget' in receiver) hints.jitterBufferTarget = 0
+          else hints.playoutDelayHint = 0
+        }
+      } catch { /* navegador sem a dica: segue o padrão dele */ }
       stream.addTrack(event.track)
       if (event.track.kind === 'audio') {
         // Alguns navegadores recebem a trilha desabilitada quando o elemento
@@ -267,6 +350,31 @@ export function Whep({
       await peer.setRemoteDescription({ type: 'answer', sdp: answer })
     }
 
+    // Estatísticas do WebRTC, uma vez por segundo: tela técnica e troca
+    // automática de nível. A cadência esperada é a maior vista nos últimos
+    // 10 s (a do nível muda conforme o canal e o nível).
+    let previous: RawStats | null = null
+    const recentFps: number[] = []
+    const statsTimer = window.setInterval(() => {
+      if (cancelled || peer.connectionState !== 'connected') return
+      void peer.getStats().then((report) => {
+        if (cancelled) return
+        const current = readRawStats(report as unknown as { forEach(cb: (value: Record<string, unknown>) => void): void }, performance.now())
+        if (!current) return
+        if (previous) {
+          const expected = recentFps.length >= 5 ? Math.max(...recentFps) : 0
+          const { stats, sample } = deriveStats(previous, current, expected)
+          recentFps.push(stats.fps); if (recentFps.length > 10) recentFps.shift()
+          monitorStatsStore.update(monitorId, { role, path, tier: tierRef.current, mode: modeRef.current, stats })
+          if (modeRef.current === 'auto' && tierRef.current) {
+            const changed = controller.current.push(sample)
+            if (changed) setAutoTier(changed)
+          }
+        }
+        previous = current
+      }).catch(() => undefined)
+    }, 1000)
+
     void negotiate().catch((failure: unknown) => {
       if (cancelled) return
       // "CODEC" quase sempre é navegador sem H.264, não canal fora do ar.
@@ -282,6 +390,7 @@ export function Whep({
 
     return () => {
       cancelled = true
+      window.clearInterval(statsTimer)
       if(confirmVideoRef.current===confirmVideo)confirmVideoRef.current=null
       abort.abort()
       window.clearTimeout(negotiationTimeout)
@@ -297,7 +406,7 @@ export function Whep({
         }).catch(() => undefined)
       }
     }
-  }, [path, port, attempt])
+  }, [effectivePath, port, attempt, monitorId, role])
 
   return (
     <>
@@ -360,6 +469,18 @@ export function Whep({
             volumeRef.current = value
             if (video.current) video.current.volume = value
           }} />}
+        </div>
+      )}
+      {hasTiers && (
+        <div className="monitor-tier absolute top-1 right-1 z-30 flex items-center gap-0.5 rounded bg-black/70 px-1 py-0.5 text-[10px] font-bold uppercase text-white" role="group" aria-label="Nível de qualidade deste monitor">
+          {(['auto', 'ref', 'std', 'lite'] as const).map((option) => (
+            <button key={option} type="button" aria-pressed={mode === option}
+              title={option === 'auto' ? `Automático: começa em ${MONITOR_TIER_LABEL[ceiling]} e cai/sobe pela conexão` : `Fixar em ${MONITOR_TIER_LABEL[option]}`}
+              className={`rounded px-1 ${mode === option ? 'bg-white text-black' : 'opacity-70 hover:opacity-100'}`}
+              onClick={() => chooseMode(option)}>
+              {option === 'auto' ? `AUTO${mode === 'auto' && tier ? `·${MONITOR_TIER_LABEL[tier].slice(0, 3)}` : ''}` : MONITOR_TIER_LABEL[option].slice(0, 3)}
+            </button>
+          ))}
         </div>
       )}
       {status === 'live' && reason && <div className="monitor-reason" role="status">{reason}</div>}

@@ -115,6 +115,12 @@ export const HTTP_AUDIT_RETENTION_DAYS = Number(process.env.RPLAYOUT_HTTP_AUDIT_
 /** Binário de descoberta de fontes ao vivo. Vazio deixa só os convidados. */
 export const DEVICES_BINARY = process.env.RPLAYOUT_DEVICES ?? findBinary('rplayout-devices')
 
+/**
+ * Sonda dos codificadores de H.264 e das sessões de placa. Roda uma vez na
+ * partida; vazio = sem placa (monitores em x264).
+ */
+export const ENCODERS_BINARY = process.env.RPLAYOUT_ENCODERS ?? findBinary('rplayout-encoders')
+
 /** Papel padrão desta estação; pode ser substituído por sessão autenticada. */
 // A estação local inicia como administrador para que o primeiro operador
 // consiga criar as contas reais. Em produção, defina RPLAYOUT_ROLE ou use

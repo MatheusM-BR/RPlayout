@@ -14,7 +14,7 @@ import {editMultiview,readMultiviewReview} from './domain/multiview-edit.js'
 import {editScheduleRule,readScheduleRuleReview} from './domain/schedule-rule-edit.js'
 import {editGraphicTemplate,editSlate,readGraphicsReview} from './domain/graphics-edit.js'
 import {requireQcReview} from './domain/qc-review-guard.js'
-import {assetMetadataETag,assetRemovalETag} from '@rplayout/protocol'
+import {assetMetadataETag,assetRemovalETag,MONITOR_TIERS,monitorTierPath,type MonitorTier} from '@rplayout/protocol'
 import {captureAssetRemovalAuthority,readAssetRemoval,applyAssetRemoval} from './domain/asset-removal.js'
 import {captureAssetMetadataAuthority,readAssetMetadata,editAssetMetadata} from './domain/asset-metadata-edit.js'
 import {EditorialVersions} from './db/editorial-revisions.js'
@@ -455,7 +455,10 @@ function monitors(app: App, channelId: string) {
   if (!app.mediamtx?.running || !path) return null
   // Browser monitoring is a low-bandwidth derivative, not the full broadcast
   // master. The PGM card must heartbeat `mon` just as PVW heartbeats `pvw`.
-  return { port: PORTS.webrtc, program: path.monitor, preview: path.preview, inspection: path.inspection ?? null }
+  // Cada monitor tem um caminho por nível; quem assiste escolhe (o leve fica
+  // no caminho histórico, que é o que clientes antigos continuam abrindo).
+  const tiers = (base: string) => Object.fromEntries(MONITOR_TIERS.map((tier) => [tier, monitorTierPath(base, tier)])) as Record<MonitorTier, string>
+  return { port: PORTS.webrtc, program: path.monitor, preview: path.preview, inspection: path.inspection ?? null, tiers: { program: tiers(path.monitor), preview: tiers(path.preview) } }
 }
 
 /**
@@ -471,6 +474,8 @@ function blockCompanions(runtime: Pick<EditorialContext, 'view'>, itemId: string
 }
 
 export function registerRoutes(app: App, server: FastifyInstance, onChange: () => void): void {
+  /** Canais com o relógio de teste ligado nos monitores. */
+  const monitorClock = new Set<string>()
   const qcFrames = new QcFrames(resolvePath(app.thumbnailDir, 'qc-tmp'))
   const globalConcurrencyManager=app.concurrency
   const auditChannels=new WeakMap<object,string[]>()
@@ -5039,17 +5044,55 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.post('/api/channels/:id/watching', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = z.object({ bus: z.enum(['pvw', 'mon']), watching: z.boolean().optional() }).safeParse(request.body)
+    const body = z.object({ bus: z.enum(['pvw', 'mon']), watching: z.boolean().optional(), tier: z.enum(['ref', 'std', 'lite']).optional() }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Barramento inválido.' })
 
     const runtime = await runtimeFor(app, id)
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
-    runtime.watching(body.data.bus)
+    runtime.watching(body.data.bus, body.data.tier ?? 'lite')
     // Diz na resposta se o monitor existe. A interface precisa saber para
     // mostrar o motivo em vez de uma janela preta esperando um sinal que não
     // vem -- e para parar de pedir.
     return { ok: true, available: runtime.temMonitor(body.data.bus) }
+  })
+
+  /**
+   * Tela técnica dos monitores: sessões de placa (total, reservadas ao
+   * programa, emprestadas, livres), o encoder e o perfil de cada nível aberto
+   * e se o relógio de teste está ligado.
+   */
+  server.get('/api/channels/:id/monitors', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar a engenharia.' })
+    const { id } = request.params as { id: string }
+    const runtime = app.runtimes.get(id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado ou parado.' })
+    reply.header('Cache-Control', 'private, no-store')
+    const path = app.paths.find((entry) => entry.channelId === id)
+    const busOf = (url: string) => /\/(pvw|mon)(?:[&?]|$)/.exec(url)?.[1] ?? (/\/qc(?:[&?]|$)/.test(url) ? 'qc' : null)
+    return {
+      sessions: app.encoderSessions?.status() ?? null,
+      watched: runtime.monitorTiersWatched(),
+      clock: monitorClock.has(id),
+      paths: path ? { program: path.monitor, preview: path.preview } : null,
+      monitors: runtime.transport.publishers().filter((publisher) => busOf(publisher.url)).map((publisher) => ({
+        bus: busOf(publisher.url), outputId: publisher.outputId ?? null, health: publisher.health, encoder: publisher.encoder ?? null, tiers: publisher.tiers ?? [], error: publisher.error ?? null,
+      })),
+      program: runtime.transport.publishers().filter((publisher) => !busOf(publisher.url)).map((publisher) => ({ outputId: publisher.outputId ?? null, health: publisher.health, encoder: publisher.encoder ?? null })),
+    }
+  })
+
+  /** Relógio de teste gravado na imagem dos monitores (nunca no programa). */
+  server.post('/api/channels/:id/monitor-clock', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para o modo de teste dos monitores.' })
+    const { id } = request.params as { id: string }
+    const body = z.object({ on: z.boolean() }).strict().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe on: true/false.' })
+    const runtime = app.runtimes.get(id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado ou parado.' })
+    if (!runtime.setMonitorClock(body.data.on)) return reply.code(409).send({ error: 'Este canal não tem engine nativo; não há relógio para gravar.' })
+    if (body.data.on) monitorClock.add(id); else monitorClock.delete(id)
+    return { ok: true, clock: body.data.on }
   })
 
   server.post('/api/channels/:id/qc/inspection', async (request,reply)=>{

@@ -1,3 +1,4 @@
+import type { MonitorTier } from '@rplayout/protocol'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import type { MediaAsset, Rate } from '@rplayout/protocol'
 import { dur, formatStandardRate } from '../../format.js'
@@ -22,7 +23,9 @@ export interface BroadcastMonitorProps {
   isAudioMonitored?: boolean
   onToggleAudioMonitor?: () => void
   onSeek?: (frames: number) => void
-  onWatching?: ((bus: 'pgm' | 'pvw', watching: boolean) => void) | (() => void)
+  onWatching?: ((bus: 'pgm' | 'pvw', watching: boolean, tier?: MonitorTier) => void) | (() => void)
+  /** Caminhos por nível de qualidade; com eles o monitor mostra o seletor. */
+  tiers?: Partial<Record<MonitorTier, string>> | null
   className?: string
 }
 
@@ -65,6 +68,7 @@ export function BroadcastMonitor({
   onToggleAudioMonitor,
   onSeek,
   onWatching,
+  tiers,
   className = '',
 }: BroadcastMonitorProps) {
   const fps = rate.num / rate.den
@@ -280,11 +284,13 @@ export function BroadcastMonitor({
             hideControls={true}
             muted={effectiveMuted}
             onErrorFallback={failedMonitor}
+            tiers={tiers}
+            role={bus}
             onWatching={
               onWatching
-                ? () => {
+                ? (tier?: MonitorTier) => {
                     if (onWatching.length > 0) {
-                      (onWatching as (bus: 'pgm' | 'pvw', watching: boolean) => void)(bus, true)
+                      (onWatching as (bus: 'pgm' | 'pvw', watching: boolean, tier?: MonitorTier) => void)(bus, true, tier)
                     } else {
                       (onWatching as () => void)()
                     }
