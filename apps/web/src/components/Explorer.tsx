@@ -341,6 +341,7 @@ export function Explorer({
                         <div className="sub">
                           {dur(durationIn(asset, rate), rate)}
                           {asset.probe?.hasAudio === false && ' · mudo'}
+                          {asset.intentionalSilence && <span className="chip mute" title="Sem áudio de propósito (marcado no QC): a sonda do PGM não alerta silêncio nem falta de áudio neste arquivo."> SEM ÁUDIO</span>}
                           {asset.loudnessFile &&
                             ` · ${lufs(asset.loudnessFile.integratedLufs)} LUFS`}
                           {asset.defaultTrim && ' · corte'}

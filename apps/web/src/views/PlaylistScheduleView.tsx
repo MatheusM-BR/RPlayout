@@ -303,6 +303,8 @@ export function PlaylistScheduleView({
         ignored:catalogIgnored(asset,ignoredOverrides.get(asset.id))}
     })
   }, [folders, metadataOverrides, ignoredOverrides])
+  /** Arquivos marcados no QC como "SEM ÁUDIO" de propósito (nesta versão). */
+  const intentionalSilence = useMemo(() => new Set(allMamAssets.filter((asset) => asset.intentionalSilence).map((asset) => `${asset.id}:${asset.contentHash}`)), [allMamAssets])
 
   // Fontes configuradas aparecem na mesma biblioteca, mas preservam a sua
   // natureza: ao clicar, vão ao PVW por sourceRef em vez de virar asset MAM.
@@ -1511,6 +1513,7 @@ export function PlaylistScheduleView({
                             <span className="font-headline-sm text-[11px] font-medium text-on-surface truncate whitespace-nowrap group-hover:text-primary">
                               {asset.title}
                             </span>
+                            {asset.intentionalSilence && <SemAudioBadge />}
                             {asset.isLiveSource && (
                               <span className="font-label-caps text-[11px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap text-accent-ice border-accent-ice/40 bg-accent-ice/10" title="Fonte ao vivo">{liveProtocolLabel((asset as any).sourceRef ?? asset.path)}</span>
                             )}
@@ -2384,6 +2387,7 @@ export function PlaylistScheduleView({
                         })()}
                         <div className="col-span-3 font-body-sm t-data truncate text-on-surface">
                           {item.asset?.title || item.item.title || item.item.id}
+                          {item.asset && intentionalSilence.has(`${item.asset.id}:${item.asset.contentHash}`) && <SemAudioBadge />}
                         </div>
                         <div className="col-span-2 min-w-0 text-right">
                           <span title={item.asset?.probeError ?? item.asset?.qcNotes ?? (item.asset ? 'Estado de QC do arquivo' : 'O cadastro não comprova sinal da fonte')} className={`font-label-mono t-status block ${item.asset?.probeError || item.asset?.qcStatus === 'REJECTED' || item.asset?.ignored ? 'text-error' : qcApproved(item.asset?.qcStatus) ? 'text-status-ok-bright' : 'text-armed-amber'}`}>
@@ -2811,4 +2815,9 @@ export function PlaylistScheduleView({
       )}
     </div>
   )
+}
+
+/** Selo do arquivo marcado no QC como "SEM ÁUDIO" de propósito. */
+export function SemAudioBadge() {
+  return <span className="ml-1 font-label-caps text-[11px] font-bold px-1 rounded border shrink-0 whitespace-nowrap text-armed-amber border-armed-amber/40 bg-armed-amber/10" title="Sem áudio de propósito (marcado no QC): a sonda do PGM não alerta silêncio nem falta de áudio neste arquivo. Preto, congelado e queda de sinal continuam alertando.">SEM ÁUDIO</span>
 }

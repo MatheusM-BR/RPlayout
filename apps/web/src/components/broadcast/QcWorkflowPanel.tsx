@@ -94,6 +94,15 @@ export function QcWorkflowPanel({ assetId, contentHash, channel, onChanged,onRev
       {assessment.checks.warnings.map((issue, index) => <p key={`w${index}`} className="mt-1 text-armed-amber">⚠ {issue}</p>)}
       {assessment.decisions[0] && <p className="mt-1 text-outline">Última decisão aplicável ({assessment.decisions[0].channelId==='@all'?'todos os canais':'este canal'}): {assessment.decisions[0].status} · {assessment.decisions[0].notes ?? 'sem ressalva'}</p>}
     </> : <p>Consultando a versão…</p>}
+    {assessment && <label className="flex items-center gap-2 mt-2" title="O arquivo não tem áudio na origem (ex.: encerramento mudo). Com a marca, a sonda do PGM não alerta silêncio enquanto ele está no ar; sem ela, o alerta aparece agrupado.">
+      <input type="checkbox" checked={Boolean(assessment.intentionalSilence)} disabled={busy || externalBusy || stale}
+        onChange={event => { const on = event.target.checked; setBusy(true); setMessage(null)
+          void api.setIntentionalSilence(assetId, { channelId: channel.id, contentHash, on })
+            .then(() => { setAssessment(current => current ? { ...current, intentionalSilence: on } : current); setMessage(on ? 'Silêncio intencional marcado: a sonda do PGM não alerta silêncio neste arquivo.' : 'Marca removida: silêncio neste arquivo volta a alertar.') })
+            .catch(error => setMessage(error instanceof Error ? error.message : 'Marca não gravada.'))
+            .finally(() => setBusy(false)) }}/>
+      <span><b>SEM ÁUDIO</b> de propósito (silêncio intencional; a sonda do PGM não alerta silêncio nem falta de áudio neste arquivo)</span>
+    </label>}
     <label className="block mt-2">Ressalva / motivo<textarea value={notes} onChange={event => setNotes(event.target.value)} maxLength={2000} rows={2} className="block w-full mt-1 bg-surface-base border border-outline/30 rounded p-2" /></label>
     <div className="flex flex-wrap gap-2 mt-2">
       {([['ANALYSIS', 'Em análise'], ['APPROVED_WITH_NOTES', 'Aprovar com ressalva'], ['BLOCKED', 'Bloquear PGM'], ['PENDING', 'Reabrir QC']] as const).map(([status, label]) => <button key={status} disabled={busy || externalBusy || stale || !assessment || (status === 'APPROVED_WITH_NOTES' && (!assessment.checks.playable || !notes.trim()))} onClick={() => void decide(status)} className="px-2 py-1 border border-outline/40 rounded disabled:opacity-40">{label}</button>)}

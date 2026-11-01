@@ -171,6 +171,7 @@ import { activeHorizonRule, executionHorizon } from './domain/continuous.js'
 import { localDate, rundownClock, rundownFrames, rundownMidnight } from './domain/rundown-clock.js'
 import { inspectBoundary, PlaylistBoundaryLedger } from './domain/playlist-boundary.js'
 import { AUTH_PASSWORD, AUTH_USER, BACKUP_DIR, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from './config.js'
+import { isIntentionalSilence, setIntentionalSilence } from './domain/intentional-silence.js'
 import { technicalLog, type TechnicalLogLevel } from './domain/technical-log.js'
 import { softwareVersion } from './domain/software-version.js'
 import { listEngineCrashReports } from './domain/engine-crash-report.js'
@@ -711,7 +712,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const channelIds = new Set<string>()
     for (const value of [query?.channelId, body?.channelId]) if (typeof value === 'string') channelIds.add(value)
     const route = request.routeOptions.url ?? ''
-    const scopedRoute = channelParameterRoutes.has(path) || channelParameterRoutes.has(route) || route === '/api/assets/:id/qc' || route === '/api/assets/:id/cut-marks' || route === '/api/assets/:id/cut-marks/:markId' || /^\/api\/(?:v1\/)?(channels\/:id|rules\/:id|rundowns\/:id|items\/:id|sources\/live\/:id|outputs\/:id|health-events\/:id|integrations\/:id|integration-deliveries\/:id|item-graphics\/:id|graphics\/:id|guests\/:id|destinations\/:id|blocks\/:blockId|timeline\/:rundownId|tenants\/:tenantId\/channels\/:channelId)(?:\/|$)/.test(route)
+    const scopedRoute = channelParameterRoutes.has(path) || channelParameterRoutes.has(route) || route === '/api/assets/:id/qc' || route === '/api/assets/:id/cut-marks' || route === '/api/assets/:id/intentional-silence' || route === '/api/assets/:id/cut-marks/:markId' || /^\/api\/(?:v1\/)?(channels\/:id|rules\/:id|rundowns\/:id|items\/:id|sources\/live\/:id|outputs\/:id|health-events\/:id|integrations\/:id|integration-deliveries\/:id|item-graphics\/:id|graphics\/:id|guests\/:id|destinations\/:id|blocks\/:blockId|timeline\/:rundownId|tenants\/:tenantId\/channels\/:channelId)(?:\/|$)/.test(route)
     if (/^\/api\/(?:v1\/)?channels\/:id(?:\/|$)/.test(route) && params?.id) channelIds.add(params.id)
     const lookup = (sql: string, id: unknown) => {
       if (typeof id !== 'string') return
@@ -1999,7 +2000,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return snapshot(app, runtime)
   })
 
-  server.get('/api/assets', async () => ({ assets: await listAssets(app.db) }))
+  server.get('/api/assets', async () => ({ assets: (await listAssets(app.db)).map(asset => isIntentionalSilence(app.db, asset) ? { ...asset, intentionalSilence: true } : asset) }))
 
   /**
    * Explorador de arquivos. A árvore sai do próprio caminho do arquivo, então
@@ -2011,7 +2012,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const channelId = (request.query as { channelId?: string }).channelId
     const assets = app.db.transaction(tx=>{
       const raw=new Map(tx.select().from(mediaAssets).all().map(row=>[row.id,toAsset(row)]))
-      return [...(channelId?applyQcDecisionsNow(tx,raw,channelId):raw).values()].filter(asset=>asset.kind==='VIDEO').map(asset=>({...asset,qcRevision:qcRevision(tx,asset.id)}))
+      return [...(channelId?applyQcDecisionsNow(tx,raw,channelId):raw).values()].filter(asset=>asset.kind==='VIDEO').map(asset=>({...asset,qcRevision:qcRevision(tx,asset.id),...(isIntentionalSilence(app.db,asset)?{intentionalSilence:true}:{})}))
     })
     const roots = await Roots.listRoots(app.db, app.mediaRoot)
 
@@ -2971,7 +2972,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if(!asset||!channel)return null
       const review={assetId:id,channelId:channel.id,contentHash:asset.contentHash,assetRevision:qcRevision(tx,id),configurationRevision:configurationRevision(tx,channel.id)}
       const decisions=tx.select().from(qcDecisions).where(and(eq(qcDecisions.assetId,id),eq(qcDecisions.contentHash,asset.contentHash),or(eq(qcDecisions.channelId,channel.id),eq(qcDecisions.channelId,'@all')))).orderBy(desc(sql`rowid`)).all()
-      return {contentHash:asset.contentHash,review,profile:channel.qcProfile??defaultQcProfileFor(channel.targetLufs),checks:assessQc(toAsset(asset),channel.qcProfile??defaultQcProfileFor(channel.targetLufs),qcChannelReference(channel)),decisions}
+      return {contentHash:asset.contentHash,review,profile:channel.qcProfile??defaultQcProfileFor(channel.targetLufs),checks:assessQc(toAsset(asset),channel.qcProfile??defaultQcProfileFor(channel.targetLufs),qcChannelReference(channel)),decisions,intentionalSilence:isIntentionalSilence(app.db,asset)}
     })
     if(!result)return reply.code(404).send({error:'Arquivo/canal não encontrado.'})
     return reply.header('cache-control','private, no-store').header('etag',qcDecisionETag(result.review)).send(result)
@@ -3000,6 +3001,23 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     let refreshError:string|null=null
     try{for(const runtime of app.runtimes.values())await runtime.refresh();onChange()}catch{refreshError='QC gravado; falha ao atualizar a visão. Consulte a conferência novamente.'}
     return {ok:true,...saved,refreshError}
+  })
+
+  /** QC: o arquivo não tem áudio na origem; a sonda do PGM não alerta silêncio nele. */
+  server.put('/api/assets/:id/intentional-silence', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Sem permissão para avaliar mídia.' })
+    const body = z.object({ channelId: z.string().min(1), contentHash: z.string().min(1), on: z.boolean() }).strict().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe o canal, a versão do arquivo e on: true/false.' })
+    const id = (request.params as { id: string }).id, ownerId = access.identity(request)?.id ?? null
+    try {
+      assertQcAccess(request, body.data.channelId, ownerId)
+      const asset = app.db.select().from(mediaAssets).where(eq(mediaAssets.id, id)).get()
+      if (!asset) return reply.code(404).send({ error: 'Arquivo não encontrado.' })
+      if (asset.contentHash !== body.data.contentHash) return reply.code(409).send({ error: 'O arquivo mudou durante a conferência. Revise a nova versão antes de marcar.' })
+      setIntentionalSilence(app.db, asset, body.data.on, access.identity(request)?.username ?? null, body.data.channelId)
+    } catch (error) { return automationError(reply, error) }
+    onChange()
+    return { ok: true, assetId: id, intentionalSilence: body.data.on }
   })
 
   // ---- Marcações de corte (QC): trechos que podem sair para alinhar horário ----

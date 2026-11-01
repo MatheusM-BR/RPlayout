@@ -7,6 +7,7 @@ import cors from '@fastify/cors'
 import fastifyStatic from '@fastify/static'
 import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
+import { probeAudioDbfs } from './domain/intentional-silence.js'
 import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation, serviceMonitors } from './app.js'
 import {EngineTransport} from './domain/engine.js'
 import { sealAudit, verifyAudit } from './domain/audit-seal.js'
@@ -405,10 +406,12 @@ async function main(): Promise<void> {
       // e o quadro reduzido após o compositor PGM. O navegador não participa
       // desta decisão, então não cria falso black/freeze por WebRTC atrasado.
       if ((meter !== null || videoProbe !== null) && runtime.transport.state().playing) {
+        const onAirAsset = runtime.executionView?.items.find((entry) => entry.item.id === runtime.transport.state().onAir?.itemId)?.asset
         pgmProbeFor(app, runtime.channel.id).feedMetrics({
           // dBFS is not LUFS. Peak gives a conservative silence gate: do not
           // declare silence while any measured channel contains audible peaks.
-          audioDbfs: meter ? Math.max(...meter.peakDbfs) : undefined,
+          // Arquivo marcado no QC como "silêncio intencional": sem decisão.
+          audioDbfs: probeAudioDbfs(app.db, meter?.peakDbfs, onAirAsset),
           isBlack: videoProbe?.black,
           isFreeze: runtime.executionView?.items.find((entry) => entry.item.id === runtime.transport.state().onAir?.itemId)?.asset?.kind === 'STILL' ? false : videoProbe?.freeze,
           freezeDurationMs: runtime.executionView?.items.find((entry) => entry.item.id === runtime.transport.state().onAir?.itemId)?.asset?.kind === 'STILL' ? 0 : videoProbe?.freezeDurationMs,

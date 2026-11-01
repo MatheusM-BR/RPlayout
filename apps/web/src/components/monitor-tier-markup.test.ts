@@ -43,3 +43,10 @@ describe('selo do scope ao vivo do PGM', () => {
     expect(withCallback).toBe(plain)
   })
 })
+
+describe('tarja SEM ÁUDIO', () => {
+  it('selo visível na grade e no acervo', async () => {
+    const { SemAudioBadge } = await import('../views/PlaylistScheduleView.js')
+    expect(renderToStaticMarkup(createElement(SemAudioBadge))).toContain('SEM ÁUDIO')
+  })
+})

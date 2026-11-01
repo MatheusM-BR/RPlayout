@@ -226,6 +226,12 @@ export interface MediaAsset {
   readonly qcCheckedAt: string | null
   /** Arquivo deliberadamente oculto do acervo ativo pelo operador. */
   readonly ignored?: boolean
+  /**
+   * Marcado no QC como "SEM ÁUDIO" de propósito (silêncio intencional, nesta
+   * versão do arquivo): a sonda do PGM não alerta silêncio nem falta de áudio
+   * enquanto ele está no ar. Preto, congelado e queda de sinal continuam.
+   */
+  readonly intentionalSilence?: boolean
   readonly createdAt: string
 }
 
