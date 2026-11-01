@@ -9,6 +9,7 @@
  *  - ms por quadro em 1080p de cada backend (WebGPU, WebGL2, WASM, JS).
  */
 import {accumulateRgbaJs} from '../cpu-js.js'
+import {paintDensities} from '../cpu-render.js'
 import {scopeLayout, accumulationConfig} from '../layout.js'
 import type {LiveSource, LiveView} from '../live.js'
 import {WebGpuScopes} from '../webgpu.js'
@@ -25,6 +26,13 @@ function median(values: number[]): number {
 const dims = (s: LiveSource) => s instanceof HTMLVideoElement ? {w: s.videoWidth, h: s.videoHeight} : {w: s.naturalWidth, h: s.naturalHeight}
 /** Modo do WebGPU: 'copy' no SwiftShader (que cai com texture_external). */
 let gpuMode: 'external' | 'copy' = 'external'
+/** Canvas do WebGPU; no SwiftShader desenha fora de tela (apresentar no canvas derruba a GPU emulada). */
+function gpuCanvasFor(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas')
+  if (gpuMode === 'copy') canvas.dataset.scopesOffscreen = '1'
+  document.body.appendChild(canvas)
+  return canvas
+}
 
 async function loadSource(url: string, at: number): Promise<LiveSource> {
   if (url.endsWith('.png')) {
@@ -121,7 +129,7 @@ async function timeBackends(wasm: ScopesWasm, video: LiveSource, iterations: num
   const panels = scopeLayout('QUAD', width, height, {waveChannel: 'Y', parade: 'RGB', scale})
   const config = accumulationConfig(panels, {levelMin: -8, levelMax: 110, vectorScale: 1.3, roi: [0, 0, 1, 1]}, dims(video).w)
   const view = (stride: number): LiveView => ({panels, config, width, height, intensity: 1, matrix: MATRIX.bt709, frozen: false, showReference: false, stride})
-  const canvasGpu = document.createElement('canvas'); document.body.appendChild(canvasGpu)
+  const canvasGpu = gpuCanvasFor()
   const gpu = await WebGpuScopes.create(canvasGpu, gpuMode)
   if (gpu) {
     for (let i = 0; i < 5; i++) { gpu.render(video, view(1)); await gpu.idle() }
@@ -173,7 +181,7 @@ async function parity(wasm: ScopesWasm, video: LiveSource) {
   const panels = scopeLayout('QUAD', 960, 540, {waveChannel: 'Y', parade: 'RGB', scale: 1})
   const view: LiveView = {panels, config, width: 960, height: 540, intensity: 1, matrix: MATRIX.bt709, frozen: false, showReference: false, stride: 1}
   const out: Record<string, unknown> = {}
-  const gpuCanvas = document.createElement('canvas'); document.body.appendChild(gpuCanvas)
+  const gpuCanvas = gpuCanvasFor()
   console.warn('[bench] paridade: criando WebGPU')
   const gpu = await WebGpuScopes.create(gpuCanvas, gpuMode)
   console.warn(`[bench] WebGPU ${gpu ? 'ok' : 'indisponível'}`)
@@ -188,6 +196,20 @@ async function parity(wasm: ScopesWasm, video: LiveSource) {
       vectorL1: +histDistance(read.vector, cpu.vector, config.vectorSize ** 2, 0).toFixed(5),
       diamondL1: +histDistance(read.diamond, cpu.diamond, config.diamondSize ** 2 * 2, 0).toFixed(5),
       stats: compareStats(read.stats, cpu.stats),
+    }
+    // Desenho: imagem da GPU × desenho da CPU (cpu-render) com o mesmo resultado do WASM.
+    const image = await gpu.debugReadImage()
+    if (image && out.webgpu) {
+      const canvas = document.createElement('canvas'); canvas.width = view.width; canvas.height = view.height
+      const ctx = canvas.getContext('2d')!
+      paintDensities(ctx, view.width, view.height, panels, cpu, {intensity: 1, samples: cpu.stats.count})
+      const mine = ctx.getImageData(0, 0, view.width, view.height).data
+      let diff = 0, lit = 0, litBoth = 0
+      for (let i = 0; i < mine.length; i += 4) {
+        const a = Math.max(image.rgba[i]!, image.rgba[i + 1]!, image.rgba[i + 2]!), b = Math.max(mine[i]!, mine[i + 1]!, mine[i + 2]!)
+        diff += Math.abs(a - b); if (a > 0 || b > 0) lit++; if (a > 0 && b > 0) litBoth++
+      }
+      ;(out.webgpu as Record<string, unknown>).display = {meanAbsDiffLit: +(diff / Math.max(1, lit)).toFixed(2), litOverlap: +(litBoth / Math.max(1, lit)).toFixed(4)}
     }
     gpu.destroy()
   }
@@ -228,7 +250,7 @@ async function run(media: Media[], iterations = 30, mode: 'external' | 'copy' = 
     entry.parity = await parity(wasm, video)
     console.warn(`[bench] ${item.name} paridade ok`)
     if (item.ycc && item.bars) {
-      const canvas = document.createElement('canvas')
+      const canvas = gpuCanvasFor()
       const gpu = await WebGpuScopes.create(canvas, gpuMode)
       entry.bars = await barErrors(wasm, video, item.ycc, item.bars, gpu, canvas)
       gpu?.destroy()

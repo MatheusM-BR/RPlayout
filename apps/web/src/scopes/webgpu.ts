@@ -12,7 +12,7 @@
  * despejados uma vez por workgroup, o que tira a contenção dos atômicos
  * globais justamente onde ela seria pior (todos os pixels no mesmo contador).
  */
-import {BufferUsage, MapMode, navigatorGpu, type GpuBuffer, type GpuCanvasContext, type GpuDevice, type GpuQuerySet} from './gpu-types.js'
+import {BufferUsage, MapMode, navigatorGpu, type GpuBuffer, type GpuCanvasContext, type GpuDevice, type GpuQuerySet, type GpuTexture} from './gpu-types.js'
 import {WGSL_ACCUMULATE, WGSL_ACCUMULATE_COPY, WGSL_DISPLAY, WGSL_FALSE_COLOR, WGSL_FALSE_COLOR_COPY} from './shaders.js'
 import {drawSpecs, sampledArea, statsFromGpu, type LiveScopes, type LiveSource, type LiveTiming, type LiveView} from './live.js'
 import {MATRIX, type FalseColorMode, type MatrixCode, type ScopeConfig, type ScopeStats} from './wasm.js'
@@ -46,7 +46,9 @@ export function sharedGpuDevice(): Promise<GpuDevice | null> {
 
 export class WebGpuScopes implements LiveScopes {
   readonly kind = 'webgpu' as const
-  private context: GpuCanvasContext
+  private context: GpuCanvasContext | null
+  private readonly offscreen: boolean
+  private offscreenTexture: {texture: GpuTexture; width: number; height: number} | null = null
   private format: string
   private accumulate: ReturnType<GpuDevice['createComputePipeline']>
   private display: ReturnType<GpuDevice['createRenderPipeline']> | null
@@ -84,9 +86,11 @@ export class WebGpuScopes implements LiveScopes {
   private constructor(private readonly device: GpuDevice, private readonly canvas: HTMLCanvasElement, private readonly sourceMode: 'external' | 'copy') {
     void device.lost.then(() => { this.lost = true })
     const gpu = navigatorGpu()!
-    this.format = gpu.getPreferredCanvasFormat()
-    this.context = canvas.getContext('webgpu') as unknown as GpuCanvasContext
-    this.context.configure({device, format: this.format, alphaMode: 'premultiplied'})
+    // Fora de tela (bancada/CI): desenha numa textura própria em vez do canvas.
+    this.offscreen = canvas.dataset.scopesOffscreen === '1'
+    this.format = this.offscreen ? 'rgba8unorm' : gpu.getPreferredCanvasFormat()
+    this.context = this.offscreen ? null : canvas.getContext('webgpu') as unknown as GpuCanvasContext
+    this.context?.configure({device, format: this.format, alphaMode: 'premultiplied'})
     this.accumulate = device.createComputePipeline({layout: 'auto', compute: {module: device.createShaderModule({code: WGSL_ACCUMULATE, label: 'scopes-accumulate'}), entryPoint: 'accumulate'}})
     this.display = null
     this.buildDynamicDisplay()
@@ -222,7 +226,7 @@ export class WebGpuScopes implements LiveScopes {
     }
     const liveCount = this.writeDraws(view, 0, this.samples, false)
     const referenceCount = view.showReference && this.reference ? this.writeDraws(view, 1, this.referenceSamples, true) : 0
-    const target = this.context.getCurrentTexture().createView()
+    const target = this.renderTarget(view.width, view.height).createView()
     const pass = encoder.beginRenderPass({colorAttachments: [{view: target, clearValue: {r: 0, g: 0, b: 0, a: 0}, loadOp: 'clear', storeOp: 'store'}]})
     pass.setPipeline(this.display!)
     const rects = drawSpecs(view.panels, view.config, 1, 1, false).map(spec => spec.rect)
@@ -355,6 +359,32 @@ export class WebGpuScopes implements LiveScopes {
     return {wave, vector, hist, diamond, stats: statsFromGpu(stats)}
   }
 
+  private renderTarget(width: number, height: number): GpuTexture {
+    if (this.context) return this.context.getCurrentTexture()
+    if (!this.offscreenTexture || this.offscreenTexture.width !== width || this.offscreenTexture.height !== height) {
+      this.offscreenTexture?.texture.destroy()
+      const device = this.device as unknown as {createTexture(d: unknown): GpuTexture}
+      this.offscreenTexture = {texture: device.createTexture({size: [width, height], format: 'rgba8unorm', usage: 0x10 | 0x01}), width, height}
+    }
+    return this.offscreenTexture.texture
+  }
+
+  /** Imagem desenhada no modo fora de tela (bancada): RGBA premultiplicado. */
+  async debugReadImage(): Promise<{width: number; height: number; rgba: Uint8Array} | null> {
+    const target = this.offscreenTexture
+    if (!target) return null
+    const bytesPerRow = Math.ceil(target.width * 4 / 256) * 256
+    const staging = this.device.createBuffer({size: bytesPerRow * target.height, usage: BufferUsage.MAP_READ | BufferUsage.COPY_DST})
+    const encoder = this.device.createCommandEncoder() as unknown as {copyTextureToBuffer(a: unknown, b: unknown, c: number[]): void; finish(): unknown}
+    encoder.copyTextureToBuffer({texture: target.texture}, {buffer: staging, bytesPerRow}, [target.width, target.height])
+    this.device.queue.submit([encoder.finish()])
+    await staging.mapAsync(MapMode.READ)
+    const raw = new Uint8Array(staging.getMappedRange()), rgba = new Uint8Array(target.width * target.height * 4)
+    for (let y = 0; y < target.height; y++) rgba.set(raw.subarray(y * bytesPerRow, y * bytesPerRow + target.width * 4), y * target.width * 4)
+    staging.unmap(); staging.destroy()
+    return {width: target.width, height: target.height, rgba}
+  }
+
   /** Espera a GPU terminar o que foi enviado (bancada de desempenho). */
   idle(): Promise<void> { return this.device.queue.onSubmittedWorkDone() }
 
@@ -387,7 +417,8 @@ export class WebGpuScopes implements LiveScopes {
     this.copyTexture?.texture.destroy()
     this.params.destroy(); this.draws.destroy(); this.statsRead.destroy(); this.falseParams.destroy()
     this.query?.destroy(); this.queryResolve?.destroy(); this.queryRead?.destroy()
-    try { this.context.unconfigure() } catch { /* canvas já removido */ }
+    try { this.context?.unconfigure() } catch { /* canvas já removido */ }
+    this.offscreenTexture?.texture.destroy()
     try { this.falseContext?.unconfigure() } catch { /* idem */ }
   }
 }
