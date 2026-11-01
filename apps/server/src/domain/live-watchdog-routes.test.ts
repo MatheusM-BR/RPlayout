@@ -6,6 +6,7 @@ import {createApp,type App} from '../app.js'
 import {registerRoutes} from '../routes.js'
 import {channels,users,sessions,liveSources,graphicTemplates,asRun} from '../db/schema.js'
 import {attachLiveOutages} from './live-outages.js'
+import {LiveWatchdogRecorder} from './live-watchdog-events.js'
 import {sessionDigest} from './access.js'
 vi.mock('../config.js',async original=>({...await original<Record<string,unknown>>(),ENGINE_BINARY:'',MEDIAMTX_BINARY:'',DEVICES_BINARY:'',AUTH_USER:'',AUTH_PASSWORD:'',DEFAULT_ROLE:'ADMIN'}))
 let app:App,server:FastifyInstance
@@ -119,3 +120,34 @@ describe('paradas do ao vivo no AIRED',()=>{
   })
 })
 
+describe('paradas e a linha SEM SINAL do as-run',()=>{
+  const day='2026-10-31T'
+  const row=(id:string,start:string,end:string|null,title:string,type:string)=>({id,channelId:'ch',itemId:'live-1',title,type,startedAt:day+start+'.000Z',endedAt:end?day+end+'.000Z':null,actualStart:0,createdAt:day+start+'.000Z'})
+  it('parada nova vai para a linha do item ao vivo, não para a linha SEM SINAL do mesmo item',async()=>{
+    await app.db.insert(asRun).values([row('ar-live','15:04:14',null,'Leilão SRT','LIVE'),row('ar-sinal','15:04:14','15:04:18','SEM SINAL — Leilão SRT','SINAL')] as never)
+    new LiveWatchdogRecorder(app.db,'ch').persist([{kind:'OUTAGE',severity:'INFO',message:'parada',at:Date.parse(day+'15:05:13.000Z'),sourceKey:'srt://cam',sourceId:'cam',sourceName:'Câmera',bus:'pgm',itemId:'live-1',
+      outage:{phase:'OPEN',id:'o-novo',startedAt:Date.parse(day+'15:05:13.000Z'),endedAt:null,reasons:['SIGNAL_LOSS'],action:'WAIT_ART',closedBy:null}} as never],{rundownId:'r',itemId:'live-1'})
+    expect(app.sqlite.prepare("SELECT as_run_id AS a FROM live_outages WHERE id='o-novo'").get()).toEqual({a:'ar-live'})
+  })
+  it('parada antiga gravada na linha SEM SINAL aparece na linha do item ao vivo',async()=>{
+    await app.db.insert(asRun).values([row('ar-live','15:02:57','15:04:08','Leilão SRT','LIVE'),row('ar-sinal','15:02:57','15:03:00','SEM SINAL — Leilão SRT','SINAL')] as never)
+    app.sqlite.prepare('INSERT INTO live_outages(id,channel_id,as_run_id,item_id,source_key,source_name,started_at,ended_at,reasons,action,closed_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run('o-velho','ch','ar-sinal','live-1','srt://cam','Câmera',day+'15:03:58.000Z',day+'15:04:14.000Z','["FREEZE"]','CONTINGENCY','SIGNAL_RETURNED',day+'15:03:58.000Z')
+    const read=await server.inject({method:'GET',url:'/api/channels/ch/asrun?since=2026-10-31T00:00:00.000Z',headers:as('OPERATOR')})
+    const entries=read.json().entries as Array<{id:string;outages:Array<{id:string}>}>
+    expect(entries.find(entry=>entry.id==='ar-live')!.outages.map(outage=>outage.id)).toEqual(['o-velho'])
+    expect(entries.find(entry=>entry.id==='ar-sinal')!.outages).toEqual([])
+  })
+})
+describe('incidentes do watchdog por episódio',()=>{
+  it('ESPERA e CONTINGÊNCIA saem das pendências quando a live volta (RETORNO → OK)',async()=>{
+    const recorder=new LiveWatchdogRecorder(app.db,'ch'),at=Date.parse('2026-10-31T15:00:00.000Z')
+    const event=(from:string,to:string,offset:number)=>({kind:'TRANSITION',severity:'CRITICAL',message:`${from} → ${to}`,from,to,at:at+offset,sourceKey:'srt://cam',sourceId:'cam',sourceName:'Câmera',bus:'pgm',itemId:'live-1'})
+    recorder.persist([event('SUSPEITA','ESPERA',0),event('ESPERA','CONTINGENCIA',5000)] as never,{rundownId:'r',itemId:'live-1'})
+    const pending=()=>app.sqlite.prepare("SELECT state FROM health_events WHERE component='LIVE_WATCHDOG' AND resolved_at IS NULL ORDER BY occurred_at").all()
+    expect(pending()).toEqual([{state:'espera'},{state:'contingencia'}])
+    recorder.persist([event('CONTINGENCIA','RETORNO',20000),event('RETORNO','OK',21000)] as never,{rundownId:'r',itemId:'live-1'})
+    expect(pending()).toEqual([])
+    expect(app.sqlite.prepare("SELECT count(*) AS n FROM health_events WHERE component='LIVE_WATCHDOG'").get()).toEqual({n:3})
+  })
+})

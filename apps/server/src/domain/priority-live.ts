@@ -23,6 +23,15 @@ export function priorityLives(view: RundownView, nowMs: number): PriorityLive[] 
     return [{ itemId: item.id, rundownId: view.rundown.id, atMs, key: `${view.rundown.id}:${item.id}:${atMs}:${live ? item.sourceRef ?? item.liveEndpoint ?? item.liveConfig?.sourceEndpoint : `file:${item.mediaId}`}` }]
   }).sort((left,right) => left.atMs-right.atMs)
 }
+/** O corte da hora fixa só deixa "VT interrompido" para retomar quando quem
+ * entrou foi uma live: o VT sai e volta depois dela. Arquivo de HORA FIXA corta
+ * o anterior por plano -- o banner "VT interrompido pelo ao vivo" ficava para
+ * sempre oferecendo "Retomar no PGM" a um VT que a grade mandou cortar. */
+export function priorityTakeInterruptsForResume(view: RundownView | null | undefined, targetItemId: string): boolean {
+  const target = view?.items.find(entry => entry.item.id === targetItemId)?.item
+  if (!target) return true
+  return target.type === 'LIVE' || target.eventType === 'LIVE'
+}
 export interface LivePriorityEvent {
   kind: 'REQUESTED' | 'CONFIRMED' | 'FAILED'
   rundownId: string

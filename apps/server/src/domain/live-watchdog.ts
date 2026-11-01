@@ -259,7 +259,14 @@ export class WatchdogMachine {
       case 'ESPERA':
         if (!automatic) { this.leaveIntervention(now, effects, 'modo automático desligado'); break }
         if (failing.length) {
-          if (now - (this.waitSince ?? now) >= policy.waitMs) {
+          // "Ainda falhando após T1" é uma condição de ação ativa agora. Se o
+          // sinal já voltou e as condições só cumprem a histerese, a
+          // contingência espera por ela (no máximo clearHoldMs): no reteste,
+          // um encoder reiniciado em 0,5 s voltou com 24 quadros/s antes de T1
+          // e mesmo assim tirou a live do ar por 15 s. Se a condição reaparece,
+          // a contingência entra no mesmo passo.
+          const active = failing.some(name => this.conditions.get(name)?.lastTrue === now)
+          if (active && now - (this.waitSince ?? now) >= policy.waitMs) {
             this.go('CONTINGENCIA', now, `${this.describe(failing)} além de ${(policy.waitMs / 1000).toFixed(0)} s`)
             this.enterContingency(now, policy, effects)
           } else if (policy.waitArt.kind !== 'HOLD_LAST_FRAME' && !this.waitArtOnAir && now >= this.retryAt) effects.push('SHOW_WAIT')
@@ -285,7 +292,7 @@ export class WatchdogMachine {
         }
         if (now - (this.returnSince ?? now) < policy.returnStableMs) break
         if (policy.returnMode === 'MANUAL' || this.holdContingency || !automatic) {
-          if (!this.awaitingOperator) this.emit({ kind: 'TRANSITION', severity: 'WARN', message: `${this.label}: sinal estável há ${(policy.returnStableMs / 1000).toFixed(0)} s; aguardando o operador voltar para a live.` }, now)
+          if (!this.awaitingOperator) this.emit({ kind: 'TRANSITION', severity: 'WARN', message: this.blindReturn && this.contingencyOnAir ? `${this.label}: sem PVW para medir a entrada; aguardando o operador voltar para a live.` : `${this.label}: sinal estável há ${(policy.returnStableMs / 1000).toFixed(0)} s; aguardando o operador voltar para a live.` }, now)
           this.awaitingOperator = true
           break
         }
@@ -329,7 +336,10 @@ export class WatchdogMachine {
     if (!ok) {
       this.lastError = message ?? 'Ação não confirmada.'
       this.retryAt = now + RETRY_MS
-      this.emit({ kind: 'ACTION_FAILED', severity: 'CRITICAL', message: `${this.label}: ${effectLabel[effect]} não confirmado — ${this.lastError}` }, now)
+      // Retorno cancelado pelo "manter contingência" não é falha: sem alarme crítico.
+      const cancelled = effect === 'RETURN_LIVE' && this.returnCancelRequested
+      this.returnCancelRequested = false
+      this.emit({ kind: 'ACTION_FAILED', severity: cancelled ? 'INFO' : 'CRITICAL', message: `${this.label}: ${effectLabel[effect]} não confirmado — ${this.lastError}` }, now)
       if (effect === 'RETURN_LIVE' && this.state === 'RETORNO') {
         this.go('CONTINGENCIA', now, 'retorno recusado'); this.returnSince = null
         // Sem PVW, a próxima tentativa espera de novo T2 (no mínimo 10 s).
@@ -379,9 +389,15 @@ export class WatchdogMachine {
     return effects
   }
   /** Operador: "manter contingência" (liga/desliga). */
+  /** O operador pediu "manter contingência" com o retorno já em andamento. */
+  returnCancelRequested = false
   operatorHold(now: number, hold: boolean, actor: string | null) {
     this.holdContingency = hold
+    if (hold && this.pending === 'RETURN_LIVE') this.returnCancelRequested = true
     this.emit({ kind: 'OPERATOR', severity: 'INFO', message: `${this.label}: operador${actor ? ` ${actor}` : ''} ${hold ? 'manteve a contingência (retorno só manual)' : 'liberou o retorno automático'}.` }, now)
+  }
+  noteReturnCancelled(now: number) {
+    this.emit({ kind: 'OPERATOR', severity: 'INFO', message: `${this.label}: tentativa de retorno à live cancelada para manter a contingência.` }, now)
   }
 
   /** Executor externo mudou o PGM (TAKE manual): a intervenção deixa de valer. */
@@ -432,6 +448,9 @@ export interface WatchdogExecutor {
   contingencyOrigin?(): WatchdogObservedSource | null
   /** Parada que ficou aberta no banco para esta entrada (reinício durante a parada). */
   openOutage?(sourceKey: string): { id: string; startedAt: number; reasons: WatchdogDetection[]; action: LiveOutageAction } | null
+  /** Cancela o TAKE de retorno à live que ainda espera quadro. Devolve false
+   * se não havia o que cancelar (o corte já aconteceu ou não foi pedido). */
+  cancelReturn?(): Promise<boolean>
 }
 
 export interface WatchdogTickInput {
@@ -557,6 +576,15 @@ export class ChannelLiveWatchdog {
     const tracked = this.program
     if (!tracked) throw new Error('Nenhuma entrada ao vivo acompanhada pelo watchdog neste canal.')
     tracked.machine.operatorHold(now, hold, actor)
+    // "Manter contingência" com um retorno às cegas já pedido (sem PVW o TAKE
+    // da live espera o primeiro quadro): o TAKE pendente é cancelado. Antes, a
+    // live entrava 7 s depois do clique, assim que o sinal voltava.
+    if (hold && tracked.machine.pending === 'RETURN_LIVE' && this.executor.cancelReturn) {
+      void this.executor.cancelReturn().then(cancelled => {
+        if (cancelled) tracked.machine.noteReturnCancelled(Date.now())
+        this.collect(tracked.machine, tracked.source, 'pgm')
+      }, () => {})
+    }
     this.collect(tracked.machine, tracked.source, 'pgm')
   }
 

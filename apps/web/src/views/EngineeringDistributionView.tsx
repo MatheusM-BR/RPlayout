@@ -1,4 +1,5 @@
 import { confirmAction } from '../domain/confirm.js'
+import { liveEngineStateOf } from '../domain/engine-indicator.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect } from 'react'
 import type { Channel, ManagedLiveSource, RedundantStreamPair, SrtTelemetry } from '@rplayout/protocol'
@@ -113,7 +114,7 @@ export function EngineeringDistributionView({
   // Mesmo estado do cabeçalho (OK / ALERTA / REINICIANDO / FALHA): um engine
   // que já reiniciou uma vez não fica "ALERTA" para sempre.
   const engineMetric = hostMetrics?.operations?.channels.find(entry => entry.channelId === channel.id)?.engine
-  const liveEngineState = engineProcess?.details?.engineState as 'OK' | 'ALERT' | 'RESTARTING' | 'FAILED' | undefined
+  const liveEngineState = liveEngineStateOf(monitorLoaded ? processes : null, channel.id)
   const engineStatusTag = engineTag(engineMetric && liveEngineState ? { ...engineMetric, state: liveEngineState } : engineMetric)
   const engineLevel: Level = engineStatusTag.level
   const engineRss = engineProcess?.memoryBytes ?? engineMetric?.memoryBytes ?? null

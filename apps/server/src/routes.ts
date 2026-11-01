@@ -4491,7 +4491,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         assertInsertionAccess(request,id);const runtime=app.runtimes.get(id)
         if(!runtime)throw new CollaborativeEditError(409,{error:'Canal sem execução carregada.'})
         const reason=runtime.reconfigurationStatus().reason;if(reason)throw new CollaborativeEditError(409,{error:reason})
-        const plan=inspectInsertion(app.db,runtime.insertionContext(),body.data)
+        const plan=inspectInsertion(app.db,runtime.insertionContext(),body.data,view=>runtime.insertionTiming(view,body.data))
         reply.header('Cache-Control','private, no-store')
         return {reviewToken:plan.reviewToken,input:plan.input,item:{id:plan.itemId,title:plan.view.items.find(row=>row.item.id===plan.itemId)!.item.title},sourceRevisionId:plan.context.revisionId,conflicts:runtime.insertionTiming(plan.view,body.data).schedule.conflicts,nativeEngine:runtime.transport instanceof EngineTransport,estimatedTiming:true,notice:'Intervenção somente na revisão operacional. Não publica rascunhos. Timing é recalculado na execução; uma entrada descoberta ainda precisa entregar quadro. NEXT não altera PGM/CUE; NOW corta somente após confirmação.'}
       })
@@ -4519,7 +4519,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       }
       if(!runtime)throw new CollaborativeEditError(409,{error:'Canal sem execução carregada.'})
       if(input.mode==='NOW' && !(runtime.transport instanceof EngineTransport))throw new CollaborativeEditError(409,{error:'Inserir agora exige confirmação do engine nativo. Simulação não comprova corte de PGM.'})
-      const initial=inspectInsertion(app.db,runtime.insertionContext(),input);requireInsertionReview(initial,reviewToken)
+      const initial=inspectInsertion(app.db,runtime.insertionContext(),input,view=>runtime.insertionTiming(view,input));requireInsertionReview(initial,reviewToken)
       const reason=runtime.reconfigurationStatus().reason;if(reason)throw new CollaborativeEditError(409,{error:reason})
       const native=runtime.transport instanceof EngineTransport?runtime.transport:null
       return await app.configurationChanges.execute(id,native?.processId()??null,actor,'OPERATIONAL_INSERT_'+input.mode,async lease=>{
@@ -4529,12 +4529,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
           const current=runtime.insertionContext(),old=initial.context
           if(current.rundownId!==old.rundownId || current.revisionId!==old.revisionId || current.executionId!==old.executionId || (!afterTake && current.onAirItemId!==old.onAirItemId) || (afterTake && current.onAirItemId!==initial.itemId))throw new CollaborativeEditError(409,{error:'A ocorrência de PGM/edição mudou durante a preparação.'})
           const reason=runtime.reconfigurationStatus(false).reason;if(reason)throw new CollaborativeEditError(409,{error:reason})
-          requireInsertionReview(inspectInsertion(app.db,initial.context,input),reviewToken)
+          requireInsertionReview(inspectInsertion(app.db,initial.context,input,view=>runtime.insertionTiming(view,input)),reviewToken)
         }
         app.db.transaction(tx=>{guard();insertions.claim(input,initial,reviewToken,actor,lease.runId);lease.record(tx,'INSERT_PREPARING')},{behavior:'immediate'})
         let dispatched=false,committed=false
         const work=async(controls:Parameters<EngineTransport['insertOperational']>[0] extends (commands:infer T)=>unknown?T:never)=>{
-          guard();const view=await runtime.prepareInsertionView(initial.payload);guard()
+          guard();const view=runtime.insertionTiming(await runtime.prepareInsertionView(initial.payload),input);guard()
           const current=()=>{guard();return true}
           const commit=(previous:{itemId:string;frames:number}|null)=>{
             const timedView=runtime.insertionTiming(view,input)

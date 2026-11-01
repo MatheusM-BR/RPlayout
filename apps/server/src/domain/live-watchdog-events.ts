@@ -17,8 +17,9 @@ function persistOutage(sqlite: Sqlite, channelId: string, event: RecordedWatchdo
   const outage = event.outage!
   const iso = (ms: number | null) => ms === null ? null : new Date(ms).toISOString()
   if (outage.phase === 'OPEN') {
-    // Linha as-run do item ao vivo no ar quando a parada começou.
-    const row = event.itemId ? sqlite.prepare('SELECT id FROM as_run WHERE channel_id=? AND item_id=? AND started_at<=? ORDER BY started_at DESC LIMIT 1').get(channelId, event.itemId, iso(event.at)) as { id: string } | undefined : undefined
+    // Linha as-run do item ao vivo no ar quando a parada começou -- não a linha
+    // "SEM SINAL" que a perda de sinal do PGM grava com o mesmo item.
+    const row = event.itemId ? sqlite.prepare("SELECT id FROM as_run WHERE channel_id=? AND item_id=? AND started_at<=? AND type<>'SINAL' ORDER BY started_at DESC LIMIT 1").get(channelId, event.itemId, iso(event.at)) as { id: string } | undefined : undefined
     sqlite.prepare('INSERT OR IGNORE INTO live_outages(id,channel_id,as_run_id,item_id,source_key,source_name,started_at,ended_at,reasons,action,closed_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
       .run(outage.id, channelId, row?.id ?? null, event.itemId, event.sourceKey, event.sourceName, iso(outage.startedAt), null, JSON.stringify(outage.reasons), outage.action, null, new Date(event.at).toISOString())
   } else sqlite.prepare('UPDATE live_outages SET reasons=?,action=?,ended_at=COALESCE(?,ended_at),closed_by=COALESCE(?,closed_by) WHERE id=? AND channel_id=?')
@@ -27,6 +28,8 @@ function persistOutage(sqlite: Sqlite, channelId: string, event: RecordedWatchdo
 
 export class LiveWatchdogRecorder {
   private readonly open = new Map<string, string>()
+  /** Incidentes de ESPERA/CONTINGÊNCIA do episódio em curso, por entrada. */
+  private readonly episodes = new Map<string, string[]>()
   constructor(private readonly db: Db, private readonly channelId: string) {}
 
   persist(events: readonly RecordedWatchdogEvent[], context: { rundownId: string | null; itemId: string | null }): number {
@@ -63,8 +66,18 @@ export class LiveWatchdogRecorder {
             severity: 'INFO', message: event.message, occurredAt, resolvedAt: occurredAt }).onConflictDoNothing().run()
         } else if (event.kind === 'ACTION_FAILED' || (event.kind === 'TRANSITION' && event.to && (event.to === 'ESPERA' || event.to === 'CONTINGENCIA' || (event.to === 'OK' && event.from === 'RETORNO')))) {
           const state = event.kind === 'ACTION_FAILED' ? 'action_failed' : event.to === 'OK' ? 'retorno' : event.to!.toLowerCase()
-          tx.insert(healthEvents).values({ id: 'live-watchdog:' + randomUUID(), channelId: this.channelId, component: 'LIVE_WATCHDOG', state,
-            severity: event.kind === 'ACTION_FAILED' ? 'CRITICAL' : event.to === 'OK' ? 'INFO' : 'CRITICAL', message: event.message, occurredAt,
+          const episodeKey = `${event.bus}|${event.sourceKey}`
+          if (event.kind === 'TRANSITION' && event.to === 'OK') {
+            // Episódio encerrado (a live voltou): ESPERA e CONTINGÊNCIA dele saem
+            // das pendências. Antes ficavam críticas para sempre -- 43 alertas
+            // críticos de episódios já resolvidos depois de uma tarde de quedas.
+            for (const id of this.episodes.get(episodeKey) ?? []) tx.update(healthEvents).set({ resolvedAt: occurredAt }).where(eq(healthEvents.id, id)).run()
+            this.episodes.delete(episodeKey)
+          }
+          const incidentId = 'live-watchdog:' + randomUUID()
+          if (event.kind === 'TRANSITION' && (event.to === 'ESPERA' || event.to === 'CONTINGENCIA')) this.episodes.set(episodeKey, [...(this.episodes.get(episodeKey) ?? []), incidentId])
+          tx.insert(healthEvents).values({ id: incidentId, channelId: this.channelId, component: 'LIVE_WATCHDOG', state,
+            severity: event.kind === 'ACTION_FAILED' ? (event.severity === 'INFO' ? 'INFO' : 'CRITICAL') : event.to === 'OK' ? 'INFO' : 'CRITICAL', message: event.message, occurredAt,
             ...(event.to === 'OK' ? { resolvedAt: occurredAt } : {}) }).run()
         }
       }

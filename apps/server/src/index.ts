@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync } from 'node:fs'
+import { serverShutdownEvent, serverStartedEvent } from './domain/server-lifecycle.js'
+import { softwareVersion } from './domain/software-version.js'
 import { randomUUID } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import cors from '@fastify/cors'
@@ -471,9 +473,13 @@ async function main(): Promise<void> {
   }), 1000 / LIVE_HZ)
 
   let shuttingDown = false
-  const shutdown = async (exitCode=0): Promise<void> => {
+  const shutdown = async (exitCode=0, reason='encerramento pedido'): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
+    try{
+      const onAir=[...app.runtimes.values()].filter(runtime=>runtime.transport.state().onAir).map(runtime=>runtime.channel.name)
+      app.db.insert(healthEvents).values({id:randomUUID(),channelId:null,...serverShutdownEvent(reason,onAir),occurredAt:new Date().toISOString()}).run()
+    }catch(error){ try{server.log.warn(`Encerramento não registrado nos incidentes: ${error instanceof Error?error.message:String(error)}`)}catch{ /* o registro não pode impedir o encerramento */ } }
     background.close()
     libraryClosing = true
     clearInterval(libraryTimer)
@@ -513,8 +519,8 @@ async function main(): Promise<void> {
     await Promise.all(normalClosures)
     process.exit(failures.length?1:exitCode)
   }
-  process.on('SIGINT', () => void shutdown())
-  process.on('SIGTERM', () => void shutdown())
+  process.on('SIGINT', () => void shutdown(0,'SIGINT'))
+  process.on('SIGTERM', () => void shutdown(0,'SIGTERM'))
 
   startupTrace('HTTP listen requested')
   await server.listen({ port: PORT, host: HOST })
@@ -527,6 +533,8 @@ async function main(): Promise<void> {
   const alertNotifier=new AlertNotifier(app.db)
   if(primaryTasks())alertNotifier.start()
   server.log.info(`RPlayout · banco em ${DB_FILE}`)
+  try{const version=softwareVersion();app.db.insert(healthEvents).values({id:randomUUID(),channelId:null,...serverStartedEvent(process.pid,`RPlayout ${version.rplayout}${version.build?` (${version.build})`:''}`),occurredAt:new Date().toISOString()}).run()}
+  catch(error){server.log.warn(`Partida do servidor não registrada nos incidentes: ${error instanceof Error?error.message:String(error)}`)}
 }
 
 main().catch((error: unknown) => {

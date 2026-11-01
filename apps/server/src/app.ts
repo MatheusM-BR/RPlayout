@@ -87,6 +87,7 @@ import {DistributionOwnership} from './domain/distribution-ownership.js'
 import {HostDistributionFence} from './domain/host-distribution-fence.js'
 import {LocalRestoredEngineGenerations} from './domain/local-restored-engine-lease.js'
 import { Interruptions } from './domain/interruptions.js'
+import { priorityTakeInterruptsForResume } from './domain/priority-live.js'
 import { applyQcDecisions } from './domain/qc-workflow.js'
 import { HostMetrics } from './domain/host-metrics.js'
 import {captureOperationalMetrics} from './domain/operational-metrics.js'
@@ -344,7 +345,7 @@ export class ChannelRuntime {
             if (event.kind === 'CONFIRMED') {
               this.asRun.noteExit(event.previousItemId, 'LIVE_PRIORITY', event.previousFrames)
               const entry = this.executionView?.items.find(candidate => candidate.item.id === event.previousItemId)
-              if (entry) this.interruptions?.record(channel.id, event.rundownId, this.operationalRevision?.id ?? null, entry, event.previousFrames)
+              if (entry && priorityTakeInterruptsForResume(this.executionView, event.itemId)) this.interruptions?.record(channel.id, event.rundownId, this.operationalRevision?.id ?? null, entry, event.previousFrames)
             }
           },
           outputs: engineOutputs,
@@ -1322,6 +1323,7 @@ export class ChannelRuntime {
       if(preview?.kind==='SOURCE')await this.transport.cue(null)
       await this.returnLiveFromContingency()
     },
+    cancelReturn: async () => this.transport instanceof EngineTransport ? this.transport.cancelPendingSourceTake('Retorno à live cancelado: o operador manteve a contingência.') : false,
     // Reserva no ar de fato: STOP do operador encerra o acompanhamento.
     contingencyActive: () => Boolean(this.contingencyState?.active && this.transport.state().onAir),
     canMonitor: () => this.temMonitor('pvw'),

@@ -10,6 +10,26 @@ const item = (id: string): RundownItem => ({ id, rundownId: 'r', order: Number(i
   fit: 'PILLARBOX', audioTrack: null, locked: false, autoNext: true, loop: false, notes: null })
 
 describe('planejamento com arquivos indisponíveis', () => {
+  it('grade em loop: HORA FIXA de arquivo que já passou fica fora da sequência e não empurra a previsão', () => {
+    const asset = (id: string) => ({ id, kind: 'VIDEO', durationFrames: 250, durationNs: 10e9, defaultTrim: null, defaultAudio: null, probeError: null }) as MediaAsset
+    const assets = new Map(['1', '2', '3'].map(id => [id, asset(id)]))
+    const fixed = { ...item('2'), anchor: { kind: 'FIXED' as const, at: 1000 } }
+    // 14:01 já passou (agora = 3000 quadros, janela do item terminou em 1250)
+    const passed = buildView(rundown, channel, [item('1'), fixed, item('3')], assets, 3000, { itemId: '1', startedAt: 3000, elapsed: 0 })
+    const row = passed.schedule.items.find(entry => entry.id === '2')!
+    expect(row).toMatchObject({ state: 'DROPPED', duration: 0 })
+    expect(row.adjustments.some(entry => entry.kind === 'SKIPPED' && entry.reason.includes('já passou'))).toBe(true)
+    expect(passed.schedule.items.find(entry => entry.id === '3')?.start).toBe(3250)
+    expect(passed.schedule.conflicts.some(entry => entry.itemId === '2' && entry.severity === 'ERROR')).toBe(false)
+    // antes da hora e durante a janela o item continua na grade
+    const before = buildView(rundown, channel, [item('1'), fixed, item('3')], assets, 500, { itemId: '1', startedAt: 500, elapsed: 0 })
+    expect(before.schedule.items.find(entry => entry.id === '2')?.state).not.toBe('DROPPED')
+    const during = buildView(rundown, channel, [item('1'), fixed, item('3')], assets, 1100, { itemId: '1', startedAt: 1100, elapsed: 0 })
+    expect(during.schedule.items.find(entry => entry.id === '2')?.state).not.toBe('DROPPED')
+    // sem loop, ou loop só com itens de hora fixa: nada muda
+    expect(buildView({ ...rundown, loop: false }, channel, [item('1'), fixed, item('3')], assets, 3000, null).schedule.items.find(entry => entry.id === '2')?.adjustments.some(entry => entry.reason.includes('já passou'))).toBe(false)
+    expect(buildView(rundown, channel, [fixed], assets, 3000, null).schedule.items[0]?.state).not.toBe('DROPPED')
+  })
   it('TRIM AUTO calcula ganho no corte vinculado e não aceita outra duração operacional',()=>{
     const routing={mode:'STEREO_1_2' as const},audio={mode:'AUTO' as const,gainDb:0,analysisId:'job',routing,measured:{scope:'TRIM' as const,integratedLufs:-28,lra:2,truePeakDbtp:-6,measuredAt:new Date().toISOString(),input:{contentHash:'hash',audioTrack:0,routing,trim:{inNs:1e9,outNs:3e9}}}}
     const asset={id:'asset',contentHash:'hash',kind:'VIDEO',durationFrames:250,durationNs:10e9,defaultTrim:null,defaultAudio:null,probeError:null} as MediaAsset

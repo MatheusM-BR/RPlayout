@@ -48,6 +48,7 @@ import { Monitors } from './components/Monitors.js'
 import { Rundown } from './components/Rundown.js'
 import { TrimDialog } from './components/TrimDialog.js'
 import { PlaylistsDialog } from './components/PlaylistsDialog.js'
+import type { PlaylistImportTarget } from './domain/playlist-import-target.js'
 import { Login } from './components/Login.js'
 import { AuditPanel } from './components/AuditPanel.js'
 import { UsersPanel } from './components/UsersPanel.js'
@@ -71,7 +72,7 @@ import {EscalationInbox} from './components/EscalationInbox.js'
 type Dialog =
   | {kind:'asset-removal';assetId:string|null}
   | { kind: 'trim'; view: ItemView }
-  | { kind: 'playlists';revision?:number;rundownId?:string;onApplied?:(snapshot:Snapshot)=>void }
+  | { kind: 'playlists';revision?:number;rundownId?:string;target?:PlaylistImportTarget;onApplied?:(snapshot:Snapshot)=>void }
   | { kind: 'still'; view: ItemView }
   | { kind: 'audio'; view: ItemView; channel:Channel }
   | { kind: 'add'; assetId?: string; rundownId?: string; onApplied?: (snapshot: Snapshot) => void; revision?:number }
@@ -1351,8 +1352,8 @@ export function App() {
           onAddItem={(rundownId?: string, onApplied?: (snapshot: Snapshot) => void,revision?:number) =>
             setDialog({ kind: 'add', rundownId, onApplied,revision })
           }
-          onOpenImport={(rundownId: string, onApplied?: (snapshot: Snapshot) => void, revision?: number) =>
-            setDialog({ kind: 'playlists', rundownId, onApplied, revision })
+          onOpenImport={(rundownId: string, onApplied?: (snapshot: Snapshot) => void, revision?: number, target?: PlaylistImportTarget) =>
+            setDialog({ kind: 'playlists', rundownId, onApplied, revision, target })
           }
           onExportCsv={exportCsv}
           onOpenTrim={(item: ItemView) =>
@@ -1594,6 +1595,7 @@ export function App() {
       {dialog?.kind === 'playlists' && (
         <PlaylistsDialog
           revision={dialog.revision}
+          target={dialog.target}
           rundownId={dialog.rundownId ?? view.rundown.id}
           onCancel={() => setDialog(null)}
           onLoaded={(snapshot, message) => {

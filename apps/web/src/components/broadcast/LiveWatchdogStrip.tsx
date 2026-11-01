@@ -23,13 +23,22 @@ export function watchdogDetail(input: WatchdogInputStatus): string {
   if (input.state === 'ESPERA') parts.push(input.waitArtOnAir ? `Arte de espera no ar · contingência em ${seconds(input.waitRemainingMs)}` : `Espera · contingência em ${seconds(input.waitRemainingMs)}`)
   if (input.state === 'CONTINGENCIA') parts.push(!input.contingencyOnAir ? (input.pendingAction === 'ENTER_CONTINGENCY' ? 'Acionando a contingência (vinheta + vídeos)' : 'Contingência sem conteúdo · arte de espera mantida')
     : input.blindReturn ? 'Contingência no PGM · canal sem PVW: retorno por tentativa (só corta com quadro real)' : 'Contingência no PGM · observando a entrada no PVW')
-  if (input.state === 'RETORNO') parts.push(input.awaitingOperator ? 'Sinal estável · aguardando "voltar para a live"' : `Sinal voltou · estável há ${seconds(input.stableMs)}`)
+  // Sem PVW a entrada não é medida durante a contingência: "sinal estável" era
+  // falso e aparecia ao lado de "Perda de sinal 35 s".
+  const blind = input.blindReturn && input.contingencyOnAir
+  if (input.state === 'RETORNO') parts.push(blind
+    ? (input.awaitingOperator ? 'Sem PVW: sinal da entrada não medido · aguardando "voltar para a live" (o TAKE só corta com quadro real)' : 'Sem PVW: tentando voltar para a live (o TAKE só corta com quadro real)')
+    : input.awaitingOperator ? 'Sinal estável · aguardando "voltar para a live"' : `Sinal voltou · estável há ${seconds(input.stableMs)}`)
   if (input.holdContingency) parts.push('contingência mantida pelo operador')
   if (input.pendingAction) parts.push('aguardando confirmação do engine…')
   if (conditions.length) parts.push(conditions.join(' · '))
   if (input.lastError) parts.push(`Falha: ${input.lastError}`)
   return parts.join(' — ') || 'Sinal íntegro'
 }
+
+/** As métricas quebram linha em vez de vazar: no celular (390 px) a linha
+ * "fps · luma · áudio · rede" passava da borda e o "rede 8.224 kbps" sumia. */
+export const WATCHDOG_METRICS_CLASS = 'min-w-0 max-w-full break-words font-label-mono text-[12px] text-outline'
 
 export function watchdogMetrics(input: WatchdogInputStatus): string {
   const m = input.metrics
@@ -99,7 +108,7 @@ export function LiveWatchdogStrip({ channelId, compact = false, className = '' }
             <span className="max-w-[16rem] truncate font-label-caps text-[12px] font-bold text-on-surface" title={input.name}>{input.name}{input.kind ? <span className="ml-1 font-normal text-outline">{input.kind}</span> : null}</span>
             <span data-testid="watchdog-state" className={`rounded border px-1.5 py-0.5 font-label-caps text-[11px] font-bold ${STATE_TONE[input.state]}`}>{WATCHDOG_STATE_LABELS[input.state]}</span>
             <span className={`min-w-[12rem] flex-1 ${compact ? 'truncate' : ''} font-label-mono text-[12px] ${input.state === 'OK' ? 'text-outline' : 'text-on-surface'}`} title={detail}>{detail}</span>
-            <span className="shrink-0 font-label-mono text-[12px] text-outline" data-testid="watchdog-metrics">{watchdogMetrics(input)}</span>
+            <span className={WATCHDOG_METRICS_CLASS} data-testid="watchdog-metrics">{watchdogMetrics(input)}</span>
             {intervening && <span className="flex shrink-0 gap-1.5">
               <button type="button" disabled={pending || !canCommand || Boolean(input.pendingAction)} title={canCommand ? 'Leva a entrada ao vivo de volta ao PGM agora' : deniedReason('comandar o watchdog')}
                 className="rounded border border-status-ok px-2 py-0.5 font-label-caps text-[11px] font-bold text-status-ok-bright disabled:opacity-50" onClick={() => void command('RETURN_NOW')}>VOLTAR PARA A LIVE AGORA</button>

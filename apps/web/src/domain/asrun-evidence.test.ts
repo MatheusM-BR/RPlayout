@@ -73,3 +73,11 @@ describe('paradas do ao vivo na exportação do AIRED', () => {
     expect(asRunReport([live], { id: 'c', name: 'Canal' }, new Date(0), { includeOutages: false })).toBe(asRunReport([plain], { id: 'c', name: 'Canal' }, new Date(0)))
   })
 })
+describe('saídas do watchdog e do servidor no AIRED', () => {
+  it('contingência, retorno à live, inserção agora e encerramento do servidor têm nome', () => {
+    expect(asRunStatus({ ...entry, endedBy: 'CONTINGENCY' })).toBe('CORTE PARA A CONTINGÊNCIA')
+    expect(asRunStatus({ ...entry, endedBy: 'WATCHDOG_LIVE_RETURN' })).toBe('RETORNO À LIVE (WATCHDOG)')
+    expect(asRunStatus({ ...entry, endedBy: 'OPERATIONAL_INSERT_NOW' })).toBe('CORTE POR INSERÇÃO AGORA')
+    expect(asRunStatus({ ...entry, endedBy: 'SHUTDOWN' })).toBe('ENCERRADO COM O SERVIDOR')
+  })
+})

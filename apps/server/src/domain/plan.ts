@@ -1,5 +1,6 @@
 import {
   effectiveGainDb,
+  formatClock,
   durationIn,
   isStill,
   secondsToFrames,
@@ -208,12 +209,26 @@ export function buildView(
     }catch(error){return [{entry,message:error instanceof Error?error.message:'Corte operacional inválido.'}]}
   })
   const invalidCuts=new Set(timingUnavailable.map(row=>row.entry.item.id))
+  // Grade em loop: o transporte nunca leva um arquivo de HORA FIXA pela
+  // sequência (só pelo TAKE da hora). Depois que a janela da hora passou, a
+  // grade mostrava o item como AGENDADO numa hora em que o loop toca outra
+  // coisa e empurrava a previsão dos seguintes. Só vale com outro item comum
+  // no loop (sem ele, a sequência continua com os de hora fixa).
+  const anchoredFile=(item:RundownItem)=>item.type!=='LIVE'&&item.eventType!=='LIVE'&&Boolean(item.mediaId)&&(item.anchor?.kind==='FIXED'||item.anchor?.kind==='HARD_TIME')&&item.anchor.at>=0
+  const loopPassedAnchors=new Map<string,number>()
+  if(rundown.loop&&now!==null&&now>=0&&ordered.some(item=>item.anchor?.kind!=='FIXED'&&item.anchor?.kind!=='HARD_TIME')){
+    for(const item of ordered){
+      if(item.id===onAir?.itemId||!anchoredFile(item))continue
+      const at=(item.anchor as {at:number}).at,length=toPlanItem(item,item.mediaId?assets.get(item.mediaId):undefined,channel.rate).duration
+      if(at+Math.max(0,length)<now)loopPassedAnchors.set(item.id,at)
+    }
+  }
   const schedule = resolve({
     rate: channel.rate,
     items: ordered.map((item) => {
       const asset = item.mediaId ? assets.get(item.mediaId) : undefined
       const plan = toPlanItem(item, asset, channel.rate)
-      if (item.id !== onAir?.itemId && item.mediaId && (invalidCuts.has(item.id)||!asset || asset.probeError || asset.ignored || !qcApproved(asset.qcStatus ?? 'APPROVED') || (channel.qcProfile && !assessQc(asset, channel.qcProfile).playable))) {
+      if (item.id !== onAir?.itemId && item.mediaId && (loopPassedAnchors.has(item.id)||invalidCuts.has(item.id)||!asset || asset.probeError || asset.ignored || !qcApproved(asset.qcStatus ?? 'APPROVED') || (channel.qcProfile && !assessQc(asset, channel.qcProfile).playable))) {
         return { ...plan, duration: 0, minDuration: 0, elastic:null, anchor: { kind: 'FLOW' as const }, locked: false }
       }
       if(asset&&!isStill(asset)&&plan.elastic){
@@ -239,7 +254,10 @@ export function buildView(
   const unavailableIds = new Set([...unavailable.map((entry) => entry.item.id),...timingUnavailable.map(row=>row.entry.item.id)])
   return { rundown, channel, items: views, schedule: {
     ...schedule,
-    items: schedule.items.map((entry) => unavailableIds.has(entry.id) ? { ...entry, state: 'DROPPED' as const } : entry),
+    items: schedule.items.map((entry) => unavailableIds.has(entry.id) ? { ...entry, state: 'DROPPED' as const }
+      : loopPassedAnchors.has(entry.id) ? { ...entry, state: 'DROPPED' as const, adjustments: [...entry.adjustments, { kind: 'SKIPPED' as const, frames: 0,
+        reason: `HORA FIXA ${formatClock(loopPassedAnchors.get(entry.id)!, channel.rate)} já passou: na grade em loop o arquivo só entra pelo TAKE da hora marcada.` }] }
+      : entry),
     conflicts: [...schedule.conflicts,...timingUnavailable.map(({entry,message})=>({kind:'MEDIA_UNAVAILABLE' as const,itemId:entry.item.id,frames:0,severity:'ERROR' as const,message:`Será pulado: ${message}`})), ...unavailable.map((entry) => ({
       kind: 'MEDIA_UNAVAILABLE' as const, itemId: entry.item.id, frames: 0,
       severity: 'ERROR' as const, message: `Será pulado: ${(entry.asset?.probeError ?? (entry.asset && channel.qcProfile && assessQc(entry.asset, channel.qcProfile).errors.join(' '))) || (!qcApproved(entry.asset?.qcStatus ?? 'APPROVED') ? 'arquivo sem aprovação de QC' : 'arquivo removido do acervo')}`,
