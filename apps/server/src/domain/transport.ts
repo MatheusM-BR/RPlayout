@@ -168,6 +168,8 @@ export interface Transport {
    * recusa tenta de novo.
    */
   retryHardware?(): void
+  /** Há comando de transporte em curso (TAKE aguardando sinal, CUE, troca)? */
+  hasPendingCommand?(): boolean
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   graphicConfirmed?(svg: string | null, fadeMs: number, authorize?:()=>void): Promise<void>

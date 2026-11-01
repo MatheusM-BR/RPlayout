@@ -476,6 +476,18 @@ function blockCompanions(runtime: Pick<EditorialContext, 'view'>, itemId: string
   return items.filter((entry) => entry.item.blockId === blockId).map((entry) => entry.item.id)
 }
 
+/**
+ * Comando de transporte com barramento que não combina: recusa com motivo.
+ * TAKE/PARK agem no PGM, CUE no PVW; STOP aceita os dois (no PVW, limpa o
+ * preview); SEEK aceita os dois. Nunca reinterpretar como PGM em silêncio.
+ */
+export function transportBusRefusal(action: string, bus: 'pgm' | 'pvw' | undefined): string | null {
+  if (!bus) return null
+  if ((action === 'take' || action === 'park') && bus === 'pvw') return `${action.toUpperCase()} age no PGM; não aceita bus "pvw".`
+  if (action === 'cue' && bus === 'pgm') return 'CUE age no PVW; não aceita bus "pgm".'
+  return null
+}
+
 export function registerRoutes(app: App, server: FastifyInstance, onChange: () => void): void {
   /** Canais com o relógio de teste ligado nos monitores. */
   const monitorClock = new Set<string>()
@@ -5723,8 +5735,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       action: z.enum(['take', 'cue', 'stop', 'park']),
       itemId: z.string().nullable().optional(),
       assetId: z.string().nullable().optional(),
+      // Antes o zod descartava `bus` em silêncio e um STOP "do PVW" parava o PGM.
+      bus: z.enum(['pgm', 'pvw']).optional(),
     }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Comando externo inválido.' })
+    // Controle externo não limpa PVW: STOP é sempre do PGM e tem de dizer isso.
+    const externalBusRefusal = body.data.action === 'stop' && body.data.bus === 'pvw'
+      ? 'STOP com bus "pvw" não existe no controle externo: STOP para o PGM. Para trocar o preview, use CUE.'
+      : transportBusRefusal(body.data.action, body.data.bus)
+    if (externalBusRefusal) return reply.code(400).send({ error: externalBusRefusal })
     try{assertTransportOwnership(body.data.channelId)}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     const runtime = await runtimeFor(app, body.data.channelId)
     if (!runtime?.view) return reply.code(404).send({ error: 'Canal sem grade carregada.' })
@@ -5768,11 +5787,34 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-    const actionPermission = body.data.action === 'stop' ? 'CHANNEL_STOP' : 'PLAYLIST_EDIT'
+    // `bus` só vale onde o comando tem barramento de verdade. STOP com
+    // bus:'pvw' parava o PGM (o case 'stop' ignorava o bus): canal fora do ar
+    // por 19,5 s na r88-35. Agora ele limpa só o PVW; o resto que não combina
+    // com o barramento pedido é recusado, nunca reinterpretado como PGM.
+    const busRefusal = transportBusRefusal(body.data.action, body.data.bus)
+    if (busRefusal) return reply.code(400).send({ error: busRefusal })
+    const clearPreview = body.data.action === 'stop' && body.data.bus === 'pvw'
+    const actionPermission = body.data.action === 'stop' && !clearPreview ? 'CHANNEL_STOP' : 'PLAYLIST_EDIT'
     if (!(await allowed(request, actionPermission))) return reply.code(403).send({ error: 'Seu papel não pode executar esta ação.' })
 
     try{assertTransportOwnership(id)}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     const runtime = await runtimeFor(app, id)
+    if (clearPreview) {
+      // Limpa só o PVW: nada de transport.stop(), de suspender continuidade ou
+      // publicação. Com TAKE ainda pendente, limpar o PVW cancelaria a troca
+      // do PGM -- recusado.
+      if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado ou parado.' })
+      if (runtime.transport.hasPendingCommand?.()) return reply.code(409).send({ error: 'Há um comando de transporte pendente (TAKE aguardando sinal ou CUE em curso). Limpar o PVW agora poderia cancelar a troca do PGM; tente de novo em instantes.', refused: true, action: 'stop' })
+      try { await runtime.transport.cue(null) }
+      catch (error) {
+        const status = transportRefusalStatus(error, runtime.transport.health().ready)
+        if (status === null) throw error
+        return reply.code(status).send({ error: error instanceof Error ? error.message : 'Comando recusado.', refused: true, action: 'stop' })
+      }
+      if (runtime.view) await logDecision(app, runtime.view.rundown.id, null, 'PREVIEW_CLEARED', { bus: 'pvw' }, await usernameOf(request))
+      onChange()
+      return runtime.view ? snapshot(app, runtime) : { accepted: true, action: 'stop', bus: 'pvw', channelId: id, transport: runtime.transport.state() }
+    }
     // Editorial authority doesn't require a loaded PGM playlist. STOP must
     // still suspend that policy; no view is not permission to keep publishing.
     if(runtime && !runtime.view && body.data.action==='stop'){
