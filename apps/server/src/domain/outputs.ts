@@ -202,6 +202,7 @@ export function validateOutputProfile(row:OutputProfileRow,channel?:Pick<Channel
     const maxW=Math.min(ch.width,1920),maxH=Math.min(ch.height,1080)
     if((row.width===null)!==(row.height===null))throw new Error('Informe largura e altura do monitor juntas, ou deixe ambas automáticas.')
     if(row.width!==null&&row.height!==null&&(row.width<2||row.height<2||row.width>maxW||row.height>maxH||row.width%2!==0||row.height%2!==0))throw new Error(`Monitor vai até ${maxW}×${maxH} (o raster do canal, no máximo 1080p), em números pares. Em branco, segue os níveis automáticos.`)
+    if(row.width!==null&&row.height!==null&&ch.width>0&&ch.height>0&&Math.abs((row.width/row.height)/(ch.width/ch.height)-1)>0.02)throw new Error('Monitor mantém a proporção do canal: imagem esticada engana quem confere enquadramento.')
     if(row.rateNum!==null&&row.rateDen!==null&&(row.rateDen<=0||row.rateNum/row.rateDen>monitorMaxFps(ch)+0.01))throw new Error('Monitor não passa da cadência do canal (a de campo, se entrelaçado).')
     if(row.scan==='INTERLACED')throw new Error('Monitor é sempre progressivo: o navegador não mostra campos; o nível REF já sai na cadência de campo.')
     if(row.bitrateKbps!==null&&(row.bitrateKbps<300||row.bitrateKbps>MONITOR_MAX_KBPS))throw new Error(`Teto do monitor entre 300 e ${MONITOR_MAX_KBPS} kbps: acima disso já seria contribuição, não monitor.`)

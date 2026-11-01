@@ -25,7 +25,10 @@ it('requires an explicit disabling reason and never turns disabled outputs into 
 })
 it('uses the effective SRT preview protocol and refuses inherited full-resolution preview',()=>{
   const binding=plan([{outputId:'out',kind:'SRT',target:'srt://127.0.0.1:8890?streamid=publish:reserve',reason:null}])
-  expect(()=>prepareHaLocalOutputs(channel,[{...row,role:'PREVIEW'}],binding)).toThrow()
+  // Sem limite artificial: preview automático é válido; o que ultrapassa a
+  // proteção do monitor (8 Mbps) continua recusado.
+  expect(()=>prepareHaLocalOutputs(channel,[{...row,role:'PREVIEW',bitrateKbps:20000}],binding)).toThrow()
+  expect(()=>prepareHaLocalOutputs(channel,[{...row,role:'PREVIEW'}],binding)).not.toThrow()
   const result=prepareHaLocalOutputs(channel,[{...row,role:'PREVIEW',width:426,height:240,rateNum:15,bitrateKbps:450}],binding)
   expect(result.program).toEqual([])
   expect(JSON.parse(result.preview!)).toMatchObject({kind:'srt',width:426,bitrateKbps:450})
