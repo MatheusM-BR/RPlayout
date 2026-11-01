@@ -702,7 +702,7 @@ impl MonitorBus {
             (aenc, make("opusparse")?)
         } else {
             let aenc = make("avenc_aac")?;
-            aenc.set_property("bitrate", 128_000i32);
+            crate::output::set_if_exists(&aenc, "bitrate", 128_000i32);
             (aenc, make("aacparse")?)
         };
         let atee = make("tee")?;
@@ -780,7 +780,7 @@ impl MonitorBus {
         audio_gate.set_property("drop", true);
         let mux = make("mpegtsmux")?;
         mux.set_property("alignment", 7i32);
-        mux.set_property("latency", MONITOR_MUX_LATENCY);
+        crate::output::set_if_exists(&mux, "latency", MONITOR_MUX_LATENCY);
         let sink = make("srtsink")?;
         sink.set_property("uri", self.spec.url_for(tier));
         sink.set_property("async", false);

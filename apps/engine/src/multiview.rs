@@ -431,7 +431,7 @@ impl Runner {
         compositor.set_property_from_str("background", "black");
         // Uma volta de folga para a escala das células.
         let period = 1_000_000_000u64 * profile.fps_d as u64 / profile.fps_n.max(1) as u64;
-        compositor.set_property("latency", period);
+        crate::output::set_if_exists(&compositor, "latency", period);
         let caps = make("capsfilter")?;
         caps.set_property("caps", gst::Caps::builder("video/x-raw").field("format", "I420")
             .field("width", profile.width).field("height", profile.height)
@@ -466,9 +466,9 @@ impl Runner {
         for (index, rect) in rects.iter().enumerate() {
             let src = gst_app::AppSrc::builder().name(format!("celula-{index}")).is_live(true)
                 .format(gst::Format::Time).do_timestamp(true).block(false).build();
-            src.set_property("max-buffers", 1u64);
+            crate::output::set_if_exists(src.upcast_ref(), "max-buffers", 1u64);
             src.set_property_from_str("leaky-type", "downstream");
-            src.set_property("min-latency", 0i64);
+            crate::output::set_if_exists(src.upcast_ref(), "min-latency", 0i64);
             let scale = convert_scale()?;
             // Fonte 4:3 ou vertical ganha barra, não deformação.
             scale.set_property("add-borders", true);

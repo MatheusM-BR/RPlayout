@@ -1050,10 +1050,17 @@ fn set_enum_if_exists(element: &gst::Element, name: &str, value: &str) {
 /// zerolatency. `RPLAYOUT_MONITOR_ENCODER` força um (teste e diagnóstico).
 pub fn monitor_encoder(profile: &crate::monitor::TierProfile, hardware: bool) -> Result<(gst::Element, String)> {
     let forced = std::env::var("RPLAYOUT_MONITOR_ENCODER").ok();
-    let candidates: Vec<&str> = match forced.as_deref() {
-        Some(name) => vec![name, "x264enc"],
+    monitor_encoder_with(profile, hardware, forced.as_deref())
+}
+
+/// [`monitor_encoder`] com o codificador "de placa" injetado (testes). O
+/// forçado só vale com concessão de placa: sem ela (ou depois de a placa ser
+/// devolvida ao programa) o nível é sempre x264.
+pub fn monitor_encoder_with(profile: &crate::monitor::TierProfile, hardware: bool, forced: Option<&str>) -> Result<(gst::Element, String)> {
+    let candidates: Vec<&str> = match forced {
+        Some(name) if hardware => vec![name, "x264enc"],
         None if hardware && hardware_available() => ENCODERS.to_vec(),
-        None => vec!["x264enc"],
+        _ => vec!["x264enc"],
     };
     let kbps = profile.bitrate_kbps;
     let gop = profile.gop();
@@ -1092,6 +1099,11 @@ pub fn monitor_encoder(profile: &crate::monitor::TierProfile, hardware: bool) ->
                 set_if_exists(&encoder, "gop-size", gop);
                 set_if_exists(&encoder, "b-frames", 0u32);
                 set_if_exists(&encoder, "low-latency", true);
+            }
+            "openh264enc" => {
+                // Só em teste/diagnóstico (faz o papel de "placa"); fala em bit/s.
+                set_if_exists(&encoder, "bitrate", kbps.saturating_mul(1000));
+                set_if_exists(&encoder, "gop-size", gop as i32);
             }
             _ => {
                 set_if_exists(&encoder, "bitrate", kbps);
@@ -1229,13 +1241,98 @@ fn anunciar_encoder(nome: &str) {
 /// Os codificadores de hardware mudam de nome de propriedade entre versões, e
 /// um `set_property` em propriedade que não existe derruba o processo -- num
 /// playout, derrubar por causa de um ajuste opcional é o pior negócio possível.
-pub(crate) fn set_if_exists<V>(element: &gst::Element, name: &str, value: V)
+///
+/// Existir não basta: o tipo também muda entre elementos e versões (o
+/// `gop-size` é `gint` no `nvh264enc` e `guint` no `openh264enc`), e o
+/// `set_property` do gtk-rs entra em pânico quando o tipo não bate -- o que
+/// derrubava o processo do canal inteiro por causa de um monitor. Aqui o valor
+/// é convertido entre os tipos inteiros (e entre `float`/`double`) quando cabe
+/// na faixa da propriedade; nos outros casos o ajuste é ignorado com aviso.
+/// Devolve se aplicou.
+pub(crate) fn set_if_exists<V>(element: &gst::Element, name: &str, value: V) -> bool
 where
     V: Into<gst::glib::Value>,
 {
-    if element.find_property(name).is_some() {
-        element.set_property_from_value(name, &value.into());
+    let Some(pspec) = element.find_property(name) else { return false };
+    let value: gst::glib::Value = value.into();
+    if !pspec.flags().contains(gst::glib::ParamFlags::WRITABLE) {
+        eprintln!("[engine] {}: propriedade {name} não é gravável; ajuste ignorado", element.name());
+        return false;
     }
+    match coerce_property_value(&pspec, &value) {
+        Some(value) => {
+            element.set_property_from_value(name, &value);
+            true
+        }
+        None => {
+            eprintln!(
+                "[engine] {}: {name} espera {} e recebeu {} ({value:?}); ajuste ignorado",
+                element.name(),
+                pspec.value_type().name(),
+                value.type_().name()
+            );
+            false
+        }
+    }
+}
+
+/// Converte `value` para o tipo de `pspec`, se der sem perda e dentro da faixa.
+fn coerce_property_value(pspec: &gst::glib::ParamSpec, value: &gst::glib::Value) -> Option<gst::glib::Value> {
+    use gst::glib::{self, prelude::ToValue};
+    let want = pspec.value_type();
+    let have = value.type_();
+    if have == want || have.is_a(want) {
+        // Mesmo tipo: a faixa ainda vale (fora dela o GLib grampeia com aviso).
+        return integer_of(value).map_or(Some(value.clone()), |n| in_range(pspec, n).then(|| value.clone()));
+    }
+    if let Some(n) = integer_of(value) {
+        if !in_range(pspec, n) {
+            return None;
+        }
+        return match want {
+            glib::Type::I32 => i32::try_from(n).ok().map(|v| v.to_value()),
+            glib::Type::U32 => u32::try_from(n).ok().map(|v| v.to_value()),
+            glib::Type::I64 => i64::try_from(n).ok().map(|v| v.to_value()),
+            glib::Type::U64 => u64::try_from(n).ok().map(|v| v.to_value()),
+            glib::Type::F64 => Some((n as f64).to_value()),
+            glib::Type::F32 => Some((n as f32).to_value()),
+            _ => None,
+        };
+    }
+    let real = value.get::<f64>().ok().or_else(|| value.get::<f32>().ok().map(f64::from))?;
+    match want {
+        glib::Type::F64 => Some(real.to_value()),
+        glib::Type::F32 if real.is_finite() && real.abs() <= f32::MAX as f64 => Some((real as f32).to_value()),
+        _ => None,
+    }
+}
+
+fn integer_of(value: &gst::glib::Value) -> Option<i128> {
+    value
+        .get::<i32>()
+        .map(i128::from)
+        .or_else(|_| value.get::<u32>().map(i128::from))
+        .or_else(|_| value.get::<i64>().map(i128::from))
+        .or_else(|_| value.get::<u64>().map(i128::from))
+        .ok()
+}
+
+/// O inteiro cabe na faixa declarada pela propriedade?
+fn in_range(pspec: &gst::glib::ParamSpec, n: i128) -> bool {
+    use gst::glib::{ParamSpecInt, ParamSpecInt64, ParamSpecUInt, ParamSpecUInt64};
+    if let Some(p) = pspec.downcast_ref::<ParamSpecInt>() {
+        return (p.minimum() as i128..=p.maximum() as i128).contains(&n);
+    }
+    if let Some(p) = pspec.downcast_ref::<ParamSpecUInt>() {
+        return (p.minimum() as i128..=p.maximum() as i128).contains(&n);
+    }
+    if let Some(p) = pspec.downcast_ref::<ParamSpecInt64>() {
+        return (p.minimum() as i128..=p.maximum() as i128).contains(&n);
+    }
+    if let Some(p) = pspec.downcast_ref::<ParamSpecUInt64>() {
+        return (p.minimum() as i128..=p.maximum() as i128).contains(&n);
+    }
+    true
 }
 
 /// Cadeia de codificação de um destino.
@@ -1930,5 +2027,50 @@ mod testes_decklink {
         assert_eq!(decklink_mode(1920, 1080, 48, 1, false), None);
         assert_eq!(decklink_mode(1024, 768, 30, 1, false), None);
         assert_eq!(decklink_mode(1280, 720, 25, 1, false), None);
+    }
+}
+
+#[cfg(test)]
+mod set_if_exists_tests {
+    use super::*;
+
+    /// Prova do achado: `gop-size` é `guint` no openh264enc, e o caminho
+    /// "outros" de `monitor_encoder`/`video_encoder` mandava `i32`. Antes
+    /// disto, o `set_property_from_value` entrava em pânico e derrubava o
+    /// processo do canal.
+    #[test]
+    fn tipo_diferente_converte_ou_ignora_sem_panico() {
+        gst::init().unwrap();
+        let Ok(enc) = gst::ElementFactory::make("openh264enc").build() else {
+            eprintln!("openh264enc ausente; teste pulado");
+            return;
+        };
+        assert!(set_if_exists(&enc, "gop-size", 25i32), "i32 cabe em guint");
+        assert_eq!(enc.property::<u32>("gop-size"), 25);
+        assert!(!set_if_exists(&enc, "gop-size", -1i32), "negativo não cabe em guint");
+        assert_eq!(enc.property::<u32>("gop-size"), 25);
+        assert!(set_if_exists(&enc, "bitrate", 1_500_000u64));
+        assert_eq!(enc.property::<u32>("bitrate"), 1_500_000);
+        assert!(!set_if_exists(&enc, "bitrate", "muito"), "texto num inteiro é ignorado");
+        assert!(!set_if_exists(&enc, "gop-size", 1.5f64), "real num inteiro é ignorado");
+        assert!(!set_if_exists(&enc, "nao-existe", 1i32));
+
+        let x264 = make("x264enc").unwrap();
+        assert!(set_if_exists(&x264, "key-int-max", 30i32));
+        assert_eq!(x264.property::<u32>("key-int-max"), 30);
+        assert!(!set_if_exists(&x264, "quantizer", 99u32), "fora da faixa (0–50) é ignorado");
+        assert!(set_if_exists(&x264, "bitrate", 3000i64));
+        assert_eq!(x264.property::<u32>("bitrate"), 3000);
+
+        // O caminho de produção que entrava em pânico: openh264enc no papel de
+        // codificador forçado de monitor cai no ramo genérico (gop-size i32).
+        let source = crate::monitor::MonitorSource {
+            width: 1280, height: 720, fps_n: 25, fps_d: 1, frame_n: 25, frame_d: 1,
+            bitrate_ceiling_kbps: 8000, mosaic: false,
+        };
+        let profile = crate::monitor::tier_profile(crate::monitor::MonitorTier::Std, &source, true);
+        let (enc, name) = monitor_encoder_with(&profile, true, Some("openh264enc")).unwrap();
+        assert_eq!(name, "openh264enc");
+        assert_eq!(enc.property::<u32>("gop-size"), 25);
     }
 }
