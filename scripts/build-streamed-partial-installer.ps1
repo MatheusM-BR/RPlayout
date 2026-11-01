@@ -155,7 +155,9 @@ foreach($name in @($files.Keys | Sort-Object)){
 $drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($archivePath))
 if($drive.AvailableFreeSpace -lt 620000000){throw 'Espaco insuficiente para ZIP completo e margem; nenhuma release apagada.'}
 $edition=[IO.Path]::GetFileNameWithoutExtension($archivePath) -replace '-instalador$',''
-$manifest=[ordered]@{version=1;builtAt=[DateTime]::UtcNow.ToString('o');functionalVerification='NOT_RUN_PARTIAL_BUILD';node=$base.node;msvc=$base.msvc;packaging='STREAMED_FULL_INSTALLER';runtimeBase=[IO.Path]::GetFileName($baseRoot);sqliteVersion=$baseSqlite.version;files=$manifestFiles}
+# Edicao e commit no manifesto: a tela tecnica (software-version.ts) mostra os dois.
+$packageCommit=try{(& git -C $workspaceRoot rev-parse --short HEAD 2>$null)}catch{$null}
+$manifest=[ordered]@{version=1;builtAt=[DateTime]::UtcNow.ToString('o');edition=$edition;commit=$packageCommit;functionalVerification='NOT_RUN_PARTIAL_BUILD';node=$base.node;msvc=$base.msvc;packaging='STREAMED_FULL_INSTALLER';runtimeBase=[IO.Path]::GetFileName($baseRoot);sqliteVersion=$baseSqlite.version;files=$manifestFiles}
 Add-Type -AssemblyName System.IO.Compression
 function Write-ZipText($zip,[string]$name,[string]$value){
   $entry=$zip.CreateEntry($name,[IO.Compression.CompressionLevel]::Fastest)
