@@ -423,17 +423,25 @@ export function App() {
   // segurança é longa. Sem tópicos (WebSocket fora), volta o polling antigo.
   const scanRunning = useRef(false)
   const [scanBusy, setScanBusy] = useState(false)
-  const scanPoll = useRef<() => void>(() => undefined)
+  const scanPoll = useRef<(full: boolean) => void>(() => undefined)
   useEffect(() => {
     if (authRequired && !authenticated) return
     let cancelled = false
     let inFlight = false
-    const poll = async (): Promise<void> => {
+    let lastFull = 0
+    // `full`: acervo + scanner + categorias. Parado, um aviso do tópico `scan`
+    // só relê o estado do scanner (pequeno); o acervo chega pela mensagem
+    // `library` quando a varredura termina. Varrendo, relê tudo, no máximo a
+    // cada 3 s, para os arquivos novos aparecerem durante a varredura.
+    const poll = async (full: boolean): Promise<void> => {
       if (inFlight) return
       inFlight = true
       try {
-        const status = await refreshLibrary()
+        const wantsFull = full || (scanRunning.current && Date.now() - lastFull >= 3000)
+        if (wantsFull) lastFull = Date.now()
+        const status = wantsFull ? await refreshLibrary() : await api.scanStatus()
         if (cancelled) return
+        if (!wantsFull) setScan(status)
         const occupied=status.globalBusy??status.running
         if (scanRunning.current && !occupied) say('Scanner não está mais ocupado. Confira o resultado do lote; disponibilidade não significa aprovação da mídia.')
         scanRunning.current = occupied
@@ -442,11 +450,13 @@ export function App() {
         if (!cancelled&&!(failure instanceof SupersededContextError)) anotar('SERVIDOR', failure instanceof Error ? failure.message : 'Falha ao atualizar acervo.')
       } finally { inFlight = false }
     }
-    scanPoll.current = () => void poll()
-    const timer = window.setTimeout(() => void poll(), 1500)
+    scanPoll.current = full => void poll(full)
+    const timer = window.setTimeout(() => void poll(true), 1500)
     return () => { cancelled = true; window.clearTimeout(timer); scanPoll.current = () => undefined }
   }, [refreshLibrary, say, anotar, authRequired, authenticated])
-  useTopicRefresh('scan', null, () => scanPoll.current(), { fallbackMs: scanBusy ? 5_000 : 120_000, degradedMs: scanBusy ? 1500 : 10_000, enabled: !(authRequired && !authenticated) })
+  // Sem tópicos (WebSocket fora), volta a releitura completa de antes.
+  useTopicRefresh('scan', null, () => scanPoll.current(!topicsConnected()), { fallbackMs: null, degradedMs: scanBusy ? 1500 : 10_000, enabled: !(authRequired && !authenticated) })
+  useVisiblePolling(() => scanPoll.current(true), scanBusy ? 5_000 : 120_000, !(authRequired && !authenticated))
 
   // O painel de distribuição tem endereço próprio: dá para deixar aberto numa
   // segunda tela ou mandar o link para quem cuida da entrega.
@@ -1803,4 +1813,4 @@ export function App() {
   )
 }
 import {executionFromSnapshot} from './domain/execution-snapshot.js'
-import {applyTopics,documentHidden,topicsDisconnected,useTopicRefresh,type TopicsMessage} from './domain/live-topics.js'
+import {applyTopics,documentHidden,topicsConnected,topicsDisconnected,useTopicRefresh,useVisiblePolling,type TopicsMessage} from './domain/live-topics.js'

@@ -5,6 +5,7 @@ import { dur, formatStandardRate } from '../../format.js'
 import type { LibraryAsset } from '../../types.js'
 import { Whep } from '../Whep.js'
 import {lightweightPreviewUrl,notePreviewFailure,notePreviewLoaded,previewBlocked} from '../../domain/media-preview.js'
+import {documentHidden} from '../../domain/live-topics.js'
 import {ScopeDeck} from '../scopes/ScopeDeck.js'
 
 export interface BroadcastMonitorProps {
@@ -360,7 +361,8 @@ export function BroadcastMonitor({
                 ref={videoRef}
                 src={lightweightPreviewUrl(asset)}
                 poster={`/api/assets/${asset.id}/thumbnail.svg`}
-                preload="metadata"
+                // Aba oculta não baixa o proxy de cada item que entra no ar.
+                preload={documentHidden() ? 'none' : 'metadata'}
                 muted={effectiveMuted}
                 playsInline
                 className="w-full h-full object-contain cursor-pointer"
