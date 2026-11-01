@@ -29,13 +29,25 @@ export interface ViewingContext {
  * - QC: REFERÊNCIA (é para julgar imagem).
  * - Celular, economia de dados, rede 2g/3g ou janela pequena: LEVE.
  * - PGM/PVW grandes na rede local: PADRÃO.
+ * - Multiview composto: como o PGM, pela largura. É uma imagem só (uma
+ *   decodificação), não N; o teto salvo no canal limita o resto
+ *   ([`clampToAvailable`]).
  */
 export function initialTier(context: ViewingContext): MonitorTier {
   if (context.role === 'qc') return 'ref'
   const slow = context.saveData || (context.effectiveType != null && /(^|-)(2g|3g)$/.test(context.effectiveType)) || (context.downlinkMbps != null && context.downlinkMbps < 2)
   if (context.mobile || slow) return 'lite'
-  if (context.role === 'multiview') return 'lite'
   return context.elementWidth >= 480 ? 'std' : 'lite'
+}
+
+/**
+ * Rebaixa o nível ao melhor que existe de fato (o multiview só publica até o
+ * teto do mosaico). Sem nenhum abaixo, o mais leve disponível.
+ */
+export function clampToAvailable(tier: MonitorTier, available: readonly MonitorTier[]): MonitorTier {
+  if (!available.length || available.includes(tier)) return tier
+  const below = TIER_ORDER.slice(0, rank(tier) + 1).filter((candidate) => available.includes(candidate))
+  return below.at(-1) ?? TIER_ORDER.find((candidate) => available.includes(candidate)) ?? tier
 }
 
 /** Amostra de um segundo, já em taxas. */

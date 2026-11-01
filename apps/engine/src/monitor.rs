@@ -117,6 +117,10 @@ pub struct MonitorSource {
     pub frame_d: i32,
     /// Teto de bitrate do perfil do monitor (kbps). Nunca acima de [`MAX_KBPS`].
     pub bitrate_ceiling_kbps: u32,
+    /// O `inter` traz o mosaico do multiview composto, não uma imagem de
+    /// barramento: os níveis seguem [`mosaic_profile`] (um mosaico em 240
+    /// linhas não se lê), e não [`tier_profile`] dos monitores de barramento.
+    pub mosaic: bool,
 }
 
 /// Teto absoluto de um monitor. Acima disso já é contribuição, não monitor:
@@ -179,6 +183,9 @@ fn rate(n: i32, d: i32) -> f64 {
 /// Perfil de um nível, sem considerar custo. `field_rate` permite usar a
 /// cadência de campo de um canal entrelaçado.
 pub fn tier_profile(tier: MonitorTier, s: &MonitorSource, field_rate: bool) -> TierProfile {
+    if s.mosaic {
+        return mosaic_profile(tier, s);
+    }
     let entrelacado = s.fps_n as i64 * s.frame_d as i64 != s.frame_n as i64 * s.fps_d as i64;
     let (full_n, full_d) = if entrelacado && !field_rate { (s.frame_n, s.frame_d) } else { (s.fps_n, s.fps_d) };
     let ceiling = s.bitrate_ceiling_kbps.clamp(300, MAX_KBPS);
@@ -203,6 +210,41 @@ pub fn tier_profile(tier: MonitorTier, s: &MonitorSource, field_rate: bool) -> T
     let natural = (width as f64 * height as f64 * rate(fps_n, fps_d) * bpp / 1000.0).round() as u32;
     let bitrate_kbps = natural.clamp(floor, top).min(ceiling).max(floor.min(ceiling));
     TierProfile { width, height, fps_n, fps_d, bitrate_kbps, quality: tier.quality() }
+}
+
+/// Perfil de um nível do multiview composto (`docs/MULTIVIEW.md`).
+///
+/// O mosaico é conferência de várias fontes: o LEVE precisa de 960×540 para
+/// as células de um 3×3 continuarem legíveis, e o PADRÃO fica na metade da
+/// cadência acima de 30 q/s. A fonte é o raster em que o mosaico foi composto
+/// (o teto escolhido pelo Supervisor); nenhum nível passa dele.
+///
+/// | nível | geometria (teto) | cadência | bitrate |
+/// |---|---|---|---|
+/// | REFERÊNCIA | 1920×1080 | a do mosaico | 8 Mbps |
+/// | PADRÃO | 1280×720 | metade acima de 30 q/s | 3 Mbps |
+/// | LEVE | 960×540 | 15 q/s | 1,2 Mbps |
+pub fn mosaic_profile(tier: MonitorTier, s: &MonitorSource) -> TierProfile {
+    let (n, d) = (s.fps_n, s.fps_d.max(1));
+    let ceiling = s.bitrate_ceiling_kbps.clamp(300, MAX_KBPS);
+    let (max_w, max_h, fps_n, fps_d, kbps) = match tier {
+        MonitorTier::Ref => (1920, 1080, n, d, 8_000),
+        MonitorTier::Std => {
+            let (hn, hd) = if rate(n, d) > 30.5 { (n, d * 2) } else { (n, d) };
+            (1280, 720, hn, hd, 3_000)
+        }
+        MonitorTier::Lite => {
+            let (ln, ld) = if rate(n, d) > 15.0 { (15, 1) } else { (n, d) };
+            (960, 540, ln, ld, 1_200)
+        }
+    };
+    let (width, height) = fit(s.width, s.height, max_w, max_h);
+    TierProfile { width, height, fps_n, fps_d, bitrate_kbps: kbps.min(ceiling), quality: tier.quality() }
+}
+
+/// Ordem de qualidade: `Ref` > `Std` > `Lite`. `true` se `tier` passa do teto.
+pub fn above(tier: MonitorTier, ceiling: MonitorTier) -> bool {
+    (tier as u8) < (ceiling as u8)
 }
 
 /// Orçamento de CPU para monitores codificados em software, em Mpx/s.
@@ -1050,7 +1092,7 @@ mod tests {
     use super::*;
 
     fn src(w: i32, h: i32, n: i32, d: i32, fn_: i32, fd: i32) -> MonitorSource {
-        MonitorSource { width: w, height: h, fps_n: n, fps_d: d, frame_n: fn_, frame_d: fd, bitrate_ceiling_kbps: MAX_KBPS }
+        MonitorSource { width: w, height: h, fps_n: n, fps_d: d, frame_n: fn_, frame_d: fd, bitrate_ceiling_kbps: MAX_KBPS, mosaic: false }
     }
 
     #[test]

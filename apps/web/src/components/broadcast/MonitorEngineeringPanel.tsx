@@ -48,7 +48,7 @@ export function MonitorEngineeringPanel({ channelId }: { channelId: string }) {
         <tbody>
           {(status?.monitors ?? []).flatMap((monitor) => monitor.tiers.map((tier) => (
             <tr key={`${monitor.bus}-${tier.tier}`}>
-              <td>{monitor.bus === 'mon' ? 'PGM' : monitor.bus === 'pvw' ? 'PVW' : String(monitor.bus).toUpperCase()}</td>
+              <td>{monitor.bus === 'mon' ? 'PGM' : monitor.bus === 'pvw' ? 'PVW' : monitor.bus === 'mv' ? 'MULTIVIEW' : String(monitor.bus).toUpperCase()}</td>
               <td>{MONITOR_TIER_LABEL[tier.tier]}</td>
               <td>{tier.encoder ?? '—'}{tier.hardware ? ' (placa)' : ''}</td>
               <td>{tier.profile ? `${tier.profile.width}×${tier.profile.height} ${n(tier.profile.fpsN / tier.profile.fpsD, 2)} fps ≤${tier.profile.bitrateKbps} kbps` : '—'}{tier.degraded ? ` — ${tier.degraded}` : ''}</td>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TierController, initialTier, sampleIsBad, deriveStats, readRawStats, readClockRgba, clockBlock, CLOCK_BITS, CLOCK_BLOCKS, glassToGlassMs, type LinkSample, type RawStats } from './monitor-tier.js'
+import { TierController, clampToAvailable, initialTier, sampleIsBad, deriveStats, readRawStats, readClockRgba, clockBlock, CLOCK_BITS, CLOCK_BLOCKS, glassToGlassMs, type LinkSample, type RawStats } from './monitor-tier.js'
 
 const good: LinkSample = { loss: 0, jitterMs: 3, dropped: 0, fps: 50, expectedFps: 50, receivedBps: 4_000_000, availableBps: null }
 const bad: LinkSample = { ...good, loss: 0.08 }
@@ -13,6 +13,16 @@ describe('nível inicial pelo contexto', () => {
     expect(initialTier({ role: 'pgm', elementWidth: 1200, mobile: false, effectiveType: '3g' })).toBe('lite')
     expect(initialTier({ role: 'pgm', elementWidth: 1200, mobile: false, saveData: true })).toBe('lite')
     expect(initialTier({ role: 'pgm', elementWidth: 1200, mobile: false, effectiveType: '4g' })).toBe('std')
+    // Multiview composto: uma imagem só, escolhida pela largura como o PGM.
+    expect(initialTier({ role: 'multiview', elementWidth: 1200, mobile: false })).toBe('std')
+    expect(initialTier({ role: 'multiview', elementWidth: 1200, mobile: true })).toBe('lite')
+  })
+  it('nunca passa do teto que o servidor publica (multiview)', () => {
+    expect(clampToAvailable('ref', ['std', 'lite'])).toBe('std')
+    expect(clampToAvailable('std', ['lite'])).toBe('lite')
+    expect(clampToAvailable('lite', ['std'])).toBe('std')
+    expect(clampToAvailable('ref', ['ref', 'std', 'lite'])).toBe('ref')
+    expect(clampToAvailable('std', [])).toBe('std')
   })
 })
 

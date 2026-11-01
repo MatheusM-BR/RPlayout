@@ -216,7 +216,7 @@ pub enum Command {
     SetGain { gain_db: f64 },
     /// Posiciona arquivo do programa ou preview em frames desde o Mark In.
     Seek { bus: String, frames: i64 },
-    /// Liga ou desliga um monitor ("pvw", "mon") sob demanda.
+    /// Liga ou desliga um monitor ("pvw", "mon", "mv") sob demanda.
     ///
     /// Os pipelines de saída são independentes do do canal, então parar um
     /// monitor não encosta no programa. É o que permite não codificar para uma
@@ -234,6 +234,9 @@ pub enum Command {
     /// Liga o relógio de teste gravado na imagem dos monitores (medição de
     /// atraso de vidro a vidro). Nunca toca o programa.
     MonitorClock { on: bool },
+    /// Layout, células e qualidade do multiview composto. Recria só o pipeline
+    /// do multiview; PGM e saídas não são tocados.
+    Multiview { composition: crate::channel::multiview::Composition },
     /// Troca um destino já ligado ao barramento do programa.
     /// Só suporta RTMP, SRT e arquivo; SDI/NDI/OMT não fazem hot-switch.
     ReplaceOutput {
@@ -382,6 +385,12 @@ pub enum Event {
     /// Quantos frames o compositor entregou. É a prova de que o PGM não parou.
     Output {
         frames: u64,
+    },
+    /// Multiview composto: geometria, qualidade e estado de cada célula. O
+    /// navegador desenha rótulo, tally, VU e estado em HTML a partir disto.
+    MultiviewState {
+        #[serde(flatten)]
+        state: crate::channel::multiview::MultiviewState,
     },
     /// Situação de uma saída de rede. Emitido quando muda e no `status`, para
     /// a interface saber se o canal está de fato chegando ao destino.

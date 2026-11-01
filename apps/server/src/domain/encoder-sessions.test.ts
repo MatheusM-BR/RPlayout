@@ -139,4 +139,30 @@ describe('runtime: um pedido por nível, concessão de placa e desligamento', ()
     runtime.watching('pvw')
     expect(set).toHaveBeenLastCalledWith('pvw', true)
   })
+
+  it('multiview composto (mv): mesmos níveis, mesma concessão de placa, rebaixado ao teto do mosaico', async () => {
+    const runtime = (await runtimeFor(app, 'ch'))!
+    ;(runtime as unknown as { monitores: Set<string> }).monitores.add('mv')
+    app.encoderSessions!.setProbe({ ...geforce, hardwareSessions: 1 })
+    const set = vi.spyOn(runtime.transport, 'setMonitor').mockImplementation(() => {})
+    // Teto padrão do mosaico: PADRÃO. Quem pede REF recebe PADRÃO.
+    expect(runtime.multiviewCeiling()).toBe('std')
+    expect(runtime.watching('mv', 'ref')).toBe('std')
+    expect(set).toHaveBeenLastCalledWith('mv', true, 'std', true)
+    expect(app.encoderSessions!.status().grants).toEqual([{ channelId: 'ch', bus: 'mv', tier: 'std' }])
+    // A sessão do mosaico conta no orçamento da placa: o PGM em PADRÃO fica em x264.
+    ;(runtime as unknown as { monitores: Set<string> }).monitores.add('mon')
+    runtime.watching('mon', 'std')
+    expect(set).toHaveBeenLastCalledWith('mon', true, 'std', false)
+    // O engine relatou o nível do mosaico em software (placa recusou): a sessão volta.
+    vi.spyOn(runtime.transport, 'publishers').mockReturnValue([{ url: 'srt://127.0.0.1:8890?streamid=publish:ch/mv', health: 'onAir', attempts: 0, delivered: 1,
+      tiers: [{ tier: 'std', health: 'onAir', encoder: 'x264enc', hardware: false, delivered: 1, uptimeMs: 1 }] }])
+    ;(runtime as unknown as { podarMonitores(): void }).podarMonitores()
+    expect(app.encoderSessions!.status().monitorsInUse).toBe(0)
+    // Teto LEVE: tudo vira o leve, no caminho histórico do mosaico.
+    runtime.multiviewComposition = { layout: 'MV_2X2', quality: 'LEVE', cells: [] }
+    expect(runtime.watching('mv', 'std')).toBe('lite')
+    expect(set).toHaveBeenLastCalledWith('mv', true)
+    expect(runtime.monitorTiersWatched().some((t) => t.bus === 'mv' && t.tier === 'lite')).toBe(true)
+  })
 })

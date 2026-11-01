@@ -211,7 +211,7 @@ fn monitor_bus_publica_tres_niveis_e_troca_a_quente() {
     let ports = [(MonitorTier::Ref, free_port()), (MonitorTier::Std, free_port()), (MonitorTier::Lite, free_port())];
     let receivers: Vec<(MonitorTier, Receiver)> = ports.iter().map(|(t, p)| (*t, Receiver::new(*p))).collect();
     std::env::set_var("RPLAYOUT_MONITOR_SW_MPX", "1000");
-    let src = MonitorSource { width: 1920, height: 1080, fps_n: 50, fps_d: 1, frame_n: 25, frame_d: 1, bitrate_ceiling_kbps: 8000 };
+    let src = MonitorSource { width: 1920, height: 1080, fps_n: 50, fps_d: 1, frame_n: 25, frame_d: 1, bitrate_ceiling_kbps: 8000, mosaic: false };
     let mut bus = MonitorBus::new(spec(&id, src, &ports));
     TEST_CLOCK.store(true, Ordering::Relaxed);
     for (tier, _) in &ports {
@@ -266,7 +266,7 @@ fn placa_ausente_cai_para_x264_sem_derrubar() {
     let port = free_port();
     let receiver = Receiver::new(port);
     std::env::set_var("RPLAYOUT_MONITOR_ENCODER", "nvh264enc");
-    let src = MonitorSource { width: 1280, height: 720, fps_n: 25, fps_d: 1, frame_n: 25, frame_d: 1, bitrate_ceiling_kbps: 8000 };
+    let src = MonitorSource { width: 1280, height: 720, fps_n: 25, fps_d: 1, frame_n: 25, frame_d: 1, bitrate_ceiling_kbps: 8000, mosaic: false };
     let mut bus = MonitorBus::new(spec(&id, src, &[(MonitorTier::Std, port)]));
     bus.set_tier(MonitorTier::Std, true, true);
     pump(&mut bus, 3.0);
@@ -321,7 +321,7 @@ fn bench_monitor_niveis() {
         publisher.set_wanted(true);
         Sut::Legacy(publisher)
     } else {
-        let src = MonitorSource { width: w, height: h, fps_n: n, fps_d: d, frame_n: fn_, frame_d: fd, bitrate_ceiling_kbps: 8000 };
+        let src = MonitorSource { width: w, height: h, fps_n: n, fps_d: d, frame_n: fn_, frame_d: fd, bitrate_ceiling_kbps: 8000, mosaic: false };
         let mut spec = spec(&id, src, &[]);
         spec.url_overrides.insert(tier, url);
         let mut bus = MonitorBus::new(spec);

@@ -194,6 +194,13 @@ export type MonitorTier = 'ref' | 'std' | 'lite'
 export const MONITOR_TIERS: readonly MonitorTier[] = ['ref', 'std', 'lite']
 export const MONITOR_TIER_LABEL: Record<MonitorTier, string> = { ref: 'REFERÊNCIA', std: 'PADRÃO', lite: 'LEVE' }
 
+/**
+ * Monitores sob demanda do navegador: preview (`pvw`), programa (`mon`) e
+ * multiview composto (`mv`). Todos com os mesmos níveis e o mesmo aviso
+ * "estou assistindo" (`POST /api/channels/:id/watching {bus, tier}`).
+ */
+export type MonitorBus = 'pvw' | 'mon' | 'mv'
+
 /** Caminho de um nível no servidor de mídia; o leve fica no caminho histórico. */
 export function monitorTierPath(path: string, tier: MonitorTier): string {
   return tier === 'lite' ? path : `${path}-${tier}`

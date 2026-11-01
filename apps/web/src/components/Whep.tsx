@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {postWhepOffer} from '../domain/whep-offer.js'
 import { MONITOR_TIER_LABEL, type MonitorTier } from '@rplayout/protocol'
-import { TierController, deriveStats, glassToGlassMs, initialTier, readClockRgba, readRawStats, clockBlock, CLOCK_BLOCKS, type MonitorRole, type RawStats } from '../domain/monitor-tier.js'
+import { TIER_ORDER, TierController, clampToAvailable, deriveStats, glassToGlassMs, initialTier, readClockRgba, readRawStats, clockBlock, CLOCK_BLOCKS, type MonitorRole, type RawStats } from '../domain/monitor-tier.js'
 import { monitorStatsStore, useClockTest } from '../domain/monitor-stats-store.js'
 
 interface Props {
@@ -94,11 +94,14 @@ export function Whep({
   const [mode, setMode] = useState<'auto' | MonitorTier>(() => {
     try { const saved = window.localStorage.getItem(modeKey); return saved === 'ref' || saved === 'std' || saved === 'lite' ? saved : 'auto' } catch { return 'auto' }
   })
+  // Só os níveis que o servidor publica (o multiview vai até o teto do mosaico).
+  const availableKey = TIER_ORDER.filter((option) => Boolean(tiers?.[option])).join(',')
+  const available = availableKey ? (availableKey.split(',') as MonitorTier[]) : []
   const [ceiling, setCeiling] = useState<MonitorTier>(role === 'qc' ? 'ref' : 'std')
   const [autoTier, setAutoTier] = useState<MonitorTier>(ceiling)
   const controller = useRef(new TierController(ceiling))
-  const hasTiers = Boolean(tiers && Object.values(tiers).some(Boolean))
-  const tier: MonitorTier | null = hasTiers ? (mode === 'auto' ? autoTier : mode) : null
+  const hasTiers = available.length > 0
+  const tier: MonitorTier | null = hasTiers ? clampToAvailable(mode === 'auto' ? autoTier : mode, available) : null
   const effectivePath = hasTiers && tier ? (tiers?.[tier] ?? path) : path
   const tierRef = useRef(tier)
   tierRef.current = tier
@@ -109,11 +112,11 @@ export function Whep({
     const element = video.current?.parentElement
     const nav = navigator as Navigator & { connection?: { effectiveType?: string; saveData?: boolean; downlink?: number } }
     const mobile = (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
-    const next = initialTier({ role, elementWidth: element?.clientWidth || window.innerWidth, mobile, effectiveType: nav.connection?.effectiveType ?? null, saveData: nav.connection?.saveData ?? false, downlinkMbps: nav.connection?.downlink ?? null })
+    const next = clampToAvailable(initialTier({ role, elementWidth: element?.clientWidth || window.innerWidth, mobile, effectiveType: nav.connection?.effectiveType ?? null, saveData: nav.connection?.saveData ?? false, downlinkMbps: nav.connection?.downlink ?? null }), availableKey.split(',') as MonitorTier[])
     setCeiling(next)
     controller.current.setCeiling(next)
     setAutoTier(next)
-  }, [hasTiers, role])
+  }, [hasTiers, role, availableKey])
   const chooseMode = (next: 'auto' | MonitorTier) => {
     setMode(next)
     try { window.localStorage.setItem(modeKey, next) } catch { /* sem armazenamento: vale só nesta aba */ }
@@ -473,7 +476,7 @@ export function Whep({
       )}
       {hasTiers && (
         <div className="monitor-tier absolute top-1 right-1 z-30 flex items-center gap-0.5 rounded bg-black/70 px-1 py-0.5 text-[10px] font-bold uppercase text-white" role="group" aria-label="Nível de qualidade deste monitor">
-          {(['auto', 'ref', 'std', 'lite'] as const).map((option) => (
+          {(['auto', 'ref', 'std', 'lite'] as const).filter((option) => option === 'auto' || available.includes(option)).map((option) => (
             <button key={option} type="button" aria-pressed={mode === option}
               title={option === 'auto' ? `Automático: começa em ${MONITOR_TIER_LABEL[ceiling]} e cai/sobe pela conexão` : `Fixar em ${MONITOR_TIER_LABEL[option]}`}
               className={`rounded px-1 ${mode === option ? 'bg-white text-black' : 'opacity-70 hover:opacity-100'}`}

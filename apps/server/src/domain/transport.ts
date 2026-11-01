@@ -7,6 +7,7 @@ import {
   type PreviewTarget,
   type LiveSignalAssessment,
   type MonitorTier,
+  type MonitorBus,
 } from '@rplayout/protocol'
 import type { RundownView } from './plan.js'
 import type { MeterReading } from './meters.js'
@@ -138,7 +139,7 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean, tier?: MonitorTier, hardware?: boolean): void
+  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware?: boolean): void
   /** Relógio de teste gravado na imagem dos monitores (medição de atraso). */
   setMonitorClock?(on: boolean): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
@@ -157,7 +158,7 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean, tier?: MonitorTier, hardware?: boolean): void
+  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware?: boolean): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */

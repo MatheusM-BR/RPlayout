@@ -30,7 +30,8 @@
 //!     role: "mvw".into(), on_demand: true, opus: true,
 //!     // Monitor com níveis: Some(..) liga o MonitorBus (crate::monitor).
 //!     monitor: Some(MonitorSource { width, height, fps_n, fps_d,
-//!                                   frame_n, frame_d, bitrate_ceiling_kbps }),
+//!                                   frame_n, frame_d, bitrate_ceiling_kbps,
+//!                                   mosaic: false }), // true no multiview
 //! });
 //! publisher.set_tier(MonitorTier::Std, true, hardware_grant); // por nível
 //! publisher.set_wanted(on);   // atalho legado: nível `lite`
@@ -327,6 +328,17 @@ impl Publisher {
             source,
             opus: spec.opus,
             url_overrides: Default::default(),
+        }
+    }
+
+    /// Teste/bancada: endereço explícito por nível (sem servidor de mídia não
+    /// há `streamid` que separe os caminhos num porto só).
+    #[cfg(test)]
+    pub fn set_tier_urls(&mut self, urls: std::collections::BTreeMap<crate::monitor::MonitorTier, String>) {
+        if let (Some(bus), Some(source)) = (self.tiered.as_mut(), self.spec.monitor) {
+            let mut spec = Self::bus_spec(&self.spec, source);
+            spec.url_overrides = urls;
+            bus.replace(spec);
         }
     }
 

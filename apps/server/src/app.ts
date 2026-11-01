@@ -80,7 +80,7 @@ import {resolveLiveProgramBinding} from './domain/live-program-binding.js'
 import {assertPersistedLiveReplacementReceipt,unresolvedNativeReplacementJournals,type NativeLiveReplacementContext} from './domain/native-live-replacement-ledger.js'
 import {createNativeReplacementSession,resolveStoppedPredecessorJournals,type NativeReplacementActor,type NativeReplacementAuthorization,type NativeReplacementRuntimePort,type NativeReplacementSession} from './domain/native-live-replacement-session.js'
 import {assertProgramTrim} from './domain/program-trim.js'
-import {programDurationFrames,type MonitorTier} from '@rplayout/protocol'
+import {programDurationFrames,clampTier,MULTIVIEW_QUALITY_TIER,type MonitorTier} from '@rplayout/protocol'
 import {EncoderSessions,probeEncoders,programEncodedOutputs,NO_HARDWARE} from './domain/encoder-sessions.js'
 import {ExecutionOwnership,type ExecutionLease} from './domain/execution-ownership.js'
 import {endPreviousPgmObservation} from './domain/pgm-signal-incidents.js'
@@ -254,7 +254,7 @@ export class ChannelRuntime {
      * para olhar. O engine respondia `não existe monitor chamado mon` a cada
      * dois segundos, e o operador via uma janela preta sem explicação.
      */
-    private readonly monitores: ReadonlySet<'pvw' | 'mon'> = new Set(['pvw', 'mon']),
+    private readonly monitores: ReadonlySet<MonitorBus> = new Set(['pvw', 'mon']),
     /**
      * Por que cada monitor ausente está ausente.
      *
@@ -262,7 +262,7 @@ export class ChannelRuntime {
      * desligado se resolve em Distribuição, servidor de mídia ausente se resolve
      * na instalação. Um alerta que junta as duas manda procurar no lugar errado.
      */
-    private readonly motivoSemMonitor: ReadonlyMap<'pvw' | 'mon', string> = new Map(),
+    private readonly motivoSemMonitor: ReadonlyMap<MonitorBus, string> = new Map(),
     private readonly continuityCache: ContinuityCache | null = null,
     private readonly checkpoints: Checkpoints | null = null,
     private readonly mediaWorkflow: MediaWorkflow | null = null,
@@ -274,6 +274,8 @@ export class ChannelRuntime {
     private readonly executionLease:ExecutionLease|null=null,
     private readonly distributionOwnership:DistributionOwnership|null=null,
     private readonly localRestorePreparation:{host:HostDistributionFence;assertAdmission:()=>void}|null=null,
+    /** Destino do multiview composto; nulo sem servidor de mídia. */
+    private readonly multiviewOutput:string|null=null,
   ) {
     if(ENGINE_BINARY&&!this.executionLease)throw new Error('Engine nativo exige posse durável do canal antes de abrir o processo.')
     if(this.localRestorePreparation&&(!ENGINE_BINARY||!this.executionLease||!this.distributionOwnership||this.authority))throw new Error('Preparação restaurada local exige engine/posse/distribuição próprios, sem autoridade HA.')
@@ -360,6 +362,7 @@ export class ChannelRuntime {
           }:localRestoredLease?(owner,nonce)=>localRestoredLease.grant(owner,nonce):undefined,
           preview: previewOutput,
           qcPreview: qcPreviewOutput,
+          multiview: multiviewOutput,
           // O padrão sai do formato do canal, não de um número fixo: 4 Mbps
           // eram folgados num 480p30 e pobres num 1080p50, que tem oito vezes
           // mais pixel por segundo -- e imagem pobre com bloco em movimento de
@@ -1523,16 +1526,17 @@ export class ChannelRuntime {
    * silêncio, o monitor desliga: quem fechou a aba, ou quem foi almoçar com o
    * navegador fechado, não deve custar uma codificação.
    */
-  private readonly olhando = new Map<'pvw' | 'mon', number>()
-  private readonly monitorLigado = new Map<'pvw' | 'mon', boolean>()
-  private readonly monitorReafirmado = new Map<'pvw' | 'mon', number>()
+  private readonly olhando = new Map<MonitorBus, number>()
+  private readonly monitorLigado = new Map<MonitorBus, boolean>()
+  private readonly monitorReafirmado = new Map<MonitorBus, number>()
   /** Monitores que alguém tentou abrir e que este canal não tem. */
-  private readonly monitorPedidoSemExistir = new Set<'pvw' | 'mon'>()
+  private readonly monitorPedidoSemExistir = new Set<MonitorBus>()
   /**
    * Níveis REF/PADRÃO pedidos, por `bus|nível`. O leve segue pelos mapas
    * acima, que são o caminho histórico (e o que o HA e os testes antigos usam).
+   * O multiview composto (`mv`) entra aqui como os outros monitores.
    */
-  private readonly nivelOlhado = new Map<string, { bus: 'pvw' | 'mon'; tier: MonitorTier; at: number; reafirmado: number; hardware: boolean }>()
+  private readonly nivelOlhado = new Map<string, { bus: MonitorBus; tier: MonitorTier; at: number; reafirmado: number; hardware: boolean }>()
   /** Contador global de sessões de placa, injetado pela aplicação. */
   encoderSessions: EncoderSessions | null = null
 
@@ -1545,26 +1549,38 @@ export class ChannelRuntime {
   aacDisponivel: () => boolean | null = () => null
 
   /** Este canal tem este monitor? */
-  temMonitor(bus: 'pvw' | 'mon'): boolean {
+  temMonitor(bus: MonitorBus): boolean {
     return this.monitores.has(bus)
   }
 
   /** Níveis abertos agora, para a tela técnica. */
-  monitorTiersWatched(): { bus: 'pvw' | 'mon'; tier: MonitorTier; hardware: boolean; lastSeenMs: number }[] {
+  monitorTiersWatched(): { bus: MonitorBus; tier: MonitorTier; hardware: boolean; lastSeenMs: number }[] {
     const agora = Date.now()
     const tiers = [...this.nivelOlhado.values()].map(({ bus, tier, hardware, at }) => ({ bus, tier, hardware, lastSeenMs: agora - at }))
-    for (const bus of ['pvw', 'mon'] as const) if (this.monitorLigado.get(bus)) tiers.push({ bus, tier: 'lite', hardware: false, lastSeenMs: agora - (this.olhando.get(bus) ?? agora) })
+    for (const bus of ['pvw', 'mon', 'mv'] as const) if (this.monitorLigado.get(bus)) tiers.push({ bus, tier: 'lite', hardware: false, lastSeenMs: agora - (this.olhando.get(bus) ?? agora) })
     return tiers
   }
 
-  /** A interface diz que alguém está com este monitor aberto, neste nível. */
-  watching(bus: 'pvw' | 'mon', tier: MonitorTier = 'lite'): void {
-    if (tier !== 'lite') return this.watchingTier(bus, tier)
+  /**
+   * Teto do multiview composto: o nível em que o mosaico é composto, escolhido
+   * pelo Supervisor. Nenhum espectador recebe nível acima dele.
+   */
+  multiviewCeiling(): MonitorTier {
+    return MULTIVIEW_QUALITY_TIER[this.multiviewComposition?.quality ?? 'PADRAO']
+  }
+
+  /**
+   * A interface diz que alguém está com este monitor aberto, neste nível.
+   * Devolve o nível efetivamente ligado (o multiview rebaixa ao teto).
+   */
+  watching(bus: MonitorBus, tier: MonitorTier = 'lite'): MonitorTier {
+    if (bus === 'mv') tier = clampTier(tier, this.multiviewCeiling())
+    if (tier !== 'lite') { this.watchingTier(bus, tier); return tier }
     if (!this.monitores.has(bus)) {
       // Mandar ligar o que não existe só rende erro no log. Guarda o pedido
       // para o alerta poder dizer ao operador por que a janela está preta.
       this.monitorPedidoSemExistir.add(bus)
-      return
+      return 'lite'
     }
     const agora = Date.now()
     this.olhando.set(bus, agora)
@@ -1573,7 +1589,7 @@ export class ChannelRuntime {
       this.monitorReafirmado.set(bus, agora)
       console.info(`[monitor] ligando ${bus}: alguém abriu a janela`)
       this.transport.setMonitor(bus, true)
-      return
+      return 'lite'
     }
     // A primeira ordem pode se perder: chegar antes de o engine criar as
     // saídas, ou cair entre uma reconfiguração e outra. Sem reafirmar, o
@@ -1584,9 +1600,10 @@ export class ChannelRuntime {
       this.monitorReafirmado.set(bus, agora)
       this.transport.setMonitor(bus, true)
     }
+    return 'lite'
   }
 
-  private watchingTier(bus: 'pvw' | 'mon', tier: MonitorTier): void {
+  private watchingTier(bus: MonitorBus, tier: MonitorTier): void {
     if (!this.monitores.has(bus)) { this.monitorPedidoSemExistir.add(bus); return }
     const key = `${bus}|${tier}`, agora = Date.now(), current = this.nivelOlhado.get(key)
     const sessionKey = { channelId: this.channel.id, bus, tier }
@@ -1625,7 +1642,7 @@ export class ChannelRuntime {
   private podarMonitores(): void {
     void this.qcInspection.tick().catch(()=>{})
     const limite = Date.now() - MONITOR_OCIOSO_MS
-    for (const bus of ['pvw', 'mon'] as const) {
+    for (const bus of ['pvw', 'mon', 'mv'] as const) {
       if (this.monitorLigado.get(bus) !== true) continue
       if ((this.olhando.get(bus) ?? 0) > limite) continue
       this.monitorLigado.set(bus, false)
@@ -1641,7 +1658,7 @@ export class ChannelRuntime {
     }
     if (this.encoderSessions) {
       for (const publisher of this.transport.publishers()) {
-        const bus = /\/(pvw|mon)(?:[&?]|$)/.exec(publisher.url)?.[1]
+        const bus = /\/(pvw|mon|mv)(?:[&?]|$)/.exec(publisher.url)?.[1]
         if (bus && publisher.tiers?.length) this.encoderSessions.observe(this.channel.id, bus, publisher)
       }
     }
@@ -1729,7 +1746,7 @@ export class ChannelRuntime {
     // máquina headless funciona bem assim, e alarme constante para isso seria
     // ruído. Quem abriu a janela, esse sim precisa saber por que está preta.
     for (const bus of this.monitorPedidoSemExistir) {
-      const onde = bus === 'pvw' ? 'preview' : 'monitor do programa'
+      const onde = bus === 'pvw' ? 'preview' : bus === 'mv' ? 'multiview composto' : 'monitor do programa'
       found.push({
         kind: 'ENGINE',
         message: `o ${onde} não está no ar: ${this.motivoSemMonitor.get(bus) ?? 'este canal não tem esse barramento'}`,
@@ -1762,9 +1779,33 @@ export class ChannelRuntime {
     return found
   }
 
+  /** Multiview composto: layout salvo + entradas do canal -> engine. */
+  private multiviewSyncAt = 0
+  private multiviewSyncing = false
+  multiviewComposition: MultiviewComposition | null = null
+  syncMultiview(force = false): void {
+    if (!this.multiviewOutput || !(this.transport instanceof EngineTransport) || this.closed || this.multiviewSyncing) return
+    const now = Date.now()
+    if (!force && now - this.multiviewSyncAt < 2000) return
+    this.multiviewSyncAt = now; this.multiviewSyncing = true
+    const transport = this.transport
+    void listLiveSources(this.db, this.channel.id, false).then(sources => {
+      if (this.closed) return
+      const composition = effectiveComposition(readComposite(this.db, this.channel.id), sources)
+      this.multiviewComposition = composition
+      transport.configureMultiview(composition)
+    }).catch((error: unknown) => console.error('[multiview] layout não aplicado:', error instanceof Error ? error.message : error))
+      .finally(() => { this.multiviewSyncing = false })
+  }
+  hasMultiview(): boolean { return Boolean(this.multiviewOutput) && this.transport instanceof EngineTransport }
+  multiviewEngineState(): MultiviewEngineState | null {
+    return this.transport instanceof EngineTransport ? this.transport.multiviewState() : null
+  }
+
   /** Estado que vai para a interface a cada frame de atualização. */
   live() {
     this.podarMonitores()
+    this.syncMultiview()
     this.phase += 0.12
     const state = this.transport.state()
     return {
@@ -1779,6 +1820,8 @@ export class ChannelRuntime {
       graphic: this.graphics.onAir(),
       alerts: this.alerts(),
       now: this.view ? rundownFrames(this.view.rundown.date, this.channel.rate) ?? framesSinceMidnight(new Date(), this.channel.rate) : framesSinceMidnight(new Date(), this.channel.rate),
+      // Multiview composto: o navegador desenha rótulo/tally/estado a partir disto.
+      multiview: this.hasMultiview() ? { composition: this.multiviewComposition, state: this.multiviewEngineState() } : null,
       meters: {
         // Havendo engine, os dois medidores são medição de verdade, pela
         // BS.1770-4 sobre as amostras de cada barramento.
@@ -1838,6 +1881,12 @@ import {assertRestoredAdmission,type RestoredBackendAdmission} from './domain/re
 import {isRecoveryRehearsal} from './domain/recovery-rehearsal.js'
 import {assertHaExecutionAdmission,type HaExecutionAdmission} from './domain/ha-execution-admission.js'
 import {startupTrace} from './domain/startup-trace.js'
+import {effectiveComposition,readComposite} from './domain/multiview-composite.js'
+import {listLiveSources} from './domain/srt.js'
+import type {MultiviewComposition,MultiviewEngineState} from '@rplayout/protocol'
+/** Monitores sob demanda: preview, programa e multiview composto. */
+export type { MonitorBus } from '@rplayout/protocol'
+import type { MonitorBus } from '@rplayout/protocol'
 export async function createApp(file: string,options:{restoredAdmission?:RestoredBackendAdmission;haExecutionAdmission?:HaExecutionAdmission}={}): Promise<App> {
   startupTrace('application construction entered')
   const haAdmission=options.haExecutionAdmission
@@ -2099,8 +2148,8 @@ async function createRuntime(app: App, channelId: string): Promise<ChannelRuntim
   // não existe, o motivo importa mais que o fato: perfil desligado se resolve
   // em Distribuição, servidor de mídia ausente se resolve na instalação.
   const previewOutput = forRole('PREVIEW')
-  const monitores = new Set<'pvw' | 'mon'>()
-  const motivos = new Map<'pvw' | 'mon', string>()
+  const monitores = new Set<MonitorBus>()
+  const motivos = new Map<MonitorBus, string>()
   const conferir = (bus: 'pvw' | 'mon', role: 'PREVIEW' | 'MONITOR'): void => {
     const row = profiles.find((entry) => entry.role === role)
     if (row && toEngineProfile(row, path) !== null) {
@@ -2126,8 +2175,13 @@ async function createRuntime(app: App, channelId: string): Promise<ChannelRuntim
   if(app.interruptionCommands.blockedReason(channelId)){lease?.release();return null}
   const qcPreviewOutput = app.mediamtx && path?.inspection && monitores.has('pvw')
     ? JSON.stringify({kind:'srt',target:MediaMtx.loopbackSrt(path.inspection)}) : null
+  // Multiview composto: monitor como os outros, sem perfil de saída próprio.
+  const multiviewOutput = app.mediamtx && path?.multiview
+    ? JSON.stringify({kind:'srt',target:MediaMtx.loopbackSrt(path.multiview)}) : null
+  if (multiviewOutput) monitores.add('mv')
+  else motivos.set('mv', app.mediamtx ? 'este canal não tem caminho no servidor de mídia' : 'esta instalação não tem servidor de mídia local (mediamtx)')
   if(closingApplications.has(app)){lease?.release();return null}
-  const runtime = new ChannelRuntime(channel, app.db, outputs, previewOutput, monitores, motivos, app.continuityCache, new Checkpoints(app.sqlite,lease), app.mediaWorkflow, new Interruptions(app.sqlite),app.configurationChanges,app.interruptionCommands,app.ha?.witness??null,qcPreviewOutput,lease,(app.mediamtx||ENGINE_BINARY)?app.distributionOwnership:null,app.restoredAdmission?{host:app.hostFence!,assertAdmission:()=>app.restoredAdmission!.assertLocalEngineLease(app.sqlite)}:null)
+  const runtime = new ChannelRuntime(channel, app.db, outputs, previewOutput, monitores, motivos, app.continuityCache, new Checkpoints(app.sqlite,lease), app.mediaWorkflow, new Interruptions(app.sqlite),app.configurationChanges,app.interruptionCommands,app.ha?.witness??null,qcPreviewOutput,lease,(app.mediamtx||ENGINE_BINARY)?app.distributionOwnership:null,app.restoredAdmission?{host:app.hostFence!,assertAdmission:()=>app.restoredAdmission!.assertLocalEngineLease(app.sqlite)}:null,multiviewOutput)
   created=runtime
   runtime.reconcileSignalIncidents(true,path)
   app.configurationChanges.trackEngine(channelId,runtime.transport instanceof EngineTransport?runtime.transport.processId():null)
