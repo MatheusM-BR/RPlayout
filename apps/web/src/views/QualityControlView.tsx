@@ -17,7 +17,7 @@ import {qcOriginalUrl,qcExactFrameUrl,qcQualitySelected,qcInspectionUsesFrames,q
 import {useQcLiveInspection} from '../domain/use-qc-live-inspection.js'
 import {qcLiveTuningFeedback} from '../domain/qc-live-preview.js'
 import {qcFrameProgress,qcLiveFrameRecent,qcScopePixels,type QcFrameProgress} from '../domain/qc-scope-sample.js'
-import {parseYcc} from '../domain/qc-colorimetry.js'
+import {checkYccHeader} from '../scopes/wasm.js'
 import {kWeightingCoefficients,loudnessFromPower,meanSquare,ShortTermLoudness,loudnessTone,truePeakTone,formatFileIntegrated,formatPeak,TONE_CLASS} from '../domain/qc-loudness.js'
 import {qcFrameCount,qcParseTimecode,qcRateLabel,qcStepFrame,qcTimecode} from '../domain/qc-timecode.js'
 import {ScopeDeck} from '../components/scopes/ScopeDeck.js'
@@ -555,7 +555,7 @@ function QualityControlSession({
           throw new Error(message)
         }
         const buffer = await response.arrayBuffer()
-        parseYcc(buffer) // valida o cabeçalho e o tamanho antes de entregar ao WASM
+        checkYccHeader(buffer) // valida o cabeçalho e o tamanho antes de entregar ao WASM
         let rustStats: Record<string, number> | null = null
         try { rustStats = JSON.parse(response.headers.get('x-rplayout-scope-stats') ?? 'null') as Record<string, number> | null } catch { rustStats = null }
         if (controller.signal.aborted) return

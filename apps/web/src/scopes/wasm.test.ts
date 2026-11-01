@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto'
 import {readFileSync, readdirSync} from 'node:fs'
 import {join} from 'node:path'
 import {beforeAll, describe, expect, it} from 'vitest'
-import {CHANNEL_BIT, DEFAULT_SCOPE_CONFIG, ScopesWasm, type ScopeConfig, type ScopeResult} from './wasm.js'
+import {CHANNEL_BIT, DEFAULT_SCOPE_CONFIG, ScopesWasm, checkYccHeader, type ScopeConfig, type ScopeResult} from './wasm.js'
 
 /**
  * Paridade Rust nativo × WASM.
@@ -94,5 +94,9 @@ describe('scopes WASM', () => {
 
   it('recusa .ycc inválido com mensagem', () => {
     expect(() => wasm.runYcc(new Uint8Array(20))).toThrow(/inválida/)
+    expect(() => checkYccHeader(new ArrayBuffer(20))).toThrow(/inválida/)
+    const ycc = rleDecode(readFileSync(join(crate, 'fixtures/ebu-75-bt2020.ycc.rle')))
+    expect(checkYccHeader(ycc.buffer.slice(ycc.byteOffset, ycc.byteOffset + ycc.byteLength) as ArrayBuffer)).toEqual({width: 1920, height: 1080, matrix: 9, range: 0})
+    expect(() => checkYccHeader(ycc.buffer.slice(0, 1000) as ArrayBuffer)).toThrow(/truncada/)
   })
 })

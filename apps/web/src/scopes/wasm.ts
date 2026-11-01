@@ -235,6 +235,19 @@ export function sanitize(config: ScopeConfig): ScopeConfig {
   return c
 }
 
+/**
+ * Confere o cabeçalho de um `.ycc` antes de entregá-lo ao WASM (que também
+ * recusa, mas aqui a mensagem é para o operador). Devolve as dimensões.
+ */
+export function checkYccHeader(buffer: ArrayBuffer): {width: number; height: number; matrix: number; range: number} {
+  const bytes = new Uint8Array(buffer)
+  if (bytes.length < 16 || String.fromCharCode(...bytes.subarray(0, 4)) !== 'RPYC') throw new Error('Amostra Y\'CbCr inválida.')
+  if (bytes[4] !== 1 || bytes[7] !== 8 || (bytes[5] !== MATRIX.bt709 && bytes[5] !== MATRIX.bt2020) || bytes[6]! > 1) throw new Error('Amostra Y\'CbCr em formato não suportado.')
+  const width = bytes[8]! | (bytes[9]! << 8), height = bytes[10]! | (bytes[11]! << 8)
+  if (!width || !height || bytes.length < 16 + width * height * 3) throw new Error('Amostra Y\'CbCr truncada.')
+  return {width, height, matrix: bytes[5]!, range: bytes[6]!}
+}
+
 let shared: Promise<ScopesWasm> | null = null
 /** Instância compartilhada da interface (carregada sob demanda, uma vez). */
 export function sharedScopesWasm(url: string | URL): Promise<ScopesWasm> {
