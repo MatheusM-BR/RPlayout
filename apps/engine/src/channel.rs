@@ -894,18 +894,22 @@ fn srt_listener(source: &str) -> bool {
 /// `shutdown`). Numa queda de verdade (encoder que morre, rede que cai) o
 /// libsrt leva ~5 s para dar a sessão por morta, e até lá o caller que volta
 /// não é atendido. A retomada rápida (`srt_input::recycle_stalled_srt`)
-/// reabre só o socket depois de 1 s sem dados, em caller e em listener.
+/// reabre só o socket depois de 2,5 s sem sinal de vida (buffer do `srtsrc`
+/// ou pacote contado pelo libsrt), em caller e em listener. Soluço de até
+/// 1,5 s não reabre.
 ///
 /// Contrato para quem vier depois (watchdog de entradas ao vivo):
 /// - a queda NÃO gera EOS nem `SourceLost` do engine para SRT (listener ou
 ///   caller); ela aparece como fonte sem quadro recente (servidor marca LOST
 ///   na barra PGM e abre a linha "SEM SINAL" no as-run);
-/// - a volta reaproveita o mesmo pipeline e o mesmo decoder do PGM: quadros
-///   em ≤ 1 s depois que a fonte reconecta (medido em localhost: 0,3 a 0,6 s),
-///   sem TAKE nem recriação do item. A imagem nova ainda espera no sink a
-///   latência fixa do pipeline do item (~0,9 s, dos quais 700 ms são do
-///   `tsdemux`), a mesma da abertura. Uma fonte que volta no meio do GOP só
-///   dá quadro íntegro a partir do próximo quadro-chave;
+/// - a volta reaproveita o mesmo pipeline e o mesmo decoder do PGM, sem TAKE
+///   nem recriação do item. A imagem nova ainda espera no sink o atraso de
+///   recepção do item: o adiantamento do PTS sobre o PCR que o encoder dá
+///   (0,7 s no ffmpeg) mais a latência do pipeline (latência SRT + 150 ms do
+///   `tsdemux`, ver `srt_input::SRT_DEMUX_LATENCY_MS`). Medido em localhost,
+///   queda de 3 s: primeiro quadro na superfície 0,7 a 0,8 s depois que o
+///   gerador volta (gst) e ~1,1 s (ffmpeg). Uma fonte que volta no meio do
+///   GOP só dá quadro íntegro a partir do próximo quadro-chave;
 /// - demais URIs (RTMP, RTSP) seguem o caminho antigo: EOS/erro →
 ///   `LiveRecovery` em main.rs, que recria o item a cada 2 s.
 fn keep_srt_listening(decoder: &gst::Element) {
@@ -1059,9 +1063,74 @@ mod srt_recovery_tests {
         None
     }
 
-    /// Defeito 1: queda de 3 s do gerador. A entrada tem de voltar a entregar
-    /// quadros em até ~1 s depois que a fonte reconecta (antes: 2,3 s em
-    /// caller e 4 s em listener), sem trocar o decoder do PGM.
+    /// Quadros que o `intervideosink` do item de fato pôs na superfície
+    /// `inter`, e as reaberturas do `srtsrc`.
+    /// - Renderizado: o sink manda QoS rio acima depois de renderizar cada
+    ///   buffer, já passada a espera do relógio. O probe de entrega (e até o
+    ///   `last-sample`, no primeiro buffer depois do flush) vê o quadro antes
+    ///   dessa espera, que é justamente o atraso da volta.
+    /// - Reabertura: o contador de pacotes do libsrt zera no socket novo.
+    struct Watch { stop: Arc<std::sync::atomic::AtomicBool>, renders: Arc<std::sync::Mutex<Vec<(Instant,i64)>>>, reopens: Arc<AtomicU64>, thread: Option<std::thread::JoinHandle<()>> }
+
+    impl Watch {
+        fn start(channel: &RunningChannel) -> Self {
+            let pipeline=channel.0.on_air.as_ref().unwrap().pipeline.clone();
+            let find=|name:&str| pipeline.iterate_recurse().into_iter().flatten().find(|element|element.factory().is_some_and(|f|f.name()==name)).unwrap();
+            let (sink,source)=(find("intervideosink"),find("srtsrc"));
+            let stop=Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let renders=Arc::new(std::sync::Mutex::new(Vec::new()));
+            let reopens=Arc::new(AtomicU64::new(0));
+            let record=Arc::clone(&renders);
+            sink.static_pad("sink").unwrap().add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
+                if let Some(gst::PadProbeData::Event(event))=&info.data { if let gst::EventView::Qos(qos)=event.view() {
+                    record.lock().unwrap().push((Instant::now(), qos.get().2/1_000_000));
+                }}
+                gst::PadProbeReturn::Ok
+            });
+            let thread={let (stop,reopens)=(Arc::clone(&stop),Arc::clone(&reopens)); std::thread::spawn(move||{
+                let mut last_packets=None;
+                while !stop.load(Ordering::Relaxed) {
+                    let packets=crate::srt_input::received_packets(&source.property::<gst::Structure>("stats"));
+                    if let Some(before)=last_packets { if packets.is_none_or(|now|now<before) { reopens.fetch_add(1,Ordering::Relaxed); } }
+                    last_packets=packets;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            })};
+            Watch{stop,renders,reopens,thread:Some(thread)}
+        }
+        /// Maior atraso (QoS, ms) dos quadros renderizados depois de `since`.
+        fn lateness_after(&self, since: Instant) -> Option<i64> {
+            self.renders.lock().unwrap().iter().filter(|(at,_)|*at>since).map(|(_,late)|*late).max()
+        }
+        fn first_render_after(&self, since: Instant, limit: Duration) -> Option<Duration> {
+            let deadline=since+limit;
+            loop {
+                if let Some((at,_))=self.renders.lock().unwrap().iter().find(|(at,_)|*at>since) { return Some(*at-since); }
+                if Instant::now()>deadline { return None; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        /// Maior intervalo entre quadros renderizados em `[from, to]`.
+        fn worst_gap(&self, from: Instant, to: Instant) -> Duration {
+            let renders=self.renders.lock().unwrap();
+            let mut previous=from;
+            let mut worst=Duration::ZERO;
+            for (at,_) in renders.iter().filter(|(at,_)|*at>from&&*at<=to) { worst=worst.max(*at-previous); previous=*at; }
+            worst.max(to.saturating_duration_since(previous))
+        }
+        fn reopens(&self) -> u64 { self.reopens.load(Ordering::Relaxed) }
+    }
+    impl Drop for Watch { fn drop(&mut self) { self.stop.store(true,Ordering::Relaxed); if let Some(thread)=self.thread.take() { let _=thread.join(); } } }
+
+    /// Requisito do reteste r88-35: queda real de 3 s do gerador (SIGKILL,
+    /// sem `shutdown` do SRT). O primeiro quadro novo tem de estar na
+    /// superfície `inter` em menos de 1,5 s depois que a fonte volta (contado
+    /// da partida do gerador, que inclui o handshake), com cadência normal
+    /// em seguida e sem trocar o decoder do PGM.
+    ///
+    /// Antes: o socket reabria, mas o primeiro quadro esperava ~1,6 s no
+    /// sink (PTS adiantado do encoder + 0,9 s de latência do pipeline, dos
+    /// quais 700 ms eram do `tsdemux`).
     fn reconnect_case(engine_mode: &str, sender_mode: &str, offset: u16) {
         if !srt_available() { eprintln!("sem SRT/x264/aac; teste pulado"); return; }
         let port=port(offset);
@@ -1072,50 +1141,31 @@ mod srt_recovery_tests {
         take_live(&mut channel, &engine_uri);
         let decoder=channel.0.decoder_id("pgm");
         std::thread::sleep(Duration::from_secs(2));
-        assert!(delivered(&channel).0.is_some_and(|at|at.elapsed()<Duration::from_millis(300)),"sem quadros antes da queda");
-        // Atraso de cada quadro no sink (QoS: >0 é quadro atrasado, que o
-        // sink descarta e que faz o decoder pular até o próximo quadro-chave).
-        let lateness=Arc::new(std::sync::Mutex::new(Vec::<(Instant,i64)>::new()));
-        {
-            let sink=channel.0.on_air.as_ref().unwrap().pipeline.iterate_recurse().into_iter().flatten()
-                .find(|element|element.factory().is_some_and(|f|f.name()=="intervideosink")).unwrap();
-            let record=Arc::clone(&lateness);
-            sink.static_pad("sink").unwrap().add_probe(gst::PadProbeType::EVENT_UPSTREAM, move |_, info| {
-                if let Some(gst::PadProbeData::Event(event))=&info.data { if let gst::EventView::Qos(qos)=event.view() {
-                    record.lock().unwrap().push((Instant::now(), qos.get().2/1_000_000));
-                }}
-                gst::PadProbeReturn::Ok
-            });
-        }
+        let watch=Watch::start(&channel);
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(watch.first_render_after(Instant::now()-Duration::from_millis(300), Duration::ZERO).is_some(),"sem quadros antes da queda");
         sender.kill().unwrap(); let _=sender.wait();
         std::thread::sleep(Duration::from_secs(3));
         let back=Instant::now();
         let mut sender=spawn_sender(&sender_uri);
-        let took=video_back_after(&channel, back, Duration::from_secs(10));
-        // Voltar é entregar quadros sem parar, não um quadro solto: o
-        // watchdog só considera a entrada íntegra com a cadência de volta.
-        let mut worst=Duration::ZERO;
-        let steady=Instant::now()+Duration::from_secs(2);
-        while took.is_some() && Instant::now()<steady {
-            std::thread::sleep(Duration::from_millis(20));
-            worst=worst.max(delivered(&channel).0.map(|at|at.elapsed()).unwrap_or(Duration::MAX));
-        }
+        let delivered_at=video_back_after(&channel, back, Duration::from_secs(10));
+        let rendered=watch.first_render_after(back, Duration::from_secs(10));
+        std::thread::sleep(Duration::from_secs(2));
+        let worst=rendered.map(|first|watch.worst_gap(back+first, back+first+Duration::from_secs(2)));
         let _=sender.kill(); let _=sender.wait();
-        let late=lateness.lock().unwrap().iter().filter(|(at,_)|*at>back+Duration::from_millis(2000)).map(|(_,ms)|*ms).max();
-        eprintln!("[teste] SRT {engine_mode}: quadros de volta em {took:?} após a fonte reconectar; maior intervalo nos 2 s seguintes {worst:?}; maior atraso no sink depois de 2 s {late:?} ms");
+        // QoS > 0 é quadro atrasado, que o sink descarta e que faz o decoder
+        // pular até o próximo quadro-chave.
+        let late=watch.lateness_after(back+Duration::from_millis(2000));
+        eprintln!("[teste] SRT {engine_mode}: queda de 3 s; quadro novo entregue ao sink em {delivered_at:?} e na superfície em {rendered:?} após a fonte voltar; maior intervalo nos 2 s seguintes {worst:?}; maior atraso no sink {late:?} ms; reaberturas {}", watch.reopens());
         assert_eq!(channel.0.decoder_id("pgm"),decoder,"a volta não pode depender de recriar o item do PGM");
         assert_eq!(channel.0.on_air_id().as_deref(),Some("srt-live"));
-        let took=took.expect("entrada SRT não voltou em 10 s");
-        assert!(took<=Duration::from_millis(1300),"entrada SRT {engine_mode} levou {took:?} para voltar (alvo ≤ 1 s + partida do gerador)");
-        // O primeiro quadro espera no sink a latência do pipeline (~0,9 s,
-        // dos quais 700 ms são do tsdemux). O buraco depois dele é essa
-        // espera, a mesma da abertura do item, e não um soluço.
-        let mut query=gst::query::Latency::new();
-        assert!(channel.0.on_air.as_ref().unwrap().pipeline.query(&mut query));
-        let latency=Duration::from_nanos(query.result().1.nseconds());
-        assert!(worst<latency+Duration::from_millis(250),"entrada SRT {engine_mode} voltou aos soluços: {worst:?} sem quadro (latência do pipeline {latency:?})");
+        let rendered=rendered.expect("entrada SRT não voltou em 10 s");
+        assert!(rendered<Duration::from_millis(1500),"entrada SRT {engine_mode} levou {rendered:?} para pôr o primeiro quadro na superfície (alvo < 1,5 s)");
+        let worst=worst.unwrap();
+        assert!(worst<Duration::from_millis(250),"entrada SRT {engine_mode} voltou aos soluços: {worst:?} sem quadro novo");
         let late=late.expect("sink sem QoS depois da volta: não renderizou quadros");
         assert!(late<100,"quadros da sessão nova chegam {late} ms atrasados ao sink (mapa PCR da sessão velha)");
+        assert_eq!(watch.reopens(),1,"queda de 3 s reabre o socket uma vez");
     }
 
     #[test]
@@ -1123,6 +1173,48 @@ mod srt_recovery_tests {
 
     #[test]
     fn srt_caller_returns_within_a_second_after_listener_reconnects(){ reconnect_case("caller","listener",1); }
+
+    /// Requisito do reteste r88-35: soluço de 1,5 s no encoder (SIGSTOP no
+    /// gerador: a sessão SRT continua viva, mas nada chega, nem keepalive).
+    /// O engine não pode reabrir o socket. Antes, a reabertura depois de 1 s
+    /// derrubava a sessão, o gerador recebia erro de E/S e 1,5 s de soluço
+    /// viravam ~3,5 s de perda.
+    #[cfg(unix)]
+    fn hiccup_case(engine_mode: &str, sender_mode: &str, offset: u16) {
+        if !srt_available() { eprintln!("sem SRT/x264/aac; teste pulado"); return; }
+        let port=port(offset);
+        let engine_uri=format!("srt://127.0.0.1:{port}?mode={engine_mode}&latency=120");
+        let sender_uri=format!("srt://127.0.0.1:{port}?mode={sender_mode}&latency=120");
+        let mut channel=live_channel(&format!("srt-soluco-{engine_mode}"));
+        let mut sender=spawn_sender(&sender_uri);
+        take_live(&mut channel, &engine_uri);
+        std::thread::sleep(Duration::from_secs(2));
+        let watch=Watch::start(&channel);
+        std::thread::sleep(Duration::from_millis(500));
+        let signal=|name:&str| { let _=std::process::Command::new("kill").args([name,&sender.id().to_string()]).status(); };
+        signal("-STOP");
+        std::thread::sleep(Duration::from_millis(1500));
+        signal("-CONT");
+        let back=Instant::now();
+        std::thread::sleep(Duration::from_secs(4));
+        let alive=sender.try_wait().unwrap().is_none();
+        let rendered=watch.first_render_after(back, Duration::ZERO);
+        let worst=watch.worst_gap(back+Duration::from_millis(1500), back+Duration::from_secs(4));
+        let _=sender.kill(); let _=sender.wait();
+        eprintln!("[teste] SRT {engine_mode}: soluço de 1,5 s; reaberturas {}; gerador vivo {alive}; quadro novo {rendered:?} depois do SIGCONT; maior intervalo depois de 1,5 s {worst:?}", watch.reopens());
+        assert_eq!(watch.reopens(),0,"soluço de 1,5 s não pode reabrir o socket SRT ({engine_mode})");
+        assert!(alive,"o gerador perdeu a sessão SRT no soluço ({engine_mode})");
+        assert!(rendered.is_some_and(|took|took<Duration::from_millis(1500)),"imagem não voltou depois do soluço: {rendered:?}");
+        assert!(worst<Duration::from_millis(250),"entrada SRT {engine_mode} seguiu aos soluços depois do soluço: {worst:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn srt_listener_survives_encoder_hiccup_without_reopening(){ hiccup_case("listener","caller",3); }
+
+    #[cfg(unix)]
+    #[test]
+    fn srt_caller_survives_encoder_hiccup_without_reopening(){ hiccup_case("caller","listener",4); }
 
     /// Contador de buffers na entrada de um `inter*sink` do item no PGM.
     fn sink_counter(channel: &RunningChannel, factory: &str) -> Arc<AtomicU64> {
@@ -1239,7 +1331,7 @@ fn source_for(spec: &ItemSpec) -> Result<LiveInput> {
         }
         src.set_property("buffer-duration", buffer_duration);
         if srt_listener(source) { keep_srt_listening(&src); }
-        if source.starts_with("srt://") { crate::srt_input::recycle_stalled_srt(&src); }
+        if source.starts_with("srt://") { crate::srt_input::recycle_stalled_srt(&src); crate::srt_input::trim_demux_latency(&src); }
         return Ok(LiveInput { video: src, audio: None, dynamic: true });
     }
 
