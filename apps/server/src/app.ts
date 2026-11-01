@@ -1689,8 +1689,13 @@ export class ChannelRuntime {
    * A folga existe para recarregar a página não derrubar e resubir a
    * codificação: subir custa abrir pipeline e reconectar ao servidor de mídia,
    * e piscar isso a cada F5 seria pior que deixar ligado.
+   *
+   * Roda no laço do servidor (`serviceMonitors`), com ou sem navegador
+   * conectado: antes rodava só dentro de `live()`, que só é chamado com
+   * alguém conectado -- fechado o último navegador, REF/PADRÃO seguiam
+   * codificando e as sessões de placa ficavam presas para sempre.
    */
-  private podarMonitores(): void {
+  podarMonitores(): void {
     void this.qcInspection.tick().catch(()=>{})
     const limite = Date.now() - MONITOR_OCIOSO_MS
     for (const bus of ['pvw', 'mon', 'mv'] as const) {
@@ -1857,7 +1862,6 @@ export class ChannelRuntime {
 
   /** Estado que vai para a interface a cada frame de atualização. */
   live() {
-    this.podarMonitores()
     this.syncMultiview()
     this.phase += 0.12
     const state = this.transport.state()
@@ -2138,6 +2142,11 @@ export async function createApp(file: string,options:{restoredAdmission?:Restore
  * recusou tentar a placa de novo. Sem isto o canal ficava em x264 para sempre
  * (`desistir_do_hardware`) enquanto monitores de outro canal seguiam na placa.
  */
+export function serviceMonitors(app: App): void {
+  serviceMonitorHardware(app)
+  for (const runtime of app.runtimes.values()) runtime.podarMonitores()
+}
+
 export function serviceMonitorHardware(app: App): void {
   const sessions = app.encoderSessions
   if (!sessions) return

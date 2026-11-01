@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EncoderSessions, probeEncoders, programEncodedOutputs, type EncoderProbe } from './encoder-sessions.js'
 import { validateOutputProfile, monitorProfilePatch, type OutputProfileRow } from './outputs.js'
 import type { PublisherState } from './transport.js'
-import { createApp, runtimeFor, serviceMonitorHardware, type App } from '../app.js'
+import { createApp, runtimeFor, serviceMonitorHardware, serviceMonitors, type App } from '../app.js'
 import { channels } from '../db/schema.js'
 
 vi.mock('../config.js', async original => ({ ...await original<Record<string, unknown>>(), ENGINE_BINARY: '', MEDIAMTX_BINARY: '', DEVICES_BINARY: '', ENCODERS_BINARY: '' }))
@@ -186,6 +186,39 @@ describe('runtime: um pedido por nível, concessão de placa e desligamento', ()
     vi.spyOn(b.transport, 'publishers').mockReturnValue([{ ...program!, hardwareRefusals: 2 }])
     serviceMonitorHardware(app)
     expect(retry).toHaveBeenCalledTimes(1)
+  })
+
+  it('sem nenhum navegador conectado (live() nunca chamado), 20 s sem heartbeat desligam o nível e devolvem placa e CPU', async () => {
+    const runtime = (await runtimeFor(app, 'ch'))!
+    ;(runtime as unknown as { monitores: Set<string> }).monitores.add('mon').add('pvw')
+    app.encoderSessions!.setProbe(geforce)
+    const set = vi.spyOn(runtime.transport, 'setMonitor').mockImplementation(() => {})
+    const live = vi.spyOn(runtime, 'live')
+    runtime.watching('mon', 'ref')
+    runtime.watching('pvw')
+    expect(app.encoderSessions!.status().monitorsInUse).toBe(1)
+    vi.setSystemTime(Date.now() + 10_000)
+    serviceMonitors(app)
+    expect(set).not.toHaveBeenCalledWith('mon', false, 'ref', false)
+    vi.setSystemTime(Date.now() + 11_000)
+    serviceMonitors(app)
+    expect(live).not.toHaveBeenCalled()
+    expect(set).toHaveBeenCalledWith('mon', false, 'ref', false)
+    expect(set).toHaveBeenCalledWith('pvw', false)
+    expect(app.encoderSessions!.status()).toMatchObject({ monitorsInUse: 0, software: { inUseMpx: 0 } })
+  })
+
+  it('o laço do servidor chama o serviço dos monitores fora do "if" de audiência, e live() não poda mais', () => {
+    const index = readFileSync(new URL('../index.ts', import.meta.url), 'utf8')
+    const call = index.indexOf('serviceMonitors(app)')
+    const audience = index.indexOf('if (sockets.size > 0)')
+    expect(call).toBeGreaterThan(0)
+    expect(audience).toBeGreaterThan(call)
+    // A chamada está no topo do ciclo, antes do laço por canal (que tem `return`s).
+    expect(index.slice(call, audience)).toContain('for (const runtime of app.runtimes.values())')
+    const appSource = readFileSync(new URL('../app.ts', import.meta.url), 'utf8')
+    const liveBody = appSource.slice(appSource.indexOf('  live() {'), appSource.indexOf('  live() {') + 200)
+    expect(liveBody).not.toContain('podarMonitores')
   })
 
   it('pedido sem nível continua sendo o leve no caminho histórico', async () => {
