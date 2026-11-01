@@ -149,12 +149,23 @@ pub fn recycle_stalled_srt(decoder: &gst::Element) {
     });
 }
 
-/// Aplica [`SRT_DEMUX_LATENCY_MS`] ao `tsdemux` que o `uridecodebin` criar.
+/// Latência do `tsdemux` das entradas SRT: [`SRT_DEMUX_LATENCY_MS`], ou
+/// `RPLAYOUT_SRT_DEMUX_LATENCY_MS` (50 a 2000). A variável é a saída de
+/// emergência para uma fonte com B-frames longos ou PCR espaçado que solte
+/// quadro atrasado com 150 ms: volta ao padrão do GStreamer (700) sem novo build.
+pub fn srt_demux_latency_ms() -> i32 {
+    std::env::var("RPLAYOUT_SRT_DEMUX_LATENCY_MS").ok()
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .filter(|value| (50..=2000).contains(value))
+        .unwrap_or(SRT_DEMUX_LATENCY_MS)
+}
+
+/// Aplica [`srt_demux_latency_ms`] ao `tsdemux` que o `uridecodebin` criar.
 pub fn trim_demux_latency(decoder: &gst::Element) {
     let Some(bin) = decoder.downcast_ref::<gst::Bin>() else { return };
     bin.connect_deep_element_added(|_, _, element| {
         if element.factory().is_some_and(|factory| factory.name() == "tsdemux") && element.find_property("latency").is_some() {
-            element.set_property("latency", SRT_DEMUX_LATENCY_MS);
+            element.set_property("latency", srt_demux_latency_ms());
         }
     });
 }
