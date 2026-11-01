@@ -123,11 +123,51 @@ Quadros de referência: `apps/engine/scopes/fixtures/*.ycc.rle`, gerados por
 
 ## Erro esperado do caminho INDICATIVO
 
-PLACEHOLDER_ERROS
+Medido com `node scripts/bench-scopes.mjs --swiftshader` (barras EBU 75%
+codificadas em VP9 4:2:0 como o PGM; o quadro exato é o mesmo arquivo
+decodificado pelo ffmpeg em 4:4:4). Centro de cada barra, média da região:
+
+| caminho | ΔY' | Δfase | Δganho de croma |
+|---|---|---|---|
+| reconversão BT.709 do R'G'B' de 8 bits (sem gerenciamento de cor) | −0,10 … +0,20% | ≤ 0,23° | −0,4 … +0,2% |
+| idem, imagem marcada BT.709 (cICP/gAMA) que o navegador converte para sRGB | +0,1 … +2,6% (meios-tons) | ≤ 0,6° | +3,2 … +4,1% |
+| GPU (WebGPU e WebGL2) × WASM sobre o mesmo R'G'B' | 0 (densidades idênticas) | 0 | 0 |
+
+Leitura: a matemática do caminho indicativo erra menos de 0,25% (8 bits +
+croma 4:2:0); o que pode pesar é **o navegador gerenciar a cor** do quadro
+marcado BT.709 (Chrome converte a curva BT.709/BT.1886 para sRGB e sobe os
+meios-tons ~3%). Por isso o selo INDICATIVO. O número do vídeo WHEP real
+(H.264 no Edge/Chrome com GPU) só se mede no Windows de produção:
+`node scripts/bench-scopes.mjs --channel msedge` (passa as mesmas barras
+pelo decodificador de vídeo do navegador). Mesmo no pior caso medido, as
+barras ficam dentro da caixa externa (±10°, ±20%) e a 3–4% do alvo.
 
 ## Desempenho
 
-PLACEHOLDER_DESEMPENHO
+`node scripts/bench-scopes.mjs` mede, por quadro: WebGPU (CPU de
+codificação, tempo até a GPU ficar ociosa e `timestamp-query` do compute),
+WebGL2 (passo 1 e 2), WASM e JS (CPU, incluindo `drawImage`+`getImageData`).
+
+Neste container (2 vCPU, **sem GPU**, SwiftShader emulando a GPU na CPU,
+quadro de 640×360, modo QUAD):
+
+| backend | CPU por quadro | GPU por quadro | observação |
+|---|---|---|---|
+| WebGPU | 2,5 ms (codificação) | 884 ms (emulado) | SwiftShader: só lógica |
+| WebGL2 passo 1 | 2013 ms (emulado) | — | idem |
+| WebGL2 passo 2 | 536 ms (emulado) | — | idem |
+| WASM 640×360 | 21 ms (19 ms acumulação) | — | o fallback atual de CPU |
+| WASM 1920×1080 | 232 ms (214 ms acumulação) | — | por isso a CPU amostra 640×360 |
+| JS 640×360 | 67 ms | — | último recurso |
+| JS 1920×1080 | 610 ms | — | |
+
+O custo de CPU do WebGPU por quadro é só a codificação dos comandos
+(~2,5 ms neste container lento; sem cópia de pixels nem `getImageData`).
+O tempo de GPU em 1080p com GPU real fica para o Windows de produção
+(`--channel msedge`, sem `--swiftshader`). Referência de ordem de grandeza:
+2,07 M pixels × ~10 atômicos ≈ 20 M operações atômicas por quadro, que uma
+GPU integrada atual faz em ~1 ms; o render dos painéis é limitado pelo
+tamanho do canvas (≈1 M fragmentos).
 
 ## Loudness do arquivo inteiro
 
@@ -151,3 +191,8 @@ acima de 1 LU). Nesta rodada entraram os testes de conformidade EBU Tech
   uma faixa do histograma; gamut/croma não medidos (mostra "—").
 - Falsa cor sobre a imagem na CPU (sem GPU) a 10 Hz e 640×360.
 - O diamante mostra sub-black (soma negativa) colado ao centro.
+- WebGL2 lê o histograma com `readPixels` síncrono a 2 Hz (6 KB): o driver
+  avisa "GPU stall"; é curto, mas um PBO assíncrono seria o próximo passo.
+- SwiftShader (CI sem GPU) derruba o processo da GPU com `texture_external`,
+  com vídeo e com canvas WebGPU; a bancada usa PNG, `copyExternalImageToTexture`
+  e render fora de tela. Na interface, se a GPU cair o painel passa para WebGL2.

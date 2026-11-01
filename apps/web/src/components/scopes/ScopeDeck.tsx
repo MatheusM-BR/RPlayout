@@ -354,7 +354,7 @@ export function ScopeDeck({exact, live, note, storageKey, falseColorCanvas, onFa
         <div role="group" aria-label="Scopes visíveis" className="flex rounded border border-border-subtle overflow-hidden">
           {SCOPE_MODES.filter(m => !compact || ['COMBO', 'WAVE', 'PARADE', 'VECTOR', 'QUAD'].includes(m.mode)).map((m, i) => <button key={m.mode} type="button" title={`${m.title} (${i + 1})`} aria-pressed={prefs.mode === m.mode} onClick={() => setPrefs({mode: m.mode})} className={btn(prefs.mode === m.mode)}>{m.label}</button>)}
         </div>
-        <select aria-label="Canal do waveform (C)" value={prefs.channel} onChange={e => setPrefs({channel: e.target.value as ScopeChannel})} className="bg-surface-container-lowest border border-border-subtle rounded px-1 py-0.5 text-[11px]">
+        <select aria-label="Canal do waveform (C)" value={prefs.channel} onChange={e => setPrefs({channel: e.target.value as ScopeChannel})} className="!w-auto shrink-0 bg-surface-container-lowest border border-border-subtle rounded px-1 py-0.5 text-[11px]">
           {SCOPE_CHANNELS.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <button type="button" title="Parade R'G'B' ou Y'CbCr (Shift+C)" onClick={() => setPrefs({parade: prefs.parade === 'RGB' ? 'YCbCr' : 'RGB'})} className={`rounded border border-border-subtle ${btn(false)}`}>{prefs.parade === 'RGB' ? "R'G'B'" : "Y'CbCr"}</button>
@@ -377,7 +377,7 @@ export function ScopeDeck({exact, live, note, storageKey, falseColorCanvas, onFa
       <button type="button" aria-pressed={frozen} title="Congelar o scope (Z)" onClick={() => setFrozen(value => !value)} className={`rounded border border-border-subtle ${btn(frozen)}`}>{frozen ? 'CONGELADO' : 'CONGELAR'}</button>
       <button type="button" title="Guardar o quadro atual como referência (X); Shift+X limpa" onClick={() => hasReference ? clearReference() : captureReference()} className={`rounded border border-border-subtle ${btn(hasReference)}`}>{hasReference ? 'REF ✕' : 'REF'}</button>
       <button type="button" title="Zoom padrão (0). Roda do mouse sobre o scope dá zoom." onClick={resetZoom} className={`rounded border border-border-subtle ${btn(false)}`}>1:1</button>
-      <select aria-label="Backend" title="Backend dos scopes ao vivo" value={prefs.backend} onChange={e => setPrefs({backend: e.target.value as BackendPreference})} className="bg-surface-container-lowest border border-border-subtle rounded px-1 py-0.5 text-[11px]">
+      <select aria-label="Backend" title="Backend dos scopes ao vivo" value={prefs.backend} onChange={e => setPrefs({backend: e.target.value as BackendPreference})} className="!w-auto shrink-0 bg-surface-container-lowest border border-border-subtle rounded px-1 py-0.5 text-[11px]">
         <option value="auto">AUTO</option><option value="webgl2">WebGL2</option><option value="cpu">CPU</option>
       </select>
       <button type="button" title="Atalhos (?)" onClick={() => setHelp(value => !value)} className={`rounded border border-border-subtle ${btn(help)}`}>?</button>

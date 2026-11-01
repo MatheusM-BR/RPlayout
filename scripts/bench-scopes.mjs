@@ -6,6 +6,8 @@
 //   node scripts/bench-scopes.mjs --channel msedge          (ou chrome)
 // No container de CI sem GPU (SwiftShader, só valida lógica; tempos não valem):
 //   node scripts/bench-scopes.mjs --swiftshader
+// PNG (SwiftShader) sai sem cICP/gAMA; --tagged-png mantém as marcas BT.709 e
+// mostra o efeito do gerenciamento de cor do navegador (+3% nos meios-tons).
 // Opções: --codec vp9|h264 (padrão: h264 se o navegador tocar, senão vp9),
 //         --iterations N, --out arquivo.json
 //
@@ -61,7 +63,7 @@ function encode(input, name, codec) {
   if (asImages) {
     // SwiftShader derruba o processo da GPU ao tocar vídeo: entrega o quadro
     // decodificado pelo ffmpeg (Y'CbCr BT.709 limitado → R'G'B') como PNG.
-    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '0.5', '-i', out, '-frames:v', '1', '-vf', 'scale=in_color_matrix=bt709:in_range=tv:out_range=pc:flags=bilinear+accurate_rnd+full_chroma_int,format=rgb24', join(work, `${name}.png`)])
+    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '0.5', '-i', out, '-frames:v', '1', '-vf', `scale=in_color_matrix=bt709:in_range=tv:out_range=pc:flags=bilinear+accurate_rnd+full_chroma_int,format=rgb24${args.includes('--tagged-png') ? '' : ',setparams=color_trc=unknown:color_primaries=unknown:colorspace=unknown'}`, join(work, `${name}.png`)])
     return `/${name}.png`
   }
   return `/${name}.${codec === 'h264' ? 'mp4' : 'webm'}`
@@ -98,7 +100,7 @@ const allMedia = [
   {name: 'ebu-100', video: encode(['-loop', '1', '-i', join(work, 'ebu100.ppm')], 'ebu-100', codec), ycc: '/ebu-100.ycc', bars: 8},
   {name: 'natural-perf', video: encode(['-f', 'lavfi', '-i', `testsrc2=size=${W}x${H}:rate=25`], 'natural-perf', codec)},
 ]
-const media = quick ? allMedia.filter(m => m.name !== 'ebu-100') : allMedia
+const media = (quick ? allMedia.filter(m => m.name !== 'ebu-100') : allMedia).filter(m => !(args.includes('--no-perf') && m.name.includes('perf')))
 const results = await page.evaluate(([items, n, mode]) => window.scopesBench.run(items, n, mode), [media, iterations, swiftshader ? 'copy' : 'external'])
 results.codec = codec
 results.size = `${W}x${H}`
