@@ -88,9 +88,11 @@ export async function ensureManagedOutputs(
   const managed: { role: OutputRole; name: string; defaults: Partial<OutputProfileRow> }[] = [
     { role: 'PROGRAM', name: 'Programa', defaults: {} },
     // Monitores nascem automáticos: os níveis REF/PADRÃO/LEVE saem do
-    // formato do canal (veja docs/MONITORES-NAVEGADOR.md). O que o operador
-    // preencher vira teto, dentro da proteção de `validateOutputProfile`.
-    { role: 'PREVIEW', name: 'Preview', defaults: {} },
+    // formato do canal (veja docs/MONITORES-NAVEGADOR.md). No banco fica o
+    // perfil leve de antes (o que a r88-35 exige e entende), e é ele que,
+    // em tempo de execução, quer dizer "automático" (`isLegacyMonitorProfile`).
+    // O que o operador preencher de propósito vira teto.
+    { role: 'PREVIEW', name: 'Preview', defaults: lowBandwidthMonitor(channel) },
   ]
 
   managed.push({
@@ -98,14 +100,14 @@ export async function ensureManagedOutputs(
     name: 'Monitor do programa',
     // Mesmo conteúdo do ar, em níveis, para a janela do navegador. O engine
     // só codifica um nível enquanto alguém o assiste.
-    defaults: {},
+    defaults: lowBandwidthMonitor(channel),
   })
 
   for (const entry of managed) {
     const current = existing.find((row) => row.role === entry.role)
     if (current) {
-      // Monitores: o perfil antigo forçado (240p/15 fps/450 kbps) volta a
-      // automático; um teto do operador fica, aparado à proteção. Nunca
+      // Monitores: o perfil leve de antes fica como está no banco (é o
+      // "automático"); um teto do operador fica, aparado à proteção. Nunca
       // toca o PGM.
       if (entry.role === 'PREVIEW' || entry.role === 'MONITOR') {
         const patch = monitorProfilePatch(current, channel)
@@ -146,17 +148,57 @@ function monitorMaxFps(channel: Partial<Pick<Channel, 'rate' | 'scan'>> & { rate
 }
 
 /**
+ * O perfil leve de antes (o que a r88-35 e anteriores forçavam e exigem:
+ * até 240 linhas, até 15 fps, até 450 kbps). Na r88-36 ele quer dizer
+ * **automático** -- só em tempo de execução: o banco continua com ele, para um
+ * reserva HA na r88-35 preparar o canal e um projeto exportado restaurar lá.
+ */
+export function isLegacyMonitorProfile(row: Pick<OutputProfileRow, 'width' | 'height' | 'rateNum' | 'rateDen' | 'scan' | 'bitrateKbps'>, channel?: Pick<Channel, 'width' | 'height'>): boolean {
+  // Exatamente o que o `validateOutputProfile` da r88-35 aceitava.
+  // Sem o canal à mão (tempo de execução), 240 linhas e até 4:1 de proporção.
+  const [maxW, maxH] = channel ? monitorSize(channel.width, channel.height) : [960, 240]
+  const fps = row.rateNum !== null && row.rateDen !== null && row.rateDen > 0 ? row.rateNum / row.rateDen : null
+  return fps !== null && fps <= 15 && row.scan === 'PROGRESSIVE' &&
+    row.bitrateKbps !== null && row.bitrateKbps <= 450 &&
+    row.width !== null && row.height !== null && row.width <= maxW && row.height <= maxH
+}
+
+/** Todos os campos de perfil em branco ("automático" gravado como nulo). */
+const allProfileNull = (row: Pick<OutputProfileRow, 'width' | 'height' | 'rateNum' | 'rateDen' | 'scan' | 'bitrateKbps'>): boolean =>
+  row.width === null && row.height === null && row.rateNum === null && row.rateDen === null && row.scan === null && row.bitrateKbps === null
+
+/**
+ * O perfil de monitor como o tempo de execução o entende: o leve legado vira
+ * automático (campos em branco); o teto do operador fica como está.
+ */
+export function monitorRuntimeProfile<T extends OutputProfileRow>(row: T): T {
+  if ((row.role !== 'PREVIEW' && row.role !== 'MONITOR') || !isLegacyMonitorProfile(row)) return row
+  return { ...row, width: null, height: null, rateNum: null, rateDen: null, scan: null, bitrateKbps: null }
+}
+
+/**
+ * O que gravar no banco para um monitor: "automático" (tudo em branco) vira o
+ * perfil leve legado, que a r88-35 aceita e esta versão lê como automático.
+ */
+export function monitorStoredPatch(row: OutputProfileRow, channel: Pick<Channel, 'width' | 'height'>): Partial<OutputProfileRow> {
+  if ((row.role !== 'PREVIEW' && row.role !== 'MONITOR') || !allProfileNull(row)) return {}
+  return lowBandwidthMonitor(channel)
+}
+
+/**
  * Normaliza o perfil de um monitor existente.
  *
- * - O perfil legado que o sistema forçava (o de `lowBandwidthMonitor`, ou
- *   qualquer coisa em 15 fps até 450 kbps) volta a automático: era limite
- *   artificial, não escolha de ninguém.
+ * - O perfil leve legado fica como está: é o "automático" (veja
+ *   `isLegacyMonitorProfile`). Não se reescreve o banco.
+ * - Monitor gravado em branco (versões de desenvolvimento da r88-36) volta ao
+ *   perfil leve, o único que a r88-35 aceita: sem isso o reserva HA na r88-35
+ *   não prepara o canal e um projeto exportado não restaura.
  * - Teto que o operador escolheu fica, aparado ao que a proteção aceita.
  */
 export function monitorProfilePatch(current: OutputProfileRow, channel: Pick<Channel, 'width' | 'height'> & Partial<Pick<Channel, 'rate' | 'scan'>>): Partial<OutputProfileRow> {
   const fps = current.rateNum !== null && current.rateDen !== null && current.rateDen > 0 ? current.rateNum / current.rateDen : null
-  const legacy = fps !== null && fps <= 15 && (current.bitrateKbps ?? Infinity) <= 450 && (current.height ?? Infinity) <= 240
-  if (legacy) return { width: null, height: null, rateNum: null, rateDen: null, scan: null, bitrateKbps: null }
+  if (isLegacyMonitorProfile(current, channel)) return {}
+  if (allProfileNull(current)) return lowBandwidthMonitor(channel)
   const maxW = Math.min(channel.width, 1920), maxH = Math.min(channel.height, 1080)
   const geometryOk = (current.width === null && current.height === null) || current.width !== null && current.height !== null && current.width <= maxW && current.height <= maxH && current.width % 2 === 0 && current.height % 2 === 0
   return {
@@ -198,7 +240,10 @@ export function validateOutputProfile(row:OutputProfileRow,channel?:Pick<Channel
     // da cadência do canal, nunca entrelaçado, nunca acima de 8 Mbps. Que ele
     // não tire CPU/placa do programa é garantido no engine (orçamento de CPU)
     // e no servidor (reserva das sessões de placa).
+    // O perfil leve legado é o "automático" (e é o que a r88-35 aceita):
+    // passa como está, inclusive o de bitrate abaixo de 300 que ela gravava.
     const ch=channel??{width:1920,height:1080}
+    if(isLegacyMonitorProfile(row,ch))return
     const maxW=Math.min(ch.width,1920),maxH=Math.min(ch.height,1080)
     if((row.width===null)!==(row.height===null))throw new Error('Informe largura e altura do monitor juntas, ou deixe ambas automáticas.')
     if(row.width!==null&&row.height!==null&&(row.width<2||row.height<2||row.width>maxW||row.height>maxH||row.width%2!==0||row.height%2!==0))throw new Error(`Monitor vai até ${maxW}×${maxH} (o raster do canal, no máximo 1080p), em números pares. Em branco, segue os níveis automáticos.`)
@@ -232,9 +277,11 @@ export function targetOf(row: OutputProfileRow, path: ChannelPaths | undefined):
 
 /** Traduz um perfil para o que o engine entende. Nulo quando não dá para sair. */
 export function toEngineProfile(
-  row: OutputProfileRow,
+  stored: OutputProfileRow,
   path: ChannelPaths | undefined,
 ): EngineProfile | string | null {
+  // Monitor com o perfil leve legado no banco sai automático (níveis).
+  const row = monitorRuntimeProfile(stored)
   const target = targetOf(row, path)
   if (!target || !row.enabled) return null
 

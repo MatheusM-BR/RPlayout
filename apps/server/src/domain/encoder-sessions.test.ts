@@ -128,9 +128,11 @@ describe('proteção do perfil de monitor (sem limite artificial)', () => {
     expect(() => validateOutputProfile(row({ width: 1280 }), channel)).toThrow(/juntas/)
   })
 
-  it('perfil legado forçado (240p/15/450) volta a automático; teto do operador fica', () => {
-    expect(monitorProfilePatch(row({ width: 428, height: 240, rateNum: 15, rateDen: 1, bitrateKbps: 450, scan: 'PROGRESSIVE' }), channel))
-      .toEqual({ width: null, height: null, rateNum: null, rateDen: null, scan: null, bitrateKbps: null })
+  it('perfil legado (240p/15/450) fica no banco e vale como automático; em branco volta ao legado; teto do operador fica', () => {
+    expect(monitorProfilePatch(row({ width: 428, height: 240, rateNum: 15, rateDen: 1, bitrateKbps: 450, scan: 'PROGRESSIVE' }), channel)).toEqual({})
+    expect(monitorProfilePatch(row({}), channel)).toEqual({ width: 428, height: 240, rateNum: 15, rateDen: 1, scan: 'PROGRESSIVE', bitrateKbps: 450 })
+    // Legado da r88-35 com bitrate abaixo de 300 continua válido (é o automático).
+    expect(() => validateOutputProfile(row({ width: 428, height: 240, rateNum: 15, rateDen: 1, bitrateKbps: 120, scan: 'PROGRESSIVE' }), channel)).not.toThrow()
     expect(monitorProfilePatch(row({ width: 1280, height: 720, bitrateKbps: 3000 }), channel)).toEqual({})
     expect(monitorProfilePatch(row({ bitrateKbps: 20000 }), channel)).toEqual({ bitrateKbps: 8000 })
   })

@@ -112,9 +112,28 @@ um monitor uma saída de programa disfarçada:
 * entrelaçado;
 * bitrate fora de 300–8000 kbps.
 
-Perfis antigos forçados (240p/15 fps/≤450 kbps) voltam sozinhos a automático
-em `ensureManagedOutputs` (sem migração de banco; nenhuma tabela mudou, a
-migração 58 reservada não foi usada).
+**Compatibilidade com a r88-35 (HA e volta de versão).** O banco **não** é
+reescrito para "em branco": a r88-35 recusa monitor com perfil nulo em
+`validateOutputProfile`, `prepareHaLocalOutputs` e `assertProjectContract`, e
+um reserva HA na r88-35 deixaria de preparar o canal, e um projeto exportado
+não restauraria. Por isso:
+
+* No banco fica o **perfil leve legado** (o de `lowBandwidthMonitor`: 240
+  linhas, 15 fps, progressivo, 450 kbps). Canal novo nasce com ele; monitor
+  gravado em branco (versões de desenvolvimento da r88-36, ou o operador
+  limpando tudo) volta a ele em `ensureManagedOutputs`/na gravação
+  (`monitorStoredPatch`).
+* **Em tempo de execução**, qualquer perfil que a r88-35 aceitaria
+  (`isLegacyMonitorProfile`: ≤ raster leve do canal, ≤ 15 fps, progressivo,
+  ≤ 450 kbps) quer dizer **automático** (`monitorRuntimeProfile`, usado em
+  `toEngineProfile` e na preparação HA): o engine recebe o monitor sem teto
+  e publica os níveis.
+* Só o teto que o operador preencher **de propósito** (acima do perfil leve)
+  fica diferente — e é o único caso que a r88-35 não aceita.
+* Prova: `monitor-profile-compat.test.ts` copia o validador da r88-35
+  (`git show ddd7b8b:apps/server/src/domain/outputs.ts`) e confere o canal
+  novo, o projeto exportado (`assertProjectContract`) e a preparação HA.
+  Nenhuma tabela mudou; a migração 58 reservada não foi usada.
 
 Que um monitor não tire recurso do programa é garantido em dois lugares:
 

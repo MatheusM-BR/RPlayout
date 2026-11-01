@@ -234,6 +234,7 @@ import {
   createOutput,
   newOutputProfile,
   validateOutputProfile,
+  monitorStoredPatch,
   deleteOutput,
   toEngineProfile,
   listOutputs,
@@ -5443,7 +5444,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         if(!row || row.channelId!==profile.channelId)throw new CollaborativeEditError(409,{error:'A saída mudou de canal ou foi removida. Reabra a lista.'})
         if(row.role!=='EXTRA' && (body.data.target!==undefined || body.data.kind!==undefined))throw new CollaborativeEditError(422,{error:'Destino e protocolo das saídas gerenciadas são definidos pelo servidor.'})
         current=row as OutputProfileRow
-        try{patch=outputUpdatePatch(current,body.data);const channel=tx.select().from(channels).where(eq(channels.id,profile.channelId)).get()!;validateOutputProfile({...current,...patch},channel)}catch(error){throw new CollaborativeEditError(400,{error:error instanceof Error?error.message:'Endereço inválido.'})}
+        try{patch=outputUpdatePatch(current,body.data);const channel=tx.select().from(channels).where(eq(channels.id,profile.channelId)).get()!;validateOutputProfile({...current,...patch},channel)
+          // Monitor "automático" (tudo em branco) é gravado como o perfil leve
+          // legado: a r88-35 (HA, projeto exportado) só aceita esse.
+          patch={...patch,...monitorStoredPatch({...current,...patch} as OutputProfileRow,channel)}}catch(error){throw new CollaborativeEditError(400,{error:error instanceof Error?error.message:'Endereço inválido.'})}
         return {}
       })
       current=current!;patch=patch!
