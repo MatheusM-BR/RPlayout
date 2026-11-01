@@ -19,15 +19,20 @@ Pedido: o multiview de entradas abria um WHEP por fonte. Eram N codificações n
 - **Fonte congelada:** o buffer entra sem duração, e o compositor o repete sem reescalar. Fonte que para de entregar quadros mostra o último quadro por até 2 s (estado `held`). Depois disso a célula vira o quadro de **sem sinal**, cinza com listras. Fonte que não está aberta em lugar nenhum fica **indisponível**, cinza liso. Célula vazia fica preta. O estado de congelamento por conteúdo vem do watchdog, desenhado no navegador.
 - **Isolamento do PGM:** a sonda só faz `try_lock`. Se o multiview estiver ocupado, o quadro não entra no mosaico, conta em `skipped` e o PGM segue. O `appsrc` de cada célula tem `block=false`, `max-buffers=1` e `leaky-type=downstream`, e a fila antes do `intervideosink` é `leaky`. Se o multiview atrasar, quem descarta é ele.
 - **Layouts:** `MV_PGM_PVW` (PGM e PVW grandes, oito fontes embaixo), `MV_2X2`, `MV_3X3`, `MV_4X4` e `MV_1_PLUS_5`. Todos usam uma grade de 12 unidades, a mesma em `packages/protocol/src/multiview-composite.ts`, e os testes dos dois lados conferem. Trocar o layout recria **só** o pipeline do multiview. As sondas da mesma fonte são reaproveitadas, e o Publisher segura o último quadro (5 s) durante a troca.
-- **Níveis** (`Quality`, já parametrizados para ligar ao seletor de output.rs):
+- **Níveis (integrado na r88-36 com `docs/MONITORES-NAVEGADOR.md`).** O `Quality` salvo no canal é o **teto**: o nível de monitor (`MonitorTier`) em que o mosaico é composto. O publicador do `mv` é o mesmo `MonitorBus` dos monitores PGM/PVW, com um ramo por nível (`{canal}/mv-ref`, `{canal}/mv-std` e `{canal}/mv`, o LEVE no caminho histórico). Cada espectador escolhe o próprio nível até o teto, com o mesmo seletor `AUTO · REF · PAD · LEV` e a mesma troca automática por estatísticas WebRTC do `Whep`. O selo `AUTO·xxx` mostra o nível em uso. A tabela de perfis é uma só, `monitor::mosaic_profile`:
 
-| Nível | Mosaico | Cadência | Bitrate |
+| Nível | Mosaico (teto) | Cadência | Bitrate |
 |---|---|---|---|
 | REFERÊNCIA | 1920×1080 | a do canal | 8 Mbps |
-| PADRÃO (padrão) | 1280×720 | a do canal, ou metade acima de 30 q/s | 3 Mbps |
+| PADRÃO (teto padrão) | 1280×720 | a do canal, ou metade acima de 30 q/s | 3 Mbps |
 | LEVE | 960×540 | 15 q/s | 1,2 Mbps |
 
-- **Sob demanda:** o monitor `mv` segue o mesmo `watching` dos monitores `pvw` e `mon`. Sem espectador não há sonda instalada, pipeline nem thread (custo zero). O desligamento acontece 20 s depois do último aviso.
+  - Pedido acima do teto é rebaixado pelo servidor (`clampTier`); o engine recusa nível acima do teto. Baixar o teto derruba os níveis acima dele.
+  - **Orçamento de CPU:** os ramos do `mv` em software entram no mesmo `RPLAYOUT_MONITOR_SW_MPX` dos monitores e descem um degrau por vez, dizendo o motivo. O custo da composição (escala das células e compositor) não entra na conta: é fixo e foi medido abaixo.
+  - **Placa:** REF/PADRÃO do `mv` pedem sessão ao `EncoderSessions`, como PGM/PVW, depois da reserva do programa. O LEVE fica em x264.
+  - **HA/restauração:** como o QC, o destino do `mv` fica retido até a admissão do preview (`release_preview_output`). A composição pedida nesse intervalo é guardada e aplicada na liberação. Um nó em preparação não publica o mosaico do próprio PGM/PVW.
+
+- **Sob demanda:** o monitor `mv` segue o mesmo `watching {bus, tier}` dos monitores `pvw` e `mon` (um só aviso e um só caminho no servidor). Sem espectador não há sonda instalada, pipeline nem thread (custo zero). O desligamento acontece 20 s depois do último aviso.
 - **Protocolo:** o comando `{"cmd":"multiview","composition":{layout,quality,cells:[{kind:"pgm"|"pvw"|"next"|"qc"|"contingency"|"empty"}|{kind:"source",id}]}}` e o evento `multiviewState` (geometria, nível, estado, fps, resolução e barramento de cada célula, quadros compostos), a cada 500 ms enquanto roda. O destino vem da configuração privada (`"multiview"`) ou de `--multiview`.
 
 ### Sobreposição no navegador (`CompositeMultiview.tsx`)
@@ -45,7 +50,7 @@ Clicar numa célula abre o monitor individual (o WHEP por barramento que já exi
 ### Servidor
 
 - `GET /api/channels/:id/multiview/composite` devolve os layouts, os níveis, o layout salvo e a ETag, a composição efetiva, o estado do engine, o WHEP e o motivo de indisponibilidade. Pede sessão e acesso ao canal.
-- `PUT /api/channels/:id/multiview/composite` pede `If-Match`. Salvar layout e células exige `PLAYLIST_EDIT`, como o layout das fontes individuais. **Trocar o nível exige `OUTPUT_CONTROL` (Supervisor ou acima)**, porque muda o custo de codificação na máquina do ar. A regra entrou na matriz `route-authorization-matrix.test.ts`.
+- `PUT /api/channels/:id/multiview/composite` pede `If-Match`. Salvar layout e células exige `PLAYLIST_EDIT`, como o layout das fontes individuais. **Trocar o teto exige `OUTPUT_CONTROL` (Supervisor ou acima)**, porque muda o custo de codificação na máquina do ar. A regra entrou na matriz `route-authorization-matrix.test.ts`.
 - Sem células salvas, o preenchimento é automático, como num master: PGM, PVW, as entradas do canal (principal antes do backup), NEXT, QC e contingência.
 - **Sem migração:** cada gravação é uma decisão `@multiview` / `MULTIVIEW_COMPOSITE` em `operator_decisions`, com o canal em `item_id`, e vale a última. A migração 59 não foi usada: com a 58 de outro agente ainda inexistente, a lista posicional de `schema-compatibility.ts` deixaria este branch sem banco "current". Na integração, uma tabela própria pode ler essas linhas.
 - MediaMTX ganha o caminho `{canal}/mv`. O engine recebe `multiview` na configuração privada, e a composição é reenviada quando o engine reinicia.
@@ -90,7 +95,7 @@ Leitura:
 ## Só no Windows de produção
 
 - **A imagem no navegador (WHEP do `{canal}/mv`)**: aqui não há MediaMTX. O composto foi provado até o SRT, lido pelo ffprobe, e a sobreposição foi provada sem vídeo.
-- **NVENC/QSV:** o monitor sai em software (`prefer_software`), como os outros monitores. A contagem de sessões NVENC é do outro branch.
+- **NVENC/QSV:** a concessão de sessão para REF/PADRÃO do `mv` foi testada com placa simulada (`encoder-sessions.test.ts`). A sessão real, a troca a quente e a devolução ao programa só se validam no Windows com placa.
 - **CPU e latência reais** com entradas NDI, SRT e SDI e decodificação H.264 do Chrome/Edge (provavelmente por hardware): os números acima são relativos, num container de 2 núcleos.
 - **Fontes reais nas células:** NDI, SRT e DeckLink no PVW, NEXT, QC e contingência, além do tally e do VU com áudio de verdade.
 

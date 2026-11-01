@@ -75,13 +75,20 @@ ganhou `monitor: Option<MonitorSource>`; com `Some`, o `Publisher` vira um
 `Report.encoder`). Comandos do servidor: `{"cmd":"monitor","bus","on","tier","hardware"}`
 e `{"cmd":"monitorClock","on"}`.
 
+### Multiview composto (`mv`, integrado na r88-36)
+
+O mosaico de `docs/MULTIVIEW.md` usa este mesmo `MonitorBus` (`MonitorSource.mosaic = true`,
+perfis em `mosaic_profile`). O nível salvo no canal é o teto em que o mosaico é composto, e
+os espectadores escolhem até ele. Conta no orçamento de CPU e nas sessões de placa como PGM e PVW.
+
 ### Escolha do nível no navegador
 
 `apps/web/src/domain/monitor-tier.ts` (puro, testado) e `Whep.tsx`:
 
 * **Inicial pelo contexto:** QC → REF; celular (`pointer: coarse`/UA),
-  `saveData`, rede 2g/3g ou `downlink < 2 Mbps` → LEVE; multiview → LEVE;
-  PGM/PVW com janela ≥ 480 px → PADRÃO; menores → LEVE.
+  `saveData`, rede 2g/3g ou `downlink < 2 Mbps` → LEVE; PGM/PVW e
+  multiview composto com janela ≥ 480 px → PADRÃO; menores → LEVE. Nunca
+  acima do maior nível publicado (`clampToAvailable`: o teto do mosaico).
 * **Manual no próprio monitor:** seletor `AUTO · REF · PAD · LEV` no canto do
   vídeo; a escolha fica guardada por papel (localStorage, só conveniência).
 * **Automático com histerese** sobre RTCStats (um por segundo): amostra ruim
