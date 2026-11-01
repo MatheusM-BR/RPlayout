@@ -42,6 +42,7 @@ export function MonitorEngineeringPanel({ channelId }: { channelId: string }) {
       <p data-testid="encoder-sessions">
         Codificação por placa: {sessions?.hardware ? `${sessions.hardware} — ${sessions.total === null ? 'sem limite de sessões' : `${sessions.total} sessões`}, ${sessions.reservedForProgram} reservadas ao programa, ${sessions.monitorsInUse} em monitores, ${sessions.free === null ? 'livres sem limite' : `${sessions.free} livres`}` : 'sem placa — monitores em x264 (veryfast/zerolatency)'}
         {sessions?.learned ? ` (${sessions.learned})` : ''}
+        {sessions?.software ? ` · CPU dos monitores em x264 (todos os canais): ${sessions.software.inUseMpx.toFixed(1)} de ${sessions.software.budgetMpx.toFixed(0)} Mpx/s` : ''}
       </p>
       <table className="mt-1 w-full t-data">
         <thead><tr><th>Monitor</th><th>Nível</th><th>Encoder</th><th>Perfil</th><th>Estado</th></tr></thead>

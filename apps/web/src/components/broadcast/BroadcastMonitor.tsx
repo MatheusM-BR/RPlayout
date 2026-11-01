@@ -45,6 +45,17 @@ export function monitorRecovery(beat:()=>void,retry:()=>void):()=>void{
 
 /** Text for the empty screen. A failed WHEP while PGM is on air must not tell
  * the operator to press TAKE: the program is running, only this view is not. */
+/** Sigla do nível como no seletor do monitor (REF/PAD/LEV). */
+const TIER_SHORT: Record<MonitorTier, string> = { ref: 'REF', std: 'PAD', lite: 'LEV' }
+
+/**
+ * Rótulo do scope ao vivo do PGM: diz em que nível o WHEP está (o scope de um
+ * LEVE de 240 linhas não é o de uma REFERÊNCIA), ao lado do selo INDICATIVO.
+ */
+export function liveScopeLabel(tier: MonitorTier | null): string {
+  return `PGM · ${tier ? `${TIER_SHORT[tier]} · ` : ''}WHEP decodificado pelo navegador`
+}
+
 export function emptyMonitorText(isPgm:boolean,onAir:boolean,monitorFailed:boolean):{title:string;detail:string}{
   if(monitorFailed)return {title:isPgm&&onAir?'Saída no ar · prévia sem vídeo':'Monitor do engine reconectando',detail:isPgm&&onAir?'O canal está no ar (confira SAÍDAS no cabeçalho). Só a prévia deste navegador não recebeu vídeo (WebRTC, porta 8889); nova tentativa a cada 6 s.':'O vídeo deste monitor não chegou ao navegador (WebRTC, porta 8889); nova tentativa a cada 6 s.'}
   if(isPgm&&onAir)return {title:'Monitor aguardando imagem',detail:'PGM no ar; o monitor do engine ainda está abrindo.'}
@@ -94,6 +105,7 @@ export function BroadcastMonitor({
   })
   const setScopes = (value: 'off' | 'overlay' | 'window') => { setScopesState(value); try { window.localStorage.setItem(`rplayout.scopes.monitor.${bus}`, value) } catch { /* só não lembra */ } }
   const [whepVideo, setWhepVideo] = useState<HTMLVideoElement | null>(null)
+  const [whepTier, setWhepTier] = useState<MonitorTier | null>(null)
   const [falseColorCanvas, setFalseColorCanvas] = useState<HTMLCanvasElement | null>(null)
   const [falseColorOn, setFalseColorOn] = useState(false)
   const onFalseColorChange = useCallback((mode: string | null) => setFalseColorOn(Boolean(mode)), [])
@@ -303,6 +315,7 @@ export function BroadcastMonitor({
             tiers={tiers}
             role={bus}
             onVideoElement={isPgm ? setWhepVideo : undefined}
+            onTierChange={isPgm ? setWhepTier : undefined}
             onWatching={
               onWatching
                 ? (tier?: MonitorTier) => {
@@ -479,7 +492,7 @@ export function BroadcastMonitor({
               ? 'absolute inset-x-1 top-1 bottom-6 z-20 rounded bg-black/55 p-1'
               : 'fixed right-3 bottom-3 z-50 w-[560px] h-[380px] min-w-[320px] min-h-[220px] resize overflow-hidden rounded-lg border border-border-strong bg-surface-card/95 shadow-2xl p-1.5'}>
             <ScopeDeck storageKey={`monitor-${bus}-${scopes}`} compact={scopes === 'overlay'}
-              live={{element: whepVideo, label: 'PGM · WHEP decodificado pelo navegador', valid: true}}
+              live={{element: whepVideo, label: liveScopeLabel(whepTier), valid: true}}
               falseColorCanvas={falseColorCanvas} onFalseColorChange={onFalseColorChange}/>
           </div>
         </>}

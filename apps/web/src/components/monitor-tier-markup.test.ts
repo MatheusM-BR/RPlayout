@@ -24,3 +24,22 @@ describe('seletor de nível no monitor (markup)', () => {
     expect(html).toContain('MEDIR ATRASO')
   })
 })
+
+describe('selo do scope ao vivo do PGM', () => {
+  it('o rótulo diz o nível em uso (REF/PAD/LEV), ao lado do INDICATIVO', async () => {
+    const { liveScopeLabel } = await import('./broadcast/BroadcastMonitor.js')
+    const { ScopeDeck } = await import('./scopes/ScopeDeck.js')
+    expect(liveScopeLabel('ref')).toBe('PGM · REF · WHEP decodificado pelo navegador')
+    expect(liveScopeLabel('std')).toContain('· PAD ·')
+    expect(liveScopeLabel('lite')).toContain('· LEV ·')
+    expect(liveScopeLabel(null)).toBe('PGM · WHEP decodificado pelo navegador')
+    const html = renderToStaticMarkup(createElement(ScopeDeck, { storageKey: 'teste', compact: true, live: { element: null, label: liveScopeLabel('lite'), valid: true } }))
+    expect(html).toContain('INDICATIVO')
+    expect(html).toContain('PGM · LEV · WHEP')
+  })
+  it('onTierChange é opcional: o Whep sem ele (e com ele) desenha o mesmo seletor', () => {
+    const plain = renderToStaticMarkup(createElement(Whep, { path: 'c/mon', port: 8889, tiers, role: 'pgm', hideControls: true }))
+    const withCallback = renderToStaticMarkup(createElement(Whep, { path: 'c/mon', port: 8889, tiers, role: 'pgm', hideControls: true, onTierChange: () => {} }))
+    expect(withCallback).toBe(plain)
+  })
+})

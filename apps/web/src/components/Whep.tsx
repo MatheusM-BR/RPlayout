@@ -42,6 +42,12 @@ interface Props {
    * em vez de depender de um relógio independente.
    */
   onVideoFrame?: () => void
+  /**
+   * Avisa o nível em uso (REF/PADRÃO/LEVE; nulo sem níveis) quando ele muda,
+   * pela escolha manual ou pela troca automática. Opcional: quem não passa
+   * não percebe diferença (o scope ao vivo do PGM usa no rótulo).
+   */
+  onTierChange?: (tier: MonitorTier | null) => void
 }
 
 type Status = 'off' | 'connecting' | 'live' | 'failed'
@@ -80,6 +86,7 @@ export function Whep({
   muted,
   onVideoElement,
   onVideoFrame,
+  onTierChange,
   tiers,
   role = 'pgm',
 }: Props) {
@@ -105,6 +112,9 @@ export function Whep({
   const effectivePath = hasTiers && tier ? (tiers?.[tier] ?? path) : path
   const tierRef = useRef(tier)
   tierRef.current = tier
+  const onTierChangeRef = useRef(onTierChange)
+  onTierChangeRef.current = onTierChange
+  useEffect(() => { onTierChangeRef.current?.(tier) }, [tier])
   const modeRef = useRef(mode)
   modeRef.current = mode
   useEffect(() => {

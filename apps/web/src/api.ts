@@ -268,9 +268,13 @@ export interface MonitorTierReport {
   tier: 'ref' | 'std' | 'lite'; health: string; encoder?: string; hardware: boolean
   profile?: { width: number; height: number; fpsN: number; fpsD: number; bitrateKbps: number; quality: number }
   delivered: number; uptimeMs: number; degraded?: string; error?: string
+  /** A placa falhou neste nível, e por quê (campo próprio do engine). */
+  hardwareFailed?: string
 }
 export interface MonitorEngineering {
-  sessions: { hardware: string | null; total: number | null; reservedForProgram: number; monitorsInUse: number; free: number | null; learned: string | null; encoders: { name: string; hardware: boolean; available: boolean; sessions: number | null; unlimited: boolean }[] } | null
+  sessions: { hardware: string | null; total: number | null; reservedForProgram: number; monitorsInUse: number; free: number | null; learned: string | null; encoders: { name: string; hardware: boolean; available: boolean; sessions: number | null; unlimited: boolean }[]
+    /** Orçamento de CPU dos monitores em software, da máquina inteira (todos os canais). */
+    software?: { budgetMpx: number; inUseMpx: number; grants: { channelId: string; bus: string; tier: 'ref' | 'std' | 'lite'; mpx: number }[] } } | null
   watched: { bus: import('@rplayout/protocol').MonitorBus; tier: 'ref' | 'std' | 'lite'; hardware: boolean; lastSeenMs: number }[]
   /** Teto do mosaico composto (nulo sem multiview). */
   multiviewCeiling?: 'ref' | 'std' | 'lite' | null
