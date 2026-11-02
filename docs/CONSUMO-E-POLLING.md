@@ -183,6 +183,11 @@ servidor avisa pelo WebSocket quando muda; **não** = só HTTP.
 | Maior crescimento entre snapshots | código JIT (+547 kB), sem objeto de domínio | nenhum (objetos caíram) |
 | `heapUsed` amostrado | — | 38–58 MB, oscilando, sem tendência |
 
+- **Soak final (30 min, build final, com a suíte de testes rodando ao lado):**
+  - RSS de 197 → 321 MB em platô a partir de 20 min.
+  - `heapTotal` de 47–79 MB, `heapUsed` de 38–54 MB, `external` de 3 MB.
+  - Snapshots aos 3 e aos 28 min: 52,6 → 53,7 MB, só código JIT.
+  - Ou seja: dos ~320 MB de RSS, só ~80 MB são heap do V8. O resto é nativo, incluindo ~80 MB deixados pelo próprio snapshot.
 - **Sem vazamento de objetos do JavaScript:** nenhum construtor de domínio cresce entre os snapshots.
 - **Cada snapshot custa cerca de 80 MB de RSS** (degrau visível no CSV). Não é crescimento do servidor.
 - **O RSS acima do heap é memória nativa:**
