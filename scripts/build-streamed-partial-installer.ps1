@@ -69,7 +69,7 @@ $engineBuild=Get-RPlayoutNativeBuildFile -WorkspaceRoot $workspaceRoot -Name 'rp
 foreach($name in @('rplayout-engine.exe','rplayout-engine-test.exe','apps/engine/target/release/rplayout-engine.exe')){$files[$name]=$engineBuild.source;$expected[$name]=$engineBuild.sha256}
 $launcherSource=if($LauncherBinary){[IO.Path]::GetFullPath($LauncherBinary)}else{Join-Path $workspaceRoot 'apps/engine/target/release/rplayout.exe'}
 foreach($name in @('Server','Master','Schedule','Users','Monitor','Aired','QC')){$key='RPlayout-'+$name+'.exe';$files[$key]=$launcherSource;$expected.Remove($key)}
-foreach($name in @('probe','devices','relay','avsync','proxy','audio-analysis','audio-bus-probe','graphic-probe','file-security')){$key='apps/engine/target/release/rplayout-'+$name+'.exe';$files[$key]=Join-Path $workspaceRoot $key;$expected.Remove($key)}
+foreach($name in @('probe','devices','encoders','relay','avsync','proxy','audio-analysis','audio-bus-probe','graphic-probe','file-security')){$key='apps/engine/target/release/rplayout-'+$name+'.exe';$files[$key]=Join-Path $workspaceRoot $key;$expected.Remove($key)}
 $guardBuild=Get-RPlayoutNativeBuildFile -WorkspaceRoot $workspaceRoot -Name 'rplayout-host-guard.exe' -OverrideFile $HostGuardBinary -UseCurrentBuilds:$UseCurrentBuilds
 $files[$guardBuild.file]=$guardBuild.source;$expected[$guardBuild.file]=$guardBuild.sha256
 # If an older base has a root alias, it must not retain the previous helper.
