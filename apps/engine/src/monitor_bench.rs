@@ -519,7 +519,8 @@ fn relatorio_real_de_falha_de_placa_vira_fixture_do_servidor() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &lines).unwrap();
     }
-    let saved = std::fs::read_to_string(&path).unwrap_or_default();
+    // No Windows o checkout com core.autocrlf entrega CRLF: compara o conteúdo, não o fim de linha.
+    let saved = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
     assert_eq!(saved, lines, "fixture do servidor desatualizada: RPLAYOUT_UPDATE_FIXTURES=1 cargo test relatorio_real_de_falha_de_placa");
 }
 
