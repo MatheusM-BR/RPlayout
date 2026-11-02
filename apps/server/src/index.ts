@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { serverShutdownEvent, serverStartedEvent } from './domain/server-lifecycle.js'
 import { softwareVersion } from './domain/software-version.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import cors from '@fastify/cors'
 import fastifyStatic from '@fastify/static'
@@ -255,7 +255,23 @@ async function main(): Promise<void> {
 
   // Medição nova precisa chegar à grade: o nivelamento automático sai da
   // loudness do arquivo, e ela acabou de mudar.
+  // A varredura automática roda a cada 60 s. Sem nada novo no acervo, ela
+  // regravava a grade em todos os canais e mandava `library` para todas as
+  // abas -- que reliam acervo, scanner e categorias a cada minuto. Só avisa
+  // quando o conteúdo do acervo mudou (impressão de media_assets).
+  let libraryFingerprint: string | null = null
+  const libraryChanged = (): boolean => {
+    try {
+      const hash = createHash('sha256')
+      for (const row of app.sqlite.prepare('SELECT * FROM media_assets ORDER BY id').raw().all() as unknown[][]) hash.update(JSON.stringify(row))
+      const next = hash.digest('hex'), changed = next !== libraryFingerprint
+      libraryFingerprint = next
+      return changed
+    } catch { return true }
+  }
+  try { libraryChanged() } catch { /* primeira impressão: na próxima varredura */ }
   app.ingest.onFinished = () => {
+    if (!libraryChanged()) return
     void background.run('ingest-refresh',async()=>{
       await Promise.all([...app.runtimes.values()].map(runtime=>runtime.refresh()))
       if(storageConnected()){pushViews();broadcast({type:'library'})}

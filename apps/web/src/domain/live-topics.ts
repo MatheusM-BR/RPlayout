@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from 'react'
  * Aba oculta não relê nada (exceto quem pede `whileHidden`, como o alarme de
  * pendências); ao voltar a ficar visível, relê o que ficou velho.
  */
-export type TopicName = 'graphics' | 'probe' | 'watchdog' | 'interruptions' | 'nextPlaylist' | 'continuity' | 'engine' | 'scan' | 'health' | 'clock'
+export type TopicName = 'graphics' | 'probe' | 'watchdog' | 'interruptions' | 'nextPlaylist' | 'continuity' | 'engine' | 'scan' | 'health' | 'alarms' | 'clock'
 export interface ProbeLive { lastSampleAt: string | null; metrics: { blackDurationMs: number; freezeDurationMs: number; silenceDurationMs: number; audioDbfs: number | null } }
 export interface TopicsMessage { type: 'topics'; channelId: string | null; revs: Partial<Record<TopicName, number>>; probe?: ProbeLive }
 

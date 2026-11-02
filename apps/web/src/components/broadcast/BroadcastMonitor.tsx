@@ -101,6 +101,8 @@ export function BroadcastMonitor({
   const [hasMediaError, setHasMediaError] = useState(false)
   const [isScrubbing, setIsScrubbing] = useState(false)
   const [webrtcFailed, setWebrtcFailed] = useState(false)
+  const [hiddenTab,setHiddenTab]=useState(documentHidden)
+  useEffect(()=>{const sync=()=>setHiddenTab(documentHidden());document.addEventListener('visibilitychange',sync);return()=>document.removeEventListener('visibilitychange',sync)},[])
   const recoveryFailures=useRef(0)
   const failedMonitor=useCallback(()=>{recoveryFailures.current++;setWebrtcFailed(true)},[])
   // Scopes ao vivo do PGM (opcional): desligado, sobre a imagem ou em janela
@@ -352,17 +354,18 @@ export function BroadcastMonitor({
             )}
             {isStillImage || hasMediaError ? (
               <img
-                src={`/api/assets/${asset.id}/thumbnail.svg`}
+                src={hiddenTab ? undefined : `/api/assets/${asset.id}/thumbnail.svg`}
                 alt={asset.title}
                 className="w-full h-full object-contain"
               />
             ) : (
               <video
                 ref={videoRef}
-                src={lightweightPreviewUrl(asset)}
-                poster={`/api/assets/${asset.id}/thumbnail.svg`}
-                // Aba oculta não baixa o proxy de cada item que entra no ar.
-                preload={documentHidden() ? 'none' : 'metadata'}
+                // Aba oculta não baixa proxy nem miniatura de cada item que
+                // entra no ar; ao voltar, o próximo desenho pede os dois.
+                src={hiddenTab ? undefined : lightweightPreviewUrl(asset)}
+                poster={hiddenTab ? undefined : `/api/assets/${asset.id}/thumbnail.svg`}
+                preload="metadata"
                 muted={effectiveMuted}
                 playsInline
                 className="w-full h-full object-contain cursor-pointer"

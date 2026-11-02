@@ -5,7 +5,7 @@ import { useTopicRefresh } from './live-topics.js'
 export type OpenNotification = Awaited<ReturnType<typeof api.notifications>>['notifications'][number]
 
 /** Pendências abertas do PGM. Relidas quando o servidor avisa que os
- * alertas mudaram (tópico `health`, também com a aba oculta: é o alarme
+ * alarmes mudaram (tópico `alarms`, também com a aba oculta: é o alarme
  * sonoro) e, por segurança, a cada minuto com a aba visível. O nível de
  * escalonamento depende do tempo em aberto, que o minuto cobre. Falha ou
  * 401/403 só deixam a lista como estava. Nunca bloqueia comando algum. */
@@ -27,6 +27,6 @@ export function useNotifications(enabled = true, intervalMs = 60_000): { notific
     void read()
     return () => { alive = false; controller.abort(); reader.current = () => undefined }
   }, [enabled, tick])
-  useTopicRefresh('health', null, () => reader.current(), { fallbackMs: intervalMs, degradedMs: 10_000, whileHidden: true, enabled })
+  useTopicRefresh('alarms', null, () => reader.current(), { fallbackMs: intervalMs, degradedMs: 10_000, whileHidden: true, enabled })
   return { notifications, refresh: () => setTick(n => n + 1) }
 }

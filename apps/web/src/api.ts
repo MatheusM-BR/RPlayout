@@ -218,7 +218,7 @@ export interface HostMetricSample {
   sampleIntervalSeconds: number
   cpu: { percent: number | null; cores: number }
   memory: { totalBytes: number; usedBytes: number; freeBytes: number; percent: number | null }
-  process: { rssBytes: number; heapUsedBytes: number }
+  process: { rssBytes: number; heapUsedBytes: number; heapTotalBytes?: number; externalBytes?: number; arrayBuffersBytes?: number }
   gpu: { utilizationPercent: number | null; memoryUsedMiB: number | null; memoryTotalMiB: number | null; temperatureC: number | null; name: string | null; error: string | null }
   disk: { path: string; totalBytes: number | null; freeBytes: number | null; percentUsed: number | null; error: string | null }
   network: { receivedBytesPerSecond: number | null; sentBytesPerSecond: number | null; source: string | null; error: string | null }

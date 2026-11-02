@@ -5,7 +5,7 @@ import { engineStatusOf } from './engine-status.js'
 import { Interruptions } from './interruptions.js'
 import { readScanDiagnostics } from './scan-diagnostic.js'
 import type { TopicSignature } from './live-topics.js'
-import { HEALTH_CHANGE_SIGNATURE_SQL } from '../db/health-query-indexes.js'
+import { HEALTH_ALARM_SIGNATURE_SQL, HEALTH_PENDING_SIGNATURE_SQL } from '../db/health-query-indexes.js'
 
 /**
  * O que, de cada tela, conta como "mudou" -- e o que não conta.
@@ -74,13 +74,18 @@ export function probeSummary(app: App, channelId: string): unknown {
 
 /** Tópicos do servidor, sem canal: scanner, alertas (cabeçalho e pendências) e relógio. */
 export function serverTopics(app: App, sqlite: Database.Database): Record<string, TopicSignature> {
-  const pendingHealth = sqlite.prepare(HEALTH_CHANGE_SIGNATURE_SQL)
+  const pendingHealth = sqlite.prepare(HEALTH_PENDING_SIGNATURE_SQL)
+  const alarms = sqlite.prepare(HEALTH_ALARM_SIGNATURE_SQL)
   return {
     // GET /api/library/scan (e, por tabela, a releitura do acervo).
-    scan: () => [app.ingest.status(), readScanDiagnostics(sqlite).map(batch => [batch.id, batch.state])],
+    // Só o que muda o que a tela mostra parada: ocupado ou não, erro e lotes.
+    // O progresso de uma varredura em curso a tela lê sozinha (5 s).
+    scan: () => { const status = app.ingest.status(); return [status.running, status.error ?? null, readScanDiagnostics(sqlite).map(batch => [batch.id, batch.state])] },
     // Contagens de pendências (cabeçalho) e notificações abertas: muda quando
     // entra incidente novo ou quando um pendente é reconhecido/resolvido.
     health: () => pendingHealth.get(),
+    // Notificações/alarme sonoro (lido também com a aba oculta).
+    alarms: () => alarms.get(),
     clock: () => { const status = app.clockMonitor.status(); return [status.state, status.reason, status.checkedAt] },
   }
 }
