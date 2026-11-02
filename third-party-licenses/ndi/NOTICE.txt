@@ -1,0 +1,20 @@
+NDI® — Network Device Interface
+
+Este produto usa o runtime NDI® (Processing.NDI.Lib.x64.dll, versão 6.3.2.0,
+SHA256 2b6602075868ba4401f82f417d72424805d69b11ca86078023d0d489ff45dd84),
+redistribuído junto com o RPlayout para que o usuário não precise instalar
+nada à parte.
+
+NDI® é marca registrada da Vizrt NDI AB. Copyright © Vizrt NDI AB (NDI, Inc.).
+Todos os direitos reservados. O RPlayout não é um produto da NDI.
+Saiba mais em https://ndi.video/
+
+Termos aplicáveis (cópias oficiais nesta pasta, baixadas de downloads.ndi.tv
+em 27/10/2026):
+- NDI_SDK_License_Agreement.pdf (SHA256 11ae13ae038d5af06d2fd5f9e55cbbdb97e75d2526656a0dbaa4dafcb7bf48e6)
+- NDI_License_Agreement.pdf (SHA256 2f7d6c6f6be74354cb7f9d586aa4af80c5a152c486cf6dd7fdd82ffe8f2c0d81)
+
+Aceite: os termos do NDI SDK foram aceitos pelo licenciado (Remate Web,
+responsável técnico Matheus) por instrução expressa em 27/10/2026. A
+distribuição do RPlayout segue o item 3d do contrato, reproduzido em
+../RPLAYOUT-EULA.txt.

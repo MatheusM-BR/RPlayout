@@ -1,0 +1,6 @@
+cd C:\RPlayout
+git pull
+cd apps\engine
+cargo build --release
+cd C:\RPlayout
+Copy-Item apps\engine\target\release\rplayout.exe C:\RPlayout\

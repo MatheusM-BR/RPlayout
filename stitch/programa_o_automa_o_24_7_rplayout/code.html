@@ -1,0 +1,591 @@
+<!DOCTYPE html><html class="dark" lang="en"><head><meta charset="utf-8"><meta content="width=device-width, initial-scale=1.0" name="viewport"><meta content="web_standard" name="shell-type"><title>RPlayout Master Control</title><link href="https://fonts.googleapis.com" rel="preconnect"><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"><link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&amp;family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500;600;700&amp;display=swap" rel="stylesheet"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "on-primary-container": "#00285d", "on-tertiary": "#4b2800", "secondary-fixed": "#ffdad5", "surface": "#11131b", "on-tertiary-container": "#412200", "surface-bright": "#373942", "surface-container-high": "#272a32", "on-secondary": "#690003", "border-strong": "#5570AB", "on-air-glow": "#FF5F5F", "tertiary-container": "#d47b00", "on-error-container": "#ffdad6", "error-container": "#93000a", "surface-variant": "#32343d", "on-primary": "#002e6a", "on-surface": "#e1e2ed", "outline-variant": "#424754", "status-ok": "#34C759", "tertiary-fixed": "#ffdcbf", "on-tertiary-fixed": "#2d1600", "primary-fixed-dim": "#adc6ff", "inverse-surface": "#e1e2ed", "outline": "#8c909f", "secondary": "#ffb4aa", "surface-container-highest": "#32343d", "on-secondary-fixed": "#410001", "inverse-on-surface": "#2e3039", "border-subtle": "#28354E", "on-error": "#690005", "armed-glow": "#FFB340", "on-primary-fixed": "#001a42", "on-tertiary-fixed-variant": "#6a3b00", "surface-panel": "#121A2B", "on-secondary-fixed-variant": "#930005", "secondary-container": "#c5020b", "accent-ice-bright": "#5B9BFF", "background": "#11131b", "surface-tint": "#adc6ff", "on-primary-fixed-variant": "#004395", "armed-amber": "#FF9500", "surface-container-lowest": "#0b0e16", "tertiary-fixed-dim": "#ffb874", "primary-fixed": "#d8e2ff", "on-secondary-container": "#ffd2cc", "status-ok-bright": "#3DDBA0", "surface-base": "#05070E", "accent-ice": "#3B82F6", "secondary-fixed-dim": "#ffb4aa", "surface-container-low": "#191b23", "inverse-primary": "#005ac2", "on-surface-variant": "#c2c6d6", "on-background": "#e1e2ed", "on-air-crimson": "#FF3B30", "surface-container": "#1d1f27", "tertiary": "#ffb874", "surface-card": "#111827", "error": "#ffb4ab", "primary": "#adc6ff", "surface-dim": "#11131b", "primary-container": "#4d8eff" }, "borderRadius": { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" }, "spacing": { "margin": "0.75rem", "space-xs": "0.125rem", "gutter": "0.5rem", "space-lg": "0.75rem", "space-xl": "1rem", "space-md": "0.5rem", "space-sm": "0.25rem" }, "fontFamily": { "headline-lg": [ "Barlow Condensed" ], "headline-xl": [ "Barlow Condensed" ], "timecode-table": [ "JetBrains Mono" ], "label-mono": [ "JetBrains Mono" ], "body-lg": [ "Inter" ], "headline-md": [ "Barlow Condensed" ], "label-caps": [ "Inter" ], "body-sm": [ "Inter" ], "timecode-display": [ "JetBrains Mono" ], "body-md": [ "Inter" ] }, "fontSize": { "headline-lg": [ "24px", { "lineHeight": "28px", "letterSpacing": "0.03em", "fontWeight": "700" } ], "headline-xl": [ "32px", { "lineHeight": "36px", "letterSpacing": "0.04em", "fontWeight": "700" } ], "timecode-table": [ "13px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "600" } ], "label-mono": [ "10px", { "lineHeight": "12px", "fontWeight": "500" } ], "body-lg": [ "15px", { "lineHeight": "20px", "fontWeight": "500" } ], "headline-md": [ "18px", { "lineHeight": "22px", "letterSpacing": "0.02em", "fontWeight": "600" } ], "label-caps": [ "10px", { "lineHeight": "12px", "letterSpacing": "0.08em", "fontWeight": "700" } ], "body-sm": [ "11px", { "lineHeight": "15px", "fontWeight": "400" } ], "timecode-display": [ "28px", { "lineHeight": "32px", "letterSpacing": "0.05em", "fontWeight": "700" } ], "body-md": [ "13px", { "lineHeight": "18px", "fontWeight": "400" } ] } } } };</script></head><body class="bg-surface-base text-on-surface antialiased select-none"><header class="fixed top-0 left-0 right-0 w-full z-50 bg-surface-card border-b border-border-subtle"><div class="h-14 px-margin flex items-center justify-between gap-gutter"><div class="flex items-center gap-space-lg"><div class="flex items-center gap-space-sm"><img alt="RPlayout Master Logo" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1UBY8Xi-Fu-L6EKu9-85gZkkmfJRhE477JOWtrIBL_k8-LWkVFQj6AvHZZjKXnxr9PcVNTnX1CC5aP7Pu4tgk1Dtqhex6UiE72peurxF2Dxiyq7HN2YzMqy4ubNYo66QyiXsZ7kPJ_vcd2zak-7HbvmCmiqRX3pQoGPM4ix-9l5H-PasGOt5cdYVymHZlEBPzq90vgGRNPRF9CYS-0vQgTuVHCcdzeYWIpfc5duOWx9A8UtN27HtrFMMUBB"><span class="font-headline-md text-headline-md tracking-wider text-on-surface uppercase">RPlayout</span><div class="flex items-center gap-space-xs px-space-sm py-0.5 rounded bg-on-air-crimson/20 border border-on-air-crimson/50"><span class="w-2 h-2 rounded-full bg-on-air-crimson animate-ping"></span><span class="font-label-caps text-label-caps text-on-air-crimson font-bold">LIVE</span></div></div><div class="h-6 w-px bg-border-subtle"></div><div class="flex items-center gap-space-xs bg-surface-panel px-space-md py-1 rounded border border-border-subtle"><span class="material-symbols-outlined text-accent-ice text-[18px]">tv</span><span class="font-body-md text-body-md font-semibold text-on-surface">Canal 1 - TV Principal HD</span><span class="font-label-mono text-label-mono text-primary bg-surface-container px-1 py-0.5 rounded">1080p50</span><span class="material-symbols-outlined text-outline text-[16px]">expand_more</span></div></div><div class="flex items-center gap-space-lg"><div class="flex items-center gap-space-sm bg-surface-base px-space-lg py-1 rounded border border-border-subtle shadow-inner"><span class="font-label-mono text-label-mono text-outline uppercase">NTP REF</span><span class="font-timecode-display text-timecode-display text-on-surface tracking-widest font-bold tabular-nums">20:40:47:12</span><span class="w-2 h-2 rounded-full bg-status-ok shadow-[0_0_6px_#34C759]"></span></div><div class="hidden xl:flex items-center gap-space-xs"><div class="flex items-center gap-space-xs px-space-sm py-1 rounded bg-surface-panel border border-border-subtle"><span class="w-1.5 h-1.5 rounded-full bg-status-ok"></span><span class="font-label-caps text-label-caps text-on-surface-variant">SDI:</span><span class="font-label-caps text-label-caps text-status-ok-bright font-bold">OK</span></div><div class="flex items-center gap-space-xs px-space-sm py-1 rounded bg-surface-panel border border-border-subtle"><span class="w-1.5 h-1.5 rounded-full bg-accent-ice-bright"></span><span class="font-label-caps text-label-caps text-on-surface-variant">NDI:</span><span class="font-label-caps text-label-caps text-accent-ice-bright font-bold">ON</span></div><div class="flex items-center gap-space-xs px-space-sm py-1 rounded bg-surface-panel border border-border-subtle"><span class="w-1.5 h-1.5 rounded-full bg-status-ok"></span><span class="font-label-caps text-label-caps text-on-surface-variant">NVENC:</span><span class="font-label-caps text-label-caps text-status-ok-bright font-bold">60FPS</span></div><div class="flex items-center gap-space-xs px-space-sm py-1 rounded bg-surface-panel border border-border-subtle"><span class="w-1.5 h-1.5 rounded-full bg-primary-container"></span><span class="font-label-caps text-label-caps text-on-surface-variant">SRT:</span><span class="font-label-caps text-label-caps text-primary font-bold">LIVE</span></div></div></div><div class="flex items-center gap-space-md"><nav class="flex items-center gap-space-xs bg-surface-panel p-space-xs rounded border border-border-subtle" data-active-classes="bg-primary-container text-on-primary-container font-bold border-border-strong"><a class="px-space-md py-1 text-on-surface-variant hover:text-on-surface hover:bg-surface-container font-body-sm text-body-sm uppercase transition-colors rounded" data-path="master-control" href="#">Master</a><a class="px-space-md py-1 text-on-surface-variant hover:text-on-surface hover:bg-surface-container font-body-sm text-body-sm uppercase transition-colors rounded" data-path="playlist-manager" href="#">Playlist</a><a class="px-space-md py-1 text-on-surface-variant hover:text-on-surface hover:bg-surface-container font-body-sm text-body-sm uppercase transition-colors rounded" data-path="quality-control" href="#">QC</a><a class="px-space-md py-1 text-on-surface-variant hover:text-on-surface hover:bg-surface-container font-body-sm text-body-sm uppercase transition-colors rounded" data-path="multiview-monitor" href="#">Monitor</a><a class="px-space-md py-1 text-on-surface-variant hover:text-on-surface hover:bg-surface-container font-body-sm text-body-sm uppercase transition-colors rounded" data-path="as-run-logs" href="#">Aired</a><a class="px-space-md py-1 text-on-surface-variant hover:text-on-surface hover:bg-surface-container font-body-sm text-body-sm uppercase transition-colors rounded" data-path="operations-manual" href="#">Docs</a></nav><div class="h-6 w-px bg-border-subtle"></div><div class="flex items-center gap-space-sm pl-space-xs"><div class="text-right"><div class="font-body-sm text-body-sm font-semibold text-on-surface leading-none">Operador Master</div><div class="flex items-center justify-end gap-space-xs"><span class="w-1.5 h-1.5 rounded-full bg-status-ok"></span><span class="font-label-caps text-label-caps text-outline">ONLINE</span></div></div><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div></div></header><main class="w-full pt-14 bg-surface-base"><div class="flex flex-col w-full">
+<!-- Sub-Header / Workspace Control Toolbar -->
+<div class="bg-surface-card px-margin py-space-sm flex flex-col xl:flex-row xl:items-center justify-between gap-space-md shadow-md">
+<!-- Channel Metadata & Day Picker -->
+<div class="flex flex-wrap items-center gap-space-md">
+<div class="flex items-center gap-space-xs">
+<span class="bg-primary/10 text-primary px-space-sm py-0.5 rounded font-label-caps text-label-caps tracking-wider uppercase">PLAYLIST MANAGER</span>
+<span class="text-outline text-body-sm font-body-sm">/</span>
+<h1 class="font-headline-md text-headline-md text-on-surface uppercase tracking-wide">Programação &amp; Automação 24/7 • Canal 1 HD</h1>
+</div>
+<div class="h-4 w-px bg-surface-container-highest hidden sm:block"></div>
+<!-- Linear Day Selector Tabs -->
+<div class="flex items-center gap-space-xs bg-surface-base p-0.5 rounded">
+<button class="px-space-md py-1 rounded bg-surface-panel text-on-surface font-body-sm text-body-sm flex items-center gap-space-xs shadow-sm">
+<span class="w-1.5 h-1.5 rounded-full bg-status-ok shadow-[0_0_6px_#34C759]"></span>
+<span class="font-semibold">Hoje 15/Mai</span>
+<span class="font-label-mono text-label-mono text-status-ok-bright bg-surface-base px-1 py-0.2 rounded">100% OK</span>
+</button>
+<button class="px-space-md py-1 rounded text-on-surface-variant hover:text-on-surface hover:bg-surface-container font-body-sm text-body-sm flex items-center gap-space-xs transition-colors">
+<span class="w-1.5 h-1.5 rounded-full bg-armed-amber"></span>
+<span class="">Amanhã 16/Mai</span>
+<span class="font-label-mono text-label-mono text-armed-amber bg-surface-base px-1 py-0.2 rounded">98.4% (GAP 03m)</span>
+</button>
+<button class="px-space-md py-1 rounded text-outline hover:text-on-surface hover:bg-surface-container font-body-sm text-body-sm flex items-center gap-space-xs transition-colors">
+<span class="w-1.5 h-1.5 rounded-full bg-outline"></span>
+<span class="">17/Mai</span>
+<span class="font-label-mono text-label-mono text-outline bg-surface-base px-1 py-0.2 rounded">VAZIO</span>
+</button>
+<button class="px-space-sm py-1 rounded text-outline hover:text-on-surface hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined text-[16px] align-middle">calendar_today</span>
+</button>
+</div>
+</div>
+<!-- Master Action Controls -->
+<div class="flex flex-wrap items-center gap-space-xs">
+<button class="flex items-center gap-space-xs bg-surface-panel hover:bg-surface-container px-space-md py-1.5 rounded text-on-surface font-body-sm text-body-sm transition-colors">
+<span class="material-symbols-outlined text-[16px] text-accent-ice">file_upload</span>
+<span class="">Importar M3U / XML</span>
+</button>
+<button class="flex items-center gap-space-xs bg-surface-panel hover:bg-surface-container px-space-md py-1.5 rounded text-on-surface font-body-sm text-body-sm transition-colors" id="btn-autofill-modal">
+<span class="material-symbols-outlined text-[16px] text-armed-amber">auto_fix_high</span>
+<span class="">Autofill AI</span>
+</button>
+<button class="flex items-center gap-space-xs bg-surface-panel hover:bg-surface-container px-space-md py-1.5 rounded text-on-surface font-body-sm text-body-sm transition-colors">
+<span class="material-symbols-outlined text-[16px] text-status-ok-bright">rule</span>
+<span class="">Validar QC</span>
+</button>
+<div class="h-5 w-px bg-surface-container-highest mx-0.5"></div>
+<!-- Glowing CTA: Publish to Master -->
+<button class="flex items-center gap-space-sm bg-on-air-crimson hover:bg-red-500 text-surface-base px-space-lg py-1.5 rounded font-headline-md text-headline-md tracking-wider shadow-[0_0_12px_rgba(255,59,48,0.45)] transition-all">
+<span class="material-symbols-outlined text-[18px]">satellite_alt</span>
+<span class="text-white font-bold">PUBLICAR NO MASTER</span>
+<span class="bg-surface-base/90 text-on-air-glow font-label-mono text-label-mono px-1.5 py-0.5 rounded font-bold">3 DIFFS</span>
+</button>
+</div>
+</div>
+<!-- 24h Linear Broadcast Timeline Ruler & Realtime Math Banner -->
+<div class="bg-surface-panel px-margin py-space-sm shadow-inner">
+<div class="flex flex-col gap-space-xs">
+<!-- Status Health Metric Line -->
+<div class="flex flex-wrap items-center justify-between gap-space-md font-label-mono text-label-mono">
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-space-xs">
+<span class="text-outline uppercase">COBERTURA DO DIA:</span>
+<span class="font-timecode-table text-timecode-table text-on-surface font-bold">23:59:58:00</span>
+<span class="text-outline">/ 24:00:00:00</span>
+<span class="text-armed-amber bg-armed-amber/10 px-1 py-0.5 rounded font-bold">-00:00:02 SUB-EXECUÇÃO</span>
+</div>
+<div class="flex items-center gap-space-xs">
+<span class="text-outline uppercase">EVENTOS CARREGADOS:</span>
+<span class="text-primary font-bold">142 ITEMS</span>
+</div>
+<div class="flex items-center gap-space-xs">
+<span class="text-outline uppercase">ÂNCORAS FIXAS:</span>
+<span class="text-status-ok-bright font-bold">8 HARD LOCKS</span>
+</div>
+</div>
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-status-ok"></span>
+<span class="text-on-surface-variant font-label-caps text-label-caps">ANCINE COTAS: 100% CONFORME</span>
+</div>
+<div class="flex items-center gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-on-air-crimson animate-pulse"></span>
+<span class="text-on-air-glow font-label-caps text-label-caps font-bold">GENLOCK 1080p50 LOCKED</span>
+</div>
+</div>
+</div>
+<!-- 24-Hour Visual Daypart Heat Bar -->
+<div class="w-full bg-surface-base h-8 rounded relative overflow-hidden flex shadow-inner">
+<!-- Madrugada (00:00 - 06:00) 25% -->
+<div class="h-full bg-surface-container-high/60 relative group flex items-center justify-between px-space-sm" style="width: 25%;">
+<span class="font-label-caps text-label-caps text-outline tracking-wider z-10 font-bold">00:00 MADRUGADA</span>
+<span class="font-label-mono text-[9px] text-outline z-10 hidden sm:inline">REPRISE / SÉRIES</span>
+<div class="absolute inset-0 bg-primary/5 opacity-50 group-hover:opacity-100 transition-opacity"></div>
+</div>
+<!-- Manhã (06:00 - 12:00) 25% -->
+<div class="h-full bg-accent-ice/15 relative group flex items-center justify-between px-space-sm" style="width: 25%;">
+<span class="font-label-caps text-label-caps text-accent-ice-bright tracking-wider z-10 font-bold">06:00 MANHÃ</span>
+<span class="font-label-mono text-[9px] text-accent-ice z-10 hidden sm:inline">JORNALISMO LIVE</span>
+<!-- Live Position Marker at 06:40:00 -->
+<div class="absolute top-0 bottom-0 bg-on-air-crimson w-1 z-20 shadow-[0_0_8px_#FF3B30]" style="left: 11%;">
+<div class="absolute -top-1 -left-1.5 w-4 h-2 bg-on-air-crimson rounded-t-sm flex items-center justify-center">
+<span class="w-1 h-1 bg-white rounded-full"></span>
+</div>
+</div>
+<!-- Underrun Alert Notch at 06:40:45 -->
+<div class="absolute top-0 bottom-0 bg-armed-amber/80 w-2 z-10" style="left: 12.5%;"></div>
+</div>
+<!-- Tarde (12:00 - 18:00) 25% -->
+<div class="h-full bg-tertiary-container/20 relative group flex items-center justify-between px-space-sm" style="width: 25%;">
+<span class="font-label-caps text-label-caps text-tertiary tracking-wider z-10 font-bold">12:00 TARDE</span>
+<span class="font-label-mono text-[9px] text-tertiary-fixed-dim z-10 hidden sm:inline">VARIEDADES / FILMES</span>
+</div>
+<!-- Noite / Prime Time (18:00 - 24:00) 25% -->
+<div class="h-full bg-on-air-crimson/15 relative group flex items-center justify-between px-space-sm" style="width: 25%;">
+<span class="font-label-caps text-label-caps text-secondary tracking-wider z-10 font-bold">18:00 PRIME TIME</span>
+<span class="font-label-mono text-[9px] text-on-air-glow z-10 hidden sm:inline">NOVELA / HARD TIME</span>
+</div>
+</div>
+<!-- Time ruler markings -->
+<div class="flex justify-between font-label-mono text-[9px] text-outline px-1">
+<span class="">00:00:00</span>
+<span class="">03:00:00</span>
+<span class="">06:00:00</span>
+<span class="">09:00:00</span>
+<span class="">12:00:00</span>
+<span class="">15:00:00</span>
+<span class="">18:00:00</span>
+<span class="">21:00:00</span>
+<span class="">23:59:59</span>
+</div>
+</div>
+</div>
+<!-- Workspace Body: 65% Rundown Grid & 35% Smart Assistant -->
+<div class="p-margin grid grid-cols-1 xl:grid-cols-12 gap-gutter">
+<!-- LEFT PANE: Master Rundown Table (Col 8 / 12) -->
+<div class="xl:col-span-8 flex flex-col gap-space-sm">
+<!-- Rundown Action Sub-bar -->
+<div class="bg-surface-card p-space-sm rounded flex flex-wrap items-center justify-between gap-space-sm shadow-sm">
+<div class="flex flex-wrap items-center gap-space-xs">
+<button class="bg-accent-ice/20 hover:bg-accent-ice/30 text-accent-ice-bright px-space-sm py-1 rounded font-body-sm text-body-sm flex items-center gap-space-xs transition-colors">
+<span class="material-symbols-outlined text-[16px]">add_circle</span>
+<span class="font-semibold">+ Adicionar Bloco</span>
+</button>
+<button class="bg-surface-panel hover:bg-surface-container text-on-surface px-space-sm py-1 rounded font-body-sm text-body-sm flex items-center gap-space-xs transition-colors">
+<span class="material-symbols-outlined text-[16px] text-armed-amber">lock_clock</span>
+<span class="">+ Hard Time Lock</span>
+</button>
+<button class="bg-surface-panel hover:bg-surface-container text-on-surface px-space-sm py-1 rounded font-body-sm text-body-sm flex items-center gap-space-xs transition-colors">
+<span class="material-symbols-outlined text-[16px] text-status-ok-bright">auto_mode</span>
+<span class="">Resolver Todos Gaps</span>
+</button>
+</div>
+<div class="flex items-center gap-space-xs font-label-mono text-label-mono">
+<span class="text-outline">FILTRAR:</span>
+<select class="bg-surface-panel text-on-surface text-body-sm font-body-sm px-space-sm py-1 rounded focus:outline-none">
+<option>Todos os Blocos (24 Horas)</option>
+<option>Apenas Faixa Manhã (06h - 12h)</option>
+<option>Somente Comerciais &amp; Fillers</option>
+<option>Avisos de Conflito / Gap</option>
+</select>
+<button class="bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface p-1 rounded" title="Exportar Relatório ANCINE">
+<span class="material-symbols-outlined text-[18px]">download</span>
+</button>
+</div>
+</div>
+<!-- High Precision Playout Rundown Table Container -->
+<div class="bg-surface-card rounded shadow-md overflow-hidden flex flex-col">
+<!-- Table Column Headers -->
+<div class="grid grid-cols-12 bg-surface-container-high px-space-md py-1.5 font-label-caps text-label-caps text-outline uppercase tracking-wider items-center"><div class="col-span-1 flex items-center gap-1">
+<span class="">#</span>
+<span class="material-symbols-outlined text-[12px]">unfold_more</span>
+</div>
+<div class="col-span-2">Âncora / Modo</div>
+<div class="col-span-2">Início / Fim (NTP)</div>
+<div class="col-span-2">Duração</div>
+<div class="col-span-3">Título da Mídia / MAM ID</div>
+<div class="col-span-1">Categoria</div>
+<div class="col-span-1 text-right">QC / Trim</div></div>
+<!-- Table Item: 01 (Hard Time - Abertura) -->
+<div class="grid grid-cols-12 px-space-md py-2 bg-surface-card hover:bg-surface-panel items-center text-body-sm font-body-sm transition-colors group"><div class="col-span-1 flex items-center gap-space-xs font-label-mono text-label-mono text-outline">
+<span class="material-symbols-outlined text-[14px] text-outline cursor-grab">drag_indicator</span>
+<span class="">01</span>
+</div>
+<div class="col-span-2 flex items-center gap-space-xs">
+<span class="bg-on-air-crimson/20 text-on-air-crimson font-label-mono text-[9px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5">
+<span class="material-symbols-outlined text-[11px]">lock</span> HARD NTP
+            </span>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-on-surface">
+<div class="">06:00:00:00</div>
+<div class="text-outline text-[11px]">06:04:30:00</div>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-primary font-semibold pr-space-sm">
+            00:04:30:00
+          </div>
+<div class="col-span-3 min-w-0 pr-space-sm">
+<div class="text-on-surface font-semibold truncate flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-primary">play_circle</span>
+              Abertura Programação Oficial &amp; Hino Nacional HD
+            </div>
+<div class="font-label-mono text-label-mono text-outline truncate">MAM-ID: BR-ANC-2024-00918 • 1080p50 • Ch 1+2 EBU R128</div>
+</div>
+<div class="col-span-1">
+<span class="bg-surface-panel text-on-surface-variant px-1.5 py-0.5 rounded font-label-caps text-[9px]">INSTITUCIONAL</span>
+</div>
+<div class="col-span-1 flex items-center justify-end gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-status-ok" title="QC Aprovado"></span>
+<span class="material-symbols-outlined text-[16px] text-outline hover:text-on-surface cursor-pointer">more_vert</span>
+</div></div>
+<!-- Table Item: 02 (Sequencial - Bom Dia Notícias) -->
+<div class="grid grid-cols-12 px-space-md py-2 bg-surface-panel/40 hover:bg-surface-panel items-center text-body-sm font-body-sm transition-colors group"><div class="col-span-1 flex items-center gap-space-xs font-label-mono text-label-mono text-outline">
+<span class="material-symbols-outlined text-[14px] text-outline cursor-grab">drag_indicator</span>
+<span class="">02</span>
+</div>
+<div class="col-span-2 flex items-center gap-space-xs">
+<span class="bg-accent-ice/20 text-accent-ice-bright font-label-mono text-[9px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5">
+<span class="material-symbols-outlined text-[11px]">redo</span> AUTO-FOLLOW
+            </span>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-on-surface">
+<div class="">06:04:30:00</div>
+<div class="text-outline text-[11px]">06:39:15:00</div>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-on-surface font-semibold pr-space-sm">
+            00:34:45:00
+          </div>
+<div class="col-span-3 min-w-0 pr-space-sm">
+<div class="text-on-surface font-semibold truncate flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-status-ok-bright">sensors</span>
+              Bom Dia Notícias - Bloco 01 (Estúdio Principal Ao Vivo)
+            </div>
+<div class="font-label-mono text-label-mono text-status-ok font-semibold truncate">ROTEIRO SDI-IN 01 • STUDIO LIVE FEED</div>
+</div>
+<div class="col-span-1">
+<span class="bg-accent-ice/10 text-accent-ice-bright px-1.5 py-0.5 rounded font-label-caps text-[9px]">JORNALISMO</span>
+</div>
+<div class="col-span-1 flex items-center justify-end gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-status-ok" title="SDI Genlocked"></span>
+<span class="material-symbols-outlined text-[16px] text-outline hover:text-on-surface cursor-pointer">more_vert</span>
+</div></div>
+<!-- INTERSTITIAL CALLOUT: GAP DETECTED IN SCHEDULE -->
+<div class="bg-armed-amber/15 px-space-md py-1.5 flex items-center justify-between shadow-sm">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-armed-amber text-[18px]">warning</span>
+<div class="flex items-center gap-space-xs font-label-mono text-label-mono">
+<span class="text-armed-amber font-bold uppercase">GAP DETECTADO NO INTERVALO:</span>
+<span class="font-timecode-table text-timecode-table text-armed-amber font-bold">-00:00:45:00</span>
+<span class="text-on-surface-variant">(06:39:15:00 até 06:40:00:00)</span>
+</div>
+</div>
+<div class="flex items-center gap-space-xs">
+<button class="bg-armed-amber text-surface-base px-space-sm py-0.5 rounded font-label-caps text-[10px] font-bold hover:bg-armed-glow transition-all flex items-center gap-1 shadow-sm">
+<span class="material-symbols-outlined text-[13px]">add</span> INSERIR FILLER SUGERIDO (45s)
+            </button>
+<button class="bg-surface-base text-outline hover:text-on-surface px-space-xs py-0.5 rounded text-[11px]">Ignorar</button>
+</div>
+</div>
+<!-- Table Item: 03 (Break Comercial Nacional) -->
+<div class="grid grid-cols-12 px-space-md py-2 bg-surface-card hover:bg-surface-panel items-center text-body-sm font-body-sm transition-colors group"><div class="col-span-1 flex items-center gap-space-xs font-label-mono text-label-mono text-outline">
+<span class="material-symbols-outlined text-[14px] text-outline cursor-grab">drag_indicator</span>
+<span class="">03</span>
+</div>
+<div class="col-span-2 flex items-center gap-space-xs">
+<span class="bg-accent-ice/20 text-accent-ice-bright font-label-mono text-[9px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5">
+<span class="material-symbols-outlined text-[11px]">redo</span> AUTO-FOLLOW
+            </span>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-on-surface">
+<div class="">06:40:00:00</div>
+<div class="text-outline text-[11px]">06:42:30:00</div>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-primary font-semibold pr-space-sm">
+            00:02:30:00
+          </div>
+<div class="col-span-3 min-w-0 pr-space-sm">
+<div class="text-on-surface font-semibold truncate flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-tertiary">featured_video</span>
+              Break Comercial 01 - Rede Nacional (5 Spots Comerciais)
+            </div>
+<div class="font-label-mono text-label-mono text-outline truncate">GRID-COM-4412 • SCTE-35 TRIGGERS ENABLED (SPLICE IN/OUT)</div>
+</div>
+<div class="col-span-1">
+<span class="bg-tertiary-container/30 text-tertiary px-1.5 py-0.5 rounded font-label-caps text-[9px]">COMERCIAL</span>
+</div>
+<div class="col-span-1 flex items-center justify-end gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-status-ok"></span>
+<span class="material-symbols-outlined text-[16px] text-outline hover:text-on-surface cursor-pointer">more_vert</span>
+</div></div>
+<!-- Table Item: 04 (Filler Dinâmico Auto-Trim) -->
+<div class="grid grid-cols-12 px-space-md py-2 bg-surface-panel/30 hover:bg-surface-panel items-center text-body-sm font-body-sm transition-colors group"><div class="col-span-1 flex items-center gap-space-xs font-label-mono text-label-mono text-outline">
+<span class="material-symbols-outlined text-[14px] text-outline cursor-grab">drag_indicator</span>
+<span class="">04</span>
+</div>
+<div class="col-span-2 flex items-center gap-space-xs">
+<span class="bg-status-ok/20 text-status-ok-bright font-label-mono text-[9px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5">
+<span class="material-symbols-outlined text-[11px]">content_cut</span> AUTO-TRIM
+            </span>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-on-surface">
+<div class="">06:42:30:00</div>
+<div class="text-outline text-[11px]">06:43:00:00</div>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-status-ok-bright font-semibold pr-space-sm">
+            00:00:30:00
+          </div>
+<div class="col-span-3 min-w-0 pr-space-sm">
+<div class="text-on-surface font-semibold truncate flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-status-ok-bright">auto_awesome</span>
+              Chamada Institucional Programação Outono 2025 (Filler Auto-Trim)
+            </div>
+<div class="font-label-mono text-label-mono text-outline truncate">MAM-ID: FIL-2025-0044 • Flex Trim (+/- 12s) Safe Zone</div>
+</div>
+<div class="col-span-1">
+<span class="bg-status-ok/10 text-status-ok-bright px-1.5 py-0.5 rounded font-label-caps text-[9px]">CHAMADA</span>
+</div>
+<div class="col-span-1 flex items-center justify-end gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-status-ok"></span>
+<span class="material-symbols-outlined text-[16px] text-outline hover:text-on-surface cursor-pointer">more_vert</span>
+</div></div>
+<!-- Table Item: 05 (Jornal do Meio-Dia - Hard Time Anchor) -->
+<div class="grid grid-cols-12 px-space-md py-2 bg-surface-card hover:bg-surface-panel items-center text-body-sm font-body-sm transition-colors group"><div class="col-span-1 flex items-center gap-space-xs font-label-mono text-label-mono text-outline">
+<span class="material-symbols-outlined text-[14px] text-outline cursor-grab">drag_indicator</span>
+<span class="">05</span>
+</div>
+<div class="col-span-2 flex items-center gap-space-xs">
+<span class="bg-on-air-crimson/20 text-on-air-crimson font-label-mono text-[9px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5">
+<span class="material-symbols-outlined text-[11px]">lock</span> HARD NTP
+            </span>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-on-surface">
+<div class="font-bold text-on-air-glow">12:00:00:00</div>
+<div class="text-outline text-[11px]">13:00:00:00</div>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-primary font-semibold pr-space-sm">
+            01:00:00:00
+          </div>
+<div class="col-span-3 min-w-0 pr-space-sm">
+<div class="text-on-surface font-semibold truncate flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-on-air-crimson">live_tv</span>
+              Jornal do Meio-Dia - Edição Principal (Ao Vivo Estúdio A)
+            </div>
+<div class="font-label-mono text-label-mono text-outline truncate">ROTEIRO NEWS-ROOM MOS PROTOCOL • SONY ELC AUTOMATION LINK</div>
+</div>
+<div class="col-span-1">
+<span class="bg-accent-ice/10 text-accent-ice-bright px-1.5 py-0.5 rounded font-label-caps text-[9px]">JORNALISMO</span>
+</div>
+<div class="col-span-1 flex items-center justify-end gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-status-ok"></span>
+<span class="material-symbols-outlined text-[16px] text-outline hover:text-on-surface cursor-pointer">more_vert</span>
+</div></div>
+<!-- Table Item: 06 (Horário Político Obrigatório - Hard Time) -->
+<div class="grid grid-cols-12 px-space-md py-2 bg-surface-panel/50 hover:bg-surface-panel items-center text-body-sm font-body-sm transition-colors group"><div class="col-span-1 flex items-center gap-space-xs font-label-mono text-label-mono text-outline">
+<span class="material-symbols-outlined text-[14px] text-outline cursor-grab">drag_indicator</span>
+<span class="">06</span>
+</div>
+<div class="col-span-2 flex items-center gap-space-xs">
+<span class="bg-on-air-crimson/20 text-on-air-crimson font-label-mono text-[9px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5">
+<span class="material-symbols-outlined text-[11px]">gavel</span> HARD LEGAL
+            </span>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-on-surface">
+<div class="font-bold text-on-air-glow">20:30:00:00</div>
+<div class="text-outline text-[11px]">20:40:00:00</div>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-secondary font-semibold pr-space-sm">
+            00:10:00:00
+          </div>
+<div class="col-span-3 min-w-0 pr-space-sm">
+<div class="text-on-surface font-semibold truncate flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-secondary">verified</span>
+              Propaganda Eleitoral Gratuita / Horário Político Obrigatório
+            </div>
+<div class="font-label-mono text-label-mono text-outline truncate">POOL EMBRATEL CH 04 • HARD CUT TRIGGER • PREEMPT PROGRAM</div>
+</div>
+<div class="col-span-1">
+<span class="bg-on-secondary/30 text-secondary px-1.5 py-0.5 rounded font-label-caps text-[9px]">OBRIGATÓRIO</span>
+</div>
+<div class="col-span-1 flex items-center justify-end gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-status-ok"></span>
+<span class="material-symbols-outlined text-[16px] text-outline hover:text-on-surface cursor-pointer">more_vert</span>
+</div></div>
+<!-- Table Item: 07 (Série Especial - Ep. 42 Prime Time) -->
+<div class="grid grid-cols-12 px-space-md py-2 bg-surface-card hover:bg-surface-panel items-center text-body-sm font-body-sm transition-colors group"><div class="col-span-1 flex items-center gap-space-xs font-label-mono text-label-mono text-outline">
+<span class="material-symbols-outlined text-[14px] text-outline cursor-grab">drag_indicator</span>
+<span class="">07</span>
+</div>
+<div class="col-span-2 flex items-center gap-space-xs">
+<span class="bg-accent-ice/20 text-accent-ice-bright font-label-mono text-[9px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5">
+<span class="material-symbols-outlined text-[11px]">redo</span> AUTO-FOLLOW
+            </span>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-on-surface">
+<div class="">20:40:00:00</div>
+<div class="text-outline text-[11px]">21:35:00:00</div>
+</div>
+<div class="col-span-2 font-timecode-table text-timecode-table text-primary font-semibold pr-space-sm">
+            00:55:00:00
+          </div>
+<div class="col-span-3 min-w-0 pr-space-sm">
+<div class="text-on-surface font-semibold truncate flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-primary">movie</span>
+              Série Dramaturgia Nacional - Temporada 02 (Episódio 42)
+            </div>
+<div class="font-label-mono text-label-mono text-outline truncate">MAM-ID: FIC-2025-0421 • XAVC-Intra 100 • Dolby E 5.1 Surround</div>
+</div>
+<div class="col-span-1">
+<span class="bg-primary/10 text-primary px-1.5 py-0.5 rounded font-label-caps text-[9px]">DRAMATURGIA</span>
+</div>
+<div class="col-span-1 flex items-center justify-end gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-status-ok"></span>
+<span class="material-symbols-outlined text-[16px] text-outline hover:text-on-surface cursor-pointer">more_vert</span>
+</div></div>
+</div>
+<!-- Quick Rundown Footer Bar -->
+<div class="bg-surface-card px-space-md py-1.5 rounded flex items-center justify-between font-label-mono text-label-mono text-outline shadow-sm">
+<div class="flex items-center gap-space-md">
+<span class="">Exibindo 7 de 142 eventos agendados</span>
+<span class="text-primary cursor-pointer hover:underline">Carregar mais 135 eventos da grade...</span>
+</div>
+<div class="flex items-center gap-space-sm">
+<span class="">PREVIEW AUDIO: STEREO PCM</span>
+<span class="w-1.5 h-1.5 rounded-full bg-status-ok"></span>
+<span class="">AUTOPLAY MOTOR V4: ACTIVE</span>
+</div>
+</div>
+</div>
+<!-- RIGHT PANE: Assistant, Fillers & Diff Review (Col 4 / 12) -->
+<div class="xl:col-span-4 flex flex-col gap-space-sm">
+<!-- Panel 1: Autofill Intelligence & Dynamic Filler Pool -->
+<div class="bg-surface-card rounded shadow-md overflow-hidden flex flex-col">
+<div class="bg-surface-container-high px-space-md py-space-sm flex items-center justify-between">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[18px] text-armed-amber">magic_button</span>
+<h2 class="font-headline-md text-headline-md text-on-surface uppercase">Autofill AI &amp; Banco de Fillers</h2>
+</div>
+<span class="bg-surface-panel text-armed-amber font-label-mono text-label-mono px-1.5 py-0.5 rounded">POOL ATIVO</span>
+</div>
+<div class="p-space-md flex flex-col gap-space-sm">
+<div class="bg-surface-base p-space-sm rounded">
+<div class="flex items-center justify-between font-body-sm text-body-sm mb-1">
+<span class="text-on-surface font-semibold">Gap Alvo: 06:39:15 (-45s)</span>
+<span class="font-label-mono text-label-mono text-armed-amber">Necessita 00:00:45</span>
+</div>
+<p class="font-body-sm text-body-sm text-outline">
+              O motor de IA filtrou fillers baseados na regra ANCINE (Cota Nacional) e histórico de repetição dos últimos 7 dias.
+            </p>
+</div>
+<!-- Suggested Filler Items -->
+<div class="flex flex-col gap-space-xs">
+<!-- Filler Item 1 -->
+<div class="bg-surface-panel p-space-sm rounded flex items-center justify-between hover:bg-surface-container transition-colors group">
+<div class="min-w-0 flex-1 pr-2">
+<div class="text-on-surface font-body-sm text-body-sm font-semibold truncate">
+                  Chamada Futebol Copa TV (45s)
+                </div>
+<div class="font-label-mono text-label-mono text-outline">
+                  DUR: 00:00:45:00 • MAM-ID: ESP-9921
+                </div>
+</div>
+<button class="bg-accent-ice text-surface-base hover:bg-accent-ice-bright font-label-caps text-label-caps font-bold px-2 py-1 rounded transition-colors whitespace-nowrap shadow-sm">
+                INSERIR (45s)
+              </button>
+</div>
+<!-- Filler Item 2 -->
+<div class="bg-surface-panel p-space-sm rounded flex items-center justify-between hover:bg-surface-container transition-colors group">
+<div class="min-w-0 flex-1 pr-2">
+<div class="text-on-surface font-body-sm text-body-sm font-semibold truncate">
+                  Apoio Cultural Teatro Municipal (30s + 15s Vinheta)
+                </div>
+<div class="font-label-mono text-label-mono text-outline">
+                  DUR: 00:00:30:00 + 15s • MAM-ID: CULT-120
+                </div>
+</div>
+<button class="bg-surface-container hover:bg-surface-panel text-on-surface font-label-caps text-label-caps font-bold px-2 py-1 rounded transition-colors whitespace-nowrap">
+                COMBINAR
+              </button>
+</div>
+<!-- Filler Item 3 -->
+<div class="bg-surface-panel p-space-sm rounded flex items-center justify-between hover:bg-surface-container transition-colors group">
+<div class="min-w-0 flex-1 pr-2">
+<div class="text-on-surface font-body-sm text-body-sm font-semibold truncate">
+                  Vinheta Ident Interplay Outono (15s Loop Flex)
+                </div>
+<div class="font-label-mono text-label-mono text-outline">
+                  DUR: 00:00:15:00 • Loop Hold Mode
+                </div>
+</div>
+<button class="bg-surface-container hover:bg-surface-panel text-on-surface font-label-caps text-label-caps font-bold px-2 py-1 rounded transition-colors whitespace-nowrap">
+                INSERIR (15s)
+              </button>
+</div>
+</div>
+</div>
+</div>
+<!-- Panel 2: Broadcast Compliance & MAM Sanity Checks -->
+<div class="bg-surface-card rounded shadow-md overflow-hidden flex flex-col">
+<div class="bg-surface-container-high px-space-md py-space-sm flex items-center justify-between">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[18px] text-status-ok">verified_user</span>
+<h2 class="font-headline-md text-headline-md text-on-surface uppercase">Conformidade &amp; Armazenamento</h2>
+</div>
+<span class="text-status-ok-bright font-label-caps text-label-caps font-bold flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-status-ok"></span> 100% OK
+          </span>
+</div>
+<div class="p-space-md grid grid-cols-2 gap-space-sm">
+<!-- Metric 1 -->
+<div class="bg-surface-base p-space-sm rounded">
+<div class="font-label-caps text-label-caps text-outline uppercase">Cotas ANCINE (Nacional)</div>
+<div class="font-headline-md text-headline-md text-status-ok font-bold mt-0.5">3h 45m / 3h 30m</div>
+<div class="font-label-mono text-[9px] text-status-ok-bright">Meta legal atingida (+15m)</div>
+</div>
+<!-- Metric 2 -->
+<div class="bg-surface-base p-space-sm rounded">
+<div class="font-label-caps text-label-caps text-outline uppercase">Comerciais (Max 25%)</div>
+<div class="font-headline-md text-headline-md text-primary font-bold mt-0.5">18.4% Ocupação</div>
+<div class="font-label-mono text-[9px] text-outline">Dentro do teto legal (Lei 4.117)</div>
+</div>
+<!-- Metric 3 -->
+<div class="bg-surface-base p-space-sm rounded">
+<div class="font-label-caps text-label-caps text-outline uppercase">SAN Storage Playout</div>
+<div class="font-headline-md text-headline-md text-on-surface font-bold mt-0.5">142 / 142 Online</div>
+<div class="font-label-mono text-[9px] text-status-ok-bright">Nenhum arquivo offline / missing</div>
+</div>
+<!-- Metric 4 -->
+<div class="bg-surface-base p-space-sm rounded">
+<div class="font-label-caps text-label-caps text-outline uppercase">Áudio Loudness (R128)</div>
+<div class="font-headline-md text-headline-md text-on-surface font-bold mt-0.5">-23.8 LUFS</div>
+<div class="font-label-mono text-[9px] text-status-ok-bright">Normalização pré-calculada</div>
+</div>
+</div>
+</div>
+<!-- Panel 3: Master Diff Drawer (Staged Changes before On-Air Push) -->
+<div class="bg-surface-card rounded shadow-md overflow-hidden flex flex-col">
+<div class="bg-surface-container-high px-space-md py-space-sm flex items-center justify-between">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[18px] text-on-air-crimson">difference</span>
+<h2 class="font-headline-md text-headline-md text-on-surface uppercase">Diff Comparador PGM</h2>
+</div>
+<span class="bg-on-air-crimson/20 text-on-air-crimson font-label-mono text-label-mono px-1.5 py-0.5 rounded font-bold">3 PENDENTES</span>
+</div>
+<div class="p-space-md flex flex-col gap-space-sm">
+<p class="font-body-sm text-body-sm text-outline">
+            Alterações preparadas localmente que serão sincronizadas com o servidor de playout no ar ao confirmar:
+          </p>
+<div class="flex flex-col gap-space-xs font-label-mono text-label-mono">
+<!-- Diff Line 1: Modified -->
+<div class="bg-surface-panel p-space-xs rounded flex items-center justify-between">
+<div class="flex items-center gap-space-xs truncate">
+<span class="text-armed-amber font-bold">[MOD]</span>
+<span class="text-on-surface truncate">Bloco 02 Jornalismo (Trim -30s)</span>
+</div>
+<span class="text-outline text-[9px]">06:04:30</span>
+</div>
+<!-- Diff Line 2: Added -->
+<div class="bg-surface-panel p-space-xs rounded flex items-center justify-between">
+<div class="flex items-center gap-space-xs truncate">
+<span class="text-status-ok-bright font-bold">[ADD]</span>
+<span class="text-on-surface truncate">Chamada Esporte Especial (45s)</span>
+</div>
+<span class="text-outline text-[9px]">06:39:15</span>
+</div>
+<!-- Diff Line 3: Deleted -->
+<div class="bg-surface-panel p-space-xs rounded flex items-center justify-between">
+<div class="flex items-center gap-space-xs truncate">
+<span class="text-on-air-crimson font-bold">[DEL]</span>
+<span class="text-on-surface truncate">Reprise Madrugada Bloco 04</span>
+</div>
+<span class="text-outline text-[9px]">04:15:00</span>
+</div>
+</div>
+<!-- Action Buttons -->
+<div class="flex items-center justify-between gap-space-sm mt-1">
+<button class="bg-surface-panel hover:bg-surface-container text-outline hover:text-on-surface px-space-md py-1.5 rounded font-body-sm text-body-sm transition-colors">
+              Reverter Tudo
+            </button>
+<button class="flex-1 bg-primary hover:bg-primary-container text-on-primary hover:text-on-primary-container px-space-md py-1.5 rounded font-headline-md text-headline-md uppercase tracking-wider font-bold transition-colors text-center shadow-md">
+              Confirmar &amp; Sincronizar
+            </button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div></main><footer class="w-full bg-surface-card border-t border-border-subtle py-2 px-margin"><div class="w-full flex items-center justify-between font-label-mono text-label-mono text-outline"><span class="">RPLAYOUT BROADCAST SUITE v4.8.2-PRO • CORE CLUSTER ACTIVE • GENLOCK: LOCKED (1080p50 Blackburst)</span><span class="">ENGINE LATENCY: 0.8ms • REDUNDANCY: HOT-STANDBY SYNCED</span></div></footer>
+
+</body></html>

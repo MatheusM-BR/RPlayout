@@ -1,0 +1,44 @@
+node_modules/
+dist/
+build/
+# Build-time SOURCE of the web package (third-party notices), not an artifact.
+!/apps/web/build/
+coverage/
+*.local
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+apps/server/mediamtx.yml
+.thumbs/
+apps/server/.thumbs/
+apps/server/.continuity-cache/
+midia/
+apps/server/midia/
+backups/
+apps/server/backups/
+release/
+*.exe
+scratch/
+
+# Artefatos locais de execução e credenciais geradas automaticamente.
+*.key
+*.crt
+*.rvf
+*.rvf.lock
+*.log
+Processing.NDI.Lib.x64.dll
+
+# Mídia e estado local gerados pelos ensaios/operação (não são código-fonte).
+.continuity-cache/
+.media-versions/
+.claude-flow/swarm/
+.swarm/
+vault.json
+vault*.json
+apps/server/UsersfsdaAppDataLocalTempRPlayout-*.mp4
+# Configuração privada temporária: pode conter credenciais após proteção ACL.
+.mediamtx.yml.private-*

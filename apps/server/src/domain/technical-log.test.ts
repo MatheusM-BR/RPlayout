@@ -1,0 +1,37 @@
+import { describe, expect, it } from 'vitest'
+import { TechnicalLog, classifyEngineLine } from './technical-log.js'
+describe('logs técnicos em memória (A6)', () => {
+  it('guarda linhas do engine com severidade, canal e caminho do relatório de crash; ignora polling HTTP', () => {
+    const log = new TechnicalLog(100)
+    log.ingest('{"level":30,"time":1793429740102,"msg":"incoming request","req":{"route":"/api/health"}}\n')
+    log.ingest('{"level":30,"time":1793429740111,"msg":"request completed","res":{"statusCode":200}}\n')
+    log.ingest('[engine QA] ERRO Internal data stream error. (gstbasesrc.c(3177): /GstInterAudioSrc:interaudiosrc0:\nstreaming stopped, reason not-negotiated (-4))\n')
+    log.ingest('[engine QA] AVISO comando recusado: este canal não tem barramento de preview\n')
+    log.ingest('[engine QA] encerrado: sinal SIGKILL; relatório em /tmp/qa/eng/engine-crashes/engine-crash-2026-10-31T07-25-02-574Z-b46f.txt\n')
+    log.ingest('{"level":50,"time":1793432913042,"type":"Error","diagnostic":"Engine não confirmou encerramento normal.","msg":"Falha no encerramento"}\n')
+    log.ingest('[engine QA] destino srt://user:segredo@10.0.0.1:9000?passphrase=abc caiu\n')
+    const { entries } = log.read()
+    expect(entries.map(e => `${e.source}:${e.level}:${e.channel ?? '-'}`)).toEqual(['ENGINE:ERROR:QA', 'ENGINE:WARN:QA', 'ENGINE:ERROR:QA', 'SERVER:ERROR:-', 'ENGINE:INFO:QA'])
+    expect(entries[0]!.message).toContain('not-negotiated')
+    expect(entries[0]!.message.startsWith('Internal data stream error')).toBe(true)
+    expect(entries[1]!.message).toBe('comando recusado: este canal não tem barramento de preview')
+    expect(entries[2]!.crashReport).toBe('/tmp/qa/eng/engine-crashes/engine-crash-2026-10-31T07-25-02-574Z-b46f.txt')
+    expect(entries[3]!.message).toBe('Falha no encerramento — Engine não confirmou encerramento normal.')
+    expect(entries[4]!.message).not.toContain('segredo')
+    expect(log.read({ minLevel: 'WARN', query: 'sigkill' }).entries).toHaveLength(1)
+    expect(log.crashReports()[0]!.path).toContain('engine-crash-')
+  })
+  it('é limitado e permite leitura incremental e por janela de tempo', () => {
+    const log = new TechnicalLog(3)
+    for (let i = 0; i < 5; i++) log.ingest(`[engine A] linha ${i}`, 1000 + i * 1000)
+    const all = log.read()
+    expect(all.entries.map(e => e.message)).toEqual(['linha 2', 'linha 3', 'linha 4'])
+    expect(log.read({ afterSeq: all.entries[1]!.seq }).entries.map(e => e.message)).toEqual(['linha 4'])
+    expect(log.read({ sinceMs: 4000 }).entries).toHaveLength(2)
+  })
+  it('classifica linhas típicas do GStreamer/Rust', () => {
+    expect(classifyEngineLine('0:00:01.2 123 0x55 WARN  basesrc gstbasesrc.c:3132 error')).toBe('WARN')
+    expect(classifyEngineLine('[2026-10-31T07:00:00Z ERROR rplayout_engine] falhou')).toBe('ERROR')
+    expect(classifyEngineLine('pipeline pronto')).toBe('INFO')
+  })
+})

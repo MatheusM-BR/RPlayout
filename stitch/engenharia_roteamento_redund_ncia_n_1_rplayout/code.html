@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&amp;family=Inter:wght@400;500;700&amp;family=JetBrains+Mono:wght@500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+          "on-primary-container": "#00285d",
+          "surface": "#11131b",
+          "tertiary-container": "#d47b00",
+          "on-secondary-fixed": "#410001",
+          "error": "#ffb4ab",
+          "tertiary": "#ffb874",
+          "surface-bright": "#373942",
+          "surface-dim": "#11131b",
+          "outline-variant": "#424754",
+          "status-ok-bright": "#3DDBA0",
+          "on-primary-fixed": "#001a42",
+          "error-container": "#93000a",
+          "on-secondary": "#690003",
+          "outline": "#8c909f",
+          "background": "#11131b",
+          "secondary-fixed-dim": "#ffb4aa",
+          "border-subtle": "#28354E",
+          "on-surface-variant": "#c2c6d6",
+          "inverse-surface": "#e1e2ed",
+          "on-secondary-fixed-variant": "#930005",
+          "surface-container-high": "#272a32",
+          "accent-ice-bright": "#5B9BFF",
+          "on-error": "#690005",
+          "on-tertiary-container": "#412200",
+          "primary-fixed": "#d8e2ff",
+          "armed-amber": "#FF9500",
+          "surface-container-lowest": "#0b0e16",
+          "surface-base": "#05070E",
+          "primary": "#adc6ff",
+          "border-strong": "#5570AB",
+          "accent-ice": "#3B82F6",
+          "inverse-on-surface": "#2e3039",
+          "on-secondary-container": "#ffd2cc",
+          "surface-tint": "#adc6ff",
+          "surface-card": "#111827",
+          "primary-fixed-dim": "#adc6ff",
+          "inverse-primary": "#005ac2",
+          "on-tertiary-fixed": "#2d1600",
+          "armed-glow": "FFB340",
+          "surface-container-low": "#191b23",
+          "surface-panel": "#121A2B",
+          "tertiary-fixed": "#ffdcbf",
+          "secondary-fixed": "#ffdad5",
+          "on-air-crimson": "#FF3B30",
+          "surface-container-highest": "#32343d",
+          "status-ok": "#34C759",
+          "on-primary": "#002e6a",
+          "secondary": "#ffb4aa",
+          "surface-variant": "#32343d",
+          "on-tertiary-fixed-variant": "#6a3b00",
+          "on-air-glow": "#FF5F5F",
+          "on-background": "#e1e2ed",
+          "on-surface": "#e1e2ed",
+          "primary-container": "#4d8eff",
+          "on-error-container": "#ffdad6",
+          "on-tertiary": "#4b2800",
+          "on-primary-fixed-variant": "#004395",
+          "tertiary-fixed-dim": "#ffb874",
+          "secondary-container": "#c5020b",
+          "surface-container": "#1d1f27"
+        },
+        "borderRadius": {
+          "DEFAULT": "0.125rem",
+          "lg": "0.25rem",
+          "xl": "0.5rem",
+          "full": "0.75rem"
+        },
+        "spacing": {
+          "space-xl": "1rem",
+          "space-lg": "0.75rem",
+          "gutter": "0.5rem",
+          "margin": "0.75rem",
+          "space-md": "0.5rem",
+          "space-sm": "0.25rem",
+          "space-xs": "0.125rem"
+        },
+        "fontFamily": {
+          "body-sm": [
+            "Inter"
+          ],
+          "body-md": [
+            "Inter"
+          ],
+          "headline-lg": [
+            "Barlow Condensed"
+          ],
+          "label-caps": [
+            "Inter"
+          ],
+          "timecode-display": [
+            "JetBrains Mono"
+          ],
+          "headline-xl": [
+            "Barlow Condensed"
+          ],
+          "headline-md": [
+            "Barlow Condensed"
+          ],
+          "label-mono": [
+            "JetBrains Mono"
+          ],
+          "body-lg": [
+            "Inter"
+          ],
+          "timecode-table": [
+            "JetBrains Mono"
+          ]
+        },
+        "fontSize": {
+          "body-sm": [
+            "11px",
+            {
+              "lineHeight": "15px",
+              "fontWeight": "400"
+            }
+          ],
+          "body-md": [
+            "13px",
+            {
+              "lineHeight": "18px",
+              "fontWeight": "400"
+            }
+          ],
+          "headline-lg": [
+            "24px",
+            {
+              "lineHeight": "28px",
+              "letterSpacing": "0.03em",
+              "fontWeight": "700"
+            }
+          ],
+          "label-caps": [
+            "10px",
+            {
+              "lineHeight": "12px",
+              "letterSpacing": "0.08em",
+              "fontWeight": "700"
+            }
+          ],
+          "timecode-display": [
+            "28px",
+            {
+              "lineHeight": "32px",
+              "letterSpacing": "0.05em",
+              "fontWeight": "700"
+            }
+          ],
+          "headline-xl": [
+            "32px",
+            {
+              "lineHeight": "36px",
+              "letterSpacing": "0.04em",
+              "fontWeight": "700"
+            }
+          ],
+          "headline-md": [
+            "18px",
+            {
+              "lineHeight": "22px",
+              "letterSpacing": "0.02em",
+              "fontWeight": "600"
+            }
+          ],
+          "label-mono": [
+            "10px",
+            {
+              "lineHeight": "12px",
+              "fontWeight": "500"
+            }
+          ],
+          "body-lg": [
+            "15px",
+            {
+              "lineHeight": "20px",
+              "fontWeight": "500"
+            }
+          ],
+          "timecode-table": [
+            "13px",
+            {
+              "lineHeight": "16px",
+              "letterSpacing": "0.02em",
+              "fontWeight": "600"
+            }
+          ]
+        }
+      },
+    },
+  }</script></head><body class="bg-surface-base text-on-surface select-none"><header class="fixed top-0 left-0 right-0 z-50 bg-surface-card border-b border-border-subtle"><div class="h-14 w-full px-margin flex items-center justify-between gap-space-md"><div class="flex items-center gap-space-md min-w-0 shrink-0"><img alt="Brand logo. - Primary color: #3b82f6
+- Font: barlowCondensed
+- Mode: dark
+- Roundness: rounded-sm
+" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1UBY8Xi-Fu-L6EKu9-85gZkkmfJRhE477JOWtrIBL_k8-LWkVFQj6AvHZZjKXnxr9PcVNTnX1CC5aP7Pu4tgk1Dtqhex6UiE72peurxF2Dxiyq7HN2YzMqy4ubNYo66QyiXsZ7kPJ_vcd2zak-7HbvmCmiqRX3pQoGPM4ix-9l5H-PasGOt5cdYVymHZlEBPzq90vgGRNPRF9CYS-0vQgTuVHCcdzeYWIpfc5duOWx9A8UtN27HtrFMMUBB"/><div class="flex items-center gap-space-xs px-space-sm py-space-xs bg-on-air-crimson text-white rounded font-label-caps text-label-caps shadow-[0_0_8px_rgba(255,59,48,0.4)]"><span class="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span>LIVE</div><div class="hidden xl:flex items-center bg-surface-panel border border-border-subtle px-space-sm py-space-xs rounded gap-space-sm"><span class="material-symbols-outlined text-primary text-[14px]">tv</span><span class="font-headline-md text-headline-md text-on-surface">CANAL 1</span><span class="font-label-mono text-label-mono text-outline">TV Principal HD [1080p50]</span><span class="material-symbols-outlined text-outline text-[14px]">arrow_drop_down</span></div><div class="hidden 2xl:flex items-center gap-space-xs px-space-sm py-space-xs bg-surface-panel border border-border-subtle rounded"><span class="w-2 h-2 rounded-full bg-status-ok"></span><span class="font-label-caps text-label-caps text-on-surface-variant">OPERADOR: ENG. PLANTÃO</span></div></div><div class="flex items-center justify-center shrink-0 bg-surface-base border border-border-subtle px-space-lg py-space-xs rounded"><div class="flex items-center gap-space-sm"><div class="flex items-center gap-space-xs"><span class="w-2 h-2 rounded-full bg-status-ok animate-pulse"></span><span class="font-label-caps text-label-caps text-status-ok">NTP SYNC</span></div><span class="font-timecode-display text-timecode-display text-primary tracking-wider tabular-nums">14:23:09:18</span><span class="font-label-mono text-label-mono text-on-surface-variant bg-surface-panel px-space-xs py-space-xs rounded border border-border-subtle">LTC#1</span></div></div><div class="flex items-center gap-space-md shrink-0"><div class="hidden lg:flex items-center gap-space-xs"><div class="flex items-center gap-space-xs bg-surface-panel border border-border-subtle px-space-sm py-space-xs rounded"><span class="font-label-caps text-label-caps text-outline">SDI</span><span class="font-label-caps text-label-caps text-status-ok font-bold">OK</span></div><div class="flex items-center gap-space-xs bg-surface-panel border border-border-subtle px-space-sm py-space-xs rounded"><span class="font-label-caps text-label-caps text-outline">NDI</span><span class="font-label-caps text-label-caps text-status-ok font-bold">ON</span></div><div class="flex items-center gap-space-xs bg-surface-panel border border-border-subtle px-space-sm py-space-xs rounded"><span class="font-label-caps text-label-caps text-outline">NVENC</span><span class="font-label-mono text-label-mono text-accent-ice-bright font-bold">60FPS</span></div><div class="flex items-center gap-space-xs bg-surface-panel border border-border-subtle px-space-sm py-space-xs rounded"><span class="font-label-caps text-label-caps text-outline">SRT</span><span class="font-label-caps text-label-caps text-on-air-crimson font-bold">LIVE</span></div></div><nav class="flex items-center gap-space-xs" data-active-classes="bg-primary-container text-on-primary-container font-bold border-accent-ice"><a class="px-space-sm py-space-xs rounded border border-transparent font-headline-md text-headline-md text-on-surface-variant hover:text-on-surface transition-colors uppercase" data-path="master-control" href="#">MASTER</a><a class="px-space-sm py-space-xs rounded border border-transparent font-headline-md text-headline-md text-on-surface-variant hover:text-on-surface transition-colors uppercase" data-path="playlist-manager" href="#">PLAYLIST</a><a class="px-space-sm py-space-xs rounded border border-transparent font-headline-md text-headline-md text-on-surface-variant hover:text-on-surface transition-colors uppercase" data-path="qc-ingest" href="#">QC</a><a aria-current="page" class="px-space-sm py-space-xs rounded transition-colors uppercase bg-primary-container text-on-primary-container font-bold border-accent-ice" data-path="monitor-engineering-routing" href="#">MONITOR</a><a class="px-space-sm py-space-xs rounded border border-transparent font-headline-md text-headline-md text-on-surface-variant hover:text-on-surface transition-colors uppercase" data-path="aired-as-run-logs" href="#">AIRED</a><a class="px-space-sm py-space-xs rounded border border-transparent font-headline-md text-headline-md text-on-surface-variant hover:text-on-surface transition-colors uppercase" data-path="system-docs" href="#">DOCS</a></nav><div class="h-6 w-px bg-border-subtle mx-space-xs hidden sm:block"></div><div class="flex items-center gap-space-sm"><button class="flex items-center justify-center w-8 h-8 rounded bg-surface-panel border border-border-subtle text-on-surface-variant hover:text-on-surface hover:border-border-strong transition-colors"><span class="material-symbols-outlined text-[18px]">notifications</span></button><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div></div></header><aside class="fixed left-0 top-14 bottom-8 w-60 bg-surface-card border-r border-border-subtle z-40 flex flex-col justify-between py-space-sm"><div class="flex flex-col gap-space-xs px-space-sm"><div class="px-space-sm py-space-xs font-label-caps text-label-caps text-outline uppercase tracking-wider">Canais Transmissão</div><div class="flex flex-col gap-space-xs"><button class="w-full flex items-center justify-between px-space-sm py-space-xs rounded bg-surface-panel border border-on-air-crimson text-left"><div class="flex items-center gap-space-sm"><span class="w-2 h-2 rounded-full bg-on-air-crimson animate-pulse"></span><span class="font-headline-md text-headline-md text-on-surface">CH 01</span></div><span class="font-label-caps text-label-caps text-on-air-crimson font-bold">ON AIR</span></button><button class="w-full flex items-center justify-between px-space-sm py-space-xs rounded bg-surface-panel border border-border-subtle text-left opacity-75 hover:opacity-100 hover:border-border-strong"><div class="flex items-center gap-space-sm"><span class="w-2 h-2 rounded-full bg-armed-amber"></span><span class="font-headline-md text-headline-md text-on-surface">CH 02</span></div><span class="font-label-caps text-label-caps text-armed-amber font-bold">ARMED</span></button><button class="w-full flex items-center justify-between px-space-sm py-space-xs rounded bg-surface-panel border border-border-subtle text-left opacity-60 hover:opacity-100 hover:border-border-strong"><div class="flex items-center gap-space-sm"><span class="w-2 h-2 rounded-full bg-status-ok"></span><span class="font-headline-md text-headline-md text-on-surface">CH 03</span></div><span class="font-label-caps text-label-caps text-status-ok font-bold">STANDBY</span></button></div><div class="mt-space-md px-space-sm py-space-xs font-label-caps text-label-caps text-outline uppercase tracking-wider">Matriz &amp; Roteamento</div><div class="flex flex-col gap-space-xs"><div class="flex items-center justify-between px-space-sm py-space-xs rounded bg-surface-base border border-border-subtle"><span class="font-label-mono text-label-mono text-on-surface-variant">PGM OUT</span><span class="font-label-mono text-label-mono text-on-air-crimson font-bold">SDI-OUT 1</span></div><div class="flex items-center justify-between px-space-sm py-space-xs rounded bg-surface-base border border-border-subtle"><span class="font-label-mono text-label-mono text-on-surface-variant">PVW OUT</span><span class="font-label-mono text-label-mono text-armed-amber font-bold">SDI-OUT 2</span></div><div class="flex items-center justify-between px-space-sm py-space-xs rounded bg-surface-base border border-border-subtle"><span class="font-label-mono text-label-mono text-on-surface-variant">CLEAN FEED</span><span class="font-label-mono text-label-mono text-accent-ice-bright">NDI-STREAM</span></div><div class="flex items-center justify-between px-space-sm py-space-xs rounded bg-surface-base border border-border-subtle"><span class="font-label-mono text-label-mono text-on-surface-variant">AUX BACKUP</span><span class="font-label-mono text-label-mono text-status-ok">SRT-BACKBONE</span></div></div></div><div class="p-space-sm border-t border-border-subtle flex flex-col gap-space-xs bg-surface-panel"><div class="flex items-center justify-between"><span class="font-label-caps text-label-caps text-outline">CPU PL/DSP</span><span class="font-label-mono text-label-mono text-status-ok font-bold">18%</span></div><div class="w-full h-1.5 bg-surface-base rounded overflow-hidden"><div class="w-[18%] h-full bg-status-ok"></div></div><div class="flex items-center justify-between"><span class="font-label-caps text-label-caps text-outline">GPU BUFFER</span><span class="font-label-mono text-label-mono text-accent-ice-bright font-bold">24ms</span></div><div class="w-full h-1.5 bg-surface-base rounded overflow-hidden"><div class="w-[32%] h-full bg-accent-ice"></div></div></div></aside><div class="pl-60"><main class="w-full pt-14 pb-8 min-h-screen bg-surface-base"><div class="flex flex-col w-full">
+<!-- Interactive Navigation State Updater for Shell Sync -->
+<script>
+    (function () {
+      try {
+        const navLinks = document.querySelectorAll('nav a[data-path]');
+        navLinks.forEach((link) => {
+          if (link.getAttribute('data-path') === 'monitor-engineering-routing') {
+            link.className =
+              'px-space-sm py-space-xs rounded font-headline-md text-headline-md uppercase bg-primary-container text-on-primary-container font-bold shadow-sm shadow-accent-ice/30';
+          }
+        });
+      } catch (e) {}
+    })();
+  </script>
+<!-- SUB-HEADER / TELEMETRY OVERHEAD BAR -->
+<div class="w-full bg-surface-card px-space-lg py-space-sm flex flex-wrap items-center justify-between gap-space-md shadow-sm">
+<div class="flex flex-wrap items-center gap-space-lg min-w-0">
+<div class="flex items-center gap-space-xs">
+<span class="w-2 h-2 rounded-full bg-status-ok animate-ping"></span>
+<span class="w-2 h-2 rounded-full bg-status-ok -ml-3"></span>
+<span class="font-label-caps text-label-caps text-outline tracking-wider uppercase">ENGENHARIA DE SISTEMAS</span>
+<span class="font-label-mono text-label-mono text-outline">/</span>
+<span class="font-headline-md text-headline-md text-primary tracking-wide uppercase">ROTEAMENTO DE SINAIS &amp; REDUNDÂNCIA N+1</span>
+</div>
+<div class="h-4 w-px bg-surface-bright hidden xl:block"></div>
+<div class="flex items-center gap-space-xs bg-surface-base px-space-sm py-space-xs rounded shadow-inner">
+<span class="material-symbols-outlined text-accent-ice text-[15px]">lan</span>
+<span class="font-label-caps text-label-caps text-outline">CLUSTER:</span>
+<span class="font-label-mono text-label-mono text-on-surface font-bold">SP-MATRIZ-RACK-04 (PRIMÁRIO)</span>
+</div>
+<div class="flex items-center gap-space-xs bg-surface-base px-space-sm py-space-xs rounded shadow-inner">
+<span class="material-symbols-outlined text-status-ok text-[15px]">timer</span>
+<span class="font-label-caps text-label-caps text-outline">UPTIME:</span>
+<span class="font-label-mono text-label-mono text-status-ok font-bold">42d 18h 12m</span>
+<span class="font-label-caps text-label-caps text-on-surface-variant bg-surface-container-high px-space-xs rounded">[ZERO DROPS]</span>
+</div>
+</div>
+<!-- Quick Action Controls -->
+<div class="flex items-center gap-space-xs">
+<button class="flex items-center gap-space-xs px-space-sm py-space-xs bg-surface-panel hover:bg-surface-bright text-on-surface text-label-caps font-label-caps rounded transition-colors shadow-sm" id="btn-export-json">
+<span class="material-symbols-outlined text-accent-ice-bright text-[15px]">file_download</span>
+<span>EXPORTAR CONFIG .JSON</span>
+</button>
+<button class="flex items-center gap-space-xs px-space-sm py-space-xs bg-surface-panel hover:bg-surface-bright text-armed-amber text-label-caps font-label-caps rounded transition-colors shadow-sm" id="btn-bypass">
+<span class="material-symbols-outlined text-armed-amber text-[15px]">alt_route</span>
+<span>BYPASS MATRIX</span>
+</button>
+<button class="flex items-center gap-space-xs px-space-md py-space-xs bg-on-air-crimson hover:bg-on-air-glow text-white text-label-caps font-label-caps rounded uppercase font-bold transition-all shadow-md shadow-on-air-crimson/20" id="btn-manual-failover">
+<span class="material-symbols-outlined text-[15px] animate-pulse">swap_horiz</span>
+<span>MANUAL FAILOVER TRIGGER</span>
+</button>
+</div>
+</div>
+<!-- HARDWARE & PIPELINE TELEMETRY HORIZONTAL MATRIX (5 CARDS) -->
+<div class="w-full px-space-lg pt-space-md pb-space-sm">
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-space-sm">
+<!-- Card 1: GPU NVENC -->
+<div class="bg-surface-card p-space-sm rounded flex flex-col justify-between shadow-sm relative overflow-hidden group">
+<div class="flex items-center justify-between mb-space-xs">
+<span class="font-label-caps text-label-caps text-outline tracking-wider flex items-center gap-1">
+<span class="material-symbols-outlined text-accent-ice text-[13px]">memory</span> GPU NVENC LOAD
+          </span>
+<span class="font-label-mono text-label-mono text-status-ok font-bold bg-surface-base px-space-xs rounded">52°C</span>
+</div>
+<div class="flex items-baseline justify-between mb-space-xs">
+<span class="font-timecode-display text-timecode-display text-accent-ice-bright font-bold">34<span class="text-headline-md">%</span></span>
+<span class="font-label-mono text-label-mono text-on-surface-variant">VRAM: 3.1 / 12 GB</span>
+</div>
+<div class="w-full bg-surface-base h-1.5 rounded overflow-hidden shadow-inner">
+<div class="bg-accent-ice h-full transition-all duration-500 rounded" style="width: 34%"></div>
+</div>
+<div class="mt-space-xs font-label-mono text-label-mono text-outline truncate">NVIDIA RTX A4000 (PCIe Gen4 x16)</div>
+</div>
+<!-- Card 2: HOST CPU -->
+<div class="bg-surface-card p-space-sm rounded flex flex-col justify-between shadow-sm relative overflow-hidden group">
+<div class="flex items-center justify-between mb-space-xs">
+<span class="font-label-caps text-label-caps text-outline tracking-wider flex items-center gap-1">
+<span class="material-symbols-outlined text-status-ok text-[13px]">developer_board</span> HOST CPU EPYC
+          </span>
+<span class="font-label-mono text-label-mono text-status-ok font-bold bg-surface-base px-space-xs rounded">16-CORE</span>
+</div>
+<div class="flex items-baseline justify-between mb-space-xs">
+<span class="font-timecode-display text-timecode-display text-status-ok-bright font-bold">18<span class="text-headline-md">%</span></span>
+<span class="font-label-mono text-label-mono text-on-surface-variant">LOAD: 1.12, 1.05</span>
+</div>
+<div class="w-full bg-surface-base h-1.5 rounded overflow-hidden shadow-inner">
+<div class="bg-status-ok h-full transition-all duration-500 rounded" style="width: 18%"></div>
+</div>
+<div class="mt-space-xs font-label-mono text-label-mono text-outline truncate">AMD EPYC 7302P @ 3.00 GHz</div>
+</div>
+<!-- Card 3: RAM ECC -->
+<div class="bg-surface-card p-space-sm rounded flex flex-col justify-between shadow-sm relative overflow-hidden group">
+<div class="flex items-center justify-between mb-space-xs">
+<span class="font-label-caps text-label-caps text-outline tracking-wider flex items-center gap-1">
+<span class="material-symbols-outlined text-tertiary text-[13px]">storage</span> MEMÓRIA RAM ECC
+          </span>
+<span class="font-label-mono text-label-mono text-accent-ice font-bold bg-surface-base px-space-xs rounded">DDR4-3200</span>
+</div>
+<div class="flex items-baseline justify-between mb-space-xs">
+<span class="font-timecode-display text-timecode-display text-on-surface font-bold">4.2<span class="text-headline-md text-outline">/16GB</span></span>
+<span class="font-label-mono text-label-mono text-status-ok">26% EM USO</span>
+</div>
+<div class="w-full bg-surface-base h-1.5 rounded overflow-hidden shadow-inner">
+<div class="bg-tertiary-container h-full transition-all duration-500 rounded" style="width: 26%"></div>
+</div>
+<div class="mt-space-xs font-label-mono text-label-mono text-outline truncate">Cache/Buffers: 2.1 GB Livres</div>
+</div>
+<!-- Card 4: ENGINE CADÊNCIA & FPS -->
+<div class="bg-surface-card p-space-sm rounded flex flex-col justify-between shadow-sm relative overflow-hidden group">
+<div class="flex items-center justify-between mb-space-xs">
+<span class="font-label-caps text-label-caps text-outline tracking-wider flex items-center gap-1">
+<span class="material-symbols-outlined text-status-ok text-[13px]">speed</span> FPS &amp; CADÊNCIA
+          </span>
+<span class="font-label-caps text-label-caps text-status-ok font-bold bg-surface-base px-space-xs rounded flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse"></span> LOCKED
+          </span>
+</div>
+<div class="flex items-baseline justify-between mb-space-xs">
+<span class="font-timecode-display text-timecode-display text-status-ok font-bold tracking-tight">50.00<span class="text-headline-md font-normal">FPS</span></span>
+<span class="font-label-mono text-label-mono text-status-ok-bright">JITTER: 0.02ms</span>
+</div>
+<div class="w-full bg-surface-base h-1.5 rounded overflow-hidden shadow-inner">
+<div class="bg-status-ok h-full transition-all duration-500 rounded" style="width: 100%"></div>
+</div>
+<div class="mt-space-xs font-label-mono text-label-mono text-outline truncate">Raster: 1080p50 Legal Broadcast</div>
+</div>
+<!-- Card 5: DROPPED FRAMES COUNTER -->
+<div class="bg-surface-card p-space-sm rounded flex flex-col justify-between shadow-sm relative overflow-hidden group">
+<div class="flex items-center justify-between mb-space-xs">
+<span class="font-label-caps text-label-caps text-outline tracking-wider flex items-center gap-1">
+<span class="material-symbols-outlined text-accent-ice text-[13px]">flaky</span> FRAMES DROPPED
+          </span>
+<span class="font-label-mono text-label-mono text-status-ok font-bold bg-surface-base px-space-xs rounded">0.000%</span>
+</div>
+<div class="flex items-baseline justify-between mb-space-xs">
+<span class="font-timecode-display text-timecode-display text-primary-fixed font-bold tracking-tight">00<span class="text-headline-md text-outline">QDR</span></span>
+<span class="font-label-caps text-label-caps text-status-ok bg-surface-panel px-space-xs py-space-xs rounded">PERFECT RUN</span>
+</div>
+<div class="w-full bg-surface-base h-1.5 rounded overflow-hidden shadow-inner">
+<div class="bg-status-ok h-full rounded" style="width: 100%"></div>
+</div>
+<div class="mt-space-xs font-label-mono text-label-mono text-on-surface-variant truncate">Total: 18.254.120 Qdr Contínuos</div>
+</div>
+</div>
+</div>
+<!-- MAIN DUAL-PANEL WORKSPACE (48% MATRIX / 52% REDUNDANCY) -->
+<div class="w-full px-space-lg py-space-sm">
+<div class="grid grid-cols-1 xl:grid-cols-12 gap-space-md">
+<!-- LEFT COLUMN: OUTPUT MATRIX & STREAM SINKS (5 COLS) -->
+<div class="xl:col-span-6 flex flex-col gap-space-sm">
+<!-- Section Header -->
+<div class="bg-surface-card px-space-md py-space-xs rounded flex items-center justify-between shadow-sm">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-primary text-[18px]">hub</span>
+<span class="font-headline-md text-headline-md text-on-surface uppercase">MATRIZ DE ROTEAMENTO &amp; DESTINOS</span>
+<span class="font-label-mono text-label-mono text-accent-ice-bright bg-surface-panel px-space-xs py-space-xs rounded">4 SINKS ATIVOS</span>
+</div>
+<div class="flex items-center gap-space-sm">
+<button class="flex items-center gap-1 font-label-caps text-label-caps text-outline hover:text-on-surface bg-surface-base px-space-xs py-space-xs rounded transition-colors">
+<span class="material-symbols-outlined text-[13px]">volume_off</span> MASTER MUTE
+            </button>
+<button class="flex items-center gap-1 font-label-caps text-label-caps text-error hover:text-white bg-surface-base px-space-xs py-space-xs rounded transition-colors">
+<span class="material-symbols-outlined text-[13px]">power_settings_new</span> SINK KILL-SWITCH
+            </button>
+</div>
+</div>
+<!-- SINK 1: SDI HARDWARE (DECKLINK) -->
+<div class="bg-surface-card rounded p-space-md shadow-sm relative group transition-all duration-200 hover:bg-surface-container-high/60">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-status-ok"></div>
+<div class="flex items-start justify-between gap-space-md pl-space-xs">
+<div class="flex flex-col gap-1 min-w-0">
+<div class="flex flex-wrap items-center gap-space-xs">
+<span class="font-headline-md text-headline-md text-on-surface">Blackmagic DeckLink 8K Pro - SDI Port 1</span>
+<span class="font-label-caps text-label-caps text-white bg-status-ok px-space-xs py-0.5 rounded font-bold shadow-sm shadow-status-ok/30">PGM NO AR</span>
+<span class="font-label-mono text-label-mono text-accent-ice bg-surface-panel px-space-xs rounded">SDI 3G BNC</span>
+<span class="font-label-mono text-label-mono text-outline bg-surface-panel px-space-xs rounded">BUS #01</span>
+</div>
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-space-xs mt-space-xs text-outline">
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">FORMATO</div>
+<div class="font-label-mono text-label-mono text-on-surface font-bold">1080p50 Rec.709</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">ÁUDIO EMBEDDED</div>
+<div class="font-label-mono text-label-mono text-status-ok font-bold">8 CH 48kHz 24b</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">REF GENLOCK</div>
+<div class="font-label-mono text-label-mono text-status-ok-bright font-bold">BB REF LOCKED</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">LATÊNCIA HARDWARE</div>
+<div class="font-label-mono text-label-mono text-primary font-bold">0 FRAMES (DIRECT)</div>
+</div>
+</div>
+</div>
+<!-- Toggle switch -->
+<div class="flex flex-col items-end gap-1 shrink-0">
+<label class="relative inline-flex items-center cursor-pointer">
+<input checked="" class="sr-only peer" type="checkbox"/>
+<div class="w-10 h-5 bg-surface-base peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-status-ok"></div>
+</label>
+<span class="font-label-caps text-label-caps text-status-ok font-bold">ON LINE</span>
+</div>
+</div>
+</div>
+<!-- SINK 2: NDI IP BROADCAST -->
+<div class="bg-surface-card rounded p-space-md shadow-sm relative group transition-all duration-200 hover:bg-surface-container-high/60">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-accent-ice"></div>
+<div class="flex items-start justify-between gap-space-md pl-space-xs">
+<div class="flex flex-col gap-1 min-w-0">
+<div class="flex flex-wrap items-center gap-space-xs">
+<span class="font-headline-md text-headline-md text-on-surface">NDI® High Bandwidth - RPLAYOUT-CANAL1</span>
+<span class="font-label-caps text-label-caps text-white bg-accent-ice px-space-xs py-0.5 rounded font-bold shadow-sm shadow-accent-ice/30">NDI 5.6 ACTIVE</span>
+<span class="font-label-mono text-label-mono text-outline bg-surface-panel px-space-xs rounded">NIC 10GbE SFP+</span>
+<span class="font-label-mono text-label-mono text-accent-ice-bright bg-surface-panel px-space-xs rounded">2 RECEIVERS</span>
+</div>
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-space-xs mt-space-xs text-outline">
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">RESOLUÇÃO IP</div>
+<div class="font-label-mono text-label-mono text-on-surface font-bold">1920x1080p50</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">BITRATE STREAM</div>
+<div class="font-label-mono text-label-mono text-accent-ice-bright font-bold">138.4 Mbps</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">MODO ENTRADA</div>
+<div class="font-label-mono text-label-mono text-on-surface font-bold">SHM UNICAST</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">DROPPED PKTS</div>
+<div class="font-label-mono text-label-mono text-status-ok font-bold">0 PKT (0.00%)</div>
+</div>
+</div>
+</div>
+<!-- Toggle switch -->
+<div class="flex flex-col items-end gap-1 shrink-0">
+<label class="relative inline-flex items-center cursor-pointer">
+<input checked="" class="sr-only peer" type="checkbox"/>
+<div class="w-10 h-5 bg-surface-base peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-ice"></div>
+</label>
+<span class="font-label-caps text-label-caps text-accent-ice font-bold">STREAMING</span>
+</div>
+</div>
+</div>
+<!-- SINK 3: RTMP STREAMING RELAY -->
+<div class="bg-surface-card rounded p-space-md shadow-sm relative group transition-all duration-200 hover:bg-surface-container-high/60">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-armed-amber"></div>
+<div class="flex items-start justify-between gap-space-md pl-space-xs">
+<div class="flex flex-col gap-1 min-w-0">
+<div class="flex flex-wrap items-center gap-space-xs">
+<span class="font-headline-md text-headline-md text-on-surface">RTMP Master Relay (MediaMTX Loopback)</span>
+<span class="font-label-caps text-label-caps text-on-tertiary bg-armed-amber px-space-xs py-0.5 rounded font-bold shadow-sm shadow-armed-amber/30">CDN BROADCAST</span>
+<span class="font-label-mono text-label-mono text-outline bg-surface-panel px-space-xs rounded">PORT 1935</span>
+<span class="font-label-mono text-label-mono text-armed-amber bg-surface-panel px-space-xs rounded">NVENC H.264</span>
+</div>
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-space-xs mt-space-xs text-outline">
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">BITRATE V/A</div>
+<div class="font-label-mono text-label-mono text-on-surface font-bold">6500k / 192k</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">PROFILE/GOP</div>
+<div class="font-label-mono text-label-mono text-on-surface font-bold">Main@L4.2 / 2.0s</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">TARGET CDN</div>
+<div class="font-label-mono text-label-mono text-outline truncate" title="rtmp://live.cdn-sp.tv/stream/canal1">live.cdn-sp.tv...</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">BUFFER ESTABILIZADO</div>
+<div class="font-label-mono text-label-mono text-status-ok font-bold">1840ms [OK]</div>
+</div>
+</div>
+</div>
+<!-- Toggle switch -->
+<div class="flex flex-col items-end gap-1 shrink-0">
+<label class="relative inline-flex items-center cursor-pointer">
+<input checked="" class="sr-only peer" type="checkbox"/>
+<div class="w-10 h-5 bg-surface-base peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-armed-amber"></div>
+</label>
+<span class="font-label-caps text-label-caps text-armed-amber font-bold">PUSHING</span>
+</div>
+</div>
+</div>
+<!-- SINK 4: SRT CLOUD BACKUP LINK -->
+<div class="bg-surface-card rounded p-space-md shadow-sm relative group transition-all duration-200 hover:bg-surface-container-high/60">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-accent-ice-bright"></div>
+<div class="flex items-start justify-between gap-space-md pl-space-xs">
+<div class="flex flex-col gap-1 min-w-0">
+<div class="flex flex-wrap items-center gap-space-xs">
+<span class="font-headline-md text-headline-md text-on-surface">SRT Cloud Backup Link (Embratel / AWS Cloud)</span>
+<span class="font-label-caps text-label-caps text-on-primary bg-accent-ice-bright px-space-xs py-0.5 rounded font-bold shadow-sm shadow-accent-ice-bright/30">CALLER MODE</span>
+<span class="font-label-mono text-label-mono text-status-ok bg-surface-panel px-space-xs rounded flex items-center gap-1"><span class="material-symbols-outlined text-[11px]">lock</span>AES-128</span>
+<span class="font-label-mono text-label-mono text-outline bg-surface-panel px-space-xs rounded">UDP 9000</span>
+</div>
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-space-xs mt-space-xs text-outline">
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">RTT LATÊNCIA</div>
+<div class="font-label-mono text-label-mono text-status-ok-bright font-bold">24.2 ms</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">PERDA PACOTES</div>
+<div class="font-label-mono text-label-mono text-status-ok font-bold">0.00% (0 LOST)</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">SRT BUFFER SET</div>
+<div class="font-label-mono text-label-mono text-on-surface font-bold">120 ms FIXED</div>
+</div>
+<div class="bg-surface-base p-space-xs rounded shadow-inner">
+<div class="font-label-caps text-label-caps text-outline">DESTINO CLOUD</div>
+<div class="font-label-mono text-label-mono text-outline truncate">embratel.net.br:9000</div>
+</div>
+</div>
+</div>
+<!-- Toggle switch -->
+<div class="flex flex-col items-end gap-1 shrink-0">
+<label class="relative inline-flex items-center cursor-pointer">
+<input checked="" class="sr-only peer" type="checkbox"/>
+<div class="w-10 h-5 bg-surface-base peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-ice-bright"></div>
+</label>
+<span class="font-label-caps text-label-caps text-accent-ice-bright font-bold">ENCRYPTED</span>
+</div>
+</div>
+</div>
+</div>
+<!-- RIGHT COLUMN: REDUNDANCY & N+1 FAILOVER MONITOR (7 COLS) -->
+<div class="xl:col-span-6 flex flex-col gap-space-sm">
+<!-- Section Header -->
+<div class="bg-surface-card px-space-md py-space-xs rounded flex items-center justify-between shadow-sm">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-armed-amber text-[18px]">verified_user</span>
+<span class="font-headline-md text-headline-md text-on-surface uppercase">TOPOLOGIA DE ALTA DISPONIBILIDADE N+1 &amp; HEARTBEAT</span>
+</div>
+<div class="flex items-center gap-space-xs bg-surface-panel px-space-sm py-0.5 rounded">
+<span class="w-2 h-2 rounded-full bg-status-ok animate-pulse"></span>
+<span class="font-label-caps text-label-caps text-status-ok font-bold">AUTO-FAILOVER ARMADO</span>
+</div>
+</div>
+<!-- Visual Architecture Topology Box -->
+<div class="bg-surface-card rounded p-space-md shadow-sm flex flex-col gap-space-md">
+<!-- Servers Split Map (Master vs Standby) -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-space-md">
+<!-- HOST A: MASTER (PRIMÁRIO) -->
+<div class="bg-surface-panel p-space-md rounded shadow-inner relative overflow-hidden group border-l-4 border-on-air-crimson">
+<div class="flex items-center justify-between mb-space-xs">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-on-air-crimson text-[20px]">dns</span>
+<div>
+<span class="font-headline-md text-headline-md text-on-surface font-bold">HOST A (MASTER)</span>
+<div class="font-label-mono text-label-mono text-outline">IP: 10.20.1.10 • Core v4.8.2</div>
+</div>
+</div>
+<span class="font-label-caps text-label-caps text-white bg-on-air-crimson px-space-xs py-0.5 rounded font-bold shadow-md shadow-on-air-crimson/40 animate-pulse">ON AIR (PGM)</span>
+</div>
+<!-- Metrics -->
+<div class="grid grid-cols-2 gap-space-xs mt-space-sm font-label-mono text-label-mono">
+<div class="bg-surface-base p-space-xs rounded">
+<span class="text-outline block text-[9px]">ENGINE STATUS</span>
+<span class="text-status-ok font-bold">EXECUTANDO</span>
+</div>
+<div class="bg-surface-base p-space-xs rounded">
+<span class="text-outline block text-[9px]">RUNDOWN HASH</span>
+<span class="text-on-surface font-bold">#E9B2-4A7F</span>
+</div>
+<div class="bg-surface-base p-space-xs rounded">
+<span class="text-outline block text-[9px]">SAÍDA SDI 1</span>
+<span class="text-on-air-crimson font-bold">ENGAGED (FEED 1)</span>
+</div>
+<div class="bg-surface-base p-space-xs rounded">
+<span class="text-outline block text-[9px]">CLOCK SYNC</span>
+<span class="text-accent-ice font-bold">PTP / IEEE 1588</span>
+</div>
+</div>
+</div>
+<!-- HOST B: HOT STANDBY (BACKUP) -->
+<div class="bg-surface-panel p-space-md rounded shadow-inner relative overflow-hidden group border-l-4 border-armed-amber">
+<div class="flex items-center justify-between mb-space-xs">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-armed-amber text-[20px]">dns</span>
+<div>
+<span class="font-headline-md text-headline-md text-on-surface font-bold">HOST B (BACKUP)</span>
+<div class="font-label-mono text-label-mono text-outline">IP: 10.20.1.11 • Core v4.8.2</div>
+</div>
+</div>
+<span class="font-label-caps text-label-caps text-on-tertiary bg-armed-amber px-space-xs py-0.5 rounded font-bold shadow-md shadow-armed-amber/30">HOT-STANDBY</span>
+</div>
+<!-- Metrics -->
+<div class="grid grid-cols-2 gap-space-xs mt-space-sm font-label-mono text-label-mono">
+<div class="bg-surface-base p-space-xs rounded">
+<span class="text-outline block text-[9px]">ENGINE STATUS</span>
+<span class="text-armed-amber font-bold">SHADOW PLAYING</span>
+</div>
+<div class="bg-surface-base p-space-xs rounded">
+<span class="text-outline block text-[9px]">RUNDOWN HASH</span>
+<span class="text-status-ok font-bold">#E9B2-4A7F (SYNC)</span>
+</div>
+<div class="bg-surface-base p-space-xs rounded">
+<span class="text-outline block text-[9px]">SAÍDA SDI 1</span>
+<span class="text-outline font-bold">MUTED / READY</span>
+</div>
+<div class="bg-surface-base p-space-xs rounded">
+<span class="text-outline block text-[9px]">DELTA PLAYHEAD</span>
+<span class="text-status-ok font-bold">0.0 ms (EXACT)</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Central Interconnect Ring / Heartbeat Visualizer -->
+<div class="bg-surface-base p-space-sm rounded flex flex-col md:flex-row items-center justify-between gap-space-sm shadow-inner">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-status-ok text-[18px]">sync_alt</span>
+<div>
+<span class="font-label-caps text-label-caps text-outline block">FIBRA DEDICADA • HEARTBEAT RING</span>
+<span class="font-label-mono text-label-mono text-status-ok-bright font-bold">LATÊNCIA BIDIRECIONAL: 14.8 ms (ACK OK)</span>
+</div>
+</div>
+<!-- Progress Heartbeat Pulse Bar -->
+<div class="flex items-center gap-space-xs w-full md:w-48">
+<span class="font-label-mono text-label-mono text-outline text-[9px]">SYNC:</span>
+<div class="w-full bg-surface-panel h-2 rounded overflow-hidden shadow-inner flex">
+<div class="bg-status-ok h-full w-full animate-pulse"></div>
+</div>
+<span class="font-label-mono text-label-mono text-status-ok font-bold text-[9px]">100%</span>
+</div>
+<div class="flex items-center gap-space-xs">
+<span class="font-label-caps text-label-caps text-on-surface-variant bg-surface-panel px-space-sm py-space-xs rounded">CHECKSUM IDENTICAL</span>
+</div>
+</div>
+<!-- Automatic Failover Trigger Engine & Rules Box -->
+<div class="bg-surface-panel p-space-md rounded flex flex-col gap-space-sm">
+<div class="flex items-center justify-between">
+<span class="font-label-caps text-label-caps text-outline uppercase tracking-wider">CRITÉRIOS DE DISPARO AUTOMÁTICO (HARDWARE WATCHDOG)</span>
+<span class="font-label-mono text-label-mono text-status-ok text-[11px] font-bold">TEMPO ESTIMADO DE CUT: 40ms</span>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-space-xs text-body-sm font-body-sm">
+<div class="bg-surface-base p-space-sm rounded flex items-start gap-space-xs">
+<span class="material-symbols-outlined text-armed-amber text-[16px] shrink-0 mt-0.5">videocam_off</span>
+<div class="flex flex-col">
+<span class="font-label-mono text-label-mono text-on-surface font-bold">1. Black / Freeze Detect</span>
+<span class="font-label-mono text-label-mono text-outline text-[10px]">Corte se ausência de sinal de vídeo &gt; 2.0s</span>
+</div>
+</div>
+<div class="bg-surface-base p-space-sm rounded flex items-start gap-space-xs">
+<span class="material-symbols-outlined text-on-air-crimson text-[16px] shrink-0 mt-0.5">motion_photos_off</span>
+<div class="flex flex-col">
+<span class="font-label-mono text-label-mono text-on-surface font-bold">2. Cadência de Quadros</span>
+<span class="font-label-mono text-label-mono text-outline text-[10px]">Corte se perda contínua &gt;= 3 quadros</span>
+</div>
+</div>
+<div class="bg-surface-base p-space-sm rounded flex items-start gap-space-xs">
+<span class="material-symbols-outlined text-accent-ice text-[16px] shrink-0 mt-0.5">wifi_tethering_off</span>
+<div class="flex flex-col">
+<span class="font-label-mono text-label-mono text-on-surface font-bold">3. Perda de Heartbeat</span>
+<span class="font-label-mono text-label-mono text-outline text-[10px]">Corte se sem resposta ping por &gt; 100ms</span>
+</div>
+</div>
+</div>
+<div class="flex flex-wrap items-center justify-between gap-space-sm pt-space-xs">
+<div class="flex items-center gap-space-xs text-outline font-label-mono text-label-mono text-[11px]">
+<span class="material-symbols-outlined text-status-ok text-[14px]">shield</span>
+                Proteção anti-flapping armada: Retenção mínima de 60s antes de restabelecimento.
+              </div>
+<button class="px-space-md py-space-xs bg-surface-bright hover:bg-armed-amber hover:text-surface-base text-armed-amber font-label-caps text-label-caps rounded font-bold uppercase transition-all shadow-sm" id="btn-test-failover">
+                SIMULAR FALHA DO HOST A [TESTE N+1]
+              </button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- BOTTOM SECTION: LIVE DIAGNOSTICS & HARDWARE CONSOLE TERMINAL -->
+<div class="w-full px-space-lg pt-space-xs pb-space-lg">
+<div class="bg-surface-card rounded p-space-md shadow-md flex flex-col gap-space-sm">
+<!-- Terminal Header Bar -->
+<div class="flex flex-wrap items-center justify-between gap-space-md pb-space-xs border-b border-surface-bright/40">
+<div class="flex flex-wrap items-center gap-space-sm">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-primary text-[18px]">terminal</span>
+<span class="font-headline-md text-headline-md text-on-surface uppercase tracking-wide">CONSOLE DE TELEMETRIA &amp; AUDITORIA EM TEMPO REAL</span>
+</div>
+<!-- Filter Chips -->
+<div class="flex items-center gap-1 ml-space-md">
+<button class="px-space-xs py-0.5 rounded bg-primary text-on-primary font-label-caps text-label-caps font-bold">TODOS (148)</button>
+<button class="px-space-xs py-0.5 rounded bg-surface-panel hover:bg-surface-bright text-on-surface-variant font-label-caps text-label-caps">INFO (136)</button>
+<button class="px-space-xs py-0.5 rounded bg-surface-panel hover:bg-surface-bright text-armed-amber font-label-caps text-label-caps">WARN (11)</button>
+<button class="px-space-xs py-0.5 rounded bg-surface-panel hover:bg-surface-bright text-on-air-crimson font-label-caps text-label-caps font-bold">CRITICAL (1)</button>
+</div>
+</div>
+<!-- Search Bar in Terminal -->
+<div class="flex items-center gap-space-xs bg-surface-base px-space-sm py-1 rounded shadow-inner">
+<span class="material-symbols-outlined text-outline text-[14px]">search</span>
+<input class="bg-transparent border-none text-on-surface font-label-mono text-label-mono placeholder:text-outline focus:outline-none w-56" placeholder="Filtrar eventos por string, IP, PID..." type="text"/>
+</div>
+</div>
+<!-- Monospaced Log Stream Window -->
+<div class="bg-surface-base p-space-sm rounded font-label-mono text-label-mono flex flex-col gap-1.5 h-36 overflow-y-auto shadow-inner text-on-surface" id="terminal-stream">
+<div class="flex items-start gap-space-xs">
+<span class="text-status-ok font-bold bg-surface-panel px-1 rounded">[INFO 20:40:46.120]</span>
+<span class="text-on-surface-variant">Host A heartbeat ACK respondido com sucesso (14.8ms via Ring Fiber #1). Playout engine em sincronia exata de playhead.</span>
+</div>
+<div class="flex items-start gap-space-xs">
+<span class="text-status-ok font-bold bg-surface-panel px-1 rounded">[INFO 20:40:46.850]</span>
+<span class="text-on-surface-variant">NVIDIA NVENC Hardware Session 0 OK: 50.00 fps estável, bitrate quantizer médio qp: 21.4 CBR. Sem gargalos de barramento PCIe.</span>
+</div>
+<div class="flex items-start gap-space-xs">
+<span class="text-armed-amber font-bold bg-surface-panel px-1 rounded">[WARN 20:40:47.010]</span>
+<span class="text-armed-amber">SRT Link WAN jitter detectado (+3.1ms variação temporária). Buffer automático compensou sem perda de pacote ou descontinuidade de áudio.</span>
+</div>
+<div class="flex items-start gap-space-xs">
+<span class="text-status-ok font-bold bg-surface-panel px-1 rounded">[INFO 20:40:47.112]</span>
+<span class="text-on-surface-variant">DeckLink 8K Pro SDI Port 1 genlock phase offset: +0.02 µs em relação à referência Blackburst externa. Enquadramento de linhas perfeito.</span>
+</div>
+<div class="flex items-start gap-space-xs">
+<span class="text-status-ok font-bold bg-surface-panel px-1 rounded">[INFO 20:40:47.450]</span>
+<span class="text-on-surface-variant">NDI Discovery Service confirmou anúncio da fonte 'RPLAYOUT-CANAL1'. 2 receptores ativos consumindo fluxo unificado 1080p50.</span>
+</div>
+<div class="flex items-start gap-space-xs">
+<span class="text-on-air-crimson font-bold bg-surface-panel px-1 rounded">[CRIT 20:38:12.004]</span>
+<span class="text-error">Alerta de auditoria prévia: Teste de watchdog efetuado com sucesso há 2m 35s. Nenhuma anomalia persistente no barramento PGM.</span>
+</div>
+</div>
+<!-- Instant Technical Action Controls Strip -->
+<div class="flex flex-wrap items-center justify-between gap-space-sm pt-space-xs">
+<div class="flex flex-wrap items-center gap-space-xs">
+<button class="px-space-sm py-space-xs bg-surface-panel hover:bg-surface-bright text-armed-amber font-label-caps text-label-caps rounded flex items-center gap-1 transition-colors shadow-sm" id="btn-restart-encode">
+<span class="material-symbols-outlined text-[14px]">refresh</span> REINICIAR PIPELINE DE ENCODE
+          </button>
+<button class="px-space-sm py-space-xs bg-surface-panel hover:bg-surface-bright text-on-surface font-label-caps text-label-caps rounded flex items-center gap-1 transition-colors shadow-sm" id="btn-clear-cache">
+<span class="material-symbols-outlined text-[14px]">cleaning_services</span> LIMPAR CACHE DE CONTINUIDADE
+          </button>
+<button class="px-space-sm py-space-xs bg-surface-panel hover:bg-surface-bright text-accent-ice font-label-caps text-label-caps rounded flex items-center gap-1 transition-colors shadow-sm" id="btn-gen-zip">
+<span class="material-symbols-outlined text-[14px]">archive</span> GERAR DIAGNÓSTICO TÉCNICO .ZIP
+          </button>
+</div>
+<div>
+<button class="px-space-md py-space-xs bg-surface-panel hover:bg-on-air-crimson text-white font-label-caps text-label-caps rounded font-bold uppercase flex items-center gap-space-xs transition-all shadow-md shadow-on-air-crimson/20" id="btn-force-cut">
+<span class="material-symbols-outlined text-on-air-crimson group-hover:text-white text-[16px]">warning</span>
+<span>ALTERNAR FORÇADAMENTE PARA HOST B (MANUAL CUT)</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Interactive Terminal & Failover Logic Scripts -->
+<script>
+    (function () {
+      const terminal = document.getElementById('terminal-stream');
+      const btnTestFailover = document.getElementById('btn-test-failover');
+      const btnManualFailover = document.getElementById('btn-manual-failover');
+      const btnForceCut = document.getElementById('btn-force-cut');
+      const btnRestartEncode = document.getElementById('btn-restart-encode');
+      const btnClearCache = document.getElementById('btn-clear-cache');
+      const btnGenZip = document.getElementById('btn-gen-zip');
+      const btnExportJson = document.getElementById('btn-export-json');
+
+      function appendLog(level, message, colorClass) {
+        if (!terminal) return;
+        const now = new Date();
+        const timeStr =
+          String(now.getHours()).padStart(2, '0') +
+          ':' +
+          String(now.getMinutes()).padStart(2, '0') +
+          ':' +
+          String(now.getSeconds()).padStart(2, '0') +
+          '.' +
+          String(now.getMilliseconds()).padStart(3, '0');
+
+        const row = document.createElement('div');
+        row.className = 'flex items-start gap-space-xs';
+        row.innerHTML = `
+          <span class="${colorClass} font-bold bg-surface-panel px-1 rounded">[${level} ${timeStr}]</span>
+          <span class="text-on-surface-variant">${message}</span>
+        `;
+        terminal.appendChild(row);
+        terminal.scrollTop = terminal.scrollHeight;
+      }
+
+      // Simulated Real-Time System Heartbeat tick
+      setInterval(() => {
+        const pings = [14.2, 14.8, 15.1, 14.6, 14.9];
+        const randomPing = pings[Math.floor(Math.random() * pings.length)];
+        const rnd = Math.random();
+        if (rnd > 0.8) {
+          appendLog(
+            'INFO',
+            `Heartbeat ACK validado com Host B (${randomPing}ms). Sincronismo de frames 100% idêntico.`,
+            'text-status-ok'
+          );
+        }
+      }, 8000);
+
+      if (btnTestFailover) {
+        btnTestFailover.addEventListener('click', () => {
+          appendLog(
+            'WARN',
+            'TESTE INICIADO: Injetando falha simulada de perda de clock genlock no Host A...',
+            'text-armed-amber'
+          );
+          setTimeout(() => {
+            appendLog(
+              'CRIT',
+              'WATCHDOG INTERNO: Simulação confirmada. Host B assumiria a saída SDI em 38ms com glitch-free clean switch.',
+              'text-on-air-crimson'
+            );
+          }, 1200);
+        });
+      }
+
+      if (btnManualFailover || btnForceCut) {
+        const handler = () => {
+          const confirmCut = confirm(
+            'ATENÇÃO ENGENHARIA:\n\nConfirma a comutação forçada manual da saída PGM para o HOST B (HOT STANDBY)?'
+          );
+          if (confirmCut) {
+            appendLog(
+              'CRIT',
+              'COMANDO MANUAL EXECUTADO: Roteando Matriz SDI PGM -> HOST B. Transmissão transferida sem congelamento.',
+              'text-on-air-crimson'
+            );
+          }
+        };
+        if (btnManualFailover) btnManualFailover.addEventListener('click', handler);
+        if (btnForceCut) btnForceCut.addEventListener('click', handler);
+      }
+
+      if (btnRestartEncode) {
+        btnRestartEncode.addEventListener('click', () => {
+          appendLog(
+            'WARN',
+            'RESTART SOLICITADO: Reiniciando instâncias NVENC e buffers SRT/RTMP. A saída física SDI permanece inalterada.',
+            'text-armed-amber'
+          );
+        });
+      }
+
+      if (btnClearCache) {
+        btnClearCache.addEventListener('click', () => {
+          appendLog(
+            'INFO',
+            'CACHE PURGE: Memória de continuidade liberada. 2.1 GB reutilizáveis desalocados com sucesso.',
+            'text-status-ok'
+          );
+        });
+      }
+
+      if (btnGenZip) {
+        btnGenZip.addEventListener('click', () => {
+          appendLog(
+            'INFO',
+            'DIAGNÓSTICO: Gerando pacote de logs tar.gz (syslog, ffmpeg trace, dmesg, decklink sdk metrics)... Concluído.',
+            'text-accent-ice'
+          );
+        });
+      }
+
+      if (btnExportJson) {
+        btnExportJson.addEventListener('click', () => {
+          appendLog(
+            'INFO',
+            'EXPORTAÇÃO: Arquivo "rplayout-cluster-sp-matriz-04-matrix.json" pronto para download.',
+            'text-accent-ice'
+          );
+        });
+      }
+    })();
+  </script>
+</div></main></div><footer class="fixed bottom-0 left-0 right-0 h-8 bg-surface-panel border-t border-border-subtle z-50 flex items-center justify-between px-margin"><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs"><span class="font-label-caps text-label-caps text-outline">ENGINE LATENCY:</span><span class="font-label-mono text-label-mono text-status-ok font-bold">1.8ms</span></div><span class="text-border-subtle">|</span><div class="flex items-center gap-space-xs"><span class="w-1.5 h-1.5 rounded-full bg-status-ok"></span><span class="font-label-caps text-label-caps text-outline">CORE CLUSTER:</span><span class="font-label-caps text-label-caps text-status-ok font-bold">ACTIVE [NODE 01]</span></div><span class="text-border-subtle">|</span><div class="flex items-center gap-space-xs"><span class="material-symbols-outlined text-status-ok text-[13px]">lock</span><span class="font-label-caps text-label-caps text-outline">GENLOCK:</span><span class="font-label-mono text-label-mono text-status-ok font-bold">1080p50 BB LOCKED</span></div></div><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs"><span class="font-label-caps text-label-caps text-outline">REDUNDANCY:</span><span class="font-label-mono text-label-mono text-accent-ice-bright font-bold">HOT-STANDBY SYNCED</span></div><span class="text-border-subtle">|</span><div class="flex items-center gap-space-xs"><span class="font-label-caps text-label-caps text-outline">FRAMES DROPPED:</span><span class="font-label-mono text-label-mono text-status-ok font-bold">0</span></div></div></footer></body></html>

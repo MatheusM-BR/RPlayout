@@ -1,0 +1,1064 @@
+//! Sonda de arquivo de mídia.
+//!
+//! Abre o arquivo com o **mesmo GStreamer que vai tocá-lo**. É isso que faz o
+//! resultado valer alguma coisa: prova a decodificação local, não a saída
+//! física nem todo trim/mix que o playout poderá usar. Uma lista
+//! de extensões nossa não teria essa propriedade -- diria "sim" para arquivo
+//! que o pipeline recusa e "não" para arquivo que ele tocaria sem reclamar.
+//!
+//! Mede a loudness de verdade no mesmo passe, pela BS.1770-4. É o que faz o
+//! nivelamento automático parar de depender de metadado que alguém digitou.
+//!
+//! Uma linha de JSON no stdout. Erro também é JSON: quem chama não deve ter que
+//! adivinhar pela ausência de saída.
+
+use anyhow::{anyhow, Context, Result};
+use gstreamer as gst;
+use gstreamer::prelude::*;
+use gstreamer_app as gst_app;
+use serde::Serialize;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+// O medidor é compartilhado com o engine por inclusão de caminho: são dois
+// binários do mesmo crate, e o mesmo código medindo em ingest e no ar é o que
+// garante que o número do acervo e o número do medidor sejam comparáveis.
+//
+// A sonda usa só parte dele -- não há janela momentânea nem redução de ganho
+// para reportar num arquivo parado --, então o resto fica sem uso aqui.
+#[allow(dead_code)]
+#[path = "../loudness.rs"]
+mod loudness;
+
+use loudness::Meter;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoInfo {
+    width: i32,
+    height: i32,
+    /// Cadência como razão exata, nunca decimal: 59,94 é 60000/1001.
+    rate_num: i32,
+    rate_den: i32,
+    /// `progressive`, `interleaved` ou `mixed`, como o GStreamer reporta.
+    interlace_mode: String,
+}
+
+/// Uma trilha de áudio do arquivo, do jeito que ele a declara.
+///
+/// O índice é a ordem em que a trilha aparece, que é a mesma que o engine usa
+/// para escolher qual tocar. Idioma vem da tag do arquivo quando existe -- e
+/// não existe com frequência, então ele é opcional em vez de inventado.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AudioTrack {
+    index: usize,
+    rate: i32,
+    channels: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AudioInfo {
+    rate: i32,
+    channels: i32,
+    /// Loudness integrada gateada do arquivo inteiro, em LUFS.
+    ///
+    /// Ausente quando a medição foi dispensada. Mandar -70 nesse caso seria
+    /// indistinguível de um arquivo mudo medido de verdade.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    integrated_lufs: Option<f64>,
+    /// Faixa de loudness, em LU.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lra: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    true_peak_dbtp: Option<f64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Probe {
+    ok: bool,
+    /// Nonempty raw buffers on the first selected decoded video/audio pads.
+    /// Caps alone are not evidence of decoded signal. Other audio tracks are
+    /// discovered, not individually decoded or loudness-certified here.
+    decoded_video_buffers: u64,
+    decoded_audio_buffers: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    video_codec: Option<String>,
+    /// Duração em nanossegundos. Converter para frames é de quem sabe a
+    /// cadência do canal, não da sonda.
+    duration_ns: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    video: Option<VideoInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio: Option<AudioInfo>,
+    /// Todas as trilhas de áudio, na ordem em que o arquivo as declara.
+    ///
+    /// A medição vale para a primeira, que é a que a sonda decodifica; as
+    /// outras entram aqui para o operador poder escolher.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    audio_tracks: Vec<AudioTrack>,
+    /// Caminho da miniatura escrita, quando pedida e possível.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnail: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Failure {
+    ok: bool,
+    /// O motivo como o GStreamer deu. É a informação acionável quando o que
+    /// falta é um plugin.
+    reason: String,
+}
+
+fn fail(reason: String) -> ! {
+    let payload = Failure { ok: false, reason };
+    println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+    std::process::exit(0);
+}
+
+struct Args {
+    parent_pipe: bool,
+    path: String,
+    thumbnail: Option<String>,
+    /// Medir loudness custa decodificar o áudio inteiro. Vale desligar quando
+    /// só se quer saber se o arquivo abre.
+    measure: bool,
+    /// Segundo de onde tirar o quadro. Sem isto, o quadro é o do começo.
+    ///
+    /// É o que permite montar a régua de miniaturas do in/out: marcar corte
+    /// olhando só o primeiro quadro é marcar no escuro.
+    at: Option<f64>,
+    /// Quantos quadros tirar de uma vez, espalhados pelo arquivo inteiro.
+    ///
+    /// Abrir e posicionar um arquivo grande custa segundos; a régua do in/out
+    /// quer dezesseis quadros e abrir dezesseis vezes levaria um minuto. Com
+    /// `--fita`, abre-se uma vez e salta-se dentro do mesmo pipeline: os
+    /// quadros saem como `<prefixo>-0.jpg`, `<prefixo>-1.jpg`, e assim por
+    /// diante, onde o prefixo é o que veio em `--thumbnail`.
+    fita: Option<u32>,
+    only_frame: Option<u32>,
+    /// Largura da miniatura em pixels. A régua do in/out quer quadro pequeno,
+    /// para encher rápido; a tela de conferência quer quadro grande, para dar
+    /// para ver onde cortar.
+    largura: i32,
+    /// QC: posição exata (ns) de UM quadro do original. Gera `<prefixo>.jpg`
+    /// (RGB BT.709 faixa limitada→full, para exibir) e `<prefixo>.ycc`
+    /// (amostras Y'CbCr 4:4:4 cruas, códigos de 8 bits BT.709 faixa limitada,
+    /// para os scopes) numa única decodificação.
+    qc_at_ns: Option<u64>,
+    /// Largura das amostras Y'CbCr dos scopes (múltiplo de 4).
+    scope_width: i32,
+}
+
+fn parse_args() -> Result<Args> {
+    let mut path = None;
+    let mut thumbnail = None;
+    let mut only_frame = None;
+    let mut measure = true;
+    let mut at = None;
+    let mut largura = 320i32;
+    let mut fita = None;
+    let mut parent_pipe = false;
+    let mut qc_at_ns = None;
+    let mut scope_width = 960i32;
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--only-frame" => {
+                index+=1;
+                only_frame=Some(args.get(index).ok_or_else(||anyhow!("--only-frame precisa de um índice"))?.parse::<u32>()?);
+            }
+            "--thumbnail" => {
+                index += 1;
+                thumbnail = Some(
+                    args.get(index)
+                        .cloned()
+                        .ok_or_else(|| anyhow!("--thumbnail precisa de um caminho"))?,
+                );
+            }
+            "--qc-at-ns" => {
+                index += 1;
+                qc_at_ns = Some(args.get(index).ok_or_else(|| anyhow!("--qc-at-ns precisa de nanossegundos"))?.parse::<u64>().context("--qc-at-ns")?);
+            }
+            "--scope-width" => {
+                index += 1;
+                scope_width = args.get(index).ok_or_else(|| anyhow!("--scope-width precisa de um número"))?.parse().context("--scope-width")?;
+            }
+            "--no-loudness" => measure = false,
+            "--parent-pipe" => parent_pipe = true,
+            "--at" => {
+                index += 1;
+                at = Some(
+                    args.get(index)
+                        .ok_or_else(|| anyhow!("--at precisa de um número de segundos"))?
+                        .parse()
+                        .context("--at")?,
+                );
+            }
+            "--fita" => {
+                index += 1;
+                fita = Some(
+                    args.get(index)
+                        .ok_or_else(|| anyhow!("--fita precisa de um número de quadros"))?
+                        .parse()
+                        .context("--fita")?,
+                );
+            }
+            "--largura" => {
+                index += 1;
+                largura = args
+                    .get(index)
+                    .ok_or_else(|| anyhow!("--largura precisa de um número"))?
+                    .parse()
+                    .context("--largura")?;
+            }
+            other => path = Some(other.to_string()),
+        }
+        index += 1;
+    }
+
+    if only_frame.is_some() && fita.is_none(){return Err(anyhow!("--only-frame requer --fita"));}
+    if qc_at_ns.is_some() && (fita.is_some() || at.is_some() || thumbnail.is_none()){return Err(anyhow!("--qc-at-ns exige --thumbnail e não combina com --fita/--at"));}
+    Ok(Args {
+        parent_pipe,
+        path: path.ok_or_else(|| anyhow!("falta o caminho do arquivo"))?,
+        thumbnail,
+        measure,
+        at,
+        fita: fita.map(|n: u32| n.clamp(1, 64)),
+        only_frame,
+        // Largura ímpar quebra a subamostragem de croma do JPEG; e uma largura
+        // absurda transformaria a sonda num gerador de imagem enorme.
+        largura: inspection_width(largura),
+        qc_at_ns,
+        scope_width: scope_raster_width(scope_width),
+    })
+}
+
+// QC may explicitly request a native 4K inspection frame. The default remains
+// 320px; bound width and even chroma dimensions apply to every CLI consumer.
+fn inspection_width(requested: i32) -> i32 {
+    requested.clamp(64, 3840) & !1
+}
+
+// Amostras dos scopes: no mínimo 480 pontos por linha (resolução útil de um
+// waveform), no máximo UHD; múltiplo de 4 para o Y444 sair sem preenchimento.
+fn scope_raster_width(requested: i32) -> i32 {
+    requested.clamp(480, 3840) & !3
+}
+
+// Square-pixel JPEGs bounded by UHD in both axes, without baked letterbox or
+// source upscaling. Decoder PAR matters for legacy SD/anamorphic masters.
+fn inspection_raster(width:i32,height:i32,par_num:i32,par_den:i32,requested:i32)->Result<(i32,i32)>{
+    if width<2 || height<2 || par_num<=0 || par_den<=0 {return Err(anyhow!("geometria de inspeção inválida"));}
+    let maximum=inspection_width(requested);
+    let display_width=f64::from(width)*f64::from(par_num)/f64::from(par_den);
+    let scale=(f64::from(maximum)/display_width).min(2160.0/f64::from(height)).min(1.0);
+    let even=|value:f64,limit:i32| ((value/2.0).round() as i32*2).clamp(2,limit);
+    Ok((even(display_width*scale,maximum),even(f64::from(height)*scale,2160)))
+}
+
+#[cfg(test)]
+mod inspection_width_tests {
+    use super::{inspection_width,inspection_raster};
+    #[test]
+    fn keeps_economical_default_and_allows_explicit_4k() {
+        assert_eq!(inspection_width(320), 320);
+        assert_eq!(inspection_width(1920), 1920);
+        assert_eq!(inspection_width(3840), 3840);
+    }
+    #[test]
+    fn bounds_requested_pixels_and_even_chroma() {
+        assert_eq!(inspection_width(i32::MAX), 3840);
+        assert_eq!(inspection_width(-1), 64);
+        assert_eq!(inspection_width(1921), 1920);
+    }
+    #[test]
+    fn scope_samples_keep_useful_resolution_and_y444_alignment() {
+        assert_eq!(super::scope_raster_width(100), 480);
+        assert_eq!(super::scope_raster_width(962), 960);
+        assert_eq!(super::scope_raster_width(99999), 3840);
+    }
+    #[test]
+    fn ycc_header_declares_bt709_limited_444(){
+        let header=super::ycc_header(960,540);
+        assert_eq!(&header[0..4],b"RPYC");
+        assert_eq!(header[4],1);assert_eq!(header[5],1);assert_eq!(header[6],0);assert_eq!(header[7],8);
+        assert_eq!(u16::from_le_bytes([header[8],header[9]]),960);
+        assert_eq!(u16::from_le_bytes([header[10],header[11]]),540);
+    }
+    #[test]
+    fn inspection_picture_geometry_is_bounded_and_square_pixel(){
+        assert_eq!(inspection_raster(3840,2160,1,1,3840).unwrap(),(3840,2160));
+        assert_eq!(inspection_raster(2160,3840,1,1,3840).unwrap(),(1216,2160));
+        assert_eq!(inspection_raster(640,480,1,1,3840).unwrap(),(640,480));
+        assert_eq!(inspection_raster(360,640,1,1,320).unwrap(),(320,568));
+        assert_eq!(inspection_raster(720,576,16,15,320).unwrap(),(320,240));
+        assert_eq!(inspection_raster(720,576,16,15,1920).unwrap(),(768,576));
+        assert!(inspection_raster(0,1080,1,1,3840).is_err());
+        assert!(inspection_raster(1920,1080,0,1,3840).is_err());
+    }
+}
+
+fn uri_for(path: &str) -> Result<String> {
+    if path.contains("://") {
+        return Ok(path.to_string());
+    }
+    Ok(gst::glib::filename_to_uri(path, None)?.to_string())
+}
+
+fn main() -> Result<()> {
+    let args = parse_args()?;
+    if args.parent_pipe {
+        // The pipe belongs to the spawning server, not a guessed/reusable PID.
+        // EOF ends only this isolated helper, including a stalled decoder.
+        std::thread::spawn(|| {
+            use std::io::Read;
+            let mut byte = [0u8; 1];
+            while matches!(std::io::stdin().read(&mut byte), Ok(n) if n > 0) {}
+            eprintln!("[probe] servidor encerrou durante a análise");
+            std::process::exit(1);
+        });
+    }
+    gst::init().context("GStreamer não inicializou")?;
+
+    if !args.path.contains("://") && !std::path::Path::new(&args.path).is_file() {
+        fail("o arquivo não existe ou não é um arquivo".to_string());
+    }
+
+    let uri = match uri_for(&args.path) {
+        Ok(uri) => uri,
+        Err(error) => fail(format!("caminho inválido: {error}")),
+    };
+
+    let pipeline = gst::Pipeline::new();
+    let src = gst::ElementFactory::make("uridecodebin")
+        .property("uri", &uri)
+        .build()
+        .context("uridecodebin não existe nesta instalação do GStreamer")?;
+    pipeline.add(&src)?;
+    // Read encoded caps before autoplug decoding; raw output caps do not
+    // identify the codec contained in the file. Always allow normal decoding.
+    let video_codec: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let observed_codec = Arc::clone(&video_codec);
+    src.connect("autoplug-continue", false, move |values| {
+        if let Ok(caps) = values[2].get::<gst::Caps>() {
+            if let Some(structure) = caps.structure(0) {
+                let name = structure.name().to_string();
+                let container = matches!(name.as_str(), "video/quicktime" | "video/x-matroska" | "video/x-ms-asf" | "video/x-flv" | "video/mpegts")
+                    || structure.get::<bool>("systemstream").unwrap_or(false);
+                if name.starts_with("video/") && name != "video/x-raw" && !container {
+                    let mut codec = observed_codec.lock().unwrap();
+                    if codec.is_none() { *codec = Some(name); }
+                }
+            }
+        }
+        Some(true.to_value())
+    });
+
+    // O vídeo vai para um `appsink` de um quadro por segundo: um deles vira a
+    // miniatura e o resto é descartado sem custo de codificação.
+    let video_info: Arc<Mutex<Option<VideoInfo>>> = Arc::new(Mutex::new(None));
+    let audio_info: Arc<Mutex<Option<(i32, i32)>>> = Arc::new(Mutex::new(None));
+    // Toda trilha entra na lista; só a primeira é decodificada e medida.
+    let audio_tracks: Arc<Mutex<Vec<AudioTrack>>> = Arc::new(Mutex::new(Vec::new()));
+    let meter: Arc<Mutex<Option<Meter>>> = Arc::new(Mutex::new(None));
+    let decoded_video = Arc::new(AtomicU64::new(0));
+    let decoded_audio = Arc::new(AtomicU64::new(0));
+    let thumbnail_done = Arc::new(AtomicU64::new(0));
+    // Sem `--at` nem `--fita`, o primeiro quadro serve e a captura já nasce
+    // liberada.
+    let liberado = Arc::new(AtomicBool::new(args.at.is_none() && args.fita.is_none() && args.qc_at_ns.is_none()));
+    // Para onde o próximo quadro capturado vai. Com `--fita` isso muda a cada
+    // salto, então o destino não pode ficar preso dentro da callback.
+    let alvo: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(match (args.fita, args.qc_at_ns) {
+        (Some(_), _) | (_, Some(_)) => None,
+        _ => args.thumbnail.clone(),
+    }));
+    let scope_done = Arc::new(AtomicU64::new(0));
+    let qc_scope = args.qc_at_ns.map(|_| (args.scope_width, Arc::clone(&scope_done)));
+
+    let stage = pipeline.clone();
+    let seen_video = Arc::clone(&video_info);
+    let seen_audio = Arc::clone(&audio_info);
+    let listed_audio = Arc::clone(&audio_tracks);
+    let shared_meter = Arc::clone(&meter);
+    let want_thumbnail = Arc::clone(&alvo);
+    let measure = args.measure;
+    let largura_thumb = args.largura;
+    let thumb_flag = Arc::clone(&thumbnail_done);
+    let captured_pts=Arc::new(AtomicU64::new(u64::MAX));
+    let thumb_pts=Arc::clone(&captured_pts);
+    let porteiro_video = Arc::clone(&liberado);
+    let counted_video = Arc::clone(&decoded_video);
+    let counted_audio = Arc::clone(&decoded_audio);
+
+    src.connect_pad_added(move |_, pad| {
+        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+        let Some(structure) = caps.structure(0) else { return };
+        let name = structure.name().to_string();
+
+        if name.starts_with("video/") {
+            if seen_video.lock().unwrap().is_some() {
+                return;
+            }
+            let attached = match &qc_scope {
+                Some((scope_width, scope_flag)) => attach_qc_video(
+                    &stage, pad, &seen_video, &want_thumbnail, &thumb_flag, scope_flag,
+                    &thumb_pts, &porteiro_video, largura_thumb, *scope_width,
+                ),
+                None => attach_video(
+                    &stage,
+                    pad,
+                    &seen_video,
+                    &want_thumbnail,
+                    &thumb_flag,
+                    &thumb_pts,
+                    &porteiro_video,
+                    largura_thumb,
+                ),
+            };
+            if let Err(error) = attached {
+                eprintln!("[probe] vídeo ignorado: {error}");
+            } else {
+                count_decoded_buffers(pad, counted_video.clone());
+            }
+        } else if name.starts_with("audio/") {
+            let mut tracks = listed_audio.lock().unwrap();
+            let index = tracks.len();
+            tracks.push(AudioTrack {
+                index,
+                rate: structure.get::<i32>("rate").unwrap_or(0),
+                channels: structure.get::<i32>("channels").unwrap_or(0),
+                language: language_of(pad),
+            });
+            drop(tracks);
+
+            if seen_audio.lock().unwrap().is_some() {
+                return;
+            }
+            if let Err(error) = attach_audio(&stage, pad, &seen_audio, &shared_meter, measure) {
+                eprintln!("[probe] áudio ignorado: {error}");
+            } else {
+                count_decoded_buffers(pad, counted_audio.clone());
+            }
+        }
+    });
+
+    let initial_state=if args.only_frame.is_some()||args.qc_at_ns.is_some(){gst::State::Paused}else{gst::State::Playing};
+    if let Err(error) = pipeline.set_state(initial_state) {
+        fail(format!("não consegui abrir: {error}"));
+    }
+
+    // Quadro de uma posição pedida: espera o pipeline responder (só aí o
+    // arquivo aceita busca), salta, e só então libera a captura. A ordem
+    // importa: liberar antes do salto grava o primeiro quadro do arquivo.
+    if let Some(segundos) = args.at {
+        let _ = pipeline.state(gst::ClockTime::from_seconds(10));
+        let alvo = gst::ClockTime::from_nseconds((segundos.max(0.0) * 1e9) as u64);
+        if pipeline
+            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, alvo)
+            .is_err()
+        {
+            // Arquivo sem índice não busca; o quadro do começo é melhor do que
+            // nenhum, e a régua fica com repetição em vez de buraco.
+            eprintln!("[probe] o arquivo não aceitou busca; usando o começo");
+        }
+        let _ = pipeline.state(gst::ClockTime::from_seconds(10));
+        liberado.store(true, Ordering::Release);
+    }
+
+    // QC: um quadro exato do original, pedido pela posição (o servidor mira o
+    // meio do quadro, então a busca ACCURATE cai nele e não no vizinho).
+    if let Some(posicao) = args.qc_at_ns {
+        let _ = pipeline.state(gst::ClockTime::from_seconds(15));
+        let total = pipeline.query_duration::<gst::ClockTime>().map(|d| d.nseconds()).unwrap_or(0);
+        if total == 0 {
+            let _ = pipeline.set_state(gst::State::Null);
+            fail("o arquivo não disse quanto dura; sem isso não dá para buscar o quadro".to_string());
+        }
+        let alvo_ns = posicao.min(total.saturating_sub(1));
+        *alvo.lock().unwrap() = args.thumbnail.clone();
+        if pipeline.seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE, gst::ClockTime::from_nseconds(alvo_ns)).is_err() {
+            let _ = pipeline.set_state(gst::State::Null);
+            fail("o arquivo não aceitou busca exata".to_string());
+        }
+        let _ = pipeline.state(gst::ClockTime::from_seconds(15));
+        liberado.store(true, Ordering::Release);
+        pipeline.set_state(gst::State::Playing)?;
+        let limite = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while thumbnail_done.load(Ordering::Acquire) < 2 || scope_done.load(Ordering::Acquire) < 2 {
+            if std::time::Instant::now() > limite { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let ok = thumbnail_done.load(Ordering::Acquire) >= 2 && scope_done.load(Ordering::Acquire) >= 2;
+        liberado.store(false, Ordering::Release);
+        let _ = pipeline.set_state(gst::State::Null);
+        if !ok { fail("o quadro pedido não foi decodificado a tempo".to_string()); }
+        let probe = Probe {
+            ok: true,
+            decoded_video_buffers: decoded_video.load(Ordering::Acquire),
+            decoded_audio_buffers: decoded_audio.load(Ordering::Acquire),
+            video_codec: video_codec.lock().unwrap().clone(),
+            duration_ns: total,
+            video: video_info.lock().unwrap().take(),
+            audio: None,
+            audio_tracks: Vec::new(),
+            thumbnail: Some("1".to_string()),
+        };
+        let mut receipt = serde_json::to_value(&probe)?;
+        receipt["frameRecipe"] = serde_json::json!("qc-frame-v4");
+        receipt["requestedPositionNs"] = serde_json::json!(alvo_ns);
+        let pts = captured_pts.load(Ordering::Acquire);
+        receipt["framePtsNs"] = if pts == u64::MAX { serde_json::Value::Null } else { serde_json::json!(pts) };
+        println!("{}", receipt);
+        return Ok(());
+    }
+
+    // A fita inteira numa abertura só. O caro aqui é abrir e posicionar o
+    // arquivo -- um MKV de duzentos megabytes leva segundos para o primeiro
+    // salto. Repetir isso dezesseis vezes levaria um minuto; dentro do mesmo
+    // pipeline, cada salto seguinte custa uma fração disso.
+    if let Some(quantos) = args.fita {
+        let _ = pipeline.state(gst::ClockTime::from_seconds(15));
+        let total = pipeline
+            .query_duration::<gst::ClockTime>()
+            .map(|d| d.nseconds())
+            .unwrap_or(0);
+        if total == 0 {
+            let _ = pipeline.set_state(gst::State::Null);
+            fail("o arquivo não disse quanto dura; sem isso não dá para montar a fita".to_string());
+        }
+
+        let prefixo = args
+            .thumbnail
+            .clone()
+            .unwrap_or_else(|| "quadro".to_string());
+        let mut escritos = 0u32;
+        let mut requested_position=0u64;
+
+        let first=args.only_frame.unwrap_or(0).min(quantos-1);
+        let last=if args.only_frame.is_some(){first+1}else{quantos};
+        for i in first..last {
+            // O quadro sai do meio da fatia, não da borda: a borda de uma
+            // fatia é a mesma imagem da vizinha, e a fita sairia com pares
+            // repetidos.
+            let frame_ns=video_info.lock().unwrap().as_ref().map(|info|1_000_000_000u64*info.rate_den.max(1) as u64/info.rate_num.max(1) as u64).unwrap_or(40_000_000);
+            let alvo_ns = if args.only_frame.is_some(){
+                ((i as f64 / (quantos-1).max(1) as f64 * total as f64) as u64).min(total.saturating_sub(frame_ns))
+            }else{((i as f64 + 0.5) / quantos as f64 * total as f64) as u64};
+            requested_position=alvo_ns;
+
+            liberado.store(false, Ordering::Release);
+            thumbnail_done.store(0, Ordering::Release);
+            *alvo.lock().unwrap() = Some(format!("{prefixo}-{i}.jpg"));
+
+            if pipeline
+                .seek_simple(
+                    gst::SeekFlags::FLUSH | if args.only_frame.is_some(){gst::SeekFlags::ACCURATE}else{gst::SeekFlags::KEY_UNIT},
+                    gst::ClockTime::from_nseconds(alvo_ns),
+                )
+                .is_err()
+            {
+                eprintln!("[probe] o arquivo não aceitou busca; fita interrompida");
+                break;
+            }
+            let _ = pipeline.state(gst::ClockTime::from_seconds(15));
+            liberado.store(true, Ordering::Release);
+            if args.only_frame.is_some(){pipeline.set_state(gst::State::Playing)?;}
+
+            // Espera o quadro chegar. Quem escreve é a callback do appsink, e
+            // ela avisa pelo contador -- sem isso o próximo salto derrubaria o
+            // quadro atual antes de ele virar arquivo.
+            let limite = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while thumbnail_done.load(Ordering::Acquire) < 2 {
+                if std::time::Instant::now() > limite {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if thumbnail_done.load(Ordering::Acquire) >= 2 {
+                escritos += 1;
+            }
+        }
+
+        liberado.store(false, Ordering::Release);
+        let _ = pipeline.set_state(gst::State::Null);
+        let probe = Probe {
+            ok: true,
+            decoded_video_buffers: decoded_video.load(Ordering::Acquire),
+            decoded_audio_buffers: decoded_audio.load(Ordering::Acquire),
+            video_codec: video_codec.lock().unwrap().clone(),
+            duration_ns: total,
+            video: video_info.lock().unwrap().take(),
+            audio: None,
+            audio_tracks: std::mem::take(&mut *audio_tracks.lock().unwrap()),
+            // Aqui a miniatura não é um arquivo só, então o campo diz quantos
+            // quadros saíram -- é o que o servidor precisa saber.
+            thumbnail: Some(format!("{escritos}")),
+        };
+        let mut receipt=serde_json::to_value(&probe)?;
+        if args.only_frame.is_some(){
+            receipt["frameRecipe"]=serde_json::json!("qc-frame-v3");
+            receipt["requestedPositionNs"]=serde_json::json!(requested_position);
+            let pts=captured_pts.load(Ordering::Acquire);
+            receipt["framePtsNs"]=if pts==u64::MAX{serde_json::Value::Null}else{serde_json::json!(pts)};
+        }
+        println!("{}", receipt);
+        return Ok(());
+    }
+
+    let bus = pipeline.bus().expect("pipeline sempre tem bus");
+    let mut duration_ns = 0u64;
+
+    loop {
+        let Some(message) = bus.timed_pop(gst::ClockTime::from_seconds(60)) else {
+            let _ = pipeline.set_state(gst::State::Null);
+            fail("o arquivo não respondeu em sessenta segundos".to_string());
+        };
+
+        match message.view() {
+            gst::MessageView::Eos(_) => break,
+            gst::MessageView::Error(error) => {
+                let reason = format!(
+                    "{} ({})",
+                    error.error(),
+                    error.debug().unwrap_or_else(|| "sem detalhe".into())
+                );
+                let _ = pipeline.set_state(gst::State::Null);
+                fail(reason);
+            }
+            gst::MessageView::AsyncDone(_) => {
+                if let Some(duration) = pipeline.query_duration::<gst::ClockTime>() {
+                    duration_ns = duration.nseconds();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if duration_ns == 0 {
+        if let Some(duration) = pipeline.query_duration::<gst::ClockTime>() {
+            duration_ns = duration.nseconds();
+        }
+    }
+    let _ = pipeline.set_state(gst::State::Null);
+
+    let audio = audio_info.lock().unwrap().take().map(|(rate, channels)| {
+        let mut guard = meter.lock().unwrap();
+        let reading = args
+            .measure
+            .then(|| guard.as_mut().map(|meter| meter.read()))
+            .flatten();
+        AudioInfo {
+            rate,
+            channels,
+            integrated_lufs: reading.as_ref().map(|value| value.integrated_lufs),
+            lra: reading.as_ref().map(|value| value.range_lu),
+            true_peak_dbtp: reading.as_ref().map(|value| value.true_peak_dbtp),
+        }
+    });
+
+    let probe = Probe {
+        ok: true,
+        decoded_video_buffers: decoded_video.load(Ordering::Acquire),
+        decoded_audio_buffers: decoded_audio.load(Ordering::Acquire),
+        video_codec: video_codec.lock().unwrap().clone(),
+        duration_ns,
+        video: video_info.lock().unwrap().take(),
+        audio,
+        audio_tracks: std::mem::take(&mut *audio_tracks.lock().unwrap()),
+        thumbnail: args
+            .thumbnail
+            .filter(|_| thumbnail_done.load(Ordering::Relaxed) >= 2),
+    };
+    println!("{}", serde_json::to_string(&probe)?);
+    Ok(())
+}
+
+fn count_decoded_buffers(pad: &gst::Pad, counter: Arc<AtomicU64>) {
+    pad.add_probe(gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST, move |_, info| {
+        let count = if let Some(buffer) = info.buffer() {
+            u64::from(buffer.size() > 0)
+        } else if let Some(list) = info.buffer_list() {
+            list.iter().filter(|buffer| buffer.size() > 0).count() as u64
+        } else { 0 };
+        counter.fetch_add(count, Ordering::AcqRel);
+        gst::PadProbeReturn::Ok
+    });
+}
+
+/// Idioma declarado da trilha, quando o arquivo diz.
+///
+/// A tag chega como evento pegajoso no pad, então dá para ler sem decodificar
+/// nada. Arquivo que não declara idioma é a maioria -- daí `Option`, e não uma
+/// string vazia que a interface teria de adivinhar o que significa.
+fn language_of(pad: &gst::Pad) -> Option<String> {
+    let mut index = 0;
+    while let Some(event) = pad.sticky_event::<gst::event::Tag>(index) {
+        if let Some(language) = event.tag().get::<gst::tags::LanguageCode>() {
+            return Some(language.get().to_string());
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Liga o ramo de vídeo: guarda a geometria e escreve a miniatura.
+fn attach_video(
+    pipeline: &gst::Pipeline,
+    pad: &gst::Pad,
+    info: &Arc<Mutex<Option<VideoInfo>>>,
+    // Destino do próximo quadro. Vazio quer dizer "não escreva nada".
+    thumbnail: &Arc<Mutex<Option<String>>>,
+    done: &Arc<AtomicU64>,
+    captured_pts: &Arc<AtomicU64>,
+    // Enquanto `liberado` for falso, o quadro que chega é descartado: com
+    // `--at`, o pipeline entrega o primeiro quadro do arquivo antes de o salto
+    // acontecer, e capturá-lo daria sempre a mesma miniatura.
+    liberado: &Arc<AtomicBool>,
+    // Largura pedida na linha de comando.
+    largura: i32,
+) -> Result<()> {
+    // A geometria vem das caps do pad de origem, não do que foi escalado.
+    let source_caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+    let structure = source_caps
+        .structure(0)
+        .ok_or_else(|| anyhow!("pad de vídeo sem caps"))?;
+    let source_width: i32 = structure.get("width").unwrap_or(0);
+    let source_height: i32 = structure.get("height").unwrap_or(0);
+
+    let convert = gst::ElementFactory::make("videoconvert").build()?;
+    let scale = gst::ElementFactory::make("videoscale").property("add-borders",false).build()?;
+    let caps = gst::ElementFactory::make("capsfilter").build()?;
+    let par=structure.get::<gst::Fraction>("pixel-aspect-ratio").unwrap_or_else(|_|gst::Fraction::new(1,1));
+    let (thumb_width,thumb_height)=inspection_raster(source_width,source_height,par.numer(),par.denom(),largura)?;
+    caps.set_property(
+        "caps",
+        gst::Caps::builder("video/x-raw")
+            .field("width", thumb_width)
+            .field("height", thumb_height)
+            .field("pixel-aspect-ratio",gst::Fraction::new(1,1))
+            .build(),
+    );
+    let encoder = gst::ElementFactory::make("jpegenc").build()?;
+    let sink = gst::ElementFactory::make("appsink")
+        .property("sync", false)
+        .property("max-buffers", 1u32)
+        .property("drop", true)
+        .build()?;
+
+    pipeline.add_many([&convert, &scale, &caps, &encoder, &sink])?;
+    gst::Element::link_many([&convert, &scale, &caps, &encoder, &sink])?;
+    for element in [&convert, &scale, &caps, &encoder, &sink] {
+        element.sync_state_with_parent()?;
+    }
+
+    let rate = structure
+        .get::<gst::Fraction>("framerate")
+        .unwrap_or_else(|_| gst::Fraction::new(25, 1));
+    *info.lock().unwrap() = Some(VideoInfo {
+        width: source_width,
+        height: source_height,
+        rate_num: rate.numer(),
+        rate_den: rate.denom(),
+        interlace_mode: structure
+            .get::<String>("interlace-mode")
+            .unwrap_or_else(|_| "progressive".to_string()),
+    });
+
+    // O `appsink` precisa de alguém puxando **sempre**, mesmo sem miniatura a
+    // escrever: sem consumidor ele fica preso no preroll, o ramo de vídeo nunca
+    // chega a PLAYING e o arquivo inteiro morre no tempo limite. Foi assim que
+    // uma sonda sem `--thumbnail` passou a travar sessenta segundos.
+    let target = Arc::clone(thumbnail);
+    let flag = Arc::clone(done);
+    let pts=Arc::clone(captured_pts);
+    let porteiro = Arc::clone(liberado);
+    let app_sink = sink
+        .clone()
+        .dynamic_cast::<gst_app::AppSink>()
+        .map_err(|_| anyhow!("appsink de vídeo não é appsink"))?;
+    app_sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                if !porteiro.load(Ordering::Acquire) {
+                    return Ok(gst::FlowSuccess::Ok);
+                }
+                let destino = target.lock().unwrap().clone();
+                let Some(destino) = destino else {
+                    return Ok(gst::FlowSuccess::Ok);
+                };
+                // Só o primeiro quadro interessa; escrever a cada quadro
+                // deixaria a miniatura sendo o último frame do arquivo, que
+                // costuma ser preto.
+                if flag
+                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    if let Some(buffer) = sample.buffer() {
+                        if let Ok(map) = buffer.map_readable() {
+                            let temporary=format!("{destino}.part-{}",std::process::id());
+                            if std::fs::write(&temporary,map.as_slice()).and_then(|_|std::fs::rename(&temporary,&destino)).is_err() {
+                                let _=std::fs::remove_file(&temporary);
+                                flag.store(0, Ordering::Relaxed);
+                            }else{pts.store(buffer.pts().map(|timestamp|timestamp.nseconds()).unwrap_or(u64::MAX),Ordering::Release);flag.store(2,Ordering::Release);}
+                        }
+                    }
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+
+    pad.link(
+        &convert
+            .static_pad("sink")
+            .ok_or_else(|| anyhow!("videoconvert sem sink"))?,
+    )?;
+    Ok(())
+}
+
+/// Cabeçalho do arquivo `.ycc` (16 bytes): `RPYC`, versão 1, matriz 1 =
+/// BT.709, faixa 0 = limitada (16–235/240), 8 bits, largura e altura em u16
+/// LE e 4 bytes reservados. Seguem os planos Y, Cb e Cr completos (4:4:4).
+fn ycc_header(width: u16, height: u16) -> [u8; 16] {
+    let mut header = [0u8; 16];
+    header[0..4].copy_from_slice(b"RPYC");
+    header[4] = 1;
+    header[5] = 1;
+    header[6] = 0;
+    header[7] = 8;
+    header[8..10].copy_from_slice(&width.to_le_bytes());
+    header[10..12].copy_from_slice(&height.to_le_bytes());
+    header
+}
+
+/// Grava uma única amostra de um appsink no destino `<alvo><sufixo>`.
+fn capture_once(
+    sink: &gst::Element,
+    target: &Arc<Mutex<Option<String>>>,
+    flag: &Arc<AtomicU64>,
+    pts: Option<Arc<AtomicU64>>,
+    porteiro: &Arc<AtomicBool>,
+    suffix: &'static str,
+    encode: fn(&gst::Sample) -> Option<Vec<u8>>,
+) -> Result<()> {
+    let target = Arc::clone(target);
+    let flag = Arc::clone(flag);
+    let porteiro = Arc::clone(porteiro);
+    let app_sink = sink.clone().dynamic_cast::<gst_app::AppSink>().map_err(|_| anyhow!("appsink de vídeo não é appsink"))?;
+    app_sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                if !porteiro.load(Ordering::Acquire) { return Ok(gst::FlowSuccess::Ok); }
+                let Some(destino) = target.lock().unwrap().clone() else { return Ok(gst::FlowSuccess::Ok) };
+                if flag.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                    let destino = format!("{destino}{suffix}");
+                    let temporary = format!("{destino}.part-{}", std::process::id());
+                    let bytes = encode(&sample);
+                    let written = bytes.map(|bytes| std::fs::write(&temporary, bytes).and_then(|_| std::fs::rename(&temporary, &destino)).is_ok()).unwrap_or(false);
+                    if written {
+                        if let (Some(pts), Some(buffer)) = (&pts, sample.buffer()) {
+                            pts.store(buffer.pts().map(|t| t.nseconds()).unwrap_or(u64::MAX), Ordering::Release);
+                        }
+                        flag.store(2, Ordering::Release);
+                    } else {
+                        let _ = std::fs::remove_file(&temporary);
+                        flag.store(0, Ordering::Relaxed);
+                    }
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+    Ok(())
+}
+
+fn encoded_bytes(sample: &gst::Sample) -> Option<Vec<u8>> {
+    let buffer = sample.buffer()?;
+    let map = buffer.map_readable().ok()?;
+    Some(map.as_slice().to_vec())
+}
+
+/// Y444 de 8 bits como o videoconvert entrega (passo de linha múltiplo de 4)
+/// para planos contíguos com o cabeçalho `.ycc`.
+fn ycc_bytes(sample: &gst::Sample) -> Option<Vec<u8>> {
+    let caps = sample.caps()?;
+    let structure = caps.structure(0)?;
+    if structure.get::<String>("format").ok()?.as_str() != "Y444" { return None; }
+    let width = structure.get::<i32>("width").ok()? as usize;
+    let height = structure.get::<i32>("height").ok()? as usize;
+    let stride = (width + 3) & !3;
+    let buffer = sample.buffer()?;
+    let map = buffer.map_readable().ok()?;
+    let data = map.as_slice();
+    if width == 0 || height == 0 || width > u16::MAX as usize || height > u16::MAX as usize || data.len() < stride * height * 3 { return None; }
+    let mut out = Vec::with_capacity(16 + width * height * 3);
+    out.extend_from_slice(&ycc_header(width as u16, height as u16));
+    for plane in 0..3 {
+        for row in 0..height {
+            let start = plane * stride * height + row * stride;
+            out.extend_from_slice(&data[start..start + width]);
+        }
+    }
+    Some(out)
+}
+
+/// Ramo de vídeo do QC: um `tee` alimenta (a) o JPEG de exibição convertido
+/// para RGB pela matriz da origem (BT.709 faixa limitada→full) e (b) as
+/// amostras Y'CbCr 4:4:4 cruas para os scopes. As amostras são decimadas por
+/// vizinho mais próximo: todo ponto plotado é uma amostra real do original,
+/// sem o overshoot que um filtro de escala inventaria (falso ilegal).
+#[allow(clippy::too_many_arguments)]
+fn attach_qc_video(
+    pipeline: &gst::Pipeline,
+    pad: &gst::Pad,
+    info: &Arc<Mutex<Option<VideoInfo>>>,
+    target: &Arc<Mutex<Option<String>>>,
+    picture_done: &Arc<AtomicU64>,
+    scope_done: &Arc<AtomicU64>,
+    captured_pts: &Arc<AtomicU64>,
+    liberado: &Arc<AtomicBool>,
+    largura: i32,
+    scope_width: i32,
+) -> Result<()> {
+    let source_caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+    let structure = source_caps.structure(0).ok_or_else(|| anyhow!("pad de vídeo sem caps"))?;
+    let source_width: i32 = structure.get("width").unwrap_or(0);
+    let source_height: i32 = structure.get("height").unwrap_or(0);
+    let par = structure.get::<gst::Fraction>("pixel-aspect-ratio").unwrap_or_else(|_| gst::Fraction::new(1, 1));
+    let (picture_width, picture_height) = inspection_raster(source_width, source_height, par.numer(), par.denom(), largura)?;
+    let (scope_w, scope_h) = inspection_raster(source_width, source_height, par.numer(), par.denom(), scope_width)?;
+    let scope_w = (scope_w & !3).max(4);
+
+    let tee = gst::ElementFactory::make("tee").build()?;
+    let queue_a = gst::ElementFactory::make("queue").build()?;
+    let convert_a = gst::ElementFactory::make("videoconvert").build()?;
+    let scale_a = gst::ElementFactory::make("videoscale").property("add-borders", false).build()?;
+    let caps_a = gst::ElementFactory::make("capsfilter").property("caps", gst::Caps::builder("video/x-raw")
+        .field("format", "RGB").field("width", picture_width).field("height", picture_height)
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1)).build()).build()?;
+    let encoder = gst::ElementFactory::make("jpegenc").property("quality", 92i32).build()?;
+    let sink_a = gst::ElementFactory::make("appsink").property("sync", false).property("max-buffers", 1u32).property("drop", true).build()?;
+
+    let queue_b = gst::ElementFactory::make("queue").build()?;
+    let convert_b = gst::ElementFactory::make("videoconvert").build()?;
+    convert_b.set_property_from_str("dither", "none");
+    let scale_b = gst::ElementFactory::make("videoscale").property("add-borders", false).build()?;
+    scale_b.set_property_from_str("method", "nearest-neighbour");
+    let caps_b = gst::ElementFactory::make("capsfilter").property("caps", gst::Caps::builder("video/x-raw")
+        .field("format", "Y444").field("colorimetry", "bt709").field("width", scope_w).field("height", scope_h)
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1)).build()).build()?;
+    let sink_b = gst::ElementFactory::make("appsink").property("sync", false).property("max-buffers", 1u32).property("drop", true).build()?;
+
+    let elements = [&tee, &queue_a, &convert_a, &scale_a, &caps_a, &encoder, &sink_a, &queue_b, &convert_b, &scale_b, &caps_b, &sink_b];
+    pipeline.add_many(elements)?;
+    gst::Element::link_many([&tee, &queue_a, &convert_a, &scale_a, &caps_a, &encoder, &sink_a])?;
+    gst::Element::link_many([&tee, &queue_b, &convert_b, &scale_b, &caps_b, &sink_b])?;
+    for element in elements { element.sync_state_with_parent()?; }
+
+    let rate = structure.get::<gst::Fraction>("framerate").unwrap_or_else(|_| gst::Fraction::new(25, 1));
+    *info.lock().unwrap() = Some(VideoInfo {
+        width: source_width,
+        height: source_height,
+        rate_num: rate.numer(),
+        rate_den: rate.denom(),
+        interlace_mode: structure.get::<String>("interlace-mode").unwrap_or_else(|_| "progressive".to_string()),
+    });
+    capture_once(&sink_a, target, picture_done, Some(Arc::clone(captured_pts)), liberado, ".jpg", encoded_bytes)?;
+    capture_once(&sink_b, target, scope_done, None, liberado, ".ycc", ycc_bytes)?;
+    pad.link(&tee.static_pad("sink").ok_or_else(|| anyhow!("tee sem sink"))?)?;
+    Ok(())
+}
+
+/// Liga o ramo de áudio: guarda o formato e mede a loudness.
+fn attach_audio(
+    pipeline: &gst::Pipeline,
+    pad: &gst::Pad,
+    info: &Arc<Mutex<Option<(i32, i32)>>>,
+    meter: &Arc<Mutex<Option<Meter>>>,
+    measure: bool,
+) -> Result<()> {
+    let convert = gst::ElementFactory::make("audioconvert").build()?;
+    let resample = gst::ElementFactory::make("audioresample").build()?;
+    let caps = gst::ElementFactory::make("capsfilter").build()?;
+    // A BS.1770 tem coeficientes tabelados por taxa, e os nossos são de
+    // 48 kHz. Reamostrar antes de medir é mais certo do que medir com o
+    // filtro errado.
+    caps.set_property(
+        "caps",
+        gst::Caps::builder("audio/x-raw")
+            .field("format", "F32LE")
+            .field("layout", "interleaved")
+            .field("rate", 48_000i32)
+            .field("channels", 2i32)
+            .build(),
+    );
+    let sink = gst::ElementFactory::make("appsink")
+        .property("sync", false)
+        .property("max-buffers", 64u32)
+        .build()?;
+
+    pipeline.add_many([&convert, &resample, &caps, &sink])?;
+    gst::Element::link_many([&convert, &resample, &caps, &sink])?;
+    for element in [&convert, &resample, &caps, &sink] {
+        element.sync_state_with_parent()?;
+    }
+
+    let source_caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+    if let Some(structure) = source_caps.structure(0) {
+        *info.lock().unwrap() = Some((
+            structure.get("rate").unwrap_or(48_000),
+            structure.get("channels").unwrap_or(2),
+        ));
+    }
+
+    *meter.lock().unwrap() = Some(Meter::new(48_000, 2));
+    let shared = Arc::clone(meter);
+    let app_sink = sink
+        .clone()
+        .dynamic_cast::<gst_app::AppSink>()
+        .map_err(|_| anyhow!("appsink de áudio não é appsink"))?;
+    app_sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                if !measure {
+                    return Ok(gst::FlowSuccess::Ok);
+                }
+                let Some(buffer) = sample.buffer() else {
+                    return Ok(gst::FlowSuccess::Ok);
+                };
+                let Ok(map) = buffer.map_readable() else {
+                    return Ok(gst::FlowSuccess::Ok);
+                };
+                let samples: Vec<f32> = map
+                    .as_slice()
+                    .chunks_exact(4)
+                    .map(|raw| f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+                    .collect();
+                if let Some(meter) = shared.lock().unwrap().as_mut() {
+                    meter.push(&samples);
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+
+    pad.link(
+        &convert
+            .static_pad("sink")
+            .ok_or_else(|| anyhow!("audioconvert sem sink"))?,
+    )?;
+    Ok(())
+}
