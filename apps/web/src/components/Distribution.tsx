@@ -1,3 +1,4 @@
+import { MONITOR_MAX_KBPS } from '@rplayout/protocol'
 import { confirmAction } from '../domain/confirm.js'
 import { useCallback, useEffect, useState,useRef } from 'react'
 import { api } from '../api.js'
@@ -6,7 +7,6 @@ import {captureConfigurationRevision} from '../domain/channel-configuration.js'
 import {BoundedLatestRead,incidentHistoryWindow} from '../domain/bounded-latest-read.js'
 import {IncidentContextDetails} from './IncidentContextDetails.js'
 import type {
-import { MONITOR_MAX_KBPS } from '@rplayout/protocol'
   Distribution as Payload,
   OutputProfile,
   ConfigurationOperation,
