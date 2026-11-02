@@ -6,6 +6,7 @@ import {captureConfigurationRevision} from '../domain/channel-configuration.js'
 import {BoundedLatestRead,incidentHistoryWindow} from '../domain/bounded-latest-read.js'
 import {IncidentContextDetails} from './IncidentContextDetails.js'
 import type {
+import { MONITOR_MAX_KBPS } from '@rplayout/protocol'
   Distribution as Payload,
   OutputProfile,
   ConfigurationOperation,
@@ -210,8 +211,9 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
     const limpo = digitado.value.trim()
     const valor = limpo === '' ? null : Number(limpo)
     const lightweight=output.role==='PREVIEW' || output.role==='MONITOR'
-    if (valor !== null && (!Number.isInteger(valor) || valor < 50 || valor > (lightweight?450:80000)) || lightweight && valor===null) {
-      setError(lightweight?'Preview e monitor usam de 50 a 450 kbps; não herdam o bitrate do PGM.':'Bitrate deve ser um inteiro de 50 a 80000 kbps.')
+    // Monitor: vazio = automático (nível escolhido por quem assiste); preenchido = teto de 300 a MONITOR_MAX_KBPS.
+    if (valor !== null && (!Number.isInteger(valor) || valor < (lightweight?300:50) || valor > (lightweight?MONITOR_MAX_KBPS:80000))) {
+      setError(lightweight?`Teto de preview/monitor: vazio (automático) ou de 300 a ${MONITOR_MAX_KBPS} kbps.`:'Bitrate deve ser um inteiro de 50 a 80000 kbps.')
       return
     }
     if (valor === output.bitrateKbps) {
@@ -652,8 +654,8 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                           <input
                             id={`br-${output.id}`}
                             type="number"
-                            min={50}
-                            max={output.role==='PREVIEW'||output.role==='MONITOR'?450:80000}
+                            min={output.role==='PREVIEW'||output.role==='MONITOR'?300:50}
+                            max={output.role==='PREVIEW'||output.role==='MONITOR'?MONITOR_MAX_KBPS:80000}
                             step={50}
                             value={rascunho[output.id]?.value ?? output.bitrateKbps ?? ''}
                             placeholder={
