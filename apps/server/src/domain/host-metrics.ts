@@ -18,7 +18,9 @@ export interface HostMetricSample {
   generatedAt: string; sampleIntervalSeconds: number
   cpu: { percent: number | null; cores: number }
   memory: { totalBytes: number; usedBytes: number; freeBytes: number; percent: number | null }
-  process: { rssBytes: number; heapUsedBytes: number }
+  /** heapTotal/external/arrayBuffers: separam heap do V8, Buffers e memória
+   * nativa quando o RSS do Node sobe (soak de memória). */
+  process: { rssBytes: number; heapUsedBytes: number; heapTotalBytes?: number; externalBytes?: number; arrayBuffersBytes?: number }
   gpu: { utilizationPercent: number | null; memoryUsedMiB: number | null; memoryTotalMiB: number | null; temperatureC: number | null; name: string | null; error: string | null }
   disk: { path: string; totalBytes: number | null; freeBytes: number | null; percentUsed: number | null; error: string | null }
   network: { receivedBytesPerSecond: number | null; sentBytesPerSecond: number | null; source: string | null; error: string | null }
@@ -146,7 +148,7 @@ export class HostMetrics {
     const sample: HostMetricSample = {
       generatedAt: new Date().toISOString(), sampleIntervalSeconds: 10,
       cpu: { percent, cores: cores.length }, memory: { totalBytes: total, usedBytes: used, freeBytes: free, percent: total > 0 ? Math.round(used/total*1000)/10 : null },
-      process: { rssBytes: process.memoryUsage().rss, heapUsedBytes: process.memoryUsage().heapUsed },
+      process: (({ rss, heapUsed, heapTotal, external, arrayBuffers }) => ({ rssBytes: rss, heapUsedBytes: heapUsed, heapTotalBytes: heapTotal, externalBytes: external, arrayBuffersBytes: arrayBuffers }))(process.memoryUsage()),
       gpu: { utilizationPercent: null, memoryUsedMiB: null, memoryTotalMiB: null, temperatureC: null, name: null, error: null },
       disk: { path: this.storagePath, totalBytes: null, freeBytes: null, percentUsed: null, error: null },
       network: { receivedBytesPerSecond: null, sentBytesPerSecond: null, source: null, error: null },

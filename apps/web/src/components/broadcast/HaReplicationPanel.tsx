@@ -3,6 +3,7 @@ import {api,type HaReplicationStatus,type HaMediaStatus,type HaAuthorityStatus} 
 import {HaBindingsPanel} from './HaBindingsPanel.js'
 import {HaExecutionPanel} from './HaExecutionPanel.js'
 import {HaReturnReceiptsPanel} from './HaReturnReceiptsPanel.js'
+import { whenVisible } from '../../domain/live-topics.js'
 export function HaAuthority({authority}:{authority?:HaAuthorityStatus}){
   return <div aria-label="Concessão de publicação nativa" className="text-xs space-y-1">
     <p>{authority?.configured?'Testemunha configurada · concessão curta exigida no engine nativo. Perda da concessão encerra a publicação.':'Testemunha não configurada · espelho não fornece exclusividade de publicação.'}</p>
@@ -21,7 +22,7 @@ export function HaMediaProgress({media}:{media:HaMediaStatus}){
 }
 export function HaReplicationPanel(){
   const [status,setStatus]=useState<HaReplicationStatus|null>(null),[error,setError]=useState<string|null>(null)
-  useEffect(()=>{let active=true;const refresh=async()=>{try{const result=await api.haStatus();if(active){setStatus(result);setError(null)}}catch(error){if(active)setError(error instanceof Error?error.message:'Espelho indisponível.')}};void refresh();const timer=window.setInterval(()=>void refresh(),5000);return()=>{active=false;window.clearInterval(timer)}},[])
+  useEffect(()=>{let active=true;const refresh=async()=>{try{const result=await api.haStatus();if(active){setStatus(result);setError(null)}}catch(error){if(active)setError(error instanceof Error?error.message:'Espelho indisponível.')}};void refresh();const timer=window.setInterval(whenVisible(()=>void refresh()),5000);return()=>{active=false;window.clearInterval(timer)}},[])
   return <section aria-label="Espelho de operação entre nós" className="rounded border border-border-subtle bg-surface-panel p-4 text-on-surface space-y-2">
     <h2 className="font-semibold">Espelho de operação entre nós</h2>
     {error&&<p role="alert" className="text-armed-amber">{error} Os dados podem estar desatualizados.</p>}

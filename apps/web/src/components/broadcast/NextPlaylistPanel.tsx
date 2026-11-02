@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type NextPlaylistReview, type NextPlaylistStatus } from '../../api.js'
+import { useTopicRefresh } from '../../domain/live-topics.js'
 import { PublishedContinuityPanel } from './PublishedContinuityPanel.js'
 import {ReviewedOperationConfirm} from './ReviewedOperationConfirm.js'
 
@@ -12,6 +13,7 @@ export function NextPlaylistPanel({channelId,defaultOpen=false}:{channelId:strin
   const currentChannel=useRef(channelId),busy=useRef(false);currentChannel.current=channelId
   const active=status?.current && ['QUEUED','PREPARING','SWITCHING','UNCERTAIN'].includes(status.current.state)
   useEffect(()=>{setStatus(null);setRevisionId('');setReview(null);setFailure(null);setOpen(defaultOpen);setPending(false);busy.current=false},[channelId,defaultOpen])
+  const updateRef=useRef<()=>void>(()=>undefined)
   useEffect(()=>{
     let current=true,inFlight=false
     const update=async()=>{
@@ -20,9 +22,13 @@ export function NextPlaylistPanel({channelId,defaultOpen=false}:{channelId:strin
       catch(error){if(current)setFailure(error instanceof Error?error.message:String(error))}
       finally{inFlight=false}
     }
-    void update();const timer=open||active?window.setInterval(()=>void update(),2000):null
-    return()=>{current=false;if(timer!==null)window.clearInterval(timer)}
+    updateRef.current=()=>void update()
+    void update()
+    return()=>{current=false;updateRef.current=()=>undefined}
   },[channelId,open,Boolean(active)])
+  // Passagem enfileirada, mudando de fase ou grade publicada nova: tópico
+  // `nextPlaylist`. Sem WebSocket, a leitura de 2 s volta com o painel aberto.
+  useTopicRefresh('nextPlaylist',channelId,()=>updateRef.current(),{fallbackMs:open||active?30_000:null,degradedMs:open||active?2000:null})
   const execute=async(action:'REVIEW'|'QUEUE'|'CANCEL'|'RECONCILE')=>{
     if(busy.current)return
     const origin=channelId,captured=review,run=status?.current

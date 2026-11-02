@@ -18,13 +18,16 @@ it('mantém falha reconhecida não resolvida e observação encerrada, remove s�
     ['pgm-signal:active:active',{acknowledgedAt:time}],
     ['pgm-signal:ended:active',{acknowledgedAt:time,observationEndedAt:time}],
     ['pgm-signal:resolved:active',{acknowledgedAt:time,resolvedAt:time}],
-    ['pgm-signal:unacked:active',{resolvedAt:time}],
+    ['pgm-signal:unacked:active',{resolvedAt:time,severity:'CRITICAL'}],
     ['pgm-signal:recent-resolution:active',{acknowledgedAt:time,resolvedAt:'2026-10-09T00:00:00.000Z'}],
     ['pgm-signal:recent-ack:active',{acknowledgedAt:'2026-10-09T00:00:00.000Z',resolvedAt:time}],
     ['legacy',{acknowledgedAt:time}],
-    ['legacy-unacked',{}]
+    // Falha (aviso/crítico) sem ciente fica até ser reconhecida.
+    ['legacy-unacked',{severity:'WARN'}],
+    // INFO não pede ciente: antigo sai mesmo sem ele (antes ficava para sempre).
+    ['legacy-info',{}],
   ] as const)value.db.insert(healthEvents).values({id,component:'SIGNAL',state:'black',occurredAt:time,...extra}).run()
-  expect(pruneHealthHistory(value.sqlite,30,Date.parse('2026-10-10T00:00:00.000Z'))).toBe(2)
+  expect(pruneHealthHistory(value.sqlite,30,Date.parse('2026-10-10T00:00:00.000Z'))).toBe(3)
   expect(value.db.select().from(healthEvents).all().map(row=>row.id).sort()).toEqual(['legacy-unacked','pgm-signal:active:active','pgm-signal:ended:active','pgm-signal:recent-ack:active','pgm-signal:recent-resolution:active','pgm-signal:unacked:active'])
 })
 it('desativada/inválida ou em quarentena não exclui nada',()=>{
@@ -57,4 +60,16 @@ it('auditoria HTTP antiga sai em lotes; registro operacional e auditoria recente
   const kinds=value.db.select().from(operatorDecisions).all().map(row=>row.kind).sort()
   expect(kinds).toEqual(['API_MUTATION','ITEM_ADDED','RUNTIME_INCIDENT_RECOVERED'])
   expect(pruneHttpAudit(value.sqlite,0,now)).toBe(0)
+})
+
+it('expurgo de incidentes em lotes: banco grande não segura o armazenamento de uma vez',()=>{
+  const old='2026-01-01T00:00:00.000Z'
+  for(let i=0;i<12;i++)value.db.insert(healthEvents).values({id:`info-${i}`,component:'ENGINE',state:'running',occurredAt:old}).run()
+  value.db.insert(healthEvents).values({id:'crit',component:'ENGINE',state:'error',severity:'CRITICAL',occurredAt:old}).run()
+  const now=Date.parse('2026-10-10T00:00:00.000Z')
+  expect(pruneHealthHistory(value.sqlite,30,now,5)).toBe(5)
+  expect(pruneHealthHistory(value.sqlite,30,now,5)).toBe(5)
+  expect(pruneHealthHistory(value.sqlite,30,now,5)).toBe(2)
+  expect(pruneHealthHistory(value.sqlite,30,now,5)).toBe(0)
+  expect(value.db.select().from(healthEvents).all().map(row=>row.id)).toEqual(['crit'])
 })

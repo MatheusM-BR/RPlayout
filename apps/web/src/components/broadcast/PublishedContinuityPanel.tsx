@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type PublishedContinuityStatus, type PublishedContinuityReview } from '../../api.js'
+import { useTopicRefresh } from '../../domain/live-topics.js'
 import {ReviewedOperationConfirm} from './ReviewedOperationConfirm.js'
 
 export function PublishedContinuityPanel({channelId}:{channelId:string}){
   const [stored,setStored]=useState<PublishedContinuityStatus|null>(null),[review,setReview]=useState<PublishedContinuityReview|null>(null)
   const [late,setLate]=useState(5),[pending,setPending]=useState(false),[error,setError]=useState<string|null>(null)
-  const ticket=useRef({channelId,generation:0}),busy=useRef(false)
+  const ticket=useRef({channelId,generation:0}),busy=useRef(false),updateRef=useRef<()=>void>(()=>undefined)
   if(ticket.current.channelId!==channelId)ticket.current={channelId,generation:ticket.current.generation+1}
   const status=stored?.channelId===channelId?stored:null
   useEffect(()=>{
@@ -15,9 +16,11 @@ export function PublishedContinuityPanel({channelId}:{channelId:string}){
       try{const next=await api.publishedContinuity(channelId);if(!disposed&&ticket.current===captured)setStored(next)}
       catch(failure){if(!disposed&&ticket.current===captured)setError(failure instanceof Error?failure.message:String(failure))}
       finally{inFlight=false}}
-    void update();const timer=window.setInterval(()=>void update(),3000)
-    return()=>{disposed=true;window.clearInterval(timer);if(ticket.current===captured)ticket.current={channelId,generation:captured.generation+1}}
+    updateRef.current=()=>void update()
+    void update()
+    return()=>{disposed=true;updateRef.current=()=>undefined;if(ticket.current===captured)ticket.current={channelId,generation:captured.generation+1}}
   },[channelId])
+  useTopicRefresh('continuity',channelId,()=>updateRef.current(),{fallbackMs:60_000,degradedMs:3000})
   const matching=review?.channelId===channelId&&review.version===status?.version&&review.sourceRevisionId===status.sourceRevisionId&&review.maxLateMinutes===late
   const execute=async(action:'REVIEW'|'ENABLE'|'DISABLE')=>{
     if(busy.current||!status)return

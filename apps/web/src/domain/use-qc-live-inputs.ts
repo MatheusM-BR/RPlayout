@@ -2,6 +2,7 @@ import {useCallback,useEffect,useRef,useState} from 'react'
 import type {ManagedLiveSource,SrtTelemetry} from '@rplayout/protocol'
 import {api} from '../api.js'
 import {RetainedPoll,type RetainedPollState} from './retained-poll.js'
+import {useVisiblePolling} from './live-topics.js'
 
 type Catalog=RetainedPollState<ManagedLiveSource[]>&{channelId:string}
 type Telemetry=RetainedPollState<Record<string,SrtTelemetry>>&{channelId:string}
@@ -14,9 +15,11 @@ export function useQcLiveInputs(channelId:string){
     const measurements=new RetainedPoll<Record<string,SrtTelemetry>>(state=>setTelemetry({...state,channelId}),'Telemetria SRT não conferida; isso não significa perda do vídeo.')
     const refresh=()=>{void sources.refresh(signal=>api.liveSources(channelId,signal));void measurements.refresh(signal=>api.srtTelemetry(signal))}
     reload.current=refresh;refresh()
-    const timer=window.setInterval(refresh,3000)
-    return()=>{window.clearInterval(timer);sources.close();measurements.close();if(reload.current===refresh)reload.current=()=>{}}
+    return()=>{sources.close();measurements.close();if(reload.current===refresh)reload.current=()=>{}}
   },[channelId])
+  // Com entrada ao vivo, 3 s (telemetria SRT); sem nenhuma, 30 s. Oculta, nada.
+  const hasSources=catalog.channelId===channelId&&Boolean(catalog.value?.length)
+  useVisiblePolling(()=>reload.current(),hasSources?3000:30_000)
   const visible=catalog.channelId===channelId?catalog:null,currentTelemetry=telemetry.channelId===channelId?telemetry:null
   const refresh=useCallback(()=>reload.current(),[])
   return {sources:visible?.value??[],loaded:visible?.value!==null&&visible!==null,pending:visible?.pending??true,error:visible?.error??null,

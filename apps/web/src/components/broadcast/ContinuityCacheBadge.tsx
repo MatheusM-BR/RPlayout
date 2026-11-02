@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ContinuityCacheStatus } from '@rplayout/protocol'
 import { api } from '../../api.js'
+import { useVisiblePolling } from '../../domain/live-topics.js'
 
 /** File coverage is not proof of temporal autonomy or a redundant channel. */
 export function ContinuityCacheBadge({ className = '', channelId }: { className?: string; channelId?: string }) {
   const [status, setStatus] = useState<ContinuityCacheStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
+  const refreshRef = useRef<() => void>(() => undefined)
   useEffect(() => {
     setStatus(null)
     let cancelled = false
@@ -14,10 +16,12 @@ export function ContinuityCacheBadge({ className = '', channelId }: { className?
       try { const value = await api.continuityCacheStatus(channelId); if (!cancelled) { setStatus(value); setError(null) } }
       catch (failure) { if (!cancelled) { setStatus(null); setError(failure instanceof Error ? failure.message : 'Telemetria indisponível') } }
     }
+    refreshRef.current = () => void refresh()
     void refresh()
-    const interval = setInterval(() => { void refresh() }, 30_000)
-    return () => { cancelled = true; clearInterval(interval) }
+    return () => { cancelled = true; refreshRef.current = () => undefined }
   }, [channelId])
+  // Cobertura de cache muda em minutos: 2 min com a aba visível, nada oculta.
+  useVisiblePolling(() => refreshRef.current(), 120_000)
   return <div className={`relative inline-flex ${className}`}>
     <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}
       title="Cache local; não equivale a redundância ou autonomia temporal homologada"

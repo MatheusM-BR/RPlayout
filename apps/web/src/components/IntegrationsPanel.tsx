@@ -5,6 +5,7 @@ import {IntegrationEditor} from './IntegrationEditor.js'
 import {IntegrationDeliveryStatus} from './IntegrationDeliveryStatus.js'
 import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 import {ReviewedOperationConfirm} from './broadcast/ReviewedOperationConfirm.js'
+import { whenVisible } from '../domain/live-topics.js'
 
 export function IntegrationsPanel({ channelId, onMessage }: { channelId: string; onMessage: (text: string) => void }) {
   const [items, setItems] = useState<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
@@ -40,7 +41,7 @@ export function IntegrationsPanel({ channelId, onMessage }: { channelId: string;
       } catch (error) {if (!cancelled) setError(error instanceof Error ? error.message : 'Entregas indisponíveis.')}
     }
     void refresh()
-    const timer = setInterval(() => {void refresh()},5000)
+    const timer = setInterval(whenVisible(() => {void refresh()}),5000)
     return () => {cancelled=true;++generation.current;clearInterval(timer);listReads.current.cancel();reviewReads.current.cancel()}
   },[channelId])
   const perform = async (work:(expected:number) => Promise<unknown>,message:string,resetForm=false,mutation=false) => {

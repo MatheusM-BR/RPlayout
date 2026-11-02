@@ -31,6 +31,7 @@ import {qcReviewMatches} from '../domain/qc-review.js'
 import {useQcLiveInputs} from '../domain/use-qc-live-inputs.js'
 import {QcLiveSourceRow} from '../components/broadcast/QcLiveSourceRow.js'
 import type {QcReview} from '@rplayout/protocol'
+import { documentHidden } from '../domain/live-topics.js'
 
 interface Props {
   folders: LibraryFolder[]
@@ -344,9 +345,12 @@ function QualityControlSession({
       } catch (error) { if (active&&reading.isCurrent()) setProxyMessage(reading.timedOut()?'Consulta da fila demorou demais. O estado dos trabalhos não foi alterado.':error instanceof Error ? error.message : 'Não foi possível consultar a fila de mídia.') }
       finally{reading.finish()}
     }
+    // Fila de mídia: 3 s enquanto o proxy é preparado; pronto, 30 s. Oculta, nada.
+    let timer = 0
+    const tick = () => { if (!documentHidden()) void load(); timer = window.setTimeout(tick, ready ? 30_000 : 3000) }
     void load()
-    const timer = setInterval(() => void load(), 3000)
-    return () => { active = false;proxyGeneration.current++; workflowReads.current.cancel(); clearInterval(timer) }
+    timer = window.setTimeout(tick, 3000)
+    return () => { active = false;proxyGeneration.current++; workflowReads.current.cancel(); window.clearTimeout(timer) }
   }, [selectedAsset?.id, selectedAsset?.contentHash, selectedLiveSource?.id])
 
   // Análise do áudio do proxy/monitor, antes do volume de escuta.
@@ -548,7 +552,7 @@ function QualityControlSession({
       try {
         const response = await fetch(qcExactFrameUrl(asset, frame, 'ycc'), {signal: controller.signal})
         // Servidor ocupado (limite de custo): tenta de novo quando ele liberar.
-        if (response.status === 503 && attempt < 8) { retry = window.setTimeout(() => void load(attempt + 1), 700); return }
+        if (response.status === 503 && attempt < 8) { retry = window.setTimeout(() => void load(attempt + 1), Math.min(5000, 700 * 2 ** attempt)); return }
         if (!response.ok) {
           let message = `HTTP ${response.status}`
           try { message = ((await response.json()) as {error?: string}).error ?? message } catch { /* corpo não-JSON */ }

@@ -1,6 +1,7 @@
 import { confirmAction } from '../../domain/confirm.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type ManualExternalRun } from '../../api.js'
+import { whenVisible } from '../../domain/live-topics.js'
 
 type Device = Awaited<ReturnType<typeof api.externalDevices>>['devices'][number]
 interface Props { className?: string; onMessage?: (message: string) => void }
@@ -29,7 +30,7 @@ export function StudioAutomationPanel({ className = '', onMessage }: Props) {
   useEffect(() => {
     alive.current = true
     const poll = () => { if (!pendingAction.current) void refresh().catch(error => { if (alive.current) setError(error instanceof Error ? error.message : 'Consulta de automação indisponível.') }) }
-    poll(); const timer = window.setInterval(poll, 5000)
+    poll(); const timer = window.setInterval(whenVisible(poll), 5000)
     return () => { alive.current = false; ++generation.current; window.clearInterval(timer) }
   }, [refresh])
   const perform = async (work: () => Promise<unknown>, message: string) => {

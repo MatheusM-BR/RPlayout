@@ -3,6 +3,7 @@ import {MULTIVIEW_LAYOUTS,MULTIVIEW_QUALITIES,WATCHDOG_STATE_LABELS,multiviewCel
 import {api,type MultiviewCompositeView} from '../../api.js'
 import type {Live,MeterReading,Monitors} from '../../types.js'
 import {Whep} from '../Whep.js'
+import { useTopicRefresh, whenVisible } from '../../domain/live-topics.js'
 
 /**
  * Multiview composto: UMA imagem composta e codificada uma vez no engine.
@@ -51,17 +52,21 @@ export function CompositeMultiview({channelId,live,monitors,individual,onWatchin
   }
   useEffect(()=>{
     setView(null);setDraft(null);void load()
-    const timer=window.setInterval(()=>void load(),10_000)
+    const timer=window.setInterval(whenVisible(()=>void load()),30_000)
     return()=>{generation.current++;window.clearInterval(timer)}
   },[channelId])
   // Watchdog das entradas (docs/WATCHDOG-AO-VIVO.md): estado por entrada no ar.
+  const watchdogTick=useRef<()=>void>(()=>undefined)
   useEffect(()=>{
     if(mode!=='composite')return
     let active=true
     const tick=()=>void api.liveWatchdog(channelId).then(value=>{if(active)setWatchdog(value.inputs)}).catch(()=>{if(active)setWatchdog([])})
-    tick();const timer=window.setInterval(tick,2000)
-    return()=>{active=false;window.clearInterval(timer)}
+    watchdogTick.current=tick
+    tick()
+    return()=>{active=false;watchdogTick.current=()=>undefined}
   },[channelId,mode])
+  // Estado das entradas muda pelo tópico `watchdog` (o servidor avisa).
+  useTopicRefresh('watchdog',channelId,()=>watchdogTick.current(),{fallbackMs:60_000,degradedMs:2000,enabled:mode==='composite'})
 
   const names=useMemo(()=>new Map((view?.sources??[]).map(source=>[source.id,source.name])),[view?.sources])
   // A composição do live() é a que o engine está usando agora; a da rota é a salva.

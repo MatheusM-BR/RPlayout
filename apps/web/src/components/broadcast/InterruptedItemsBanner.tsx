@@ -1,6 +1,7 @@
 import { confirmAction } from '../../domain/confirm.js'
 import { useEffect, useState,useRef } from 'react'
 import { api } from '../../api'
+import { useTopicRefresh } from '../../domain/live-topics.js'
 import { formatTimecode, type Rate } from '@rplayout/protocol'
 import {commandRequestId} from '../../domain/request-id.js'
 import {interruptionResultMessage,interruptionFailureMessage} from '../../domain/interruption-feedback.js'
@@ -17,9 +18,10 @@ function InterruptedItemsContent({channelId,rate}:{channelId:string;rate:Rate}){
   useEffect(() => {
     mounted.current=true
     void refresh()
-    const timer = setInterval(() => void refresh(), 2000)
-    return () => { mounted.current=false;generation.current++;clearInterval(timer) }
+    return () => { mounted.current=false;generation.current++ }
   }, [channelId])
+  // Retorno novo, resolvido ou em andamento chega pelo tópico `interruptions`.
+  useTopicRefresh('interruptions', channelId, () => { if (mounted.current) void refresh() }, { fallbackMs: 60_000, degradedMs: 2000 })
   const resolve = async (item:typeof items[number], action: 'RESUME' | 'DISCARD'|'ACKNOWLEDGE') => {
     if(busyRef.current)return
     if (action === 'RESUME' && !(await confirmAction('Retomar este VT troca o PGM atual pela última posição informada pelo engine. Confirmar?'))) return

@@ -8,6 +8,7 @@ import { outageDurationText, outageLine } from '@rplayout/protocol'
 import { dur } from '../format.js'
 import { asRunCsv, asRunDuration, asRunHold, asRunReport, asRunStatus, asRunXml, summarizeAsRun } from '../domain/asrun-evidence.js'
 import type { AsRunEntry } from '../types.js'
+import { whenVisible } from '../domain/live-topics.js'
 
 interface Props {
   channel?: Channel
@@ -133,7 +134,7 @@ export function AiredView({
         .finally(() => { inFlight = false })
     }
     load()
-    const timer = window.setInterval(load, 3000)
+    const timer = window.setInterval(whenVisible(load), 3000)
     return () => {
       alive = false
       window.clearInterval(timer)

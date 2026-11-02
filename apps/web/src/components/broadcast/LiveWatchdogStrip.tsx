@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { WATCHDOG_DETECTION_LABELS, WATCHDOG_STATE_LABELS, type WatchdogInputStatus, type WatchdogMode, type WatchdogState } from '@rplayout/protocol'
 import { api, type LiveWatchdogView } from '../../api.js'
+import { useTopicRefresh } from '../../domain/live-topics.js'
 import { confirmAction } from '../../domain/confirm.js'
 import { deniedReason, useCan } from '../../domain/permissions.js'
 import { LiveWatchdogConfigDialog } from './LiveWatchdogConfigDialog.js'
@@ -68,13 +69,17 @@ export function LiveWatchdogStrip({ channelId, compact = false, className = '' }
     try { const next = await api.liveWatchdog(channelId, signal); if (current.current === channelId) { setView(next); setFailure(null) } }
     catch (error) { if (current.current === channelId && !signal?.aborted) setFailure(error instanceof Error ? error.message : String(error)) }
   }, [channelId])
+  const controllerRef = useRef<AbortController | null>(null)
   useEffect(() => {
     setView(null); setFailure(null)
     const controller = new AbortController()
+    controllerRef.current = controller
     void refresh(controller.signal)
-    const timer = window.setInterval(() => void refresh(controller.signal), 1000)
-    return () => { window.clearInterval(timer); controller.abort() }
+    return () => { controller.abort() }
   }, [refresh])
+  // O servidor avisa quando política, entradas ou eventos mudam. Com entrada
+  // ao vivo as métricas medidas mudam a cada segundo e o tópico acompanha.
+  useTopicRefresh('watchdog', channelId, () => { const controller = controllerRef.current; if (controller && !controller.signal.aborted) void refresh(controller.signal) }, { fallbackMs: 60_000, degradedMs: 1000 })
   const command = async (action: 'RETURN_NOW' | 'HOLD' | 'RELEASE_HOLD') => {
     if (action === 'RETURN_NOW' && !(await confirmAction('Voltar para a live agora? Com contingência no ar, a entrada é levada ao PGM e o corte só acontece quando o engine confirmar quadro real. Com a arte de espera, ela sai do ar.'))) return
     setPending(true)

@@ -1,3 +1,24 @@
+/**
+ * Proxy leve que ainda não existe (425) ou falhou: lembrado por arquivo, com
+ * espera que dobra (10 s, 20 s… até 5 min). Enquanto a espera corre, o
+ * monitor mostra a miniatura sem pedir o vídeo de novo -- remontar o monitor
+ * (troca de nível do WHEP, reconexão) pedia o mesmo 425 em laço.
+ */
+const previewFailures=new Map<string,{count:number;until:number}>()
+const previewKey=(asset:{id:string;contentHash:string})=>`${asset.id}:${asset.contentHash}`
+export function previewBlocked(asset:{id:string;contentHash:string}|null|undefined,now=Date.now()):boolean{
+  if(!asset)return false
+  const failure=previewFailures.get(previewKey(asset))
+  return Boolean(failure&&failure.until>now)
+}
+export function notePreviewFailure(asset:{id:string;contentHash:string},now=Date.now()):number{
+  const key=previewKey(asset),count=(previewFailures.get(key)?.count??0)+1
+  const wait=Math.min(300_000,10_000*2**(count-1))
+  previewFailures.set(key,{count,until:now+wait})
+  if(previewFailures.size>500)previewFailures.delete(previewFailures.keys().next().value!)
+  return wait
+}
+export function notePreviewLoaded(asset:{id:string;contentHash:string}):void{previewFailures.delete(previewKey(asset))}
 /** Never fall back to downloading a full-resolution video for a monitor. */
 export function lightweightPreviewUrl(asset: {id:string;contentHash:string}): string {
   return `/api/assets/${encodeURIComponent(asset.id)}/media?preview=1&hash=${encodeURIComponent(asset.contentHash)}`

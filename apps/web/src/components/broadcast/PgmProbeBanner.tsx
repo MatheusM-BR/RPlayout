@@ -2,6 +2,7 @@ import { confirmAction } from '../../domain/confirm.js'
 import { deniedReason, useCan } from '../../domain/permissions.js'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../../api.js'
+import { useProbeLive, useTopicRefresh } from '../../domain/live-topics.js'
 import { ContingencyLoopPanel } from './ContingencyLoopPanel.js'
 
 type ProbeStatus = Awaited<ReturnType<typeof api.pgmProbeStatus>>
@@ -70,9 +71,12 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
   useEffect(() => {
     setStatus(null); setFailure(null); setPending(false)
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 2_000)
-    return () => window.clearInterval(timer)
   }, [refresh])
+  // Alertas, slate, política e contingência: relidos quando o tópico `probe`
+  // muda. As leituras que andam sozinhas (preto/congelado/silêncio em curso e
+  // a hora da amostra) chegam pelo WebSocket a cada segundo.
+  useTopicRefresh('probe', channelId, () => void refresh(), { fallbackMs: 30_000, degradedMs: 2_000 })
+  const probeLive = useProbeLive(channelId)
 
   const toggleSlate = async () => {
     setPending(true)
@@ -89,7 +93,12 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
     }
   }
 
-  const active = status?.activeAlerts ?? []
+  // A duração de um alerta aberto cresce a cada amostra: vem da leitura viva.
+  const active = (status?.activeAlerts ?? []).map(alert => {
+    const live = probeLive?.metrics
+    const duration = !live ? undefined : alert.type === 'BLACK_FRAME' ? live.blackDurationMs : alert.type === 'FREEZE_FRAME' ? live.freezeDurationMs : live.silenceDurationMs
+    return duration && duration > alert.durationMs ? { ...alert, durationMs: duration } : alert
+  })
   const toggleAutomation = async () => {
     if (!status) return
     const enabled = !status.automaticActionsEnabled
@@ -119,7 +128,8 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
     } finally { if (currentChannel.current === channelId) setPending(false) }
   }
   const showAlertBanner = Boolean(failure || status?.emergencySlateActive || (alert && acknowledgedKey !== alertKey))
-  const telemetryAvailable = Boolean(status?.lastSampleAt)
+  const lastSampleAt = probeLive?.lastSampleAt ?? status?.lastSampleAt
+  const telemetryAvailable = Boolean(lastSampleAt)
   const healthy = telemetryAvailable && !alert && !status?.emergencySlateActive && !status?.contingency?.active
   const stateLabel = failure
     ? 'INDISPONÍVEL'
@@ -144,7 +154,7 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
     )
   }
 
-  const metrics = status?.metrics
+  const metrics = probeLive?.metrics ?? status?.metrics
   const thresholds = status?.thresholds
   // Faixa de altura fixa (U5): alerta e telemetria dividem a mesma linha, o
   // layout não pula quando um alerta surge ou some.
@@ -171,7 +181,7 @@ export function PgmProbeBanner({ channelId, className = '', compact = false, sho
               {'  ·  '}Silêncio <strong className="text-on-surface">{metrics && thresholds ? `${metrics.audioDbfs?.toFixed(1) ?? '—'} / ${thresholds.silenceDbfs} dBFS` : '—'}</strong>
               {'  ·  '}Freeze <strong className="text-on-surface">{metrics && thresholds ? `${seconds(metrics.freezeDurationMs)} / ${seconds(thresholds.freezeThresholdMs)}` : '—'}</strong>
             </span>}
-        <span className="shrink-0 font-label-mono text-[12px] text-outline hidden 2xl:inline">{telemetryAvailable ? `Amostra ${new Date(status!.lastSampleAt!).toLocaleTimeString('pt-BR')}` : 'Aguardando medição do engine'}</span>
+        <span className="shrink-0 font-label-mono text-[12px] text-outline hidden 2xl:inline">{telemetryAvailable ? `Amostra ${new Date(lastSampleAt!).toLocaleTimeString('pt-BR')}` : 'Aguardando medição do engine'}</span>
         {status && alert && showAlertBanner && !status.emergencySlateActive && !failure && (
           <button disabled={pending || !canAcknowledge} title={canAcknowledge ? 'Registrar que o alerta foi visto (para os lembretes externos)' : deniedReason('registrar ciente de incidentes')} onClick={() => void acknowledge()} className="shrink-0 px-2.5 py-1 rounded border border-on-air-crimson bg-surface-panel text-on-surface disabled:opacity-50 font-label-caps text-[11px] font-bold">
             CIENTE
@@ -219,9 +229,9 @@ export function ContingencyTool({ channelId, slateConfigured }: { channelId: str
   useEffect(() => {
     setStatus(null)
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 5_000)
-    return () => window.clearInterval(timer)
   }, [refresh])
+  // Com contingência no ar, o cursor reportado anda: relê a cada 5 s só nesse caso.
+  useTopicRefresh('probe', channelId, () => void refresh(), { fallbackMs: status?.contingency?.active ? 5_000 : 60_000, degradedMs: 5_000 })
   if (failure) return <p role="alert" className="text-[12px] text-armed-amber">{failure}</p>
   if (!status) return <p className="text-[12px] text-outline">Consultando…</p>
   return <ContingencyLoopPanel channelId={channelId} status={status} onChanged={refresh} slateConfigured={slateConfigured} defaultOpen />

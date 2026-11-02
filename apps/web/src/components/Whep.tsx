@@ -3,6 +3,7 @@ import {postWhepOffer} from '../domain/whep-offer.js'
 import { MONITOR_TIER_LABEL, type MonitorTier } from '@rplayout/protocol'
 import { TIER_ORDER, TierController, clampToAvailable, deriveStats, glassToGlassMs, initialTier, readClockRgba, readRawStats, clockBlock, CLOCK_BLOCKS, type MonitorRole, type RawStats } from '../domain/monitor-tier.js'
 import { monitorStatsStore, useClockTest } from '../domain/monitor-stats-store.js'
+import { backoffDelay } from '../domain/live-topics.js'
 
 interface Props {
   /** Caminho no servidor de mídia, ex. `canal-1/pgm`. Nulo apaga a tela. */
@@ -213,6 +214,8 @@ export function Whep({
 
   /** Sobe a cada falha e é o que faz o monitor tentar de novo. */
   const [attempt, setAttempt] = useState(0)
+  // Tentativas seguidas sem imagem: a espera dobra até 30 s (3, 6, 12, 24, 30…).
+  const failures = useRef(0)
 
   useEffect(() => {
     if (muted !== undefined && video.current) {
@@ -268,7 +271,7 @@ export function Whep({
       if (!cancelled && (video.current?.readyState ?? 0) < 2) {
         setReason('CONEXÃO COM O MONITOR EXPIROU')
         setStatus('failed')
-        if (!retry) retry = window.setTimeout(() => setAttempt((n) => n + 1), 3000)
+        if (!retry) retry = window.setTimeout(() => setAttempt((n) => n + 1), backoffDelay(failures.current++, 3000, 30_000))
       }
     }, 15_000)
     const peer = new RTCPeerConnection()
@@ -285,7 +288,7 @@ export function Whep({
     const confirmVideo=()=>{
       const element=video.current
       if(cancelled||decoded||['failed','disconnected','closed'].includes(peer.connectionState)||element?.srcObject!==stream||element.readyState<2||!element.videoWidth||!element.videoHeight)return
-      decoded=true
+      decoded=true;failures.current=0
       window.clearTimeout(negotiationTimeout)
       setStatus('live');setReason(null)
     }
@@ -328,7 +331,7 @@ export function Whep({
         // Sessão que caiu no meio: o canal pode ter reiniciado, então o
         // monitor tenta de novo em vez de ficar preto até alguém recarregar.
         setStatus('failed')
-        if (!retry) retry = window.setTimeout(() => setAttempt((n) => n + 1), 3000)
+        if (!retry) retry = window.setTimeout(() => setAttempt((n) => n + 1), backoffDelay(failures.current++, 3000, 30_000))
       }
     }
 
@@ -398,7 +401,7 @@ export function Whep({
       if (onErrorFallback) onErrorFallback(message || 'falha de conexão')
       // Canal que ainda não subiu volta sozinho; navegador sem H.264 não muda
       // de ideia, então insistir só gastaria conexão.
-      if (!codec && !retry) retry = window.setTimeout(() => setAttempt((n) => n + 1), 3000)
+      if (!codec && !retry) retry = window.setTimeout(() => setAttempt((n) => n + 1), backoffDelay(failures.current++, 3000, 30_000))
     })
 
     return () => {

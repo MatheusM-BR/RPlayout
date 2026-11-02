@@ -1,3 +1,4 @@
+import {readHealthPending} from './domain/health-pending.js'
 import { randomUUID } from 'node:crypto'
 import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
 import { transportRefusalStatus } from './domain/transport-refusal.js'
@@ -636,7 +637,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (servicePaths.has(path) && EXTERNAL_CONTROL_TOKEN && typeof bearer === 'string' && secretEquals(bearer, EXTERNAL_CONTROL_TOKEN)) return
     return reply.code(401).send({ error: 'Entre com usuário e senha. A sessão expirou, foi revogada ou a conta está desativada.' })
   })
-  const unauditedHeartbeats=new Set(['/api/channels/:id/watching'])
+  const unauditedHeartbeats=new Set(['/api/channels/:id/watching','/api/channels/:id/watching/batch'])
   server.addHook('onResponse', async (request, reply) => {
     if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) || !request.url.startsWith('/api') || request.url.startsWith('/api/auth/')) return
     // Monitor keep-alive is a heartbeat every few seconds per open window, not
@@ -871,7 +872,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
   server.get('/api/health-events', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar saúde.' })
-    const query = request.query as Omit<IncidentPageQuery,'limit'> & {limit?:string}
+    const query = request.query as Omit<IncidentPageQuery,'limit'> & {limit?:string;view?:string}
+    // ?view=pending: só as contagens do selo ALERTAS (sem página, riscos nem mensagens).
+    if(query.view==='pending')try{return reply.header('Cache-Control','private, no-store').send(readHealthPending(app.db,access.identity(request)?.channelIds??null,query))}
+    catch(error){if(error instanceof IncidentError)return reply.code(error.status).send({error:error.message});throw error}
     try{return reply.header('Cache-Control','private, no-store').send(readHealthIncidentPage(app.db,access.identity(request)?.channelIds??null,{...query,limit:Number(query.limit??200)}))}
     catch(error){if(error instanceof IncidentError)return reply.code(error.status).send({error:error.message});throw error}
   })
@@ -4004,8 +4008,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * Isso permite fechar monitores sem confundir um Preview desligado com uma
    * falha do canal.
    */
-  const processMetrics = new ProcessMetrics()
-  server.get('/api/processes', async () => {
+  // Contadores do SO custam um powershell.exe por leitura no Windows: uma
+  // leitura a cada 5 s serve todas as abas do Monitor.
+  const processMetrics = new ProcessMetrics(undefined, 5000)
+  server.get('/api/processes', async (request) => {
     const rows: Array<{
       id: string
       kind: 'ENGINE' | 'MEDIAMTX' | 'OUTPUT'
@@ -4085,6 +4091,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
 
     const pids = rows.map((row) => row.pid).filter((pid): pid is number => pid !== null)
+    // O cabeçalho só quer o estado (?counters=0); CPU e memória são do Monitor.
+    if ((request.query as { counters?: string } | undefined)?.counters === '0') return { generatedAt: new Date().toISOString(), processes: rows, measurementError: null }
     const counters = await processMetrics.latest(pids)
     for (const row of rows) {
       const sample = row.pid === null ? undefined : counters.samples.get(row.pid)
@@ -5141,6 +5149,20 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     // vem -- e para parar de pedir. `tier` é o nível ligado de fato (o
     // multiview rebaixa ao teto do mosaico).
     return { ok: true, available: runtime.temMonitor(body.data.bus), tier }
+  })
+
+  /**
+   * Um aviso por aba para todos os monitores abertos deste canal (PGM, PVW,
+   * multiview, nos níveis pedidos), no lugar de um POST por monitor. Mesma
+   * semântica da rota de um monitor só; até 16 entradas.
+   */
+  server.post('/api/channels/:id/watching/batch', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z.object({ monitors: z.array(z.object({ bus: z.enum(['pvw', 'mon', 'mv']), tier: z.enum(['ref', 'std', 'lite']).optional() }).strict()).min(1).max(16) }).strict().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Monitores inválidos.' })
+    const runtime = await runtimeFor(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    return { ok: true, monitors: body.data.monitors.map(({ bus, tier }) => ({ bus, tier: runtime.watching(bus, tier ?? 'lite'), available: runtime.temMonitor(bus) })) }
   })
 
   /**

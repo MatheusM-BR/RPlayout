@@ -4,7 +4,8 @@ import type { MediaAsset, Rate } from '@rplayout/protocol'
 import { dur, formatStandardRate } from '../../format.js'
 import type { LibraryAsset } from '../../types.js'
 import { Whep } from '../Whep.js'
-import {lightweightPreviewUrl} from '../../domain/media-preview.js'
+import {lightweightPreviewUrl,notePreviewFailure,notePreviewLoaded,previewBlocked} from '../../domain/media-preview.js'
+import {documentHidden} from '../../domain/live-topics.js'
 import {ScopeDeck} from '../scopes/ScopeDeck.js'
 
 export interface BroadcastMonitorProps {
@@ -35,11 +36,14 @@ export const MONITOR_HEARTBEAT_MS = 5_000
 /** A failed WHEP offer is retried; meanwhile the file preview (if any) shows. */
 export const MONITOR_RETRY_MS = 6_000
 
-/** While WHEP is down: heartbeat now and every 5 s, then remount WHEP once. */
-export function monitorRecovery(beat:()=>void,retry:()=>void):()=>void{
+/** While WHEP is down: heartbeat now and every 5 s, then remount WHEP once.
+ * `retryMs` grows with consecutive failures (6, 12, 24, 48, 60 s): a monitor
+ * that cannot come up must not hammer the media server forever. */
+export function monitorRetryMs(failures:number):number{return Math.min(60_000,MONITOR_RETRY_MS*2**Math.max(0,Math.min(4,failures-1)))}
+export function monitorRecovery(beat:()=>void,retry:()=>void,retryMs=MONITOR_RETRY_MS):()=>void{
   beat()
   const heartbeat=setInterval(beat,MONITOR_HEARTBEAT_MS)
-  const again=setTimeout(retry,MONITOR_RETRY_MS)
+  const again=setTimeout(retry,retryMs)
   return ()=>{clearInterval(heartbeat);clearTimeout(again)}
 }
 
@@ -97,7 +101,10 @@ export function BroadcastMonitor({
   const [hasMediaError, setHasMediaError] = useState(false)
   const [isScrubbing, setIsScrubbing] = useState(false)
   const [webrtcFailed, setWebrtcFailed] = useState(false)
-  const failedMonitor=useCallback(()=>setWebrtcFailed(true),[])
+  const [hiddenTab,setHiddenTab]=useState(documentHidden)
+  useEffect(()=>{const sync=()=>setHiddenTab(documentHidden());document.addEventListener('visibilitychange',sync);return()=>document.removeEventListener('visibilitychange',sync)},[])
+  const recoveryFailures=useRef(0)
+  const failedMonitor=useCallback(()=>{recoveryFailures.current++;setWebrtcFailed(true)},[])
   // Scopes ao vivo do PGM (opcional): desligado, sobre a imagem ou em janela
   // flutuante. Nenhum dos modos muda o tamanho do monitor nem da grade.
   const [scopes, setScopesState] = useState<'off' | 'overlay' | 'window'>(() => {
@@ -125,15 +132,16 @@ export function BroadcastMonitor({
       if(notify.length>0)(notify as (bus:'pgm'|'pvw',watching:boolean)=>void)(bus,true)
       else (notify as ()=>void)()
     }
-    return monitorRecovery(beat,()=>setWebrtcFailed(false))
+    return monitorRecovery(beat,()=>setWebrtcFailed(false),monitorRetryMs(recoveryFailures.current))
   },[webrtcPath,webrtcFailed,bus])
+  useEffect(()=>{recoveryFailures.current=0},[webrtcPath])
 
   // O áudio é desmutado se isAudioMonitored for explicitamente verdadeiro
   const effectiveMuted = isAudioMonitored !== undefined ? !isAudioMonitored : isMuted
 
   // Reset states when asset or stream changes
   useEffect(() => {
-    setHasMediaError(false)
+    setHasMediaError(previewBlocked(asset && 'contentHash' in asset ? asset : null))
     setWebrtcFailed(false)
     setCurrentTimeSec(0)
     setIsPlayingPreview(false)
@@ -346,15 +354,17 @@ export function BroadcastMonitor({
             )}
             {isStillImage || hasMediaError ? (
               <img
-                src={`/api/assets/${asset.id}/thumbnail.svg`}
+                src={hiddenTab ? undefined : `/api/assets/${asset.id}/thumbnail.svg`}
                 alt={asset.title}
                 className="w-full h-full object-contain"
               />
             ) : (
               <video
                 ref={videoRef}
-                src={lightweightPreviewUrl(asset)}
-                poster={`/api/assets/${asset.id}/thumbnail.svg`}
+                // Aba oculta não baixa proxy nem miniatura de cada item que
+                // entra no ar; ao voltar, o próximo desenho pede os dois.
+                src={hiddenTab ? undefined : lightweightPreviewUrl(asset)}
+                poster={hiddenTab ? undefined : `/api/assets/${asset.id}/thumbnail.svg`}
                 preload="metadata"
                 muted={effectiveMuted}
                 playsInline
@@ -366,6 +376,7 @@ export function BroadcastMonitor({
                   }
                 }}
                 onLoadedMetadata={() => {
+                  if ('contentHash' in asset) notePreviewLoaded(asset)
                   if (videoRef.current) {
                     setVideoDurationSec(videoRef.current.duration || (durationFrames / fps))
                     videoRef.current.volume = volume
@@ -376,6 +387,7 @@ export function BroadcastMonitor({
                   setIsPlayingPreview(false)
                 }}
                 onError={() => {
+                  if ('contentHash' in asset) notePreviewFailure(asset)
                   setHasMediaError(true)
                 }}
               />

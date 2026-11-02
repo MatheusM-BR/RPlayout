@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { MONITOR_TIER_LABEL } from '@rplayout/protocol'
 import { api, type MonitorEngineering } from '../../api.js'
 import { monitorStatsStore, percentile, useClockTest, useMonitorEntries } from '../../domain/monitor-stats-store.js'
+import { whenVisible } from '../../domain/live-topics.js'
 
 const n = (value: number | null | undefined, digits = 0, unit = '') => (value == null || !Number.isFinite(value) ? '—' : `${value.toFixed(digits)}${unit}`)
 
@@ -22,7 +23,8 @@ export function MonitorEngineeringPanel({ channelId }: { channelId: string }) {
     let active = true
     const refresh = () => void api.monitorStatus(channelId).then((value) => { if (active) { setStatus(value); setError(null) } }).catch((failure: unknown) => { if (active) setError(failure instanceof Error ? failure.message : 'indisponível') })
     refresh()
-    const timer = window.setInterval(refresh, 2000)
+    // Diagnóstico técnico: 5 s com a aba visível basta; oculta, nada.
+    const timer = window.setInterval(whenVisible(refresh), 5000)
     return () => { active = false; window.clearInterval(timer) }
   }, [channelId])
   const toggleClock = async () => {

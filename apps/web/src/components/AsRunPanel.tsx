@@ -4,6 +4,7 @@ import type { Rate } from '@rplayout/protocol'
 import { api } from '../api.js'
 import { dur } from '../format.js'
 import type { AsRunEntry } from '../types.js'
+import { whenVisible } from '../domain/live-topics.js'
 
 interface Props {
   channelId: string
@@ -30,7 +31,7 @@ export function AsRunPanel({ channelId, rate, onClose }: Props) {
         .catch(() => alive && setEntries([]))
     }
     load()
-    const timer = window.setInterval(load, 2000)
+    const timer = window.setInterval(whenVisible(load), 2000)
     return () => {
       alive = false
       window.clearInterval(timer)

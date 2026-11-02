@@ -419,27 +419,44 @@ export function App() {
   }, [])
 
   // Acompanha também varreduras iniciadas pelo servidor ou por outro operador.
+  // O servidor avisa pelo tópico `scan` quando o scanner muda; a releitura de
+  // segurança é longa. Sem tópicos (WebSocket fora), volta o polling antigo.
+  const scanRunning = useRef(false)
+  const [scanBusy, setScanBusy] = useState(false)
+  const scanPoll = useRef<(full: boolean) => void>(() => undefined)
   useEffect(() => {
     if (authRequired && !authenticated) return
     let cancelled = false
-    let timer: number | undefined
-    let wasRunning = false
-    const poll = async (): Promise<void> => {
+    let inFlight = false
+    let lastFull = 0
+    // `full`: acervo + scanner + categorias. Parado, um aviso do tópico `scan`
+    // só relê o estado do scanner (pequeno); o acervo chega pela mensagem
+    // `library` quando a varredura termina. Varrendo, relê tudo, no máximo a
+    // cada 3 s, para os arquivos novos aparecerem durante a varredura.
+    const poll = async (full: boolean): Promise<void> => {
+      if (inFlight) return
+      inFlight = true
       try {
-        const status = await refreshLibrary()
+        const wantsFull = full || (scanRunning.current && Date.now() - lastFull >= 3000)
+        if (wantsFull) lastFull = Date.now()
+        const status = wantsFull ? await refreshLibrary() : await api.scanStatus()
         if (cancelled) return
+        if (!wantsFull) setScan(status)
         const occupied=status.globalBusy??status.running
-        if (wasRunning && !occupied) say('Scanner não está mais ocupado. Confira o resultado do lote; disponibilidade não significa aprovação da mídia.')
-        wasRunning = occupied
+        if (scanRunning.current && !occupied) say('Scanner não está mais ocupado. Confira o resultado do lote; disponibilidade não significa aprovação da mídia.')
+        scanRunning.current = occupied
+        setScanBusy(occupied)
       } catch (failure) {
         if (!cancelled&&!(failure instanceof SupersededContextError)) anotar('SERVIDOR', failure instanceof Error ? failure.message : 'Falha ao atualizar acervo.')
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => void poll(), wasRunning ? 1500 : 10_000)
-      }
+      } finally { inFlight = false }
     }
-    timer = window.setTimeout(() => void poll(), 1500)
-    return () => { cancelled = true; window.clearTimeout(timer) }
+    scanPoll.current = full => void poll(full)
+    const timer = window.setTimeout(() => void poll(true), 1500)
+    return () => { cancelled = true; window.clearTimeout(timer); scanPoll.current = () => undefined }
   }, [refreshLibrary, say, anotar, authRequired, authenticated])
+  // Sem tópicos (WebSocket fora), volta a releitura completa de antes.
+  useTopicRefresh('scan', null, () => scanPoll.current(!topicsConnected()), { fallbackMs: null, degradedMs: scanBusy ? 1500 : 10_000, enabled: !(authRequired && !authenticated) })
+  useVisiblePolling(() => scanPoll.current(true), scanBusy ? 5_000 : 120_000, !(authRequired && !authenticated))
 
   // O painel de distribuição tem endereço próprio: dá para deixar aberto numa
   // segunda tela ou mandar o link para quem cuida da entrega.
@@ -486,13 +503,17 @@ export function App() {
     let retry: number | undefined
     const connect = (): void => {
     socket = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`)
+    // Aba oculta: o servidor manda o estado ao vivo a 1 Hz em vez de 20 Hz.
+    socket.addEventListener('open', () => { try { socket.send(JSON.stringify({ type: 'visibility', hidden: documentHidden() })) } catch { /* fechando */ } })
     socket.addEventListener('message', (event: MessageEvent<string>) => {
       if (closed || !clientContext.sessionCurrent(ticket)) return
       const payload = JSON.parse(event.data) as
         | { type: 'view'; channelId: string; view: RundownView | null; executionView?: RundownView | null }
         | ({ type: 'live'; channelId: string } & Live)
         | { type: 'library' }
+        | TopicsMessage
 
+      if (payload.type === 'topics') { applyTopics(payload); return }
       if (payload.type === 'library') {
         void refreshLibrary().catch((failure: Error) => {if(!(failure instanceof SupersededContextError))anotar('SERVIDOR', failure.message)})
         return
@@ -510,13 +531,16 @@ export function App() {
       }
     })
     socket.addEventListener('close', event => {
+      topicsDisconnected()
       if (closed || !clientContext.sessionCurrent(ticket)) return
       if (event.code === 4401) { window.dispatchEvent(new Event('rplayout-session-ended')); return }
       if (!closed) retry = window.setTimeout(connect, 2000)
     })
     }
+    const visibility = (): void => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'visibility', hidden: documentHidden() })) }
+    document.addEventListener('visibilitychange', visibility)
     connect()
-    return () => { closed = true; window.clearTimeout(retry); socket.close() }
+    return () => { closed = true; window.clearTimeout(retry); document.removeEventListener('visibilitychange', visibility); socket.close(); topicsDisconnected() }
   }, [refreshLibrary, anotar, authRequired, authenticated, sessionRefresh])
 
   useEffect(() => {
@@ -1789,3 +1813,4 @@ export function App() {
   )
 }
 import {executionFromSnapshot} from './domain/execution-snapshot.js'
+import {applyTopics,documentHidden,topicsConnected,topicsDisconnected,useTopicRefresh,useVisiblePolling,type TopicsMessage} from './domain/live-topics.js'

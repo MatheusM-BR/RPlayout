@@ -4,6 +4,7 @@ import {OperationalHistoryPanel} from './OperationalHistoryPanel.js'
 import {StorageStatusPanel} from './StorageStatusPanel.js'
 import {UpgradeBackupPanel} from './UpgradeBackupPanel.js'
 import {HostMetricHistoryPanel} from './HostMetricHistoryPanel.js'
+import { whenVisible } from '../../domain/live-topics.js'
 
 const pct = (value: number | null | undefined) => value == null ? 'N/D' : `${value.toFixed(1)}%`
 const bytes = (value: number | null | undefined) => value == null ? 'N/D' : `${(value / 1024 ** 3).toFixed(2)} GB`
@@ -28,7 +29,7 @@ export function HostResourcesPanel({channels=[],initialChannelId}:{channels?:rea
       }finally{window.clearTimeout(timeout);pending=false}
     }
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 15_000)
+    const timer = window.setInterval(whenVisible(() => void refresh()), 15_000)
     return () => { active = false;controller?.abort();window.clearInterval(timer) }
   }, [])
   return <section aria-label="Recursos e histórico do servidor" className="h-full overflow-auto rounded-lg border border-border-subtle bg-surface-panel p-4 text-on-surface">

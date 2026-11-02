@@ -34,6 +34,7 @@ import {migrateItemSourceBindings} from './item-source-bindings.js'
 import {migrateProxyRecipe} from './proxy-recipe.js'
 import {migrateHealthResolution} from './health-resolution.js'
 import {migrateIncidentContexts} from './incident-context.js'
+import {ensureHealthQueryIndexes} from './health-query-indexes.js'
 import {migrateGraphicCommandPending} from './graphic-command-pending.js'
 import type {StorageMaintenance} from '../domain/storage-maintenance.js'
 import {openProcessDatabase} from './process-database.js'
@@ -618,6 +619,7 @@ export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.D
     migrateProxyRecipe(sqlite)
     migrateHealthResolution(sqlite)
     migrateIncidentContexts(sqlite)
+    ensureHealthQueryIndexes(sqlite)
     migrateGraphicCommandPending(sqlite)
     migrateUpgradeBackupRequests(sqlite)
     migrateChannelMirrors(sqlite)
