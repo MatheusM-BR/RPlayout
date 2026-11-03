@@ -31,6 +31,9 @@ pub struct EngineOutputs {
     pub qc_preview: Option<String>,
     #[serde(default, rename = "fenceOwner")]
     pub fence_owner: Option<String>,
+    /// Destino do multiview composto (SRT local do servidor de mídia).
+    #[serde(default)]
+    pub multiview: Option<String>,
     #[serde(default, rename = "holdProgramOutputs")]
     pub hold_program_outputs: bool,
 }

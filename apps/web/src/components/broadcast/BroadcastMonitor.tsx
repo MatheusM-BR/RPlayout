@@ -1,9 +1,12 @@
+import type { MonitorTier } from '@rplayout/protocol'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import type { MediaAsset, Rate } from '@rplayout/protocol'
 import { dur, formatStandardRate } from '../../format.js'
 import type { LibraryAsset } from '../../types.js'
 import { Whep } from '../Whep.js'
-import {lightweightPreviewUrl} from '../../domain/media-preview.js'
+import {lightweightPreviewUrl,notePreviewFailure,notePreviewLoaded,previewBlocked} from '../../domain/media-preview.js'
+import {documentHidden} from '../../domain/live-topics.js'
+import {ScopeDeck} from '../scopes/ScopeDeck.js'
 
 export interface BroadcastMonitorProps {
   bus: 'pgm' | 'pvw'
@@ -22,7 +25,9 @@ export interface BroadcastMonitorProps {
   isAudioMonitored?: boolean
   onToggleAudioMonitor?: () => void
   onSeek?: (frames: number) => void
-  onWatching?: ((bus: 'pgm' | 'pvw', watching: boolean) => void) | (() => void)
+  onWatching?: ((bus: 'pgm' | 'pvw', watching: boolean, tier?: MonitorTier) => void) | (() => void)
+  /** Caminhos por nível de qualidade; com eles o monitor mostra o seletor. */
+  tiers?: Partial<Record<MonitorTier, string>> | null
   className?: string
 }
 
@@ -31,16 +36,30 @@ export const MONITOR_HEARTBEAT_MS = 5_000
 /** A failed WHEP offer is retried; meanwhile the file preview (if any) shows. */
 export const MONITOR_RETRY_MS = 6_000
 
-/** While WHEP is down: heartbeat now and every 5 s, then remount WHEP once. */
-export function monitorRecovery(beat:()=>void,retry:()=>void):()=>void{
+/** While WHEP is down: heartbeat now and every 5 s, then remount WHEP once.
+ * `retryMs` grows with consecutive failures (6, 12, 24, 48, 60 s): a monitor
+ * that cannot come up must not hammer the media server forever. */
+export function monitorRetryMs(failures:number):number{return Math.min(60_000,MONITOR_RETRY_MS*2**Math.max(0,Math.min(4,failures-1)))}
+export function monitorRecovery(beat:()=>void,retry:()=>void,retryMs=MONITOR_RETRY_MS):()=>void{
   beat()
   const heartbeat=setInterval(beat,MONITOR_HEARTBEAT_MS)
-  const again=setTimeout(retry,MONITOR_RETRY_MS)
+  const again=setTimeout(retry,retryMs)
   return ()=>{clearInterval(heartbeat);clearTimeout(again)}
 }
 
 /** Text for the empty screen. A failed WHEP while PGM is on air must not tell
  * the operator to press TAKE: the program is running, only this view is not. */
+/** Sigla do nível como no seletor do monitor (REF/PAD/LEV). */
+const TIER_SHORT: Record<MonitorTier, string> = { ref: 'REF', std: 'PAD', lite: 'LEV' }
+
+/**
+ * Rótulo do scope ao vivo do PGM: diz em que nível o WHEP está (o scope de um
+ * LEVE de 240 linhas não é o de uma REFERÊNCIA), ao lado do selo INDICATIVO.
+ */
+export function liveScopeLabel(tier: MonitorTier | null): string {
+  return `PGM · ${tier ? `${TIER_SHORT[tier]} · ` : ''}WHEP decodificado pelo navegador`
+}
+
 export function emptyMonitorText(isPgm:boolean,onAir:boolean,monitorFailed:boolean):{title:string;detail:string}{
   if(monitorFailed)return {title:isPgm&&onAir?'Saída no ar · prévia sem vídeo':'Monitor do engine reconectando',detail:isPgm&&onAir?'O canal está no ar (confira SAÍDAS no cabeçalho). Só a prévia deste navegador não recebeu vídeo (WebRTC, porta 8889); nova tentativa a cada 6 s.':'O vídeo deste monitor não chegou ao navegador (WebRTC, porta 8889); nova tentativa a cada 6 s.'}
   if(isPgm&&onAir)return {title:'Monitor aguardando imagem',detail:'PGM no ar; o monitor do engine ainda está abrindo.'}
@@ -65,6 +84,7 @@ export function BroadcastMonitor({
   onToggleAudioMonitor,
   onSeek,
   onWatching,
+  tiers,
   className = '',
 }: BroadcastMonitorProps) {
   const fps = rate.num / rate.den
@@ -81,7 +101,21 @@ export function BroadcastMonitor({
   const [hasMediaError, setHasMediaError] = useState(false)
   const [isScrubbing, setIsScrubbing] = useState(false)
   const [webrtcFailed, setWebrtcFailed] = useState(false)
-  const failedMonitor=useCallback(()=>setWebrtcFailed(true),[])
+  const [hiddenTab,setHiddenTab]=useState(documentHidden)
+  useEffect(()=>{const sync=()=>setHiddenTab(documentHidden());document.addEventListener('visibilitychange',sync);return()=>document.removeEventListener('visibilitychange',sync)},[])
+  const recoveryFailures=useRef(0)
+  const failedMonitor=useCallback(()=>{recoveryFailures.current++;setWebrtcFailed(true)},[])
+  // Scopes ao vivo do PGM (opcional): desligado, sobre a imagem ou em janela
+  // flutuante. Nenhum dos modos muda o tamanho do monitor nem da grade.
+  const [scopes, setScopesState] = useState<'off' | 'overlay' | 'window'>(() => {
+    try { const v = window.localStorage.getItem(`rplayout.scopes.monitor.${bus}`); return v === 'overlay' || v === 'window' ? v : 'off' } catch { return 'off' }
+  })
+  const setScopes = (value: 'off' | 'overlay' | 'window') => { setScopesState(value); try { window.localStorage.setItem(`rplayout.scopes.monitor.${bus}`, value) } catch { /* só não lembra */ } }
+  const [whepVideo, setWhepVideo] = useState<HTMLVideoElement | null>(null)
+  const [whepTier, setWhepTier] = useState<MonitorTier | null>(null)
+  const [falseColorCanvas, setFalseColorCanvas] = useState<HTMLCanvasElement | null>(null)
+  const [falseColorOn, setFalseColorOn] = useState(false)
+  const onFalseColorChange = useCallback((mode: string | null) => setFalseColorOn(Boolean(mode)), [])
   const onWatchingRef=useRef(onWatching)
   useEffect(()=>{onWatchingRef.current=onWatching},[onWatching])
 
@@ -98,15 +132,16 @@ export function BroadcastMonitor({
       if(notify.length>0)(notify as (bus:'pgm'|'pvw',watching:boolean)=>void)(bus,true)
       else (notify as ()=>void)()
     }
-    return monitorRecovery(beat,()=>setWebrtcFailed(false))
+    return monitorRecovery(beat,()=>setWebrtcFailed(false),monitorRetryMs(recoveryFailures.current))
   },[webrtcPath,webrtcFailed,bus])
+  useEffect(()=>{recoveryFailures.current=0},[webrtcPath])
 
   // O áudio é desmutado se isAudioMonitored for explicitamente verdadeiro
   const effectiveMuted = isAudioMonitored !== undefined ? !isAudioMonitored : isMuted
 
   // Reset states when asset or stream changes
   useEffect(() => {
-    setHasMediaError(false)
+    setHasMediaError(previewBlocked(asset && 'contentHash' in asset ? asset : null))
     setWebrtcFailed(false)
     setCurrentTimeSec(0)
     setIsPlayingPreview(false)
@@ -238,6 +273,11 @@ export function BroadcastMonitor({
         </div>
 
         <div className="flex items-center gap-1.5 flex-wrap">
+          {isPgm && webrtcPath && <button type="button" onClick={(event) => { event.stopPropagation(); setScopes(scopes === 'off' ? 'overlay' : scopes === 'overlay' ? 'window' : 'off') }}
+            className={`px-2 py-1 rounded border font-label-mono text-[11px] font-bold cursor-pointer ${scopes === 'off' ? 'bg-surface-panel text-outline border-border-subtle hover:text-on-surface' : 'bg-accent-ice/15 text-accent-ice border-accent-ice/50'}`}
+            title="Scopes ao vivo do PGM (indicativos, do WHEP): desligado → sobre a imagem → janela flutuante">
+            SCOPES{scopes === 'overlay' ? ' · SOBRE' : scopes === 'window' ? ' · JANELA' : ''}
+          </button>}
           {/* Botão de Monitoramento de Áudio Exclusivo (PGM ou PVW) em 2 linhas */}
           <button
             onClick={handleToggleAudio}
@@ -280,11 +320,15 @@ export function BroadcastMonitor({
             hideControls={true}
             muted={effectiveMuted}
             onErrorFallback={failedMonitor}
+            tiers={tiers}
+            role={bus}
+            onVideoElement={isPgm ? setWhepVideo : undefined}
+            onTierChange={isPgm ? setWhepTier : undefined}
             onWatching={
               onWatching
-                ? () => {
+                ? (tier?: MonitorTier) => {
                     if (onWatching.length > 0) {
-                      (onWatching as (bus: 'pgm' | 'pvw', watching: boolean) => void)(bus, true)
+                      (onWatching as (bus: 'pgm' | 'pvw', watching: boolean, tier?: MonitorTier) => void)(bus, true, tier)
                     } else {
                       (onWatching as () => void)()
                     }
@@ -310,15 +354,17 @@ export function BroadcastMonitor({
             )}
             {isStillImage || hasMediaError ? (
               <img
-                src={`/api/assets/${asset.id}/thumbnail.svg`}
+                src={hiddenTab ? undefined : `/api/assets/${asset.id}/thumbnail.svg`}
                 alt={asset.title}
                 className="w-full h-full object-contain"
               />
             ) : (
               <video
                 ref={videoRef}
-                src={lightweightPreviewUrl(asset)}
-                poster={`/api/assets/${asset.id}/thumbnail.svg`}
+                // Aba oculta não baixa proxy nem miniatura de cada item que
+                // entra no ar; ao voltar, o próximo desenho pede os dois.
+                src={hiddenTab ? undefined : lightweightPreviewUrl(asset)}
+                poster={hiddenTab ? undefined : `/api/assets/${asset.id}/thumbnail.svg`}
                 preload="metadata"
                 muted={effectiveMuted}
                 playsInline
@@ -330,6 +376,7 @@ export function BroadcastMonitor({
                   }
                 }}
                 onLoadedMetadata={() => {
+                  if ('contentHash' in asset) notePreviewLoaded(asset)
                   if (videoRef.current) {
                     setVideoDurationSec(videoRef.current.duration || (durationFrames / fps))
                     videoRef.current.volume = volume
@@ -340,6 +387,7 @@ export function BroadcastMonitor({
                   setIsPlayingPreview(false)
                 }}
                 onError={() => {
+                  if ('contentHash' in asset) notePreviewFailure(asset)
                   setHasMediaError(true)
                 }}
               />
@@ -447,6 +495,19 @@ export function BroadcastMonitor({
             </div>
           </div>
         )}
+
+        {/* Scopes do PGM: falsa cor e scopes sobre a imagem, ou janela flutuante. */}
+        {isPgm && scopes !== 'off' && whepVideo && !webrtcFailed && <>
+          <canvas ref={setFalseColorCanvas} aria-hidden="true" className={`absolute inset-0 w-full h-full pointer-events-none z-[5] ${falseColorOn ? '' : 'hidden'}`}/>
+          <div onClick={event => event.stopPropagation()}
+            className={scopes === 'overlay'
+              ? 'absolute inset-x-1 top-1 bottom-6 z-20 rounded bg-black/55 p-1'
+              : 'fixed right-3 bottom-3 z-50 w-[560px] h-[380px] min-w-[320px] min-h-[220px] resize overflow-hidden rounded-lg border border-border-strong bg-surface-card/95 shadow-2xl p-1.5'}>
+            <ScopeDeck storageKey={`monitor-${bus}-${scopes}`} compact={scopes === 'overlay'}
+              live={{element: whepVideo, label: liveScopeLabel(whepTier), valid: true}}
+              falseColorCanvas={falseColorCanvas} onFalseColorChange={onFalseColorChange}/>
+          </div>
+        </>}
 
         {/* O frame do WHEP já vem do compositor do engine. Não há CG HTML
             adicional aqui: assim PGM, WebRTC e todas as saídas exibem a mesma

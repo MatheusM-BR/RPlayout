@@ -2,3 +2,6 @@
 *.pdf binary
 *.png binary
 *.dll binary
+
+# Fixtures geradas pelo engine e lidas byte a byte: sempre LF.
+*.jsonl text eol=lf

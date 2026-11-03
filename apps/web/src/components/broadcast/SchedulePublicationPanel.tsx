@@ -1,6 +1,7 @@
 import { confirmAction } from '../../domain/confirm.js'
 import {useEffect,useRef,useState} from 'react'
 import {api,type SchedulePublicationReview,type SchedulePublicationStatus} from '../../api.js'
+import { whenVisible } from '../../domain/live-topics.js'
 
 export function SchedulePublicationPanel({channelId,defaultOpen=false}:{channelId:string;defaultOpen?:boolean}){
   const [open,setOpen]=useState(defaultOpen),[stored,setStored]=useState<SchedulePublicationStatus|null>(null),[review,setReview]=useState<SchedulePublicationReview|null>(null)
@@ -15,7 +16,7 @@ export function SchedulePublicationPanel({channelId,defaultOpen=false}:{channelI
       try{const result=await api.schedulePublication(channelId);if(!disposed&&ticket.current===captured)setStored(result)}
       catch(failure){if(!disposed&&ticket.current===captured)setError(failure instanceof Error?failure.message:String(failure))}
       finally{inFlight=false}}
-    void update();const timer=open?window.setInterval(()=>void update(),3000):null
+    void update();const timer=open?window.setInterval(whenVisible(()=>void update()),3000):null
     return()=>{disposed=true;if(timer!==null)window.clearInterval(timer);if(ticket.current===captured)ticket.current={channelId}}
   },[channelId,open])
   const valid=Number.isInteger(days)&&days>=1&&days<=7&&Number.isInteger(limit)&&limit>=1&&limit<=5000

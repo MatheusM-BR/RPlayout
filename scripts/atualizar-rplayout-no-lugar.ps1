@@ -54,6 +54,24 @@ function StopRoot($root){
   Start-Sleep 3
   if(@(Owned $root).Count){ throw "processos ainda ativos em $root" }
 }
+# Quem escuta na porta da API: nome, PID e caminho, para o registro.
+function PortHolders(){
+  @(Get-NetTCPConnection -LocalPort 4000 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {
+    $p=Get-CimInstance Win32_Process -Filter "ProcessId=$_" -ErrorAction SilentlyContinue
+    if($p){ [pscustomobject]@{Id=$p.ProcessId;Name=$p.Name;Path=$p.ExecutablePath;Cmd=$p.CommandLine} } })
+}
+# Espera a porta 4000 ficar livre. Processo da propria instalacao nova (sobra
+# da revisao) e encerrado; qualquer outro dono e registrado e recusa a ativacao.
+function WaitPortFree($root,$seconds){
+  $deadline=(Get-Date).AddSeconds($seconds)
+  while((Get-Date) -lt $deadline){ if(!@(PortHolders).Count){ return }; Start-Sleep -Milliseconds 500 }
+  foreach($h in @(PortHolders)){
+    Note ("porta 4000 ocupada por "+$h.Name+" pid "+$h.Id+" "+$h.Path+" :: "+$h.Cmd)
+    if($h.Path -and $h.Path.StartsWith($root.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){ Stop-Process -Id $h.Id -Force -ErrorAction SilentlyContinue; Note ("sobra da instalacao nova encerrada: pid "+$h.Id) }
+  }
+  Start-Sleep 3
+  if(@(PortHolders).Count){ throw ('porta 4000 continua ocupada: '+((@(PortHolders)|ForEach-Object{$_.Name+' '+$_.Id+' '+$_.Path}) -join '; ')) }
+}
 function StartRoot($root,$tag){
   Start-Process -FilePath (Join-Path $root 'RPlayout-Server.exe') -WorkingDirectory $root -RedirectStandardOutput (Join-Path $Log "$tag.out.log") -RedirectStandardError (Join-Path $Log "$tag.err.log") -WindowStyle Minimized | Out-Null
 }
@@ -126,6 +144,9 @@ Stop-Transcript | Out-Null
   # Ferramentas nativas da revisao (guarda do computador) da etapa anterior
   # precisam ter saido antes da revisao da ativacao.
   Start-Sleep -Seconds 10
+  # A ativacao recusa porta ocupada ("preparacao/ativacao nao reutiliza outra
+  # instancia"). Em 02/11 a r88-36 falhou assim e o ar ficou 10 min fora.
+  WaitPortFree $Stable 90
   # Saida e erro da ativacao em arquivo: o motivo de uma recusa da revisao
   # sai no erro padrao do node, que a transcricao do PowerShell nao guarda.
   $activation=Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$activate) -WindowStyle Minimized -PassThru `
@@ -153,11 +174,23 @@ Stop-Transcript | Out-Null
   $state.error=$_.Exception.Message; Note ('ERRO: '+$_.Exception.Message)
   # Volta para a versao anterior intacta. A nova fica guardada para analise.
   try{
+    foreach($h in @(PortHolders)){ Note ("no erro, porta 4000 com "+$h.Name+" pid "+$h.Id+" "+$h.Path) }
     if(Test-Path $Stable){ StopRoot $Stable }
-    if($installedNew -and (Test-Path $Stable)){ Rename-Item -LiteralPath $Stable -NewName ((Split-Path $Stable -Leaf)+" (falhou $Tag $(Get-Date -Format HHmmss))") }
-    if($retired -and !(Test-Path $Stable)){ Rename-Item -LiteralPath $retired -NewName (Split-Path $Stable -Leaf); Note 'pasta anterior restaurada' }
+    $renamed=$false
+    if($installedNew -and (Test-Path $Stable)){
+      # Sobra de processo ou antivirus segurando a pasta: insiste antes de desistir.
+      for($i=0;$i -lt 15 -and !$renamed;$i++){
+        try{ Rename-Item -LiteralPath $Stable -NewName ((Split-Path $Stable -Leaf)+" (falhou $Tag $(Get-Date -Format HHmmss))") -ErrorAction Stop; $renamed=$true }
+        catch{ foreach($p in @(Owned $Stable)){ Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep 2 }
+      }
+    }
+    if($retired -and !(Test-Path $Stable)){ Rename-Item -LiteralPath $retired -NewName (Split-Path $Stable -Leaf); Note 'pasta anterior restaurada'; $retired=$null }
     if($retiredShortcuts -and !(Test-Path $StableShortcuts)){ Rename-Item -LiteralPath $retiredShortcuts -NewName (Split-Path $StableShortcuts -Leaf) }
-    StartRoot $OldRoot ($Tag+'-rollback'); Note "versao anterior religada: $OldRoot"
+    if($retired){
+      # A pasta nova nao saiu do lugar: o ar volta com a versao anterior rodando
+      # da pasta aposentada mesmo, e a troca de nomes fica para depois.
+      StartRoot $retired ($Tag+'-rollback'); Note "versao anterior religada da pasta aposentada: $retired (renomear depois)"
+    } else { StartRoot $OldRoot ($Tag+'-rollback'); Note "versao anterior religada: $OldRoot" }
   }catch{ Note ('ROLLBACK FALHOU: '+$_.Exception.Message) }
 }
 if(!$operatorStop -and (Test-Path -LiteralPath $maintenance)){ Remove-Item -LiteralPath $maintenance -Force -ErrorAction SilentlyContinue }

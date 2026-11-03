@@ -43,6 +43,9 @@ export type AutoActionCallback = (action: PgmProbeAutoAction, alert: PgmProbeAle
 
 export interface ProbeTransition {key:string;alert:PgmProbeAlert;state:'active'|'recovered'|'unobserved';occurredAt:string;context:IncidentContext|null}
 
+/** Alertas guardados em memória por sonda (o histórico durável é o de incidentes). */
+export const PGM_PROBE_HISTORY_LIMIT = 100
+
 export class PgmProbe {
   private thresholds: PgmProbeThresholds = {
     blackThresholdMs: 2000,
@@ -77,7 +80,15 @@ export class PgmProbe {
   private set activeSilenceAlert(value:PgmProbeAlert|null){this.kinds.silence.alert=value;if(!value){this.kinds.silence.clearSinceMs=null;this.kinds.silence.relapse=false}}
 
   private emergencySlateActive = false
+  /** Histórico em memória para a tela: só os mais recentes. Sem teto, uma
+   * condição repetida (VT mudo em loop) acumulava milhares de alertas por
+   * dia, e cada leitura de status copiava e serializava a lista inteira. O
+   * registro completo é o de incidentes (health_events), não este. */
   private history: PgmProbeAlert[] = []
+  private remember(alert: PgmProbeAlert): void {
+    this.history.push(alert)
+    if (this.history.length > PGM_PROBE_HISTORY_LIMIT) this.history.splice(0, this.history.length - PGM_PROBE_HISTORY_LIMIT)
+  }
   private transitions=new Map<string,ProbeTransition>()
   private contextProvider:(()=>IncidentContext)|null=null
   onContext(provider:()=>IncidentContext):void{this.contextProvider=provider}
@@ -187,7 +198,7 @@ export class PgmProbe {
           if(!k.alert){
             const alert: PgmProbeAlert = { id: randomUUID(), type, durationMs: k.durationMs, thresholdMs, active: true, timestamp: new Date(now).toISOString(), occurrences: 1 }
             k.alert=alert
-            this.history.push(alert)
+            this.remember(alert)
             this.transition(alert,'active',now)
             void this.runAction(this.thresholds.defaultAutoAction, alert)
             triggeredAlerts.push(alert)
@@ -233,7 +244,7 @@ export class PgmProbe {
       active: true,
       timestamp: new Date().toISOString(),
     }
-    this.history.push(alert)
+    this.remember(alert)
     alert.actionMessage = reason
     await this.runAction(action, alert, true,callback)
     return alert

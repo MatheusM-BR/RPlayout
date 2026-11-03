@@ -1,5 +1,32 @@
 # Pendências numeradas — RPlayout
 
+## r88-36 — correções da revisão independente (01/11/2026, branch integra/r88-36)
+
+Monitores do navegador, multiview composto e scopes. Um commit por achado, cada um com teste que falha antes e passa depois.
+
+| # | Gravidade | Achado | Estado | Prova |
+| --- | --- | --- | --- | --- |
+| 1 | ALTO | Orçamento de CPU dos monitores em software valia por processo (N canais = N orçamentos) | Feito: orçamento da máquina no servidor (`EncoderSessions.requestSoftware`), escada publicada pelo engine (`ladders`), concessão por nível (`budgetMpx`), `mv` e LEVE incluídos. Prioridade de thread só no Windows (Linux documentado) | `monitor::concessao_do_servidor_abre_o_degrau_reservado`; vitest "orçamento de CPU dos monitores em software" |
+| 2 | ALTO | REF/PADRÃO e sessões de placa presos quando o último navegador fecha | Feito: `serviceMonitors(app)` no laço do servidor, fora do `if` de audiência | vitest "sem nenhum navegador conectado…" |
+| 3 | MÉDIO | Troca a quente placa → x264 falhava na 1ª tentativa ("Failed to add element", +2,11 s) | Feito: nome de ramo por geração, `dispose_retired` antes de reabrir, erro de ramo retirado ignorado | `monitor_bench::troca_a_quente_da_placa_para_x264_na_mesma_volta` (openh264enc como placa) |
+| 4 | MÉDIO | Servidor nunca aprendia a capacidade real da placa; revogação não cruzava processos | Feito: `hardwareFailed` no relatório do nível; `hardwareRefusals` + `hardwareRetry` entre canais | fixture `__fixtures__/engine-hardware-failed.jsonl` gerada pelo Rust e consumida pelo vitest |
+| 5 | MÉDIO | Perfil de monitor nulo no banco quebrava HA com reserva na r88-35 e restauração de projeto | Feito: banco guarda o perfil leve legado; automático só em tempo de execução | `monitor-profile-compat.test.ts` (validador da r88-35 copiado de ddd7b8b) |
+| 6 | MÉDIO | `set_if_exists` entrava em pânico com tipo diferente (openh264enc `gop-size`) | Feito: conversão entre inteiros/reais na faixa da propriedade, senão ignora com aviso; propriedades sensíveis à versão no código novo passam por ele | `output::set_if_exists_tests` |
+| 7 | MÉDIO | Sonda de encoders atrasava a partida em até 30 s | Feito: segundo plano, cache invalidado por binário/GStreamer/driver | `encoder-probe-cache.test.ts` |
+| 8 | BAIXO | Multiview montava tap points a ~50 Hz sem espectador | Feito | `multiview::tests::sem_espectador_nao_monta_pontos_de_sonda` |
+| 9 | BAIXO | `GET /monitors` mostrava concessões de outros canais | Feito | `monitors-route.test.ts` |
+| 10 | — | Selo do scope ao vivo sem o nível do WHEP | Feito: `onTierChange` opcional no `Whep`; rótulo `PGM · REF/PAD/LEV` ao lado de INDICATIVO | `monitor-tier-markup.test.ts` |
+| 11 | — | Plausíveis | Feito: `Runner::drop` do multiview sem join no laço; concessão de placa sem elemento criável usa perfil/orçamento de software | `desmontar_o_multiview_nao_segura_o_laco_principal`, `placa_concedida_sem_elemento_*` |
+
+| 12 | ALTO (no ar, r88-35) | `transport` com `{action:'stop', bus:'pvw'}` parava o PGM (19,5 s fora do ar) e suspendia continuidade e publicação | Feito: STOP no PVW só limpa o preview (recusa com TAKE/CUE pendente); TAKE/PARK com `pvw` e CUE com `pgm` recusados; controle externo recusa STOP com `pvw` (antes o zod descartava o `bus`) | `transport-bus-routes.test.ts` |
+| 13 | BAIXO (no ar) | Versão "desconhecida" e build nulo no Windows instalado | Feito: edição do `installation-receipt.json` e commit do `package-manifest.json` (scripts de pacote gravam o commit) | `software-version-install.test.ts` |
+| 14 | MÉDIO (no ar) | Avalanche: VT mudo em loop gerava 2460 críticos pendentes | Feito: mesma condição com pendente vira repetição agrupada (INFO, contador e última vez no pendente); tarja **SEM ÁUDIO** no QC (decisão `ASSET_INTENTIONAL_SILENCE`, quem e quando), selo na Biblioteca e na Grade; a sonda do PGM não alerta silêncio/falta de áudio no arquivo marcado (preto, congelado e queda continuam). O watchdog das entradas observa só fontes ao vivo, que já têm "áudio esperado: não" por fonte | `alert-avalanche.test.ts`, `intentional-silence-routes.test.ts` |
+| 15 | BAIXO (no ar) | "Nome indisponível" nas mensagens de saúde | Feito: perfil pelo id, monitor conhecido, item no barramento ou o id | `runtime-signal-names.test.ts` |
+
+Pendente da produção (item 14): os 2460 críticos já gravados continuam pendentes até alguém reconhecer; o agrupamento vale daqui em diante.
+
+Só no Windows de produção: prioridade de thread (`SetThreadPriority`), sonda real e cache com driver NVIDIA/Intel, recusa real de sessão NVENC entre canais (`hardwareRetry`), HA com reserva na r88-35 de verdade.
+
 ## Estado atual — r88-34 (30/10 23:24, D:\RPlayout Atual, dados r88-34b)
 
 Ver CORRECOES-R88-34-2026-10-30.md. No ar: Gestor, monitor de relógio (OK ~13 ms), vigia instalado e testado (queda religada em 23 s; parada do operador respeitada). Abertos: soak 24 h da r88-34, U1 DeckLink, mídia real, Windows limpo/Linux, MIX/WIPE e corte no VT (decisão), Telegram (decisões), ativação com live salva sem sinal (decisão de produto).

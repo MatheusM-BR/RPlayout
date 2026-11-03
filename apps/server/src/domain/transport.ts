@@ -6,6 +6,8 @@ import {
   type OnAirState,
   type PreviewTarget,
   type LiveSignalAssessment,
+  type MonitorTier,
+  type MonitorBus,
 } from '@rplayout/protocol'
 import type { RundownView } from './plan.js'
 import type { MeterReading } from './meters.js'
@@ -24,6 +26,43 @@ export interface PublisherState {
   /** Native generation changes whenever the delivery counter is reset. */
   readonly generation?: number
   readonly error?: string
+  /** Codificador de vídeo em uso (saídas comuns). */
+  readonly encoder?: string
+  /** Níveis de um monitor (só os pedidos ou abertos). */
+  readonly tiers?: readonly MonitorTierState[]
+  /**
+   * Saída de programa: recusas da placa sem monitor local para tomar de volta
+   * (cresce a cada uma). O servidor revoga as sessões de monitores dos outros
+   * canais e manda este engine tentar a placa de novo.
+   */
+  readonly hardwareRefusals?: number
+  /** Motivo da última recusa da placa nesta saída. */
+  readonly hardwareFailed?: string
+  /**
+   * Monitor com níveis: custo (Mpx/s) de cada degrau de cada nível em
+   * software, do pedido ao LEVE. É por ela que o servidor concede o orçamento
+   * de CPU da máquina (`EncoderSessions.requestSoftware`).
+   */
+  readonly ladders?: readonly { readonly tier: MonitorTier; readonly mpx: readonly number[] }[]
+}
+
+/** Um nível de monitor, como o engine reporta. */
+export interface MonitorTierState {
+  readonly tier: MonitorTier
+  readonly health: PublisherState['health']
+  readonly encoder?: string
+  readonly hardware: boolean
+  readonly profile?: { width: number; height: number; fpsN: number; fpsD: number; bitrateKbps: number; quality: number }
+  readonly delivered: number
+  readonly uptimeMs: number
+  readonly degraded?: string
+  readonly error?: string
+  /**
+   * A placa falhou num ramo aberto nela, e por quê. Campo próprio do engine,
+   * que `degraded`/`error` não sobrescrevem: é por ele que o servidor aprende
+   * a capacidade real da placa.
+   */
+  readonly hardwareFailed?: string
 }
 
 /** Estado de uma entrada viva que o engine de fato abriu nesta sessão. */
@@ -120,7 +159,17 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean): void
+  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware?: boolean, budgetMpx?: number): void
+  /** Relógio de teste gravado na imagem dos monitores (medição de atraso). */
+  setMonitorClock?(on: boolean): void
+  /**
+   * Sessões de placa de monitores de outros canais foram revogadas para o
+   * programa deste: a placa volta a valer no engine e a saída que caiu por
+   * recusa tenta de novo.
+   */
+  retryHardware?(): void
+  /** Há comando de transporte em curso (TAKE aguardando sinal, CUE, troca)? */
+  hasPendingCommand?(): boolean
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   graphicConfirmed?(svg: string | null, fadeMs: number, authorize?:()=>void): Promise<void>
@@ -137,7 +186,7 @@ export interface Transport {
    * Codificar para uma janela que ninguém abriu é gastar CPU do ar com nada --
    * e com quatro canais são quatro codificações desperdiçadas.
    */
-  setMonitor(bus: 'pvw' | 'mon', on: boolean): void
+  setMonitor(bus: MonitorBus, on: boolean, tier?: MonitorTier, hardware?: boolean, budgetMpx?: number): void
   /** Põe ou tira grafismo do programa. SVG já preenchido; nulo tira. */
   graphic(svg: string | null, fadeMs: number): void
   /** Levanta o motor quando ele cai ou congela. Nada a fazer no simulado. */

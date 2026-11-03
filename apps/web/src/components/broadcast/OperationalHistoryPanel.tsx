@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react'
 import {api,type OperationalMetricHistory} from '../../api.js'
+import { whenVisible } from '../../domain/live-topics.js'
 type ChannelChoice={id:string;name:string}
 const metric=(value:number|null|undefined,suffix='')=>value==null?'N/D':`${value}${suffix}`
 const short=(id:string|null)=>id?`${id.slice(0,12)}${id.length>12?'…':''}`:'N/D'
@@ -47,7 +48,7 @@ function OperationalHistoryQuery({channelId,hours}:{channelId:string;hours:numbe
       catch(failure){if(active)setError(timedOut?'A consulta excedeu 10 segundos. Tente novamente.':failure instanceof Error?failure.message:'Histórico indisponível.')}
       finally{window.clearTimeout(timeout);pending=false;if(active)setLoading(false)}
     }
-    void refresh();const timer=page?null:window.setInterval(()=>void refresh(),15000)
+    void refresh();const timer=page?null:window.setInterval(whenVisible(()=>void refresh()),15000)
     return()=>{active=false;controller?.abort();if(timer!==null)window.clearInterval(timer)}
   },[channelId,hours,page,retry])
   return <>

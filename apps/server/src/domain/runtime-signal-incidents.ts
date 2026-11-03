@@ -12,7 +12,9 @@ import {captureIncidentContext} from './incident-context.js'
 import type {MetricRuntime} from './operational-metrics.js'
 import {safeMetricLabel,type MetricLabels} from './operational-metric-labels.js'
 
-export interface RuntimeObservation {identity:string;component:'LIVE_SOURCE'|'OUTPUT';bus:'pgm'|'pvw'|'output';state:string;result:'FAILED'|'HEALTHY'|'UNKNOWN'|'ENDED';delivered:number;name:string|null;legacyState?:string;endpointIdentity?:string;generation?:number}
+export interface RuntimeObservation {identity:string;component:'LIVE_SOURCE'|'OUTPUT';bus:'pgm'|'pvw'|'output';state:string;result:'FAILED'|'HEALTHY'|'UNKNOWN'|'ENDED';delivered:number;name:string|null;legacyState?:string;endpointIdentity?:string;generation?:number
+  /** Rótulo seguro quando o nome não é confirmado: item do barramento, perfil pelo id ou o id. Nunca URL. */
+  fallback?:string}
 export interface RuntimeObservationSnapshot {channelId:string;context:IncidentContext;observations:RuntimeObservation[]}
 type LiveSourceState=ReturnType<MetricRuntime['transport']['state']>['liveSources'][number]
 type BusSignal=NonNullable<LiveSourceState['busSignals']>['pgm']
@@ -55,14 +57,36 @@ export function runtimeObservationSnapshot(runtime:MetricRuntime,labelsInput?:Me
     for(const source of state.liveSources)for(const bus of ['pgm','pvw'] as const){
       const lifecycle=source.busStates?.[bus],signal=source.busSignals?.[bus]
       if(!lifecycle&&!signal)continue
-      observations.push({identity:identity(source.source,'metric-source:v1'),component:'LIVE_SOURCE',bus,state:signal?.status??lifecycle??'UNKNOWN',result:sourceResult(lifecycle,signal),delivered:0,name:safeMetricLabel(labels?.sources.get(source.source)),legacyState:lifecycle})
+      observations.push({identity:identity(source.source,'metric-source:v1'),component:'LIVE_SOURCE',bus,state:signal?.status??lifecycle??'UNKNOWN',result:sourceResult(lifecycle,signal),delivered:0,name:safeMetricLabel(labels?.sources.get(source.source)),legacyState:lifecycle,fallback:sourceFallback(source,labels,identity(source.source,'metric-source:v1'))})
     }
     for(const output of runtime.transport.publishers()){
       const profile=output.outputId?labels?.outputProfiles?.get(output.outputId):undefined
-      observations.push({identity:output.outputId?identity(JSON.stringify([runtime.channel.id,output.outputId]),'metric-output-profile:v1'):identity(output.url,'metric-output:v1'),endpointIdentity:identity(output.url,'metric-output:v1'),generation:Number.isSafeInteger(output.generation)&&output.generation!>=0?output.generation:undefined,component:'OUTPUT',bus:'output',state:output.health,result:outputResult(output),delivered:Number.isSafeInteger(output.delivered)&&output.delivered>=0?output.delivered:0,name:safeMetricLabel(output.outputId?(profile?.target===output.url?profile.name:null):labels?.outputs.get(output.url))})
+      observations.push({identity:output.outputId?identity(JSON.stringify([runtime.channel.id,output.outputId]),'metric-output-profile:v1'):identity(output.url,'metric-output:v1'),endpointIdentity:identity(output.url,'metric-output:v1'),generation:Number.isSafeInteger(output.generation)&&output.generation!>=0?output.generation:undefined,component:'OUTPUT',bus:'output',state:output.health,result:outputResult(output),delivered:Number.isSafeInteger(output.delivered)&&output.delivered>=0?output.delivered:0,name:safeMetricLabel(output.outputId?(profile?.target===output.url?profile.name:null):labels?.outputs.get(output.url)),fallback:outputFallback(output,labels)})
     }
   }
   return {channelId:runtime.channel.id,context,observations}
+}
+/** Fonte sem nome confirmado: o item que está no barramento, ou o id curto. */
+function sourceFallback(source:LiveSourceState,labels:MetricLabels|undefined,identity:string):string{
+  const itemId=(source as {itemId?:unknown}).itemId
+  const title=typeof itemId==='string'?safeMetricLabel(labels?.items.get(itemId)):null
+  return title?`item ${title}`:`fonte id ${identity.slice(0,12)}`
+}
+/** Saída sem nome confirmado: o perfil pelo id estável, o monitor, ou o id. */
+function outputFallback(output:Publisher,labels:MetricLabels|undefined):string{
+  if(output.outputId){
+    const profile=safeMetricLabel(labels?.outputProfiles?.get(output.outputId)?.name)
+    if(profile)return `${profile} (id ${output.outputId})`
+    if(output.outputId==='multiview')return 'Multiview composto'
+    if(output.outputId==='qc-inspection')return 'Monitor do QC'
+    return `saída id ${output.outputId}`
+  }
+  const bus=/\/(pvw|mon|mv|qc)(?:[&?]|$)/.exec(output.url)?.[1]
+  return bus?({pvw:'Monitor do PVW',mon:'Monitor do PGM',mv:'Multiview composto',qc:'Monitor do QC'} as Record<string,string>)[bus]!:'saída sem id'
+}
+/** Nome para a mensagem de saúde: o confirmado, senão um rótulo seguro com id. */
+export function observationLabel(observation:RuntimeObservation):string{
+  return safeMetricLabel(observation.name)??safeMetricLabel(observation.fallback)??'Nome indisponível'
 }
 const entity=(channelId:string,row:RuntimeObservation)=>installationVault(false).reviewIdentity(JSON.stringify([channelId,row.component,row.bus,row.identity,...(row.component==='OUTPUT'&&row.endpointIdentity?[row.endpointIdentity]:[])]),'runtime-incident:v1')
 /** Keep the detection snapshot across a failed DB write. The next item/config
@@ -152,7 +176,7 @@ export function persistRuntimeSignalIncidents(db:Db,lease:ExecutionLease,snapsho
       if(observation.result!=='FAILED'||open.has(key))continue
       const id=`runtime-signal:${key}:${owner.id}:${randomUUID()}:${observation.delivered}:${observation.generation??'legacy'}:active`
       const state=safeMetricLabel(observation.state)??'UNKNOWN'
-      tx.insert(healthEvents).values({id,channelId,component:observation.component,state,severity:'CRITICAL',message:`${observation.bus.toUpperCase()} · ${safeMetricLabel(observation.name)??'Nome indisponível'} · ${state}`,occurredAt:at,context:snapshot.context}).run()
+      tx.insert(healthEvents).values({id,channelId,component:observation.component,state,severity:'CRITICAL',message:`${observation.bus.toUpperCase()} · ${observationLabel(observation)} · ${state}`,occurredAt:at,context:snapshot.context}).run()
       enqueueIntegrationEvent(tx,(observation.component==='OUTPUT'?'output.':'source.')+'failed',{incidentId:id,identity:observation.identity,bus:observation.bus,state,signalRecovered:false,physicalSignalValidated:false,context:snapshot.context},channelId,at)
       inserted++
     }
@@ -165,7 +189,7 @@ export function persistRuntimeSignalIncidents(db:Db,lease:ExecutionLease,snapsho
       // Failure already has one correlated CRITICAL incident; lifecycle
       // history must not double the operator's pending-critical count.
       const id=prefix+randomUUID(),severity=state==='connecting'||state==='CUEING'?'WARN':'INFO'
-      tx.insert(healthEvents).values({id,channelId,component:observation.component,state,severity,message:`${observation.bus.toUpperCase()} · ${safeMetricLabel(observation.name)??'Nome indisponível'} · estado reportado ${state}; não confirma recuperação.`,occurredAt:at,context:snapshot.context}).run()
+      tx.insert(healthEvents).values({id,channelId,component:observation.component,state,severity,message:`${observation.bus.toUpperCase()} · ${observationLabel(observation)} · estado reportado ${state}; não confirma recuperação.`,occurredAt:at,context:snapshot.context}).run()
       const event=(observation.component==='OUTPUT'?'output.':'source.')+(observation.component==='OUTPUT'?state:state.toLowerCase())
       // Canonical failure already carries the correlated incident for FAILED.
       if(event!=='source.failed'&&event!=='output.failed')enqueueIntegrationEvent(tx,event,{incidentId:id,identity:observation.identity,bus:observation.bus,state,signalRecovered:false,physicalSignalValidated:false,context:snapshot.context},channelId,at)

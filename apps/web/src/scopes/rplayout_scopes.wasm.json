@@ -1,0 +1,7 @@
+{
+  "note": "Gerado por scripts/build-scopes-wasm.mjs. Não edite: recompile.",
+  "sourceHash": "1247eb424d46eeb2ff833f3d7ca4a17567fb4e84e8f70ccde70f0ecc1553a11e",
+  "wasmSha256": "ce2b6c32584b4b8558f859de906e68d864eb63beba4a3b33bb766c5b11afab55",
+  "bytes": 29263,
+  "abi": 1
+}

@@ -5,6 +5,7 @@ import {Whep} from '../Whep.js'
 import {HaControlPanel} from './HaControlPanel.js'
 import {HaStopPanel} from './HaStopPanel.js'
 import {HaReturnPanel} from './HaReturnPanel.js'
+import { whenVisible } from '../../domain/live-topics.js'
 
 export function HaExecutionPanel(){
   const [channels,setChannels]=useState<Array<{id:string;name:string}>>([]),[channelId,setChannelId]=useState(''),[rows,setRows]=useState<HaExecutionObservation[]>([]),[error,setError]=useState<string|null>(null)
@@ -49,7 +50,7 @@ export function HaExecutionPanel(){
       if(busy)return;busy=true
       try{const result=await api.haExecutionObservations(channelId);if(active){setRows(result.executions);setError(null)}}catch{if(active)setError('Não foi possível atualizar a execução. Os dados exibidos podem estar desatualizados.')}finally{busy=false}
     }
-    void refresh();const timer=window.setInterval(()=>void refresh(),5000)
+    void refresh();const timer=window.setInterval(whenVisible(()=>void refresh()),5000)
     return()=>{active=false;window.clearInterval(timer)}
   },[channelId])
   const labels={CHECKING:'Conferindo',PREPARING:'Preparando',TRANSFERRING:'Transferindo autoridade',ACTIVATING:'Ativando',CONFIRMED:'Confirmada no histórico',REFUSED:'Recusada',UNCERTAIN:'Resultado incerto'}

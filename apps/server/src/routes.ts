@@ -1,3 +1,4 @@
+import {readHealthPending} from './domain/health-pending.js'
 import { randomUUID } from 'node:crypto'
 import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
 import { transportRefusalStatus } from './domain/transport-refusal.js'
@@ -10,11 +11,13 @@ import {requireChannelConfiguration} from './domain/channel-configuration-guard.
 import {configurationRevision} from './db/channel-configuration.js'
 import {qcRevision} from './db/qc-revisions.js'
 import {editLiveSource,readLiveSourceReview} from './domain/live-source-edit.js'
+import {compositeETag,effectiveComposition,readComposite,saveComposite} from './domain/multiview-composite.js'
+import {MULTIVIEW_LAYOUTS,MULTIVIEW_QUALITIES,multiviewTierPaths} from '@rplayout/protocol'
 import {editMultiview,readMultiviewReview} from './domain/multiview-edit.js'
 import {editScheduleRule,readScheduleRuleReview} from './domain/schedule-rule-edit.js'
 import {editGraphicTemplate,editSlate,readGraphicsReview} from './domain/graphics-edit.js'
 import {requireQcReview} from './domain/qc-review-guard.js'
-import {assetMetadataETag,assetRemovalETag} from '@rplayout/protocol'
+import {assetMetadataETag,assetRemovalETag,MONITOR_TIERS,monitorTierPath,type MonitorTier} from '@rplayout/protocol'
 import {captureAssetRemovalAuthority,readAssetRemoval,applyAssetRemoval} from './domain/asset-removal.js'
 import {captureAssetMetadataAuthority,readAssetMetadata,editAssetMetadata} from './domain/asset-metadata-edit.js'
 import {EditorialVersions} from './db/editorial-revisions.js'
@@ -169,6 +172,7 @@ import { activeHorizonRule, executionHorizon } from './domain/continuous.js'
 import { localDate, rundownClock, rundownFrames, rundownMidnight } from './domain/rundown-clock.js'
 import { inspectBoundary, PlaylistBoundaryLedger } from './domain/playlist-boundary.js'
 import { AUTH_PASSWORD, AUTH_USER, BACKUP_DIR, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from './config.js'
+import { isIntentionalSilence, setIntentionalSilence } from './domain/intentional-silence.js'
 import { technicalLog, type TechnicalLogLevel } from './domain/technical-log.js'
 import { softwareVersion } from './domain/software-version.js'
 import { listEngineCrashReports } from './domain/engine-crash-report.js'
@@ -232,6 +236,7 @@ import {
   createOutput,
   newOutputProfile,
   validateOutputProfile,
+  monitorStoredPatch,
   deleteOutput,
   toEngineProfile,
   listOutputs,
@@ -455,7 +460,10 @@ function monitors(app: App, channelId: string) {
   if (!app.mediamtx?.running || !path) return null
   // Browser monitoring is a low-bandwidth derivative, not the full broadcast
   // master. The PGM card must heartbeat `mon` just as PVW heartbeats `pvw`.
-  return { port: PORTS.webrtc, program: path.monitor, preview: path.preview, inspection: path.inspection ?? null }
+  // Cada monitor tem um caminho por nível; quem assiste escolhe (o leve fica
+  // no caminho histórico, que é o que clientes antigos continuam abrindo).
+  const tiers = (base: string) => Object.fromEntries(MONITOR_TIERS.map((tier) => [tier, monitorTierPath(base, tier)])) as Record<MonitorTier, string>
+  return { port: PORTS.webrtc, program: path.monitor, preview: path.preview, inspection: path.inspection ?? null, tiers: { program: tiers(path.monitor), preview: tiers(path.preview) } }
 }
 
 /**
@@ -470,7 +478,21 @@ function blockCompanions(runtime: Pick<EditorialContext, 'view'>, itemId: string
   return items.filter((entry) => entry.item.blockId === blockId).map((entry) => entry.item.id)
 }
 
+/**
+ * Comando de transporte com barramento que não combina: recusa com motivo.
+ * TAKE/PARK agem no PGM, CUE no PVW; STOP aceita os dois (no PVW, limpa o
+ * preview); SEEK aceita os dois. Nunca reinterpretar como PGM em silêncio.
+ */
+export function transportBusRefusal(action: string, bus: 'pgm' | 'pvw' | undefined): string | null {
+  if (!bus) return null
+  if ((action === 'take' || action === 'park') && bus === 'pvw') return `${action.toUpperCase()} age no PGM; não aceita bus "pvw".`
+  if (action === 'cue' && bus === 'pgm') return 'CUE age no PVW; não aceita bus "pgm".'
+  return null
+}
+
 export function registerRoutes(app: App, server: FastifyInstance, onChange: () => void): void {
+  /** Canais com o relógio de teste ligado nos monitores. */
+  const monitorClock = new Set<string>()
   const qcFrames = new QcFrames(resolvePath(app.thumbnailDir, 'qc-tmp'))
   const globalConcurrencyManager=app.concurrency
   const auditChannels=new WeakMap<object,string[]>()
@@ -615,7 +637,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if (servicePaths.has(path) && EXTERNAL_CONTROL_TOKEN && typeof bearer === 'string' && secretEquals(bearer, EXTERNAL_CONTROL_TOKEN)) return
     return reply.code(401).send({ error: 'Entre com usuário e senha. A sessão expirou, foi revogada ou a conta está desativada.' })
   })
-  const unauditedHeartbeats=new Set(['/api/channels/:id/watching'])
+  const unauditedHeartbeats=new Set(['/api/channels/:id/watching','/api/channels/:id/watching/batch'])
   server.addHook('onResponse', async (request, reply) => {
     if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) || !request.url.startsWith('/api') || request.url.startsWith('/api/auth/')) return
     // Monitor keep-alive is a heartbeat every few seconds per open window, not
@@ -691,7 +713,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const channelIds = new Set<string>()
     for (const value of [query?.channelId, body?.channelId]) if (typeof value === 'string') channelIds.add(value)
     const route = request.routeOptions.url ?? ''
-    const scopedRoute = channelParameterRoutes.has(path) || channelParameterRoutes.has(route) || route === '/api/assets/:id/qc' || route === '/api/assets/:id/cut-marks' || route === '/api/assets/:id/cut-marks/:markId' || /^\/api\/(?:v1\/)?(channels\/:id|rules\/:id|rundowns\/:id|items\/:id|sources\/live\/:id|outputs\/:id|health-events\/:id|integrations\/:id|integration-deliveries\/:id|item-graphics\/:id|graphics\/:id|guests\/:id|destinations\/:id|blocks\/:blockId|timeline\/:rundownId|tenants\/:tenantId\/channels\/:channelId)(?:\/|$)/.test(route)
+    const scopedRoute = channelParameterRoutes.has(path) || channelParameterRoutes.has(route) || route === '/api/assets/:id/qc' || route === '/api/assets/:id/cut-marks' || route === '/api/assets/:id/intentional-silence' || route === '/api/assets/:id/cut-marks/:markId' || /^\/api\/(?:v1\/)?(channels\/:id|rules\/:id|rundowns\/:id|items\/:id|sources\/live\/:id|outputs\/:id|health-events\/:id|integrations\/:id|integration-deliveries\/:id|item-graphics\/:id|graphics\/:id|guests\/:id|destinations\/:id|blocks\/:blockId|timeline\/:rundownId|tenants\/:tenantId\/channels\/:channelId)(?:\/|$)/.test(route)
     if (/^\/api\/(?:v1\/)?channels\/:id(?:\/|$)/.test(route) && params?.id) channelIds.add(params.id)
     const lookup = (sql: string, id: unknown) => {
       if (typeof id !== 'string') return
@@ -850,7 +872,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   })
   server.get('/api/health-events', async (request, reply) => {
     if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar saúde.' })
-    const query = request.query as Omit<IncidentPageQuery,'limit'> & {limit?:string}
+    const query = request.query as Omit<IncidentPageQuery,'limit'> & {limit?:string;view?:string}
+    // ?view=pending: só as contagens do selo ALERTAS (sem página, riscos nem mensagens).
+    if(query.view==='pending')try{return reply.header('Cache-Control','private, no-store').send(readHealthPending(app.db,access.identity(request)?.channelIds??null,query))}
+    catch(error){if(error instanceof IncidentError)return reply.code(error.status).send({error:error.message});throw error}
     try{return reply.header('Cache-Control','private, no-store').send(readHealthIncidentPage(app.db,access.identity(request)?.channelIds??null,{...query,limit:Number(query.limit??200)}))}
     catch(error){if(error instanceof IncidentError)return reply.code(error.status).send({error:error.message});throw error}
   })
@@ -1979,7 +2004,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     return snapshot(app, runtime)
   })
 
-  server.get('/api/assets', async () => ({ assets: await listAssets(app.db) }))
+  server.get('/api/assets', async () => ({ assets: (await listAssets(app.db)).map(asset => isIntentionalSilence(app.db, asset) ? { ...asset, intentionalSilence: true } : asset) }))
 
   /**
    * Explorador de arquivos. A árvore sai do próprio caminho do arquivo, então
@@ -1991,7 +2016,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const channelId = (request.query as { channelId?: string }).channelId
     const assets = app.db.transaction(tx=>{
       const raw=new Map(tx.select().from(mediaAssets).all().map(row=>[row.id,toAsset(row)]))
-      return [...(channelId?applyQcDecisionsNow(tx,raw,channelId):raw).values()].filter(asset=>asset.kind==='VIDEO').map(asset=>({...asset,qcRevision:qcRevision(tx,asset.id)}))
+      return [...(channelId?applyQcDecisionsNow(tx,raw,channelId):raw).values()].filter(asset=>asset.kind==='VIDEO').map(asset=>({...asset,qcRevision:qcRevision(tx,asset.id),...(isIntentionalSilence(app.db,asset)?{intentionalSilence:true}:{})}))
     })
     const roots = await Roots.listRoots(app.db, app.mediaRoot)
 
@@ -2202,6 +2227,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       .header('x-rplayout-frame-pts-ns', extracted.ptsNs === null ? '' : String(extracted.ptsNs))
     if (match[2] === 'jpg') return reply.type('image/jpeg').header('x-rplayout-rendition', `qc-rgb709-${largura}`).send(extracted.jpg)
     reply.type('application/octet-stream').header('x-rplayout-rendition', 'qc-ycbcr444-bt709-limited-8bit').header('vary', 'accept-encoding')
+    // Medição Rust nativa do mesmo quadro: a interface confere o WASM contra ela.
+    if (extracted.scopeStats) reply.header('x-rplayout-scope-stats', JSON.stringify(extracted.scopeStats))
     if (/\bgzip\b/.test(String(request.headers['accept-encoding'] ?? ''))) return reply.header('content-encoding', 'gzip').send(extracted.yccGzip)
     return reply.send(extracted.ycc)
   })
@@ -2949,7 +2976,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if(!asset||!channel)return null
       const review={assetId:id,channelId:channel.id,contentHash:asset.contentHash,assetRevision:qcRevision(tx,id),configurationRevision:configurationRevision(tx,channel.id)}
       const decisions=tx.select().from(qcDecisions).where(and(eq(qcDecisions.assetId,id),eq(qcDecisions.contentHash,asset.contentHash),or(eq(qcDecisions.channelId,channel.id),eq(qcDecisions.channelId,'@all')))).orderBy(desc(sql`rowid`)).all()
-      return {contentHash:asset.contentHash,review,profile:channel.qcProfile??defaultQcProfileFor(channel.targetLufs),checks:assessQc(toAsset(asset),channel.qcProfile??defaultQcProfileFor(channel.targetLufs),qcChannelReference(channel)),decisions}
+      return {contentHash:asset.contentHash,review,profile:channel.qcProfile??defaultQcProfileFor(channel.targetLufs),checks:assessQc(toAsset(asset),channel.qcProfile??defaultQcProfileFor(channel.targetLufs),qcChannelReference(channel)),decisions,intentionalSilence:isIntentionalSilence(app.db,asset)}
     })
     if(!result)return reply.code(404).send({error:'Arquivo/canal não encontrado.'})
     return reply.header('cache-control','private, no-store').header('etag',qcDecisionETag(result.review)).send(result)
@@ -2978,6 +3005,23 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     let refreshError:string|null=null
     try{for(const runtime of app.runtimes.values())await runtime.refresh();onChange()}catch{refreshError='QC gravado; falha ao atualizar a visão. Consulte a conferência novamente.'}
     return {ok:true,...saved,refreshError}
+  })
+
+  /** QC: o arquivo não tem áudio na origem; a sonda do PGM não alerta silêncio nele. */
+  server.put('/api/assets/:id/intentional-silence', async (request, reply) => {
+    if (!(await allowed(request, 'PLAYLIST_EDIT'))) return reply.code(403).send({ error: 'Sem permissão para avaliar mídia.' })
+    const body = z.object({ channelId: z.string().min(1), contentHash: z.string().min(1), on: z.boolean() }).strict().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe o canal, a versão do arquivo e on: true/false.' })
+    const id = (request.params as { id: string }).id, ownerId = access.identity(request)?.id ?? null
+    try {
+      assertQcAccess(request, body.data.channelId, ownerId)
+      const asset = app.db.select().from(mediaAssets).where(eq(mediaAssets.id, id)).get()
+      if (!asset) return reply.code(404).send({ error: 'Arquivo não encontrado.' })
+      if (asset.contentHash !== body.data.contentHash) return reply.code(409).send({ error: 'O arquivo mudou durante a conferência. Revise a nova versão antes de marcar.' })
+      setIntentionalSilence(app.db, asset, body.data.on, access.identity(request)?.username ?? null, body.data.channelId)
+    } catch (error) { return automationError(reply, error) }
+    onChange()
+    return { ok: true, assetId: id, intentionalSilence: body.data.on }
   })
 
   // ---- Marcações de corte (QC): trechos que podem sair para alinhar horário ----
@@ -3964,8 +4008,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    * Isso permite fechar monitores sem confundir um Preview desligado com uma
    * falha do canal.
    */
-  const processMetrics = new ProcessMetrics()
-  server.get('/api/processes', async () => {
+  // Contadores do SO custam um powershell.exe por leitura no Windows: uma
+  // leitura a cada 5 s serve todas as abas do Monitor.
+  const processMetrics = new ProcessMetrics(undefined, 5000)
+  server.get('/api/processes', async (request) => {
     const rows: Array<{
       id: string
       kind: 'ENGINE' | 'MEDIAMTX' | 'OUTPUT'
@@ -4045,6 +4091,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
 
     const pids = rows.map((row) => row.pid).filter((pid): pid is number => pid !== null)
+    // O cabeçalho só quer o estado (?counters=0); CPU e memória são do Monitor.
+    if ((request.query as { counters?: string } | undefined)?.counters === '0') return { generatedAt: new Date().toISOString(), processes: rows, measurementError: null }
     const counters = await processMetrics.latest(pids)
     for (const row of rows) {
       const sample = row.pid === null ? undefined : counters.samples.get(row.pid)
@@ -4202,6 +4250,56 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   }
   server.put('/api/v1/multiview/config', handlePutMultiview)
   server.put('/api/multiview/config', handlePutMultiview)
+
+  // Multiview composto (R88-36): um mosaico por canal, composto e codificado
+  // uma vez no engine. Ler: quem acessa o canal. Salvar layout/células:
+  // PLAYLIST_EDIT (como o layout das fontes individuais). Trocar o nível:
+  // OUTPUT_CONTROL, porque muda o custo de codificação na máquina do ar.
+  server.get('/api/channels/:id/multiview/composite', async (request, reply) => {
+    const {id}=request.params as {id:string}
+    if(access.required()&&!access.identity(request))return reply.code(401).send({error:'Entre para ver o multiview.'})
+    if(!access.channelAllowed(request,id))return reply.code(403).send({error:'Sem acesso a este canal.'})
+    const channel=app.db.select().from(channels).where(eq(channels.id,id)).get()
+    if(!channel)return reply.code(404).send({error:'Canal não encontrado.'})
+    const saved=readComposite(app.db,id)
+    const sources=await listLiveSources(app.db,id,false)
+    const runtime=app.runtimes.get(id)
+    const path=app.paths.find(entry=>entry.channelId===id)
+    const role=await roleOf(request)
+    const available=Boolean(runtime?.hasMultiview()&&app.mediamtx?.running&&path?.multiview)
+    reply.header('cache-control','private, no-store').header('etag',compositeETag(id,saved.revision))
+    return {
+      saved,eTag:compositeETag(id,saved.revision),
+      composition:effectiveComposition(saved,sources),
+      sources:sources.map(source=>({id:source.id,name:source.name,kind:source.kind,role:source.role,enabled:source.enabled})),
+      layouts:MULTIVIEW_LAYOUTS,qualities:MULTIVIEW_QUALITIES,
+      engine:runtime?.multiviewEngineState()??null,
+      // Mesmos níveis dos monitores, até o teto salvo: quem assiste escolhe.
+      whep:available&&path?.multiview?{port:PORTS.webrtc,path:path.multiview,tiers:multiviewTierPaths(path.multiview,saved.quality)}:null,
+      available,
+      reason:available?null:!app.mediamtx?'Esta instalação não tem servidor de mídia local (mediamtx): o mosaico composto não tem para onde sair. Use "fontes individuais".':!runtime?'Canal sem engine em execução.':'Engine sem multiview composto neste canal.',
+      canSave:can(role,'PLAYLIST_EDIT'),canChangeQuality:can(role,'OUTPUT_CONTROL'),
+    }
+  })
+  server.put('/api/channels/:id/multiview/composite', async (request, reply) => {
+    const {id}=request.params as {id:string}
+    if(!(await allowed(request,'PLAYLIST_EDIT')))return reply.code(403).send({error:'Seu papel não pode alterar o layout do multiview.'})
+    if(!access.channelAllowed(request,id))return reply.code(403).send({error:'Sem acesso a este canal.'})
+    const ownerId=access.identity(request)?.id??null
+    try{
+      const saved=saveComposite(app.db,id,request.body,request.headers['if-match'],{
+        authorize:()=>{
+          const current=access.identity(request)
+          if(access.required()&&!current||(current?.id??null)!==ownerId||!access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:'A sessão ou o acesso ao canal mudou. Confira novamente.'})
+        },
+        canChangeQuality:can(await roleOf(request),'OUTPUT_CONTROL'),
+        actor:await usernameOf(request),
+      })
+      app.runtimes.get(id)?.syncMultiview(true)
+      reply.header('cache-control','private, no-store').header('etag',compositeETag(id,saved.revision))
+      return {saved,eTag:compositeETag(id,saved.revision)}
+    }catch(error){return automationError(reply,error)}
+  })
 
   // Gerenciamento de Fontes ao Vivo (Live Sources CRUD)
   const sourceEditHooks=(request:FastifyRequest)=>{
@@ -5039,17 +5137,73 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
    */
   server.post('/api/channels/:id/watching', async (request, reply) => {
     const { id } = request.params as { id: string }
-    const body = z.object({ bus: z.enum(['pvw', 'mon']), watching: z.boolean().optional() }).safeParse(request.body)
+    const body = z.object({ bus: z.enum(['pvw', 'mon', 'mv']), watching: z.boolean().optional(), tier: z.enum(['ref', 'std', 'lite']).optional() }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Barramento inválido.' })
 
     const runtime = await runtimeFor(app, id)
     if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
 
-    runtime.watching(body.data.bus)
+    const tier = runtime.watching(body.data.bus, body.data.tier ?? 'lite')
     // Diz na resposta se o monitor existe. A interface precisa saber para
     // mostrar o motivo em vez de uma janela preta esperando um sinal que não
-    // vem -- e para parar de pedir.
-    return { ok: true, available: runtime.temMonitor(body.data.bus) }
+    // vem -- e para parar de pedir. `tier` é o nível ligado de fato (o
+    // multiview rebaixa ao teto do mosaico).
+    return { ok: true, available: runtime.temMonitor(body.data.bus), tier }
+  })
+
+  /**
+   * Um aviso por aba para todos os monitores abertos deste canal (PGM, PVW,
+   * multiview, nos níveis pedidos), no lugar de um POST por monitor. Mesma
+   * semântica da rota de um monitor só; até 16 entradas.
+   */
+  server.post('/api/channels/:id/watching/batch', async (request, reply) => {
+    const { id } = request.params as { id: string }
+    const body = z.object({ monitors: z.array(z.object({ bus: z.enum(['pvw', 'mon', 'mv']), tier: z.enum(['ref', 'std', 'lite']).optional() }).strict()).min(1).max(16) }).strict().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Monitores inválidos.' })
+    const runtime = await runtimeFor(app, id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado.' })
+    return { ok: true, monitors: body.data.monitors.map(({ bus, tier }) => ({ bus, tier: runtime.watching(bus, tier ?? 'lite'), available: runtime.temMonitor(bus) })) }
+  })
+
+  /**
+   * Tela técnica dos monitores: sessões de placa (total, reservadas ao
+   * programa, emprestadas, livres), o encoder e o perfil de cada nível aberto
+   * e se o relógio de teste está ligado.
+   */
+  server.get('/api/channels/:id/monitors', async (request, reply) => {
+    if (!(await allowed(request, 'REPORT_EXPORT'))) return reply.code(403).send({ error: 'Sem permissão para consultar a engenharia.' })
+    const { id } = request.params as { id: string }
+    const runtime = app.runtimes.get(id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado ou parado.' })
+    reply.header('Cache-Control', 'private, no-store')
+    const path = app.paths.find((entry) => entry.channelId === id)
+    const busOf = (url: string) => /\/(pvw|mon|mv)(?:[&?]|$)/.exec(url)?.[1] ?? (/\/qc(?:[&?]|$)/.test(url) ? 'qc' : null)
+    return {
+      // Totais da máquina; concessões só deste canal (as de outros canais
+      // não são assunto desta tela nem de quem só tem acesso a este canal).
+      sessions: app.encoderSessions?.status(id) ?? null,
+      watched: runtime.monitorTiersWatched(),
+      clock: monitorClock.has(id),
+      paths: path ? { program: path.monitor, preview: path.preview, multiview: path.multiview ?? null } : null,
+      multiviewCeiling: runtime.hasMultiview() ? runtime.multiviewCeiling() : null,
+      monitors: runtime.transport.publishers().filter((publisher) => busOf(publisher.url)).map((publisher) => ({
+        bus: busOf(publisher.url), outputId: publisher.outputId ?? null, health: publisher.health, encoder: publisher.encoder ?? null, tiers: publisher.tiers ?? [], error: publisher.error ?? null,
+      })),
+      program: runtime.transport.publishers().filter((publisher) => !busOf(publisher.url)).map((publisher) => ({ outputId: publisher.outputId ?? null, health: publisher.health, encoder: publisher.encoder ?? null })),
+    }
+  })
+
+  /** Relógio de teste gravado na imagem dos monitores (nunca no programa). */
+  server.post('/api/channels/:id/monitor-clock', async (request, reply) => {
+    if (!(await allowed(request, 'OUTPUT_CONTROL'))) return reply.code(403).send({ error: 'Sem permissão para o modo de teste dos monitores.' })
+    const { id } = request.params as { id: string }
+    const body = z.object({ on: z.boolean() }).strict().safeParse(request.body)
+    if (!body.success) return reply.code(400).send({ error: 'Informe on: true/false.' })
+    const runtime = app.runtimes.get(id)
+    if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado ou parado.' })
+    if (!runtime.setMonitorClock(body.data.on)) return reply.code(409).send({ error: 'Este canal não tem engine nativo; não há relógio para gravar.' })
+    if (body.data.on) monitorClock.add(id); else monitorClock.delete(id)
+    return { ok: true, clock: body.data.on }
   })
 
   server.post('/api/channels/:id/qc/inspection', async (request,reply)=>{
@@ -5344,7 +5498,10 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         if(!row || row.channelId!==profile.channelId)throw new CollaborativeEditError(409,{error:'A saída mudou de canal ou foi removida. Reabra a lista.'})
         if(row.role!=='EXTRA' && (body.data.target!==undefined || body.data.kind!==undefined))throw new CollaborativeEditError(422,{error:'Destino e protocolo das saídas gerenciadas são definidos pelo servidor.'})
         current=row as OutputProfileRow
-        try{patch=outputUpdatePatch(current,body.data);const channel=tx.select().from(channels).where(eq(channels.id,profile.channelId)).get()!;validateOutputProfile({...current,...patch},channel)}catch(error){throw new CollaborativeEditError(400,{error:error instanceof Error?error.message:'Endereço inválido.'})}
+        try{patch=outputUpdatePatch(current,body.data);const channel=tx.select().from(channels).where(eq(channels.id,profile.channelId)).get()!;validateOutputProfile({...current,...patch},channel)
+          // Monitor "automático" (tudo em branco) é gravado como o perfil leve
+          // legado: a r88-35 (HA, projeto exportado) só aceita esse.
+          patch={...patch,...monitorStoredPatch({...current,...patch} as OutputProfileRow,channel)}}catch(error){throw new CollaborativeEditError(400,{error:error instanceof Error?error.message:'Endereço inválido.'})}
         return {}
       })
       current=current!;patch=patch!
@@ -5618,8 +5775,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       action: z.enum(['take', 'cue', 'stop', 'park']),
       itemId: z.string().nullable().optional(),
       assetId: z.string().nullable().optional(),
+      // Antes o zod descartava `bus` em silêncio e um STOP "do PVW" parava o PGM.
+      bus: z.enum(['pgm', 'pvw']).optional(),
     }).safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Comando externo inválido.' })
+    // Controle externo não limpa PVW: STOP é sempre do PGM e tem de dizer isso.
+    const externalBusRefusal = body.data.action === 'stop' && body.data.bus === 'pvw'
+      ? 'STOP com bus "pvw" não existe no controle externo: STOP para o PGM. Para trocar o preview, use CUE.'
+      : transportBusRefusal(body.data.action, body.data.bus)
+    if (externalBusRefusal) return reply.code(400).send({ error: externalBusRefusal })
     try{assertTransportOwnership(body.data.channelId)}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     const runtime = await runtimeFor(app, body.data.channelId)
     if (!runtime?.view) return reply.code(404).send({ error: 'Canal sem grade carregada.' })
@@ -5663,11 +5827,34 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       })
       .safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
-    const actionPermission = body.data.action === 'stop' ? 'CHANNEL_STOP' : 'PLAYLIST_EDIT'
+    // `bus` só vale onde o comando tem barramento de verdade. STOP com
+    // bus:'pvw' parava o PGM (o case 'stop' ignorava o bus): canal fora do ar
+    // por 19,5 s na r88-35. Agora ele limpa só o PVW; o resto que não combina
+    // com o barramento pedido é recusado, nunca reinterpretado como PGM.
+    const busRefusal = transportBusRefusal(body.data.action, body.data.bus)
+    if (busRefusal) return reply.code(400).send({ error: busRefusal })
+    const clearPreview = body.data.action === 'stop' && body.data.bus === 'pvw'
+    const actionPermission = body.data.action === 'stop' && !clearPreview ? 'CHANNEL_STOP' : 'PLAYLIST_EDIT'
     if (!(await allowed(request, actionPermission))) return reply.code(403).send({ error: 'Seu papel não pode executar esta ação.' })
 
     try{assertTransportOwnership(id)}catch(error){if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
     const runtime = await runtimeFor(app, id)
+    if (clearPreview) {
+      // Limpa só o PVW: nada de transport.stop(), de suspender continuidade ou
+      // publicação. Com TAKE ainda pendente, limpar o PVW cancelaria a troca
+      // do PGM -- recusado.
+      if (!runtime) return reply.code(404).send({ error: 'Canal não encontrado ou parado.' })
+      if (runtime.transport.hasPendingCommand?.()) return reply.code(409).send({ error: 'Há um comando de transporte pendente (TAKE aguardando sinal ou CUE em curso). Limpar o PVW agora poderia cancelar a troca do PGM; tente de novo em instantes.', refused: true, action: 'stop' })
+      try { await runtime.transport.cue(null) }
+      catch (error) {
+        const status = transportRefusalStatus(error, runtime.transport.health().ready)
+        if (status === null) throw error
+        return reply.code(status).send({ error: error instanceof Error ? error.message : 'Comando recusado.', refused: true, action: 'stop' })
+      }
+      if (runtime.view) await logDecision(app, runtime.view.rundown.id, null, 'PREVIEW_CLEARED', { bus: 'pvw' }, await usernameOf(request))
+      onChange()
+      return runtime.view ? snapshot(app, runtime) : { accepted: true, action: 'stop', bus: 'pvw', channelId: id, transport: runtime.transport.state() }
+    }
     // Editorial authority doesn't require a loaded PGM playlist. STOP must
     // still suspend that policy; no view is not permission to keep publishing.
     if(runtime && !runtime.view && body.data.action==='stop'){

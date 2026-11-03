@@ -1,7 +1,7 @@
 import { confirmAction } from '../domain/confirm.js'
 import { liveEngineStateOf } from '../domain/engine-indicator.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Channel, ManagedLiveSource, RedundantStreamPair, SrtTelemetry } from '@rplayout/protocol'
 import type { Live, Monitors } from '../types.js'
 import { api, type ClockStatusView } from '../api.js'
@@ -11,6 +11,7 @@ import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { OperationalMultiview } from '../components/broadcast/OperationalMultiview.js'
 import {SharedMultiview} from '../components/broadcast/SharedMultiview.js'
+import {CompositeMultiview} from '../components/broadcast/CompositeMultiview.js'
 import type { MultiviewSourceItem } from '../components/broadcast/OperationalMultiview.js'
 import { SrtManagerPanel, type SrtLinkItem } from '../components/broadcast/SrtManagerPanel.js'
 import { RedundancyFailoverPanel } from '../components/broadcast/RedundancyFailoverPanel.js'
@@ -20,7 +21,9 @@ import { PgmProbeBanner } from '../components/broadcast/PgmProbeBanner.js'
 import { LiveWatchdogStrip } from '../components/broadcast/LiveWatchdogStrip.js'
 import { StudioAutomationPanel } from '../components/broadcast/StudioAutomationPanel.js'
 import { HostResourcesPanel } from '../components/broadcast/HostResourcesPanel.js'
+import { MonitorEngineeringPanel } from '../components/broadcast/MonitorEngineeringPanel.js'
 import {liveSourceMonitor} from '../domain/live-source-monitor.js'
+import { useTopicRefresh, useVisiblePolling } from '../domain/live-topics.js'
 
 interface Props {
   channel: Channel
@@ -83,30 +86,45 @@ export function EngineeringDistributionView({
   const [serverStatus, setServerStatus] = useState<Awaited<ReturnType<typeof api.engineeringStatus>> | null>(null)
   const [clock, setClock] = useState<ClockStatusView | null>(null)
 
+  // Leituras do Monitoramento em três ritmos, todas paradas com a aba oculta:
+  // - entradas, SRT, processos e saídas: 5 s (e na hora, quando o engine ou
+  //   uma saída muda de estado -- tópico `engine`);
+  // - amostra do host: 10 s (é o intervalo de amostragem do servidor);
+  // - versão/uptime e relógio: 60 s (relógio também pelo tópico `clock`).
+  const readers = useRef({ fast: () => {}, host: () => {}, slow: () => {} })
   useEffect(() => {
     let active = true
-    const refresh = async () => {
-      try {
-        const [sources, telemetry, metrics, processSnapshot, outputSnapshot] = await Promise.all([api.liveSources(channel.id), api.srtTelemetry(), api.hostMetrics(), api.processes(), api.outputs(channel.id)])
-        if (!active) return
-        setLiveSources(sources)
-        setSrtTelemetry(telemetry)
-        setHostMetrics(metrics)
-        setProcesses(processSnapshot.processes)
-        setOutputs(outputSnapshot.outputs)
-        setMonitorLoadError(null)
-        setMonitorLoaded(true)
-        // Versão/uptime/relógio: leitura à parte, a falha não esconde o resto.
+    let fastBusy = false
+    readers.current = {
+      fast: () => {
+        if (fastBusy) return
+        fastBusy = true
+        void Promise.all([api.liveSources(channel.id), api.srtTelemetry(), api.processes(), api.outputs(channel.id)]).then(([sources, telemetry, processSnapshot, outputSnapshot]) => {
+          if (!active) return
+          setLiveSources(sources)
+          setSrtTelemetry(telemetry)
+          setProcesses(processSnapshot.processes)
+          setOutputs(outputSnapshot.outputs)
+          setMonitorLoadError(null)
+          setMonitorLoaded(true)
+        }).catch(error => { if (active) setMonitorLoadError(error instanceof Error ? error.message : 'Não foi possível ler as fontes de entrada.') })
+          .finally(() => { fastBusy = false })
+      },
+      host: () => { void api.hostMetrics().then(value => { if (active) setHostMetrics(value) }).catch(() => undefined) },
+      // Versão/uptime/relógio: leitura à parte, a falha não esconde o resto.
+      slow: () => {
         void api.engineeringStatus().then(value => { if (active) setServerStatus(value) }).catch(() => { if (active) setServerStatus(null) })
         void api.clock().then(value => { if (active) setClock(value) }).catch(() => { if (active) setClock(null) })
-      } catch (error) {
-        if (active) setMonitorLoadError(error instanceof Error ? error.message : 'Não foi possível ler as fontes de entrada.')
-      }
+      },
     }
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), 3000)
-    return () => { active = false; window.clearInterval(timer) }
+    readers.current.fast(); readers.current.host(); readers.current.slow()
+    return () => { active = false }
   }, [channel.id])
+  useVisiblePolling(() => readers.current.fast(), 5_000)
+  useVisiblePolling(() => readers.current.host(), 10_000)
+  useVisiblePolling(() => readers.current.slow(), 60_000)
+  useTopicRefresh('engine', channel.id, () => readers.current.fast(), { fallbackMs: null })
+  useTopicRefresh('clock', null, () => readers.current.slow(), { fallbackMs: null })
 
   const gpu = hostMetrics?.gpu ?? null
   const engineProcess = processes.find((process) => process.kind === 'ENGINE' && process.channelId === channel.id)
@@ -392,7 +410,7 @@ export function EngineeringDistributionView({
         </div>
 
         {/* 4. CONTEÚDO PRINCIPAL DINÂMICO CONFORME A SUB-SEÇÃO */}
-        <div className="lg:flex-1 lg:min-h-0 min-h-[80vh] p-3.5 lg:overflow-hidden flex flex-col gap-2.5">
+        <div className="lg:flex-1 lg:min-h-0 min-h-[80vh] p-3.5 lg:overflow-y-auto flex flex-col gap-2.5">
           {/* WATCHDOG DE SONDA PGM & SLATE DE EMERGÊNCIA (FASE C) */}
           <PgmProbeBanner
             channelId={channel.id}
@@ -405,17 +423,23 @@ export function EngineeringDistributionView({
 
           {/* SEÇÃO 1: VISÃO INTEGRADA MCR (DASHBOARD) */}
           {activeSection === 'DASHBOARD' && (
-            <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
+            <div className="flex-1 min-h-0 flex flex-col gap-2">
               {monitorLoadError && <div role="alert" className="shrink-0 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 font-label-mono text-[12px] text-on-air-crimson">Monitor sem dados: {monitorLoadError}</div>}
               {/* A visão integrada cabe integralmente no viewport operacional.
                   Detalhes extensos seguem nas abas SRT e Redundância. */}
               {monitorLoaded ? <OutputsSummary sample={hostMetrics} channelId={channel.id} profiles={outputs} /> : <div role="status" className="t-data text-outline animate-pulse motion-reduce:animate-none">Carregando saídas…</div>}
-              <div className="flex-1 min-h-0">
-                <OperationalMultiview
-                  sources={multiviewSources}
-                  loading={!monitorLoaded}
-                  initialLayout="COMPACT_LIST"
-                  onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
+              <details className="shrink-0 max-h-[40vh] overflow-auto"><summary className="cursor-pointer font-label-mono text-[12px] uppercase">Monitores do navegador: níveis, encoders, sessões de placa e atraso</summary><MonitorEngineeringPanel channelId={channel.id} /></details>
+              {/* O mosaico precisa de altura útil mesmo em 1366x768: abaixo disso a
+                  área do painel rola em vez de espremer a imagem. */}
+              <div className="flex-1 min-h-[380px]">
+                <CompositeMultiview channelId={channel.id} live={live} monitors={monitors}
+                  onWatchingBus={(bus,tier) => { void api.watching(channel.id,bus,tier).catch(() => undefined) }}
+                  individual={<OperationalMultiview
+                    sources={multiviewSources}
+                    loading={!monitorLoaded}
+                    initialLayout="COMPACT_LIST"
+                    onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
+                  />}
                 />
               </div>
 
@@ -425,12 +449,15 @@ export function EngineeringDistributionView({
 
           {/* SEÇÃO 2: MULTIVIEW COMPLETO (FOCO TOTAL) */}
           {activeSection === 'MULTIVIEW' && (
-            <div className="flex-1 min-h-0">
-              <SharedMultiview key={channel.id}
-                channelId={channel.id}
-                sources={multiviewSources}
+            <div className="flex-1 min-h-[320px] lg:min-h-0">
+              <CompositeMultiview key={channel.id} channelId={channel.id} live={live} monitors={monitors}
+                onWatchingBus={(bus,tier) => { void api.watching(channel.id,bus,tier).catch(() => undefined) }}
+                individual={<SharedMultiview key={channel.id}
+                  channelId={channel.id}
+                  sources={multiviewSources}
                   loading={!monitorLoaded}
-                onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
+                  onWatchingBus={bus => { void api.watching(channel.id,bus).catch(() => undefined) }}
+                />}
               />
             </div>
           )}

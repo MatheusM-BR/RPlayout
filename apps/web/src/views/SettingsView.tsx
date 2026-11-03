@@ -20,6 +20,7 @@ import { SaidasTransmissaoPanel } from '../components/SaidasTransmissaoPanel.js'
 import { EntradasAoVivoPanel } from '../components/EntradasAoVivoPanel.js'
 import type { Live } from '../types.js'
 import { engineIndicator } from '../domain/engine-indicator.js'
+import { useTopicRefresh } from '../domain/live-topics.js'
 
 interface Props {
   channel: Channel
@@ -66,22 +67,25 @@ export function SettingsView({
   const canRestoreProject = sessionRole === 'Supervisor' || sessionRole === 'Gestor' || sessionRole === 'Administrador'
   const [engineProcess, setEngineProcess] = useState<Awaited<ReturnType<typeof api.processes>>['processes'][number]>()
   const [processError, setProcessError] = useState(false)
+  const engineRead = useRef<() => void>(() => undefined)
   useEffect(() => {
     let active = true
     setEngineProcess(undefined); setProcessError(false)
     const refresh = async () => {
       try {
-        const result = await api.processes()
+        const result = await api.processes(undefined, false)
         if (active) {
           setEngineProcess(result.processes.find(process => process.kind === 'ENGINE' && process.channelId === channel.id))
           setProcessError(false)
         }
       } catch { if (active) { setEngineProcess(undefined); setProcessError(true) } }
     }
+    engineRead.current = () => void refresh()
     void refresh()
-    const timer = setInterval(() => void refresh(), 3000)
-    return () => { active = false; clearInterval(timer) }
+    return () => { active = false; engineRead.current = () => undefined }
   }, [channel.id])
+  // Estado do engine: relido quando muda (tópico `engine`), sem os contadores do SO.
+  useTopicRefresh('engine', channel.id, () => engineRead.current(), { fallbackMs: 60_000, degradedMs: 3000 })
   const engine = engineIndicator(engineProcess, processError || Boolean(live?.alerts.some(alert => alert.kind === 'ENGINE')))
 
   // Estado de edição de canal

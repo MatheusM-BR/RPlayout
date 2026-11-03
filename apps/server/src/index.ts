@@ -1,13 +1,14 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { serverShutdownEvent, serverStartedEvent } from './domain/server-lifecycle.js'
 import { softwareVersion } from './domain/software-version.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import cors from '@fastify/cors'
 import fastifyStatic from '@fastify/static'
 import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
-import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation } from './app.js'
+import { probeAudioDbfs } from './domain/intentional-silence.js'
+import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation, serviceMonitors } from './app.js'
 import {EngineTransport} from './domain/engine.js'
 import { sealAudit, verifyAudit } from './domain/audit-seal.js'
 import { BACKUP_EVERY_HOURS, BACKUP_MIRROR_DIR, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS, HTTP_AUDIT_RETENTION_DAYS } from './config.js'
@@ -44,6 +45,11 @@ import {parseAllowedOrigins} from './domain/http-origin-policy.js'
 import {parseAllowedHosts,createHttpHostPolicy,registerHttpHostPolicy} from './domain/http-host-policy.js'
 import {registerLauncherDiscovery} from './domain/launcher-discovery.js'
 import {internalFailureDiagnostic} from './domain/http-privacy.js'
+import {LiveTopics} from './domain/live-topics.js'
+import {registerRequestLog} from './domain/request-log.js'
+import {channelTopics,probeSummary,serverTopics} from './domain/live-topic-sources.js'
+import {Interruptions} from './domain/interruptions.js'
+import {LiveSocketPacing} from './domain/live-socket-pacing.js'
 
 /** Cadência do estado ao vivo. Vinte por segundo já engana o olho no medidor. */
 const LIVE_HZ = 20
@@ -83,7 +89,8 @@ async function main(): Promise<void> {
       // Ignora erro se não conseguir criar pasta de mídia padrão
     }
   }
-  const server = Fastify({ logger: privateHttpLogger(process.env.LOG_LEVEL ?? 'info') })
+  const server = Fastify({ logger: privateHttpLogger(process.env.LOG_LEVEL ?? 'info'), disableRequestLogging: true })
+  registerRequestLog(server)
   registerHttpPrivacy(server,{notFound:false})
   registerHttpHostPolicy(server,hostPolicy)
 
@@ -154,8 +161,12 @@ async function main(): Promise<void> {
     socketAuth.set(socket, decision)
     return decision
   }
+  // Aba oculta recebe o estado ao vivo a 1 Hz em vez de 20 Hz: ninguém vê
+  // tally nem medidor numa aba escondida, e a grade/tópicos seguem na hora.
+  const pacing = new LiveSocketPacing()
   const broadcast = (payload: unknown): void => {
     const data = JSON.stringify(sourceWire().publicValue(payload))
+    const live = Boolean(payload && typeof payload === 'object' && (payload as { type?: unknown }).type === 'live'), now = Date.now()
     for (const [socket, request] of sockets) {
       try {
         const auth = authFor(socket, request)
@@ -164,6 +175,7 @@ async function main(): Promise<void> {
         }
         const channelId = payload && typeof payload === 'object' && 'channelId' in payload ? (payload as { channelId?: unknown }).channelId : null
         if (typeof channelId === 'string' && auth.channelIds !== null && !auth.channelIds.includes(channelId)) continue
+        if (live && !pacing.due(socket, typeof channelId === 'string' ? channelId : '', now)) continue
         socket.send(data)
       } catch {
         try{socket.close(storageConnected()?1011:4503,'Controle indisponível; confira o servidor.')}catch{}
@@ -183,6 +195,25 @@ async function main(): Promise<void> {
 
   registerRoutes(app, server, pushViews)
 
+  // Revisões de tópicos (ver live-topics.ts): uma avaliação por segundo, só
+  // com navegador conectado, no lugar de N abas consultando cada rota.
+  const liveTopics = new LiveTopics()
+  const topicInterruptions = new Interruptions(app.sqlite)
+  let globalTopics: ReturnType<typeof serverTopics> | null = null
+  const runtimeTopics = new WeakMap<object, ReturnType<typeof channelTopics>>()
+  const sampleTopics = (): void => {
+    if (sockets.size === 0 || !storageConnected()) return
+    const global = liveTopics.sample(null, globalTopics ??= serverTopics(app, app.sqlite))
+    if (global) broadcast(global)
+    for (const runtime of app.runtimes.values()) {
+      let topics = runtimeTopics.get(runtime)
+      if (!topics) { topics = channelTopics(app, runtime, topicInterruptions, app.sqlite); runtimeTopics.set(runtime, topics) }
+      const message = liveTopics.sample(runtime.channel.id, topics, () => probeSummary(app, runtime.channel.id))
+      if (message) broadcast(message)
+    }
+    liveTopics.retain(app.runtimes.keys())
+  }
+
   server.get('/ws', { websocket: true }, (socket, request) => {
     sockets.set(socket, { headers: request.headers, ip: request.ip })
     for (const runtime of app.runtimes.values()) {
@@ -196,7 +227,15 @@ async function main(): Promise<void> {
       // corrida entre o snapshot HTTP inicial e o primeiro tick do WebSocket.
       socket.send(JSON.stringify(sourceWire().publicValue({ type: 'live', channelId: runtime.channel.id, ...runtime.live() })))
     }
-    socket.on('close', () => sockets.delete(socket))
+    for (const message of [liveTopics.message(null), ...[...app.runtimes.values()].filter(runtime => access.channelAllowed(request, runtime.channel.id)).map(runtime => liveTopics.message(runtime.channel.id))])
+      if (message) socket.send(JSON.stringify(message))
+    // Única mensagem que a interface manda: "esta aba ficou oculta/visível".
+    socket.on('message', (raw: unknown) => {
+      const text = typeof raw === 'string' ? raw : Buffer.isBuffer(raw) ? raw.toString('utf8') : ''
+      if (text.length > 200) return
+      try { const message = JSON.parse(text) as { type?: unknown; hidden?: unknown }; if (message.type === 'visibility') pacing.setHidden(socket, message.hidden === true) } catch { /* ignora */ }
+    })
+    socket.on('close', () => { sockets.delete(socket); pacing.forget(socket) })
   })
 
   // O servidor de mídia sobe antes dos canais: é nele que o engine publica.
@@ -217,7 +256,23 @@ async function main(): Promise<void> {
 
   // Medição nova precisa chegar à grade: o nivelamento automático sai da
   // loudness do arquivo, e ela acabou de mudar.
+  // A varredura automática roda a cada 60 s. Sem nada novo no acervo, ela
+  // regravava a grade em todos os canais e mandava `library` para todas as
+  // abas -- que reliam acervo, scanner e categorias a cada minuto. Só avisa
+  // quando o conteúdo do acervo mudou (impressão de media_assets).
+  let libraryFingerprint: string | null = null
+  const libraryChanged = (): boolean => {
+    try {
+      const hash = createHash('sha256')
+      for (const row of app.sqlite.prepare('SELECT * FROM media_assets ORDER BY id').raw().all() as unknown[][]) hash.update(JSON.stringify(row))
+      const next = hash.digest('hex'), changed = next !== libraryFingerprint
+      libraryFingerprint = next
+      return changed
+    } catch { return true }
+  }
+  try { libraryChanged() } catch { /* primeira impressão: na próxima varredura */ }
   app.ingest.onFinished = () => {
+    if (!libraryChanged()) return
     void background.run('ingest-refresh',async()=>{
       await Promise.all([...app.runtimes.values()].map(runtime=>runtime.refresh()))
       if(storageConnected()){pushViews();broadcast({type:'library'})}
@@ -333,6 +388,7 @@ async function main(): Promise<void> {
       if((!app.mediamtx||await app.mediamtx.waitUntilReady(500))&&storageConnected())app.relays.tick()
     }finally{distributionChecking=false}
   }),1000)
+  const topicsTimer = setInterval(() => void background.run('live-topics', sampleTopics), 1000)
   const timer = setInterval(() => void background.run('live-cycle',() => {
     // No new scheduled native effects from stale storage authority. Preserve
     // existing PGM; never replay an uncertain write to reopen this connection.
@@ -348,6 +404,11 @@ async function main(): Promise<void> {
         for (const channel of await listChannels(app.db)) await warmChannelCache(app,channel.id)
       }).finally(() => {cacheWarming=false})
     }
+    // Monitores: desliga o que ninguém olha há 20 s (devolvendo placa e CPU)
+    // e revoga a placa dos monitores quando o programa de um canal a pede.
+    // Fora de qualquer `if` de audiência: sem navegador conectado é que os
+    // níveis precisam ser desligados.
+    try{serviceMonitors(app)}catch(error){server.log.warn({err:error},'Serviço dos monitores não concluído; nova tentativa no próximo ciclo.')}
     for (const runtime of app.runtimes.values()) {
       app.continuityCache.replaceProtection(`runtime:${runtime.channel.id}`,runtime.cachePins())
       try{runtime.reconcileSignalIncidents(false,app.paths.find(path=>path.channelId===runtime.channel.id))}
@@ -400,10 +461,12 @@ async function main(): Promise<void> {
       // e o quadro reduzido após o compositor PGM. O navegador não participa
       // desta decisão, então não cria falso black/freeze por WebRTC atrasado.
       if ((meter !== null || videoProbe !== null) && runtime.transport.state().playing) {
+        const onAirAsset = runtime.executionView?.items.find((entry) => entry.item.id === runtime.transport.state().onAir?.itemId)?.asset
         pgmProbeFor(app, runtime.channel.id).feedMetrics({
           // dBFS is not LUFS. Peak gives a conservative silence gate: do not
           // declare silence while any measured channel contains audible peaks.
-          audioDbfs: meter ? Math.max(...meter.peakDbfs) : undefined,
+          // Arquivo marcado no QC como "silêncio intencional": sem decisão.
+          audioDbfs: probeAudioDbfs(app.db, meter?.peakDbfs, onAirAsset),
           isBlack: videoProbe?.black,
           isFreeze: runtime.executionView?.items.find((entry) => entry.item.id === runtime.transport.state().onAir?.itemId)?.asset?.kind === 'STILL' ? false : videoProbe?.freeze,
           freezeDurationMs: runtime.executionView?.items.find((entry) => entry.item.id === runtime.transport.state().onAir?.itemId)?.asset?.kind === 'STILL' ? 0 : videoProbe?.freezeDurationMs,
@@ -490,6 +553,7 @@ async function main(): Promise<void> {
     if(haTimer)clearInterval(haTimer)
     if(haMediaTimer)clearInterval(haMediaTimer)
     clearInterval(timer)
+    clearInterval(topicsTimer)
     clearInterval(distributionTimer)
     if (backupTimer) clearInterval(backupTimer)
     clearInterval(sealTimer);clearTimeout(sealStartTimer)

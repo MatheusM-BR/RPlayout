@@ -91,6 +91,8 @@ export interface Live {
   alerts: { kind: 'OUTPUT' | 'ENGINE'; message: string }[]
   now: Frames
   meters: { program: MeterReading; preview: MeterReading }
+  /** Multiview composto: composição em uso e estado das células (engine). */
+  multiview?: { composition: import('@rplayout/protocol').MultiviewComposition | null; state: import('@rplayout/protocol').MultiviewEngineState | null } | null
 }
 
 /** Perfil de uma saída do canal. */
@@ -199,6 +201,8 @@ export interface Monitors {
   program: string
   preview: string | null
   inspection?: string | null
+  /** Caminho de cada nível (REF/PADRÃO/LEVE) dos monitores de PGM e PVW. */
+  tiers?: { program: Record<'ref' | 'std' | 'lite', string>; preview: Record<'ref' | 'std' | 'lite', string> }
 }
 
 export interface Snapshot {

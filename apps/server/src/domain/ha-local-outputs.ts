@@ -2,7 +2,7 @@ import {fileURLToPath} from 'node:url'
 import {isAbsolute} from 'node:path'
 import {z} from 'zod'
 import type {HaBindings} from './ha-bindings.js'
-import {encodeProfile,validateOutputProfile,type OutputProfileRow} from './outputs.js'
+import {encodeProfile,monitorRuntimeProfile,validateOutputProfile,type OutputProfileRow} from './outputs.js'
 
 const nullableInteger=z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().default(null)
 const profile=z.object({id:z.string().min(1),channelId:z.string().min(1),name:z.string(),
@@ -46,8 +46,9 @@ export function prepareHaLocalOutputs(channel:{id:string;width:number;height:num
       const url=new URL(target)
       if(!protocols.includes(url.protocol)||((kind==='SRT'||kind==='RTMP')&&!url.hostname))throw new Error('Destino local de outro protocolo.')
     }
-    const local={...row!,kind,target} as OutputProfileRow
-    validateOutputProfile(local,channel)
+    validateOutputProfile({...row!,kind,target} as OutputProfileRow,channel)
+    // Perfil leve legado de monitor (o que fica no banco) sai automático.
+    const local=monitorRuntimeProfile({...row!,kind,target} as OutputProfileRow)
     const encoded=encodeProfile({id,kind:kind.toLowerCase() as 'rtmp'|'srt'|'file'|'ndi'|'omt',target,
       ...(local.width!==null?{width:local.width}:{}),...(local.height!==null?{height:local.height}:{}),
       ...(local.rateNum!==null?{rateNum:local.rateNum}:{}),...(local.rateDen!==null?{rateDen:local.rateDen}:{}),

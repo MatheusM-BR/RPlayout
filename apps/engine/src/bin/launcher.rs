@@ -380,6 +380,7 @@ fn preparar_servidor(raiz: &Path, restoration: Option<&RestorationOptions>,endpo
         ("RPLAYOUT_PROBE", bin.join(executavel("rplayout-probe"))),
         ("RPLAYOUT_PROXY", bin.join(executavel("rplayout-proxy"))),
         ("RPLAYOUT_DEVICES", bin.join(executavel("rplayout-devices"))),
+        ("RPLAYOUT_ENCODERS", bin.join(executavel("rplayout-encoders"))),
         ("RPLAYOUT_RELAY", bin.join(executavel("rplayout-relay"))),
         ("RPLAYOUT_MEDIAMTX", raiz.join("mediamtx").join(executavel("mediamtx"))),
     ];

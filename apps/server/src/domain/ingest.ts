@@ -680,14 +680,14 @@ export class Ingest {
    * `<prefixo>.jpg` (RGB BT.709 limitado→full, para exibir) e `<prefixo>.ycc`
    * (Y'CbCr 4:4:4 cru, para os scopes). Devolve o PTS do quadro ou null.
    */
-  qcFrame(path:string,positionNs:number,prefixo:string,largura:number,scopeWidth:number):Promise<{ptsNs:number|null}|null>{
+  qcFrame(path:string,positionNs:number,prefixo:string,largura:number,scopeWidth:number):Promise<{ptsNs:number|null;scopeStats?:Record<string,number>|null}|null>{
     if(this.closed||!this.available)return Promise.resolve(null)
     return new Promise(done=>{
       try{mkdirSync(dirname(prefixo),{recursive:true})}catch{/* a sonda falha abaixo */}
       const child=spawn(this.probeBinary,[path,'--thumbnail',prefixo,'--qc-at-ns',String(Math.max(0,Math.round(positionNs))),'--largura',String(largura),'--scope-width',String(scopeWidth),'--no-loudness','--parent-pipe'],{windowsHide:true,env:mediaProcessEnvironment(),stdio:['pipe','pipe','pipe']})
       this.track(child)
       let settled=false,out=''
-      const finish=(value:{ptsNs:number|null}|null)=>{if(settled)return;settled=true;clearTimeout(timeout);done(value)}
+      const finish=(value:{ptsNs:number|null;scopeStats?:Record<string,number>|null}|null)=>{if(settled)return;settled=true;clearTimeout(timeout);done(value)}
       const timeout=setTimeout(()=>{finish(null);child.kill()},30_000)
       child.stderr?.resume()
       try{if(child.pid)setPriority(child.pid,constants.priority.PRIORITY_LOW)}catch{/* sem prioridade baixa ainda funciona */}
@@ -695,8 +695,8 @@ export class Ingest {
       child.on('error',()=>finish(null))
       child.on('close',()=>{
         try{
-          const result=JSON.parse(out.trim().split('\n').pop()??'') as {ok?:boolean;frameRecipe?:string;framePtsNs?:number|null}
-          finish(result.ok&&result.frameRecipe==='qc-frame-v4'?{ptsNs:typeof result.framePtsNs==='number'?result.framePtsNs:null}:null)
+          const result=JSON.parse(out.trim().split('\n').pop()??'') as {ok?:boolean;frameRecipe?:string;framePtsNs?:number|null;scopeStats?:unknown}
+          finish(result.ok&&result.frameRecipe==='qc-frame-v4'?{ptsNs:typeof result.framePtsNs==='number'?result.framePtsNs:null,scopeStats:qcScopeStats(result.scopeStats)}:null)
         }catch{finish(null)}
       })
     })
@@ -822,4 +822,18 @@ function hashFile(path: string,signal?:AbortSignal): Promise<string> {
 export function titleFrom(path: string): string {
   const name = basename(path, extname(path))
   return name.replace(/_+/g, ' ').replace(/\.(?!\d)|(?<!\d)\./g, ' ').replace(/\s+/g, ' ').trim() || name
+}
+
+/**
+ * Estatísticas que a sonda mediu no `.ycc` com o crate rplayout-scopes. Só
+ * números finitos passam: vão para um cabeçalho HTTP e a interface as compara
+ * com o resultado do WASM dela (paridade em produção).
+ */
+export function qcScopeStats(value:unknown):Record<string,number>|null{
+  if(!value||typeof value!=='object')return null
+  const out:Record<string,number>={}
+  for(const [key,raw] of Object.entries(value as Record<string,unknown>)){
+    if(/^[a-zA-Z0-9]{1,24}$/.test(key)&&typeof raw==='number'&&Number.isFinite(raw))out[key]=raw
+  }
+  return Object.keys(out).length?out:null
 }

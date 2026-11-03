@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 export const DB_FILE = process.env.RPLAYOUT_DB ?? resolve(process.cwd(), 'rplayout.db')
 export const PORT = Number(process.env.PORT ?? 4000)
@@ -114,6 +114,19 @@ export const HTTP_AUDIT_RETENTION_DAYS = Number(process.env.RPLAYOUT_HTTP_AUDIT_
 
 /** Binário de descoberta de fontes ao vivo. Vazio deixa só os convidados. */
 export const DEVICES_BINARY = process.env.RPLAYOUT_DEVICES ?? findBinary('rplayout-devices')
+
+/**
+ * Sonda dos codificadores de H.264 e das sessões de placa. Roda em segundo
+ * plano na partida (ou nem roda, com cache válido); vazio = sem placa
+ * (monitores em x264).
+ */
+export const ENCODERS_BINARY = process.env.RPLAYOUT_ENCODERS ?? findBinary('rplayout-encoders')
+
+/**
+ * Cache da sonda entre partidas, invalidado quando muda o binário da sonda,
+ * o GStreamer ou o driver de vídeo (`encoderProbeFingerprint`).
+ */
+export const ENCODERS_CACHE_FILE = process.env.RPLAYOUT_ENCODERS_CACHE ?? resolve(dirname(DB_FILE), 'rplayout-encoders-cache.json')
 
 /** Papel padrão desta estação; pode ser substituído por sessão autenticada. */
 // A estação local inicia como administrador para que o primeiro operador

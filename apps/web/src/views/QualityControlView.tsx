@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
+import { useState, useMemo, useRef, useEffect, useCallback, useReducer } from 'react'
 import { confirmAction } from '../domain/confirm.js'
 import { durationIn, qcApproved, assessQc, DEFAULT_QC_PROFILE, type Channel, type ManagedLiveSource, type Rate } from '@rplayout/protocol'
 import type { LibraryFolder, LibraryAsset, ScanStatus, Live } from '../types.js'
@@ -16,14 +16,13 @@ import { QcSafeAreaOverlay } from '../components/broadcast/QcSafeAreaOverlay.js'
 import {qcOriginalUrl,qcExactFrameUrl,qcQualitySelected,qcInspectionUsesFrames,qcMonitorLabels,qcInspectionFrameAtTime,qcInspectionVideoHasPicture,qcQualityFrameFailed} from '../domain/media-preview.js'
 import {useQcLiveInspection} from '../domain/use-qc-live-inspection.js'
 import {qcLiveTuningFeedback} from '../domain/qc-live-preview.js'
-import {qcFrameProgress,qcLiveFrameRecent,qcScopePixels,qcStableMeasurements,type QcFrameProgress} from '../domain/qc-scope-sample.js'
-import {QcRenderCost} from '../domain/qc-render-cost.js'
-import {analyzeScopeSample,parseYcc,sampleFromRgba,type QcScopeSample} from '../domain/qc-colorimetry.js'
+import {qcFrameProgress,qcLiveFrameRecent,qcScopePixels,type QcFrameProgress} from '../domain/qc-scope-sample.js'
+import {checkYccHeader} from '../scopes/wasm.js'
 import {kWeightingCoefficients,loudnessFromPower,meanSquare,ShortTermLoudness,loudnessTone,truePeakTone,formatFileIntegrated,formatPeak,TONE_CLASS} from '../domain/qc-loudness.js'
 import {qcFrameCount,qcParseTimecode,qcRateLabel,qcStepFrame,qcTimecode} from '../domain/qc-timecode.js'
-import {QcScopePanel,type QcScopeMode} from '../components/broadcast/QcScopePanel.js'
+import {ScopeDeck} from '../components/scopes/ScopeDeck.js'
+import {RoiSelector} from '../components/scopes/RoiSelector.js'
 import {QcAudioStrip,type QcListeningMeter} from '../components/broadcast/QcAudioStrip.js'
-import type {LevelUnit} from '../domain/qc-scope-draw.js'
 import {retryMediaJobs} from '../domain/media-job-retry.js'
 import {BoundedLatestRead} from '../domain/bounded-latest-read.js'
 import {QcMediaRetryControl} from '../components/broadcast/QcMediaRetryControl.js'
@@ -32,6 +31,7 @@ import {qcReviewMatches} from '../domain/qc-review.js'
 import {useQcLiveInputs} from '../domain/use-qc-live-inputs.js'
 import {QcLiveSourceRow} from '../components/broadcast/QcLiveSourceRow.js'
 import type {QcReview} from '@rplayout/protocol'
+import { documentHidden } from '../domain/live-topics.js'
 
 interface Props {
   folders: LibraryFolder[]
@@ -57,8 +57,8 @@ interface Props {
   onPreviewLiveSource?: (sourceRef: string, title: string) => void
 }
 
-/** Amostra para os scopes lida do navegador (vídeo/WHEP/JPEG): 640×360 ≥ 480 pontos por linha. */
-const BROWSER_SAMPLE = {width: 640, height: 360} as const
+/** Marca de "há quadro decodificado" (os pixels são lidos pelo ScopeDeck, na GPU). */
+const DECODED_FRAME = new Uint8ClampedArray(1)
 const IDLE_METER: QcListeningMeter = {active: false, momentary: null, shortTerm: null, peakL: -Infinity, peakR: -Infinity, phase: null, muted: null}
 const validRate = (rate: Rate | null | undefined): rate is Rate => Boolean(rate && rate.num > 0 && rate.den > 0)
 
@@ -126,11 +126,17 @@ function QualityControlSession({
   const [safeAreaActive, setSafeAreaActive] = useState(false)
   const [centerCut, setCenterCut] = useState(false)
   const [listOpen, setListOpen] = useState(true)
-  const [scopeUnit, setScopeUnit] = useState<LevelUnit>('%')
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'OK' | 'PENDING' | 'ALERT' | 'IGNORED'>('ALL')
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'VIDEO' | 'AUDIO'>('ALL')
-  const [scopeMode, setScopeMode] = useState<QcScopeMode>('COMBO')
+  // Lupa dos scopes e falsa cor sobre a imagem.
+  const [scopeRoi, setScopeRoi] = useState<[number, number, number, number] | null>(null)
+  const [roiSelecting, setRoiSelecting] = useState(false)
+  const [falseColorCanvas, setFalseColorCanvas] = useState<HTMLCanvasElement | null>(null)
+  const [falseColorOn, setFalseColorOn] = useState(false)
+  // Novo <video>/<img> montado: re-renderiza para o painel de scopes pegar o elemento.
+  const [, bumpScopeMedia] = useReducer((n: number) => n + 1, 0)
+  const onFalseColorChange = useCallback((mode: string | null) => setFalseColorOn(Boolean(mode)), [])
   const liveCatalog=useQcLiveInputs(channel.id)
   const liveInputs=liveCatalog.sources,liveTelemetry=liveCatalog.telemetry
   const selectedLiveSource = liveInputs.find((source) => source.id === selectedLiveSourceId) ?? null
@@ -234,8 +240,10 @@ function QualityControlSession({
   // Amostras dos scopes. `browserSample`: o que o navegador decodificou (vídeo,
   // WHEP ou JPEG) -- aproximado, recortado em 0..100%. `exact`: Y'CbCr do
   // original no quadro exato (pausado em "Ver em qualidade").
-  const [browserSample, setBrowserSample] = useState<QcScopeSample | null>(null)
-  const [exact, setExact] = useState<{key: string; frame: number; sample: QcScopeSample} | null>(null)
+  // O painel de scopes (ScopeDeck) amostra o quadro sozinho, na GPU quando
+  // houver; aqui só se acompanha se há quadro decodificado (para o estado).
+  const [browserSample, setBrowserSample] = useState(false)
+  const [exact, setExact] = useState<{key: string; frame: number; ycc: Uint8Array; rustStats: Record<string, number> | null} | null>(null)
   const [exactState, setExactState] = useState<{key: string; status: 'loading' | 'error'; message?: string} | null>(null)
   const [audioMeter, setAudioMeter] = useState<QcListeningMeter>(IDLE_METER)
   const scopeSampleReadyRef = useRef(false)
@@ -246,18 +254,10 @@ function QualityControlSession({
   // A entrada pode entregar 60 callbacks/s; amostrar a 10 Hz basta para QC e
   // não disputa a thread da UI com o decoder.
   const lastScopeRenderAtRef = useRef(0)
-  const scopeCostRef=useRef(new QcRenderCost())
-  const lastScopeCostReportRef=useRef(0)
-  const [scopeCost,setScopeCost]=useState<ReturnType<QcRenderCost['snapshot']>>(null)
   const clearBrowserSample = useCallback(() => {
     lastScopePixelsRef.current = null; lastBrowserSampleKeyRef.current = null; scopeSampleReadyRef.current = false
-    setScopeSampleReady(false); setBrowserSample(null)
+    setScopeSampleReady(false); setBrowserSample(false)
   }, [])
-  useEffect(()=>{
-    scopeCostRef.current.reset()
-    lastScopeCostReportRef.current=0
-    setScopeCost(null)
-  },[channel.id,selectedAsset?.id,selectedAsset?.contentHash,selectedLiveSource?.id,qualityActive,framesOnly])
 
   // A different JPEG is a different sample. Do not retain the previous frame's
   // measurements while loading it, or present a failed quality request as QC.
@@ -273,14 +273,6 @@ function QualityControlSession({
     setAudioMeter(IDLE_METER)
   },[selectedLiveSourceId,liveSourceRef,livePreviewReady,liveQualityActive,liveInspection.ready,sharedPreviewVideo,clearBrowserSample])
 
-  // Offscreen sampling canvas
-  const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null)
-  if (!sampleCanvasRef.current && typeof document !== 'undefined') {
-    const c = document.createElement('canvas')
-    c.width = BROWSER_SAMPLE.width
-    c.height = BROWSER_SAMPLE.height
-    sampleCanvasRef.current = c
-  }
 
   // Web Audio API analyzer
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -353,9 +345,12 @@ function QualityControlSession({
       } catch (error) { if (active&&reading.isCurrent()) setProxyMessage(reading.timedOut()?'Consulta da fila demorou demais. O estado dos trabalhos não foi alterado.':error instanceof Error ? error.message : 'Não foi possível consultar a fila de mídia.') }
       finally{reading.finish()}
     }
+    // Fila de mídia: 3 s enquanto o proxy é preparado; pronto, 30 s. Oculta, nada.
+    let timer = 0
+    const tick = () => { if (!documentHidden()) void load(); timer = window.setTimeout(tick, ready ? 30_000 : 3000) }
     void load()
-    const timer = setInterval(() => void load(), 3000)
-    return () => { active = false;proxyGeneration.current++; workflowReads.current.cancel(); clearInterval(timer) }
+    timer = window.setTimeout(tick, 3000)
+    return () => { active = false;proxyGeneration.current++; workflowReads.current.cancel(); window.clearTimeout(timer) }
   }, [selectedAsset?.id, selectedAsset?.contentHash, selectedLiveSource?.id])
 
   // Análise do áudio do proxy/monitor, antes do volume de escuta.
@@ -517,34 +512,22 @@ function QualityControlSession({
     const sampleKey = !sourceEl ? null : sourceEl instanceof HTMLImageElement ? `img:${sourceEl.currentSrc}` : selectedLiveSource ? null : `video:${sourceEl.currentSrc}:${sourceEl.currentTime}`
     if (sampleKey && sampleKey === lastBrowserSampleKeyRef.current && !force) return
     let pixels: Uint8ClampedArray | null = null
-    const sCtx = sampleCanvasRef.current?.getContext('2d', { willReadFrequently: true })
-    if (sCtx && sourceEl && liveFrameValid) {
-      try {
-        // Não aceite um canvas transparente/sem decoder como amostra. Em WHEP
-        // `loadedmetadata` pode anteceder o primeiro frame real.
-        if (sourceEl instanceof HTMLVideoElement && (sourceEl.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || sourceEl.videoWidth < 1 || sourceEl.videoHeight < 1)) throw new Error('sem quadro decodificado')
-        if (sourceEl instanceof HTMLImageElement && (!sourceEl.complete || sourceEl.naturalWidth < 1)) throw new Error('imagem ainda não decodificada')
-        sCtx.drawImage(sourceEl, 0, 0, BROWSER_SAMPLE.width, BROWSER_SAMPLE.height)
-        pixels = sCtx.getImageData(0, 0, BROWSER_SAMPLE.width, BROWSER_SAMPLE.height).data
-        lastScopePixelsRef.current = pixels
-      } catch {
-        // Não apaga a última amostra durante uma lacuna do decoder.
-      }
+    if (sourceEl && liveFrameValid) {
+      // Só confere que há quadro decodificado: quem lê pixels é o ScopeDeck
+      // (na GPU, sem ida e volta pela CPU). Não aceite WHEP antes do 1º quadro.
+      const decoded = sourceEl instanceof HTMLVideoElement
+        ? sourceEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && sourceEl.videoWidth > 0 && sourceEl.videoHeight > 0
+        : sourceEl.complete && sourceEl.naturalWidth > 0
+      if (decoded) { pixels = DECODED_FRAME; lastScopePixelsRef.current = pixels }
     }
     // Sem quadro novo, só o ao vivo reaproveita o último RGBA real (jitter do WHEP).
     const samplePixels = qcScopePixels(Boolean(selectedLiveSource),liveFrameValid && !qualityFrameUnavailable,pixels,lastScopePixelsRef.current)
     const hasPixels = samplePixels !== null
     if (scopeSampleReadyRef.current !== hasPixels) { scopeSampleReadyRef.current = hasPixels; setScopeSampleReady(hasPixels) }
-    if (!samplePixels) { setBrowserSample(null); lastBrowserSampleKeyRef.current = null }
+    if (!samplePixels) { setBrowserSample(false); lastBrowserSampleKeyRef.current = null }
     else if (pixels || selectedLiveSource) {
       lastBrowserSampleKeyRef.current = pixels ? sampleKey : null
-      setBrowserSample(sampleFromRgba(samplePixels, BROWSER_SAMPLE.width, BROWSER_SAMPLE.height))
-    }
-    scopeCostRef.current.add(performance.now()-now)
-    if(now-lastScopeCostReportRef.current>=1000){
-      lastScopeCostReportRef.current=now
-      const next=scopeCostRef.current.snapshot()
-      if(next)setScopeCost(previous=>qcStableMeasurements(previous,next))
+      setBrowserSample(true)
     }
   }, [framesOnly, qualityFrameUnavailable, inspectionFrameUrl, sharedPreviewVideo, playbackUrl, selectedLiveSource, selectedAsset?.probeError, livePreviewReady, exactWanted, exactFailed, fileFps])
 
@@ -569,15 +552,18 @@ function QualityControlSession({
       try {
         const response = await fetch(qcExactFrameUrl(asset, frame, 'ycc'), {signal: controller.signal})
         // Servidor ocupado (limite de custo): tenta de novo quando ele liberar.
-        if (response.status === 503 && attempt < 8) { retry = window.setTimeout(() => void load(attempt + 1), 700); return }
+        if (response.status === 503 && attempt < 8) { retry = window.setTimeout(() => void load(attempt + 1), Math.min(5000, 700 * 2 ** attempt)); return }
         if (!response.ok) {
           let message = `HTTP ${response.status}`
           try { message = ((await response.json()) as {error?: string}).error ?? message } catch { /* corpo não-JSON */ }
           throw new Error(message)
         }
-        const sample = parseYcc(await response.arrayBuffer())
+        const buffer = await response.arrayBuffer()
+        checkYccHeader(buffer) // valida o cabeçalho e o tamanho antes de entregar ao WASM
+        let rustStats: Record<string, number> | null = null
+        try { rustStats = JSON.parse(response.headers.get('x-rplayout-scope-stats') ?? 'null') as Record<string, number> | null } catch { rustStats = null }
         if (controller.signal.aborted) return
-        setExact({key, frame, sample}); setExactState(null)
+        setExact({key, frame, ycc: new Uint8Array(buffer), rustStats}); setExactState(null)
       } catch (error) {
         if (controller.signal.aborted) return
         setExactState({key, status: 'error', message: error instanceof Error ? error.message : 'Amostra exata indisponível.'})
@@ -588,20 +574,21 @@ function QualityControlSession({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exactWanted, exactKey])
 
-  const exactCurrent = exactWanted && exact?.key === exactKey ? exact.sample : null
+  const exactCurrent = exactWanted && exact?.key === exactKey ? exact : null
   // Enquanto o próximo quadro exato chega, mantém o anterior -- o cabeçalho diz qual é.
-  const exactShown = exactWanted ? (exactCurrent ?? (!exactFailed && exact?.key.startsWith(`${selectedAsset?.id}:${selectedAsset?.contentHash}:`) ? exact.sample : null)) : null
-  const scopeSample: QcScopeSample | null = exactShown ?? (exactWanted && !exactFailed ? null : browserSample)
-  const scopeStats = useMemo(() => scopeSample ? analyzeScopeSample(scopeSample) : null, [scopeSample])
-  const scopeStatus = (() => {
+  const exactShown = exactWanted ? (exactCurrent ?? (!exactFailed && exact?.key.startsWith(`${selectedAsset?.id}:${selectedAsset?.contentHash}:`) ? exact : null)) : null
+  const scopeExact = useMemo(() => exactShown ? {ycc: exactShown.ycc, rustStats: exactShown.rustStats, label: `Y'CbCr do original · ${qcTimecode(exactShown.frame, fileRate)} · 4:4:4`} : null, [exactShown, fileRate])
+  const scopeNote = (() => {
     if (exactWanted) {
-      if (exactCurrent) return {text: `Y'CbCr DO ORIGINAL · EXATO · ${qcTimecode(exact!.frame, fileRate)} · 4:4:4 BT.709`, tone: 'exact' as const}
-      if (exactFailed) return {text: `Amostra exata indisponível (${exactState?.message}) · usando RGB do navegador (aprox.)`, tone: 'approx' as const}
-      return {text: exact && exactShown ? `Mostrando ${qcTimecode(exact.frame, fileRate)} · carregando ${qcTimecode(settledFrame, fileRate)}…` : `Carregando Y'CbCr de ${qcTimecode(settledFrame, fileRate)}…`, tone: 'approx' as const}
+      if (exactCurrent) return null
+      if (exactFailed) return `Amostra exata indisponível (${exactState?.message}) · usando o quadro do navegador`
+      return exact && exactShown ? `Mostrando ${qcTimecode(exact.frame, fileRate)} · carregando ${qcTimecode(settledFrame, fileRate)}…` : `Carregando Y'CbCr de ${qcTimecode(settledFrame, fileRate)}…`
     }
-    if (!browserSample) return {text: 'AGUARDANDO FRAME', tone: 'idle' as const}
-    return {text: `RGB DECODIFICADO PELO NAVEGADOR · ${monitorLabels.image} · aproximado`, tone: 'approx' as const}
+    return browserSample ? null : 'AGUARDANDO FRAME'
   })()
+  const scopeLiveElement: HTMLVideoElement | HTMLImageElement | null = selectedLiveSource ? sharedPreviewVideo
+    : selectedAsset?.probeError && !playbackUrl ? null
+    : framesOnly ? (qualityFrameUnavailable ? null : frameImgRef.current) : videoRef.current
 
   // Escuta: M (400 ms) e S (3 s) com filtro K, picos L/R e correlação a 10 Hz.
   useEffect(() => {
@@ -1393,7 +1380,7 @@ function QualityControlSession({
                             renderScopes(true)
                           }
                         }}
-                        onLoadedData={() => renderScopes(true)}
+                        onLoadedData={() => {bumpScopeMedia();renderScopes(true)}}
                         onPlay={() => {
                           initAudio()
                           setIsPlaying(true)
@@ -1414,7 +1401,7 @@ function QualityControlSession({
                         key={inspectionFrameUrl}
                         ref={frameImgRef}
                         src={inspectionFrameUrl!}
-                        onLoad={() => {if(inspectionFrameUrlRef.current===inspectionFrameUrl){renderScopes(true);advanceShuttleAfterLoad()}}}
+                        onLoad={() => {if(inspectionFrameUrlRef.current===inspectionFrameUrl){bumpScopeMedia();renderScopes(true);advanceShuttleAfterLoad()}}}
                         onError={(e) => {
                           if(inspectionFrameUrlRef.current!==inspectionFrameUrl)return
                           setShuttle(0)
@@ -1430,6 +1417,10 @@ function QualityControlSession({
                       <span className="font-body-sm text-outline">Selecione um clipe ou uma entrada ao vivo para inspecionar</span>
                     </div>
                   )}
+
+                {/* Falsa cor (scopes) e lupa: por cima do quadro, sem roubar espaço. */}
+                <canvas ref={setFalseColorCanvas} aria-hidden="true" className={`absolute inset-0 w-full h-full pointer-events-none z-10 ${falseColorOn && !scopeExact ? '' : 'hidden'}`}/>
+                <RoiSelector roi={scopeRoi} selecting={roiSelecting} aspect={16 / 9} onChange={setScopeRoi} onDone={() => setRoiSelecting(false)}/>
 
                 {/* Play/Pause Overlay Indicator */}
                 {!isPlaying && selectedAsset && !framesOnly && (
@@ -1584,9 +1575,10 @@ function QualityControlSession({
                 <span className="ml-auto font-label-mono text-[11px] text-outline shrink-0">SMPTE RP 219 · BT.709 · EBU R103</span>
               </div>
               <div className="flex-1 min-h-0">
-                <QcScopePanel sample={scopeSample} stats={scopeStats} status={scopeStatus.text} statusTone={scopeStatus.tone}
-                  mode={scopeMode} onModeChange={setScopeMode} unit={scopeUnit} onUnitChange={setScopeUnit}
-                  costLabel={scopeCost && !exactWanted ? `amostra p95 ${scopeCost.p95Ms.toFixed(1)} ms` : null}/>
+                <ScopeDeck storageKey="qc" exact={scopeExact} note={scopeNote}
+                  live={{element: scopeLiveElement, label: `${monitorLabels.image} · decodificado pelo navegador`, valid: browserSample}}
+                  falseColorCanvas={falseColorCanvas} onFalseColorChange={onFalseColorChange}
+                  roi={scopeRoi} onRoiChange={setScopeRoi} roiSelecting={roiSelecting} onRoiSelect={setRoiSelecting}/>
               </div>
             </div>
             </div>

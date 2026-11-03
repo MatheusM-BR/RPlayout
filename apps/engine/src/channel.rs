@@ -27,6 +27,10 @@ use crate::output::{Kind, Publisher, PublisherSpec, Report};
 use crate::protocol::{Fit, ItemSpec, SourceSignalReport};
 use crate::live_replacement::{Journal as ReplacementJournal, Phase as ReplacementPhase, Receipt as ReplacementReceipt, Request as ReplacementRequest};
 
+/// Multiview composto (R88-36). Módulo filho para ler os itens sem abrir campos.
+#[path = "multiview.rs"]
+pub mod multiview;
+
 /// Para onde o programa sai. Todas as saídas penduram no mesmo par de tees,
 /// então o canal codifica uma vez, não uma vez por destino.
 #[derive(Debug, Clone)]
@@ -726,6 +730,13 @@ pub struct Channel {
     /// Buffer reaproveitado da conversão de bytes para amostras. Alocar a cada
     /// volta do laço num processo que fica meses no ar não é opção.
     meter_scratch: Vec<f32>,
+    /// Multiview composto: só existe com destino configurado, só roda com espectador.
+    multiview: Option<multiview::Multiview>,
+    /// Destino do multiview guardado enquanto o canal restaurado/HA está com
+    /// as saídas retidas (e a última composição pedida nesse meio tempo). Só
+    /// vira publicador depois da admissão do preview, como o QC: o mosaico
+    /// mostra PGM/PVW deste nó e não pode publicar antes de ele ser o dono.
+    held_multiview: Option<(Output, Option<multiview::Composition>)>,
 }
 
 /// A regra de comutação é deliberadamente pequena e isolada para que uma
@@ -1962,6 +1973,8 @@ impl Channel {
             overlays: crate::overlay::Overlays::default(),
             overlay_wait_ms: 0.0,
             meter_scratch: Vec::with_capacity(16_384),
+            multiview: None,
+            held_multiview: None,
         };
 
         if program_outputs_held { channel.attach_output(0,&Output::Null,&tee_video,&tee_audio)?; }
@@ -2207,8 +2220,45 @@ impl Channel {
             // Todo fluxo SRT gerenciado pelo MediaMTX precisa de Opus para
             // WHEP; RTMP continua em AAC para destinos externos.
             opus: spec.kind == Kind::Srt && spec.role.as_deref() == Some("mon"),
+            // O monitor do programa publica em níveis (crate::monitor). Chega
+            // pelo inter na cadência de composição: num canal entrelaçado é a
+            // de campo, que o nível REF aproveita sem desentrelaçador.
+            monitor: (spec.role.as_deref() == Some("mon") && spec.kind == Kind::Srt).then(|| self.monitor_source(spec, true)),
         }));
         Ok(())
+    }
+
+    /// O que chega a um monitor pelo inter e o teto do perfil dele.
+    ///
+    /// `composition`: o inter vem do tee do programa (cadência de composição,
+    /// de campo no entrelaçado). Senão vem do preview, na cadência de quadro.
+    /// Largura/altura/bitrate do perfil, quando o operador definiu, são teto.
+    pub(crate) fn monitor_source(&self, spec: &OutputSpec, composition: bool) -> crate::monitor::MonitorSource {
+        let rate = if composition { self.composition_rate() } else { gst::Fraction::new(self.config.fps_n, self.config.fps_d) };
+        let (width, height) = self.monitor_raster();
+        let (width, height) = match (spec.width, spec.height) {
+            (Some(w), Some(h)) if w > 0 && h > 0 && w <= width && h <= height => (w, h),
+            _ => (width, height),
+        };
+        crate::monitor::MonitorSource {
+            width,
+            height,
+            fps_n: rate.numer(),
+            fps_d: rate.denom(),
+            frame_n: self.config.fps_n,
+            frame_d: self.config.fps_d,
+            bitrate_ceiling_kbps: spec.bitrate_kbps.unwrap_or(crate::monitor::MAX_KBPS).min(crate::monitor::MAX_KBPS),
+            mosaic: false,
+        }
+    }
+
+    /// Raster do monitor: o do canal, até 1920x1080, sem deformar.
+    fn monitor_raster(&self) -> (i32, i32) {
+        let (mw, mh) = crate::monitor::MAX_RASTER;
+        let scale = (mw as f64 / self.config.width.max(1) as f64).min(mh as f64 / self.config.height.max(1) as f64).min(1.0);
+        let w = ((self.config.width as f64 * scale).round() as i32 / 2 * 2).max(2);
+        let h = ((self.config.height as f64 * scale).round() as i32 / 2 * 2).max(2);
+        (w, h)
     }
 
     /// Liga o barramento de preview.
@@ -2234,7 +2284,8 @@ impl Channel {
         // um navegador: 1080p ali é banda e CPU jogadas fora nas duas pontas
         // -- e com quatro canais abertos era o navegador que engasgava,
         // decodificando quatro fluxos grandes ao mesmo tempo.
-        let (width, height) = monitor_size(self.config.width, self.config.height);
+        let source = self.monitor_source(spec, false);
+        let (width, height) = (source.width, source.height);
         self.publishers.push(Publisher::new(PublisherSpec {
             output_id: spec.id.clone().unwrap_or_else(|| "preview".to_string()),
             kind: spec.kind,
@@ -2260,6 +2311,8 @@ impl Channel {
             on_demand: true,
             // Quem olha isto é um navegador, e navegador não fala AAC.
             opus: som_de_monitor(spec.kind),
+            // Três níveis a partir do mesmo inter; o leve no caminho de sempre.
+            monitor: (spec.kind == Kind::Srt).then_some(source),
         }));
 
         self.preview_channels = Some((video_channel, audio_channel));
@@ -2272,12 +2325,22 @@ impl Channel {
         let output=self.config.preview.clone().ok_or_else(||anyhow!("Nenhum destino local de preview configurado."))?;
         self.attach_preview(&output)?;
         if let Some(qc)=self.held_qc_preview.take() { self.attach_qc_preview(&qc)?; }
+        // Multiview é monitor: se o destino não serve, o resto segue sem ele.
+        if let Some((mv, composition))=self.held_multiview.take() {
+            match self.attach_multiview(&mv) {
+                Ok(()) => if let Some(composition)=composition { if let Err(error)=self.configure_multiview(composition) { eprintln!("[engine] composição do multiview recusada: {error:#}"); } },
+                Err(error) => eprintln!("[engine] multiview desligado: {error:#}"),
+            }
+        }
         Ok(())
     }
 
     /// Caps do preview: mesma cadência do canal, tamanho de monitor.
     fn preview_caps(&self) -> gst::Caps {
-        let (width, height) = monitor_size(self.config.width, self.config.height);
+        // O PVW é decodificado no raster da REFERÊNCIA (o do canal até 1080p):
+        // cada nível reduz o que precisa no próprio ramo. Decodificar a 240p
+        // tornava impossível avaliar o PVW em qualquer nível acima do leve.
+        let (width, height) = self.monitor_raster();
         gst::Caps::builder("video/x-raw")
             .field("format", "I420")
             .field("width", width - width % 2)
@@ -2539,7 +2602,7 @@ impl Channel {
             output_id: "qc-inspection".into(), kind: Kind::Srt, url: spec.target.clone(),
             video_channel: video_channel.clone(), audio_channel, width, height, fps_n, fps_d,
             bitrate_kbps: 6000, interlaced: false, top_field_first: self.config.top_field_first,
-            prefer_software: true, role: "qc".into(), on_demand: true, opus: true,
+            prefer_software: true, role: "qc".into(), on_demand: true, opus: true, monitor: None,
         }));
         self.qc_video_channel = Some(video_channel);
         Ok(())
@@ -2604,9 +2667,44 @@ impl Channel {
         Ok(())
     }
 
+    /// Saídas de programa que caíram por recusa da placa tentam de novo já.
+    pub fn retry_hardware_outputs(&mut self) {
+        for publisher in &mut self.publishers {
+            publisher.retry_hardware_soon();
+        }
+    }
+
+    /// Orçamento de CPU (Mpx/s) concedido pelo servidor a um nível de monitor.
+    pub fn set_monitor_budget(&mut self, bus: &str, tier: crate::monitor::MonitorTier, budget: Option<f64>) {
+        if bus == multiview::BUS {
+            self.set_multiview_budget(tier, budget);
+            return;
+        }
+        for publisher in &mut self.publishers {
+            if publisher.role() == bus {
+                publisher.set_tier_budget(tier, budget);
+            }
+        }
+    }
+
+    /// Liga ou desliga um nível de um monitor. Sem nível, o legado (leve).
+    pub fn set_monitor_tier(&mut self, bus: &str, tier: Option<crate::monitor::MonitorTier>, on: bool, hardware: bool) -> bool {
+        let Some(tier) = tier else { return self.set_monitor(bus, on) };
+        if bus == "qc" { return false; }
+        if bus == multiview::BUS { return self.set_multiview_tier(tier, on, hardware); }
+        let mut achou = false;
+        for publisher in &mut self.publishers {
+            if publisher.role() == bus && publisher.set_tier(tier, on, hardware) {
+                achou = true;
+            }
+        }
+        achou
+    }
+
     pub fn set_monitor(&mut self, bus: &str, on: bool) -> bool {
         // Generic monitor traffic must not bypass source-bound inspection.
         if bus == "qc" { return false; }
+        if bus == multiview::BUS { return self.set_multiview_wanted(on); }
         let mut achou = false;
         for publisher in &mut self.publishers {
             if publisher.role() == bus {
@@ -2723,15 +2821,17 @@ impl Channel {
         if self.qc_deadline.is_some() && self.qc_item.as_ref().is_some_and(|item| item.qc_ready.load(Ordering::Acquire)) {
             for publisher in &mut self.publishers { if publisher.role() == "qc" { publisher.set_wanted(true); } }
         }
+        let multiview = self.service_multiview();
         self.publishers
             .iter_mut()
             .filter_map(|publisher| publisher.service())
+            .chain(multiview)
             .collect()
     }
 
     /// Situação de todas as saídas de rede, mudando ou não.
     pub fn outputs_report(&self) -> Vec<Report> {
-        self.publishers.iter().map(Publisher::report).collect()
+        self.publishers.iter().map(Publisher::report).chain(self.multiview_report()).collect()
     }
 
     pub fn bus(&self) -> gst::Bus {
@@ -3781,6 +3881,7 @@ impl Channel {
         if let Some(item) = self.qc_item.take() {
             discard(item);
         }
+        if let Some(mut multiview) = self.multiview.take() { multiview.shutdown(); }
         for publisher in &mut self.publishers {
             publisher.shutdown();
         }

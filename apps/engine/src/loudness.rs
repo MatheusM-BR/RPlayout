@@ -673,4 +673,57 @@ mod tests {
         let faixa = measure(&variado, 2).range_lu;
         assert!(faixa > 10.0, "faixa medida foi {faixa:.3}");
     }
+
+    // --- Conformidade EBU Tech 3341 (I, TP) e Tech 3342 (LRA) ---------------
+    // Sinais sintetizados como descritos nas normas: seno de 1 kHz estéreo
+    // com o nível de pico em dBFS indicado. Tolerâncias das próprias normas.
+
+    fn segments(parts: &[(f64, f64)]) -> Vec<f32> {
+        let mut out = Vec::new();
+        for (dbfs, seconds) in parts {
+            out.extend(sine(1_000.0, 10f64.powf(dbfs / 20.0), *seconds, 2));
+        }
+        out
+    }
+
+    #[test]
+    fn tech3341_casos_1_a_4_integrado() {
+        for (parts, expected) in [
+            (vec![(-23.0, 20.0)], -23.0),
+            (vec![(-33.0, 20.0)], -33.0),
+            (vec![(-36.0, 10.0), (-23.0, 60.0), (-36.0, 10.0)], -23.0),
+            (vec![(-72.0, 10.0), (-36.0, 10.0), (-23.0, 60.0), (-36.0, 10.0), (-72.0, 10.0)], -23.0),
+        ] {
+            let reading = measure(&segments(&parts), 2);
+            assert!((reading.integrated_lufs - expected).abs() <= 0.1, "{parts:?}: {:.2} LUFS", reading.integrated_lufs);
+        }
+    }
+
+    #[test]
+    fn tech3342_casos_1_a_3_lra() {
+        for (parts, expected) in [
+            (vec![(-20.0, 20.0), (-30.0, 20.0)], 10.0),
+            (vec![(-20.0, 20.0), (-15.0, 20.0)], 5.0),
+            (vec![(-40.0, 20.0), (-20.0, 20.0)], 20.0),
+        ] {
+            let reading = measure(&segments(&parts), 2);
+            assert!((reading.range_lu - expected).abs() <= 1.0, "{parts:?}: LRA {:.2} LU", reading.range_lu);
+        }
+    }
+
+    #[test]
+    fn tech3341_pico_verdadeiro_entre_amostras() {
+        // fs/4 com fase de 45°: as amostras caem em ±0,707 (−3,01 dBFS), o pico
+        // real é 0 dBTP. Tolerância da Tech 3341: +0,2/−0,4 dB.
+        let frames = RATE as usize * 2;
+        let mut samples = Vec::with_capacity(frames * 2);
+        for frame in 0..frames {
+            let value = (2.0 * PI * 12_000.0 * frame as f64 / RATE as f64 + PI / 4.0).sin();
+            samples.push(value as f32);
+            samples.push(value as f32);
+        }
+        let reading = measure(&samples, 2);
+        assert!(reading.peak_dbfs[0] < -2.9, "pico de amostra {:.2}", reading.peak_dbfs[0]);
+        assert!(reading.true_peak_dbtp > -0.4 && reading.true_peak_dbtp < 0.2, "TP {:.2} dBTP", reading.true_peak_dbtp);
+    }
 }

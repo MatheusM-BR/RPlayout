@@ -94,7 +94,7 @@ Copy-Item apps/engine/third_party/omt/LICENSE.txt "$Destination/licenses/omt/LIC
 if (!(Test-Path 'apps/engine/target/release/rplayout-host-guard.exe')) { throw 'Trava nativa de distribuição não foi compilada; pacote recusado.' }
 if (!(Test-Path 'apps/engine/target/release/rplayout-file-security.exe')) { throw 'Proteção nativa de configuração não foi compilada; pacote recusado.' }
 if (!(Test-Path 'apps/engine/target/release/rplayout-audio-bus-probe.exe' -PathType Leaf)) { throw 'Sonda de barramento completo não foi compilada; pacote recusado.' }
-foreach ($aux in @('rplayout-probe.exe','rplayout-devices.exe','rplayout-relay.exe','rplayout-avsync.exe','rplayout-proxy.exe','rplayout-audio-analysis.exe','rplayout-audio-bus-probe.exe','rplayout-graphic-probe.exe','rplayout-host-guard.exe','rplayout-file-security.exe')) {
+foreach ($aux in @('rplayout-probe.exe','rplayout-devices.exe','rplayout-encoders.exe','rplayout-relay.exe','rplayout-avsync.exe','rplayout-proxy.exe','rplayout-audio-analysis.exe','rplayout-audio-bus-probe.exe','rplayout-graphic-probe.exe','rplayout-host-guard.exe','rplayout-file-security.exe')) {
   if (Test-Path "apps/engine/target/release/$aux") { Copy-Item "apps/engine/target/release/$aux" "$Destination/apps/engine/target/release/$aux" -Force }
 }
 if (!(Test-Path 'apps/server/dist/server.cjs')) { throw 'Servidor empacotado não encontrado. Rode pnpm --filter @rplayout/server build.' }
@@ -208,7 +208,9 @@ Write-Host "MSVC x64 app-local incluído: $($crtFiles[0].VersionInfo.FileVersion
 $manifestFiles = @(Get-ChildItem -LiteralPath $Destination -Recurse -File | ForEach-Object {
   [ordered]@{ file = $_.FullName.Substring($Destination.Length + 1).Replace('\','/'); bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
 })
-$manifest = [ordered]@{ version = 1; builtAt = [DateTime]::UtcNow.ToString('o'); functionalVerification = $(if ($SkipFunctionalVerification) { 'NOT_RUN_PARTIAL_BUILD' } else { 'REQUIRED' }); node = (& node -v); msvc = [ordered]@{ version = $crtFiles[0].VersionInfo.FileVersion; distribution = (Split-Path $MsvcRuntimeDirectory -Leaf); deployment = 'app-local'; documentation = 'https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files' }; files = $manifestFiles }
+# Commit do pacote: a tela técnica (software-version.ts) mostra edição + commit.
+$packageCommit = try { (& git -C $workspaceRoot rev-parse --short HEAD 2>$null) } catch { $null }
+$manifest = [ordered]@{ version = 1; builtAt = [DateTime]::UtcNow.ToString('o'); commit = $packageCommit; functionalVerification = $(if ($SkipFunctionalVerification) { 'NOT_RUN_PARTIAL_BUILD' } else { 'REQUIRED' }); node = (& node -v); msvc = [ordered]@{ version = $crtFiles[0].VersionInfo.FileVersion; distribution = (Split-Path $MsvcRuntimeDirectory -Leaf); deployment = 'app-local'; documentation = 'https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files' }; files = $manifestFiles }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'package-manifest.json') -Encoding UTF8
 if ($SkipFunctionalVerification) {
   Write-Warning "BUILD PARCIAL NAO HOMOLOGADA: verificacao funcional nao executada por solicitacao do operador. $Destination"

@@ -156,6 +156,7 @@ import type {
   SourceList,
 } from './types.js'
 import {requestResult} from './domain/json-request.js'
+import {MonitorWatch} from './domain/monitor-watch.js'
 import {editorialHeaders} from './domain/editorial-revision.js'
 import {configurationHeaders} from './domain/channel-configuration.js'
 import {qcDecisionHeaders,qcAssetHeaders} from './domain/qc-review.js'
@@ -217,7 +218,7 @@ export interface HostMetricSample {
   sampleIntervalSeconds: number
   cpu: { percent: number | null; cores: number }
   memory: { totalBytes: number; usedBytes: number; freeBytes: number; percent: number | null }
-  process: { rssBytes: number; heapUsedBytes: number }
+  process: { rssBytes: number; heapUsedBytes: number; heapTotalBytes?: number; externalBytes?: number; arrayBuffersBytes?: number }
   gpu: { utilizationPercent: number | null; memoryUsedMiB: number | null; memoryTotalMiB: number | null; temperatureC: number | null; name: string | null; error: string | null }
   disk: { path: string; totalBytes: number | null; freeBytes: number | null; percentUsed: number | null; error: string | null }
   network: { receivedBytesPerSecond: number | null; sentBytesPerSecond: number | null; source: string | null; error: string | null }
@@ -256,12 +257,54 @@ export interface OperationalSimulation {
   differences: { added: string[]; removed: string[]; changed: Array<{ itemId: string; fields: string[] }>; graphicsChanged?: string[]; timingPolicyChanged?: boolean }
 }
 
+/**
+ * Leituras idênticas em voo são uma só. Quando o servidor avisa que um
+ * tópico mudou, várias telas releem a mesma rota no mesmo instante (camadas
+ * de GC, sonda PGM, processos): sai uma requisição e todas recebem a mesma
+ * resposta. Só GET simples, sem corpo, cabeçalho ou sinal de cancelamento --
+ * quem cancela ou tem prazo próprio continua com a requisição dele.
+ */
+const inflightReads = new Map<string, Promise<unknown>>()
+export function sharedRead<T>(path: string, read: () => Promise<T>): Promise<T> {
+  const pending = inflightReads.get(path) as Promise<T> | undefined
+  if (pending) return pending
+  const work = read().finally(() => { if (inflightReads.get(path) === work) inflightReads.delete(path) })
+  inflightReads.set(path, work)
+  return work
+}
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
+  const plainRead = (!init || (!init.method || init.method.toUpperCase() === 'GET') && !init.body && !init.headers && !init.signal)
+  if (plainRead) return sharedRead(path, async () => (await requestResult<T>(path, init)).body)
   return (await requestResult<T>(path,init)).body
 }
 
+/** Aviso único "estou vendo" desta aba, para todos os monitores abertos. */
+const monitorWatch = typeof window === 'undefined' ? null : new MonitorWatch((channelId, monitors) =>
+  requestResult(`/api/channels/${encodeURIComponent(channelId)}/watching/batch`, { method: 'POST', body: JSON.stringify({ monitors }) }))
+if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') monitorWatch?.visible() })
+
 const post = <T>(path: string, body: unknown): Promise<T> =>
   send<T>(path, { method: 'POST', body: JSON.stringify(body) })
+
+/** Tela técnica dos monitores (GET /api/channels/:id/monitors). */
+export interface MonitorTierReport {
+  tier: 'ref' | 'std' | 'lite'; health: string; encoder?: string; hardware: boolean
+  profile?: { width: number; height: number; fpsN: number; fpsD: number; bitrateKbps: number; quality: number }
+  delivered: number; uptimeMs: number; degraded?: string; error?: string
+  /** A placa falhou neste nível, e por quê (campo próprio do engine). */
+  hardwareFailed?: string
+}
+export interface MonitorEngineering {
+  sessions: { hardware: string | null; total: number | null; reservedForProgram: number; monitorsInUse: number; free: number | null; learned: string | null; encoders: { name: string; hardware: boolean; available: boolean; sessions: number | null; unlimited: boolean }[]
+    /** Orçamento de CPU dos monitores em software, da máquina inteira (todos os canais). */
+    software?: { budgetMpx: number; inUseMpx: number; grants: { channelId: string; bus: string; tier: 'ref' | 'std' | 'lite'; mpx: number }[] } } | null
+  watched: { bus: import('@rplayout/protocol').MonitorBus; tier: 'ref' | 'std' | 'lite'; hardware: boolean; lastSeenMs: number }[]
+  /** Teto do mosaico composto (nulo sem multiview). */
+  multiviewCeiling?: 'ref' | 'std' | 'lite' | null
+  clock: boolean
+  monitors: { bus: string | null; outputId: string | null; health: string; encoder: string | null; tiers: MonitorTierReport[]; error: string | null }[]
+  program: { outputId: string | null; health: string; encoder: string | null }[]
+}
 
 export interface LiveReplacementView {
   transactionId:string;targetSourceId?:string;receipt:{phase:string}|null;prepareSent?:boolean;commitSent?:boolean;cancelSent?:boolean;closed?:boolean
@@ -269,6 +312,24 @@ export interface LiveReplacementView {
 }
 const liveReplacementPath=(channelId:string,suffix='')=>`/api/channels/${encodeURIComponent(channelId)}/live-replacement${suffix}`
 export type LiveWatchdogView = import('@rplayout/protocol').LiveWatchdogStatus & { revision: number; updatedAt: string | null; updatedBy: string | null }
+export interface MultiviewCompositeView {
+  saved:{layout:MultiviewCompositeLayout;quality:MultiviewQuality;cells:MultiviewCellSource[]|null;revision:number;savedAt:string|null;savedBy:string|null}
+  eTag:string
+  composition:import('@rplayout/protocol').MultiviewComposition
+  sources:Array<{id:string;name:string;kind:string;role:string;enabled:boolean}>
+  layouts:typeof import('@rplayout/protocol').MULTIVIEW_LAYOUTS
+  qualities:typeof import('@rplayout/protocol').MULTIVIEW_QUALITIES
+  engine:import('@rplayout/protocol').MultiviewEngineState|null
+  /** `tiers`: caminho de cada nível até o teto (REF/PADRÃO/LEVE, como PGM e PVW). */
+  whep:{port:number;path:string;tiers?:Partial<Record<'ref'|'std'|'lite',string>>}|null
+  available:boolean
+  reason:string|null
+  canSave:boolean
+  canChangeQuality:boolean
+}
+type MultiviewCompositeLayout=import('@rplayout/protocol').MultiviewCompositeLayout
+type MultiviewQuality=import('@rplayout/protocol').MultiviewQuality
+type MultiviewCellSource=import('@rplayout/protocol').MultiviewCellSource
 const liveWatchdogPath = (channelId: string, suffix = '') => `/api/channels/${encodeURIComponent(channelId)}/live-watchdog${suffix}`
 export const api = {
   liveWatchdog: (channelId: string, signal?: AbortSignal) => send<LiveWatchdogView>(liveWatchdogPath(channelId), { signal }),
@@ -347,7 +408,9 @@ export const api = {
   addChannel: (name: string) =>
     post<{ channelId: string; rundownId: string }>('/api/channels', { name }),
   assets: () => send<{ assets: MediaAsset[] }>('/api/assets'),
-  qcAssessment: (id: string, channelId: string) => send<{ contentHash: string; review:import('@rplayout/protocol').QcReview;profile: import('@rplayout/protocol').QcProfile; checks: ReturnType<typeof import('@rplayout/protocol').assessQc>; decisions: Array<{ channelId:string;status: string; notes: string | null; createdAt: string }> }>(`/api/assets/${encodeURIComponent(id)}/qc?channelId=${encodeURIComponent(channelId)}`),
+  qcAssessment: (id: string, channelId: string) => send<{ contentHash: string; review:import('@rplayout/protocol').QcReview;profile: import('@rplayout/protocol').QcProfile; checks: ReturnType<typeof import('@rplayout/protocol').assessQc>; decisions: Array<{ channelId:string;status: string; notes: string | null; createdAt: string }>; intentionalSilence?: boolean }>(`/api/assets/${encodeURIComponent(id)}/qc?channelId=${encodeURIComponent(channelId)}`),
+  /** Arquivo sem áudio na origem: a sonda do PGM não alerta silêncio nele. */
+  setIntentionalSilence: (id: string, body: { channelId: string; contentHash: string; on: boolean }) => send<{ ok: true; intentionalSilence: boolean }>(`/api/assets/${encodeURIComponent(id)}/intentional-silence`, { method: 'PUT', body: JSON.stringify(body) }),
   qcDecision: (id: string, body: { channelId: string; contentHash: string; status: 'PENDING' | 'ANALYSIS' | 'APPROVED' | 'APPROVED_WITH_NOTES' | 'REJECTED' | 'BLOCKED'; notes?: string },review:import('@rplayout/protocol').QcReview|undefined) => send<{ok:true;refreshError:string|null}>(`/api/assets/${encodeURIComponent(id)}/qc`,{method:'POST',headers:qcDecisionHeaders(id,body.channelId,body.contentHash,review),body:JSON.stringify(body)}),
   qcProfile: (channelId: string) => send<{ profile: import('@rplayout/protocol').QcProfile;configurationRevision:number }>(`/api/channels/${encodeURIComponent(channelId)}/qc-profile`),
   setQcProfile: (channelId: string, profile: import('@rplayout/protocol').QcProfile,revision:number|undefined) => send<{ message: string;configurationRevision:number;refreshError:string|null }>(`/api/channels/${encodeURIComponent(channelId)}/qc-profile`, { method: 'PUT',headers:configurationHeaders(channelId,revision), body: JSON.stringify(profile) }),
@@ -467,6 +530,9 @@ export const api = {
   liveSources: (channelId: string,signal?:AbortSignal) =>
     send<ManagedLiveSource[]>(`/api/sources/live?channelId=${encodeURIComponent(channelId)}`,{signal}),
   liveSourceReview:(channelId:string)=>send<LiveSourceReview>(`/api/channels/${encodeURIComponent(channelId)}/live-source-review`),
+  multiviewComposite:(channelId:string)=>send<MultiviewCompositeView>(`/api/channels/${encodeURIComponent(channelId)}/multiview/composite`),
+  saveMultiviewComposite:(channelId:string,eTag:string,body:{layout:MultiviewCompositeLayout;quality?:MultiviewQuality;cells?:MultiviewCellSource[]|null})=>
+    send<{saved:MultiviewCompositeView['saved'];eTag:string}>(`/api/channels/${encodeURIComponent(channelId)}/multiview/composite`,{method:'PUT',headers:{'if-match':eTag},body:JSON.stringify(body)}),
   multiviewReview:(channelId:string|null)=>send<MultiviewReview>(`/api/multiview/config${channelId===null?'':`?channelId=${encodeURIComponent(channelId)}`}`),
   saveMultiview:(channelId:string|null,layout:MultiviewLayout,review:MultiviewReview|null,cells?:MultiviewCell[])=>send<MultiviewReview&{applied:true;refreshError?:string}>('/api/multiview/config',{method:'PUT',headers:multiviewHeaders(review,channelId),body:JSON.stringify({...(channelId===null?{}:{channelId}),layout,...(cells===undefined?{}:{cells})})}),
   reviewOperationalInsertion:(channelId:string,input:OperationalInsertionInput)=>post<OperationalInsertionReview>(`/api/channels/${encodeURIComponent(channelId)}/operational-insert/review`,input),
@@ -552,7 +618,9 @@ export const api = {
     send<Snapshot & {result:{message:string}}>(`/api/items/${id}/audio`,{method:'POST',headers:editorialHeaders(revision),body:JSON.stringify({audio,scope,audioTrack,scopeReviewToken})}),
 
   distribution: (signal?:AbortSignal) => send<Distribution>('/api/distribution',{signal}),
-  processes: (signal?:AbortSignal) =>
+  /** `counters=false`: só estado de engine e saídas, sem os contadores do SO
+   * (um powershell.exe por leitura no Windows). É o que o cabeçalho usa. */
+  processes: (signal?:AbortSignal,counters=true) =>
     send<{
       generatedAt: string
       processes: Array<{
@@ -567,7 +635,7 @@ export const api = {
         cpuPercent?: number | null
         details?: Record<string, unknown>
       }>
-    }>('/api/processes',{signal}),
+    }>(counters?'/api/processes':'/api/processes?counters=0',{signal}),
   engineeringLogs:(filter:{level?:TechnicalLogLevel;source?:'ENGINE'|'SERVER';channelId?:string;q?:string;sinceMs?:number;afterSeq?:number;limit?:number}={},signal?:AbortSignal)=>
     send<{entries:TechnicalLogEntry[];lastSeq:number;capacity:number;retained:number;crashReports:Array<{path:string;at:string;bytes:number}>;generatedAt:string}>(`/api/engineering/logs?${new URLSearchParams(Object.entries(filter).filter(([,value])=>value!==undefined&&value!=='').map(([key,value])=>[key,String(value)])).toString()}`,{signal}),
   engineeringStatus:(signal?:AbortSignal)=>send<{version:{rplayout:string;build:string|null;node:string;platform:string;gstreamer:string|null;startedAt:string};uptimeSeconds:number;serverTime:string}>('/api/engineering/status',{signal}),
@@ -595,6 +663,8 @@ export const api = {
   externalCommandRuns: () => send<{ runs: ManualExternalRun[]; uncertainState: string }>('/api/external/commands'),
   acknowledgeExternalCommand: (requestId: string, note: string) => post(`/api/external/commands/${encodeURIComponent(requestId)}/acknowledge`, { note }),
   controlExternalDevice: (id: string, body: { requestId: string; action: 'PING' | 'ROUTE_CROSSPOINT'; source?: number; destination?: number }) => post<{ run: ManualExternalRun; deduplicated: boolean; physicalOutputValidated: false }>(`/api/external/devices/${encodeURIComponent(id)}/control`, body),
+  /** Só as contagens de pendentes (selo ALERTAS do cabeçalho): sem página, riscos nem mensagens. */
+  healthPending: (channelId: string, includeHost = true) => send<{ pending: { critical: number; warn: number } }>(`/api/health-events?view=pending&channelId=${encodeURIComponent(channelId)}${includeHost ? '&includeHost=1' : ''}`),
   healthEvents: (channelId?: string,options?:{severity?:'ALL'|'INFO'|'WARN'|'CRITICAL';acknowledgement?:'ALL'|'PENDING'|'ACKNOWLEDGED';until?:string;beforeAt?:string;beforeId?:string;includeHost?:'1'},signal?:AbortSignal) => send<{ events: Array<{ id: string; channelId: string | null; component: string; state: string; severity: 'INFO' | 'WARN' | 'CRITICAL'; message: string | null; occurredAt: string; acknowledgedAt: string | null;resolvedAt?:string|null;observationEndedAt?:string|null;context?:IncidentContext|null }>;pending:{critical:number;warn:number};risk:{observedUnresolved:number;observationEndedUnresolved:number;withoutContext:number};page:{until:string;totalMatching:number;hasMore:boolean;nextBefore:{occurredAt:string;id:string}|null} }>(`/api/health-events?limit=30${channelId ? `&channelId=${encodeURIComponent(channelId)}` : ''}${options?'&'+new URLSearchParams(Object.entries(options).filter((entry):entry is [string,string]=>typeof entry[1]==='string')).toString():''}`,{signal}),
   acknowledgeHealth: (id: string) => post<{ ok: true }>(`/api/health-events/${id}/ack`, {}),
   schedulerStatus: (signal?:AbortSignal) => send<{ checkedAt: string; channels: Array<{ channelId: string; rundownId: string | null; rundownDate: string | null; revisionId: string | null; source: 'NONE' | 'LEGACY' | 'PUBLISHED'; mode: 'FINITE' | 'LOOP' | 'OPEN_LIVE' | 'MANUAL_HOLD' | 'WAITING_START' | 'NO_EXECUTION' | 'INVALID_DATE'; reason: string | null; automaticHandover: boolean; nextPlaylist: {state:NextPlaylistRun['state'];targetName:string;targetRevisionId:string;policy:'ONE_REVIEWED_EOS'}|null; activeRule: { name: string; startMinute: number; endMinute: number } | null; endsAtFrames: number | null; minutesRemaining: number | null; coverageMinutes: number | null; coverageHours: number | null; targetHours: number; coverageReady: boolean }> }>('/api/scheduler/status',{signal}),
@@ -743,13 +813,21 @@ export const api = {
     },
     review:ScheduleRuleReview|null,
   ) => send<ScheduleRuleReview&{applied:true;refreshError?:string}>(`/api/channels/${encodeURIComponent(channelId)}/rules`,{method:'POST',headers:scheduleRuleHeaders(review,channelId),body:JSON.stringify(body)}),
-  /** "Estou com este monitor aberto." O engine só codifica enquanto há aviso. */
-  watching: (channelId: string, bus: 'pvw' | 'mon') =>
-    post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, { bus }),
+  /** "Estou com este monitor aberto." O engine só codifica enquanto há aviso.
+   * Não vai direto para a rede: entra no aviso único da aba (monitor-watch). */
+  watching: (channelId: string, bus: import('@rplayout/protocol').MonitorBus, tier?: 'ref' | 'std' | 'lite'): Promise<{ ok: true }> => {
+    monitorWatch?.touch(channelId, bus, tier)
+    return Promise.resolve({ ok: true })
+  },
   qcLiveInspection:(channelId:string,viewerId:string,sourceRef:string,watching:boolean)=>
     post<{ok:true;rendition:'qc-encoded';profileFromSource:true;maxWidth:number;maxHeight:number;maxFps:number;maxBitrateKbps:number}>(`/api/channels/${channelId}/qc/inspection`,{viewerId,sourceRef,watching}),
-  setWatching: (channelId: string, bus: 'pvw' | 'mon', watching = true) =>
-    post<{ ok: true; available?: boolean }>(`/api/channels/${channelId}/watching`, { bus, watching }),
+  setWatching: (channelId: string, bus: import('@rplayout/protocol').MonitorBus, watching = true, tier?: 'ref' | 'std' | 'lite'): Promise<{ ok: true }> => {
+    if (watching) monitorWatch?.touch(channelId, bus, tier)
+    else monitorWatch?.release(channelId, bus, tier)
+    return Promise.resolve({ ok: true })
+  },
+  monitorStatus: (channelId: string) => send<MonitorEngineering>(`/api/channels/${channelId}/monitors`),
+  setMonitorClock: (channelId: string, on: boolean) => post<{ ok: true; clock: boolean }>(`/api/channels/${channelId}/monitor-clock`, { on }),
 
   playlists: () =>
     send<{ playlists: PlaylistFile[]; today: string | null; date: string }>('/api/playlists'),

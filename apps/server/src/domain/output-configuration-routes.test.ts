@@ -135,9 +135,11 @@ describe('configuração de saída confirma versão e compensa efeitos sem fingi
     const result=await patch();expect(result.statusCode).toBe(200);expect(result.json()).toMatchObject({applied:'hot',configurationUncertain:true,physicalOutputValidated:false})
     expect(profile().target).toBe(next);expect(audit()).toHaveLength(1);expect(app.configurationChanges.status('ch').state).toBe('UNCERTAIN')
   })
-  it('preview full/null/inconsistente é recusado antes de qualquer comando; PGM não muda',async()=>{
+  it('preview fora da proteção (acima de 8 Mbps, esticado, acima da cadência, entrelaçado, inconsistente) é recusado antes de qualquer comando; PGM não muda',async()=>{
     app.db.update(outputProfiles).set({role:'PREVIEW',target:'',width:426,height:240,rateNum:15,rateDen:1,scan:'PROGRESSIVE',bitrateKbps:450}).where(eq(outputProfiles.id,'out')).run()
-    for(const body of [{bitrateKbps:6000},{bitrateKbps:null},{width:1920},{height:null},{rateNum:60},{scan:'INTERLACED'},{rateDen:null}]){
+    // {width:1280,height:720,bitrateKbps:100}: teto abaixo de 300 kbps. (O perfil leve legado
+    // com bitrate baixo continua aceito: é o "automático" que a r88-35 grava.)
+    for(const body of [{bitrateKbps:12000},{width:1280,height:720,bitrateKbps:100},{width:1920},{height:null},{rateNum:240},{scan:'INTERLACED'},{rateDen:null}]){
       const result=await patch(body);expect(result.statusCode,result.body).toBe(400)
     }
     expect(apply).not.toHaveBeenCalled();expect(profile().bitrateKbps).toBe(450)

@@ -181,3 +181,30 @@ export function monitorSize(width: number, height: number): [number, number] {
   const escalada = Math.ceil((width * TETO) / height)
   return [escalada + (escalada % 2), TETO]
 }
+
+/**
+ * Nível de qualidade de um monitor do navegador (veja
+ * docs/MONITORES-NAVEGADOR.md e apps/engine/src/monitor.rs).
+ *
+ * - `ref` REFERÊNCIA: raster do canal até 1080p, cadência cheia, 4–8 Mbps.
+ * - `std` PADRÃO: 1280×720 (até 30 fps) ou 960×540, cadência cheia, 1,5–3 Mbps.
+ * - `lite` LEVE: 240 linhas, cadência de quadro até 30, 180–450 kbps.
+ */
+export type MonitorTier = 'ref' | 'std' | 'lite'
+export const MONITOR_TIERS: readonly MonitorTier[] = ['ref', 'std', 'lite']
+export const MONITOR_TIER_LABEL: Record<MonitorTier, string> = { ref: 'REFERÊNCIA', std: 'PADRÃO', lite: 'LEVE' }
+
+/**
+ * Monitores sob demanda do navegador: preview (`pvw`), programa (`mon`) e
+ * multiview composto (`mv`). Todos com os mesmos níveis e o mesmo aviso
+ * "estou assistindo" (`POST /api/channels/:id/watching {bus, tier}`).
+ */
+export type MonitorBus = 'pvw' | 'mon' | 'mv'
+
+/** Caminho de um nível no servidor de mídia; o leve fica no caminho histórico. */
+export function monitorTierPath(path: string, tier: MonitorTier): string {
+  return tier === 'lite' ? path : `${path}-${tier}`
+}
+
+/** Teto absoluto de um monitor: acima disso já seria contribuição. */
+export const MONITOR_MAX_KBPS = 8_000

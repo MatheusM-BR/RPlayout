@@ -479,10 +479,15 @@ dependencies = [
  "gstreamer-base",
  "libloading",
  "quick-xml",
+ "rplayout-scopes",
  "serde",
  "serde_json",
  "windows-sys",
 ]
+
+[[package]]
+name = "rplayout-scopes"
+version = "0.1.0"
 
 [[package]]
 name = "serde"

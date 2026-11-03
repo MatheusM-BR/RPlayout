@@ -69,7 +69,7 @@ $engineBuild=Get-RPlayoutNativeBuildFile -WorkspaceRoot $workspaceRoot -Name 'rp
 foreach($name in @('rplayout-engine.exe','rplayout-engine-test.exe','apps/engine/target/release/rplayout-engine.exe')){$files[$name]=$engineBuild.source;$expected[$name]=$engineBuild.sha256}
 $launcherSource=if($LauncherBinary){[IO.Path]::GetFullPath($LauncherBinary)}else{Join-Path $workspaceRoot 'apps/engine/target/release/rplayout.exe'}
 foreach($name in @('Server','Master','Schedule','Users','Monitor','Aired','QC')){$key='RPlayout-'+$name+'.exe';$files[$key]=$launcherSource;$expected.Remove($key)}
-foreach($name in @('probe','devices','relay','avsync','proxy','audio-analysis','audio-bus-probe','graphic-probe','file-security')){$key='apps/engine/target/release/rplayout-'+$name+'.exe';$files[$key]=Join-Path $workspaceRoot $key;$expected.Remove($key)}
+foreach($name in @('probe','devices','encoders','relay','avsync','proxy','audio-analysis','audio-bus-probe','graphic-probe','file-security')){$key='apps/engine/target/release/rplayout-'+$name+'.exe';$files[$key]=Join-Path $workspaceRoot $key;$expected.Remove($key)}
 $guardBuild=Get-RPlayoutNativeBuildFile -WorkspaceRoot $workspaceRoot -Name 'rplayout-host-guard.exe' -OverrideFile $HostGuardBinary -UseCurrentBuilds:$UseCurrentBuilds
 $files[$guardBuild.file]=$guardBuild.source;$expected[$guardBuild.file]=$guardBuild.sha256
 # If an older base has a root alias, it must not retain the previous helper.
@@ -155,7 +155,9 @@ foreach($name in @($files.Keys | Sort-Object)){
 $drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($archivePath))
 if($drive.AvailableFreeSpace -lt 620000000){throw 'Espaco insuficiente para ZIP completo e margem; nenhuma release apagada.'}
 $edition=[IO.Path]::GetFileNameWithoutExtension($archivePath) -replace '-instalador$',''
-$manifest=[ordered]@{version=1;builtAt=[DateTime]::UtcNow.ToString('o');functionalVerification='NOT_RUN_PARTIAL_BUILD';node=$base.node;msvc=$base.msvc;packaging='STREAMED_FULL_INSTALLER';runtimeBase=[IO.Path]::GetFileName($baseRoot);sqliteVersion=$baseSqlite.version;files=$manifestFiles}
+# Edicao e commit no manifesto: a tela tecnica (software-version.ts) mostra os dois.
+$packageCommit=try{(& git -C $workspaceRoot rev-parse --short HEAD 2>$null)}catch{$null}
+$manifest=[ordered]@{version=1;builtAt=[DateTime]::UtcNow.ToString('o');edition=$edition;commit=$packageCommit;functionalVerification='NOT_RUN_PARTIAL_BUILD';node=$base.node;msvc=$base.msvc;packaging='STREAMED_FULL_INSTALLER';runtimeBase=[IO.Path]::GetFileName($baseRoot);sqliteVersion=$baseSqlite.version;files=$manifestFiles}
 Add-Type -AssemblyName System.IO.Compression
 function Write-ZipText($zip,[string]$name,[string]$value){
   $entry=$zip.CreateEntry($name,[IO.Compression.CompressionLevel]::Fastest)

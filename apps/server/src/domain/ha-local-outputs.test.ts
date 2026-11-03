@@ -25,10 +25,18 @@ it('requires an explicit disabling reason and never turns disabled outputs into 
 })
 it('uses the effective SRT preview protocol and refuses inherited full-resolution preview',()=>{
   const binding=plan([{outputId:'out',kind:'SRT',target:'srt://127.0.0.1:8890?streamid=publish:reserve',reason:null}])
-  expect(()=>prepareHaLocalOutputs(channel,[{...row,role:'PREVIEW'}],binding)).toThrow()
+  // Sem limite artificial: preview automático é válido; o que ultrapassa a
+  // proteção do monitor (8 Mbps) continua recusado.
+  expect(()=>prepareHaLocalOutputs(channel,[{...row,role:'PREVIEW',bitrateKbps:20000}],binding)).toThrow()
+  expect(()=>prepareHaLocalOutputs(channel,[{...row,role:'PREVIEW'}],binding)).not.toThrow()
+  // O perfil leve legado (o que fica no banco, compatível com a r88-35) sai automático.
   const result=prepareHaLocalOutputs(channel,[{...row,role:'PREVIEW',width:426,height:240,rateNum:15,bitrateKbps:450}],binding)
   expect(result.program).toEqual([])
-  expect(JSON.parse(result.preview!)).toMatchObject({kind:'srt',width:426,bitrateKbps:450})
+  const legacy=JSON.parse(result.preview!)
+  expect(legacy).toMatchObject({kind:'srt'});expect(legacy).not.toHaveProperty('width');expect(legacy).not.toHaveProperty('bitrateKbps')
+  // Teto preenchido de propósito pelo operador passa como está.
+  const ceiling=prepareHaLocalOutputs(channel,[{...row,role:'PREVIEW',width:1280,height:720,rateNum:25,bitrateKbps:3000}],binding)
+  expect(JSON.parse(ceiling.preview!)).toMatchObject({kind:'srt',width:1280,bitrateKbps:3000})
 })
 it('requires an explicit discovered connector for master SDI',()=>{
   const result=prepareHaLocalOutputs({...channel,programSdiDeviceId:'sdi:9'},[],plan([{outputId:'@masterSDI',kind:'SDI',target:'sdi:2',reason:null}]))

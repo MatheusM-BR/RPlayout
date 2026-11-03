@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type TechnicalLogEntry, type TechnicalLogLevel } from '../../api.js'
 import { useCan, deniedReason } from '../../domain/permissions.js'
+import { whenVisible } from '../../domain/live-topics.js'
 
 type LevelFilter = 'ALL' | 'WARN' | 'ERROR'
 type SourceFilter = 'ALL' | 'ENGINE' | 'SERVER'
@@ -51,7 +52,7 @@ export function TechnicalLogsPanel({ channelId, channelName }: { channelId: stri
   useEffect(() => {
     if (!canRead || paused) return
     void poll()
-    const timer = window.setInterval(() => void poll(), 3000)
+    const timer = window.setInterval(whenVisible(() => void poll()), 3000)
     return () => window.clearInterval(timer)
   }, [canRead, paused, poll])
 
