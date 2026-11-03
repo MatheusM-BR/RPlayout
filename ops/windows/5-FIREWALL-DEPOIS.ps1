@@ -1,0 +1,1 @@
+Get-NetFirewallApplicationFilter | Where-Object { $_.Program -match 'RPlayout' } | ForEach-Object { $r=$_ | Get-NetFirewallRule; '{0}|{1}|{2}' -f $r.DisplayName,$r.Action,$_.Program } | Out-File -Encoding utf8 D:\IA\Claude\RPlayout\firewall-DEPOIS.txt
