@@ -173,7 +173,7 @@ import {scopedSourceList} from './domain/sources.js'
 import { activeHorizonRule, executionHorizon } from './domain/continuous.js'
 import { localDate, rundownClock, rundownFrames, rundownMidnight } from './domain/rundown-clock.js'
 import { inspectBoundary, PlaylistBoundaryLedger } from './domain/playlist-boundary.js'
-import { AUTH_PASSWORD, AUTH_USER, BACKUP_DIR, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from './config.js'
+import { AUTH_PASSWORD, AUTH_USER, BACKUP_DIR, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL, METRIC_RETENTION } from './config.js'
 import { isIntentionalSilence, setIntentionalSilence } from './domain/intentional-silence.js'
 import { technicalLog, type TechnicalLogLevel } from './domain/technical-log.js'
 import { softwareVersion } from './domain/software-version.js'
@@ -3990,7 +3990,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if(query.channelId&&!access.channelAllowed(request,query.channelId))return reply.code(403).send({error:'Sem acesso ao histórico deste canal.'})
     const page=app.hostMetrics.historyPage(query.since,query.until,query.before,query.limit)
     const samples=page.samples.map(({sample})=>scopedOperationalSample(sample,id=>access.channelAllowed(request,id),query.channelId))
-    return {since:query.since,until:query.until,retainedDays:14,limit:query.limit,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
+    return {since:query.since,until:query.until,retainedDays:METRIC_RETENTION.days,limit:query.limit,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
   })
   server.get('/api/channels/:id/operational-metrics/history',async(request,reply)=>{
     const id=(request.params as {id:string}).id
@@ -4000,7 +4000,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const {since,until,before,limit}=query
     const page=app.hostMetrics.historyPage(since,until,before,limit)
     const samples=page.samples.map(({sampledAt,sample})=>({sampledAt,operations:scopedOperationalSample(sample,channelId=>access.channelAllowed(request,channelId),id).operations??null}))
-    return {channelId:id,since,until,retainedDays:14,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
+    return {channelId:id,since,until,retainedDays:METRIC_RETENTION.days,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
   })
 
   /**

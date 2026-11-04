@@ -7,6 +7,7 @@ import type Database from 'better-sqlite3'
 import { installationVault } from './secret-vault.js'
 import type {OperationalMetricFrame} from './operational-metrics.js'
 import {persistMetricHistory} from './metric-history-store.js'
+import {METRIC_RETENTION} from '../config.js'
 const run = promisify(execFile)
 type CpuCounters = { idle: number; total: number }
 export function cpuUtilization(previous: CpuCounters | null, current: CpuCounters): number | null {
@@ -213,7 +214,7 @@ export class HostMetrics {
             this.sqlite.prepare('INSERT OR IGNORE INTO health_events (id,component,state,severity,message,occurred_at) VALUES (?,?,?,?,?,?)').run(change.id+':recovered','HOST','recovered','INFO',message,sample.generatedAt)
           }
         }
-      })
+      },METRIC_RETENTION)
       this.incidents.commit(changes)
       this.cached=sample
       for(const change of changes)this.onIncident?.(change.kind==='open'?'degraded':'running',change.message,sample)
