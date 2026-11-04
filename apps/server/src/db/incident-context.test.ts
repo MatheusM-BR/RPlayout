@@ -39,12 +39,12 @@ it('contexto presente sem48 e48 registrado sem coluna são corrupção, não bac
   db.exec("ALTER TABLE health_events DROP COLUMN context; INSERT INTO schema_migrations VALUES(48,'durable-incident-context','now')")
   expect(()=>validateIncidentContexts(db)).toThrow('Schema')
 })
-it('backup48 real preserva contexto cifrado e recusa cópia de outro canal sem tocar origem',async()=>{
+it('backup48 real preserva contexto (em claro desde a r88-37) e recusa cópia de outro canal sem tocar origem',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'RPlayout-incident-context-current-backup-')),file=join(directory,'original.db'),invalid=join(directory,'invalid.db'),value=openDatabase(file);opened.push(value.sqlite)
   value.db.insert(healthEvents).values({id:'fixture',channelId:'a',component:'SIGNAL',state:'freeze',occurredAt:new Date().toISOString(),context:{version:1,capturedAt:new Date().toISOString(),channelId:'a',rundownId:'rd',revisionId:'edition',executionId:'execution',itemId:'item',itemName:'Jornal São José',elapsedFrames:25,engine:{ready:false,processPresent:false},sources:[],outputs:[],sourcesTruncated:false,outputsTruncated:false,physicalSignalValidated:false}}).run()
   value.sqlite.close();const before=readFileSync(file)
   await expect(validateBackupRestore(file)).resolves.toMatchObject({integrity:'ok'})
   copyFileSync(file,invalid);const broken=new Database(invalid);opened.push(broken);broken.exec("UPDATE health_events SET channel_id='b'");broken.close()
   await expect(validateBackupRestore(invalid)).rejects.toThrow('outro canal')
-  expect(readFileSync(file)).toEqual(before);expect(before.includes(Buffer.from('Jornal São José'))).toBe(false)
+  expect(readFileSync(file)).toEqual(before);expect(before.includes(Buffer.from('Jornal São José'))).toBe(true)
 })
