@@ -29,7 +29,7 @@ export function persistMetricHistory(sqlite:Database.Database,sample:{generatedA
  * fica a PRIMEIRA amostra de cada intervalo de `coarseSeconds` (a página de
  * histórico segue com o mesmo formato, só mais espaçada). Em lotes, para não
  * segurar o armazenamento num banco grande; devolve quantas linhas saíram. */
-export function compactMetricHistory(sqlite:Database.Database,now=Date.now(),retention:MetricRetention=DEFAULT_METRIC_RETENTION,batch=20_000):number{
+export function compactMetricHistory(sqlite:Database.Database,now=Date.now(),retention:MetricRetention=DEFAULT_METRIC_RETENTION,batch=5_000):number{
   if(!Number.isFinite(now)||!validRetention(retention))return 0
   const before=new Date(now-retention.fullResolutionHours*3600_000).toISOString()
   return sqlite.prepare(`DELETE FROM host_metric_samples WHERE sampled_at IN (
