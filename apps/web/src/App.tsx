@@ -19,7 +19,7 @@ import { loadSessionOperation } from './domain/session-load.js'
 import {JoinedRead} from './domain/joined-read.js'
 import { clientContext, ContextCommandQueue, SupersededContextError } from './domain/client-context.js'
 import { commitSnapshot } from './domain/snapshot-commit.js'
-import { clock, dur } from './format.js'
+import { clock, dur, newChannelFormatLabel } from './format.js'
 import type {
   HistoryState,
   ItemView,
@@ -1222,7 +1222,8 @@ export function App() {
             </button>
           </div>}
           {['Supervisor','Gestor','Administrador'].includes(sessionRole ?? '') && <p className="hint">
-            O canal nasce no padrão broadcast 1080i59.94 (ou 1080p59.94), com uma grade vazia. Depois aponte
+            O canal nasce em {newChannelFormatLabel()} (1920×1080 progressivo), com uma grade vazia; o formato
+            pode ser trocado em Configurações › Canal antes de ir ao ar. Depois aponte
             <code>RPLAYOUT_MEDIA</code> para a sua pasta de vídeos e use <b>LER PASTA</b>: o
             acervo é lido do disco, com duração, loudness e miniatura de cada arquivo.
           </p>}
