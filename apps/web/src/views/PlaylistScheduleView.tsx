@@ -24,7 +24,7 @@ import {OperationalRollbackDialog} from '../components/OperationalRollbackDialog
 import { canonicalLiveSourceRef, liveDefaultFrames, liveProtocolLabel } from '../liveSource.js'
 import { collapsedRows, findRepeatRuns } from '../domain/repeat-runs.js'
 import { ProtectedTimingZonesDialog } from '../components/ProtectedTimingZonesDialog.js'
-import { editorialContext, editorialSelection } from '../domain/editorial-context.js'
+import { editorialContext, editorialSelection, emptyDayState } from '../domain/editorial-context.js'
 import { SchedulePublicationPanel } from '../components/broadcast/SchedulePublicationPanel.js'
 import {AssetMetadataEditor} from '../components/AssetMetadataEditor.js'
 import {isCatalogMediaAsset} from '../domain/asset-metadata-review.js'
@@ -476,6 +476,9 @@ export function PlaylistScheduleView({
   // Identidade editorial é data + canal, nunca um fallback para o Master.
   const activeView = editorialContext(view,dateRundownView,selectedDate,channel.id)
   const isLoadedEditorial = activeView?.rundown.id === view.rundown.id
+  // Dia sem itens: "sem grade" oferece criar/copiar; "grade vazia" já existe
+  // (B4: depois de "Criar Grade em Branco" a tela repetia "nenhuma grade").
+  const emptyDay = emptyDayState(activeView)
   useEffect(() => {
     setSelectedItemIds(new Set())
     lastClickedIndexRef.current = null
@@ -2240,15 +2243,29 @@ export function PlaylistScheduleView({
                       <span className="material-symbols-outlined text-[28px] text-accent-ice">calendar_month</span>
                     </div>
                     <div className="flex flex-col gap-1 max-w-md">
-                      <h3 className="font-headline-sm text-sm font-bold text-on-surface uppercase">
-                        Nenhuma Grade Cadastrada para {selectedDateFormatted}
+                      <h3 className="font-headline-sm text-sm font-bold text-on-surface uppercase" data-testid="empty-day-title">
+                        {emptyDay === 'EMPTY_GRID' ? `Grade de ${selectedDateFormatted} criada · sem eventos` : `Nenhuma Grade Cadastrada para ${selectedDateFormatted}`}
                       </h3>
                       <p className="text-outline text-xs">
-                        Este dia ainda não possui eventos programados. Escolha uma das opções abaixo para iniciar a grade linear desta data:
+                        {emptyDay === 'EMPTY_GRID'
+                          ? 'A grade desta data já existe e está vazia. Insira itens pelo acervo (Inserir), por + Evento, importe uma lista ou preencha pelo Auto-Fill:'
+                          : 'Este dia ainda não possui eventos programados. Escolha uma das opções abaixo para iniciar a grade linear desta data:'}
                       </p>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg pt-2">
+                      {emptyDay === 'EMPTY_GRID' ? (
+                      <button
+                        onClick={() => void handleAddItem()}
+                        className="p-3 bg-surface-panel hover:bg-surface-container border border-border-subtle hover:border-primary/50 rounded flex items-center gap-2.5 text-left transition-colors cursor-pointer group sm:col-span-2"
+                      >
+                        <span className="material-symbols-outlined text-primary text-[22px] group-hover:scale-110 transition-transform">add_circle</span>
+                        <div className="flex flex-col">
+                          <span className="font-bold text-xs text-on-surface">+ Evento</span>
+                          <span className="text-[11px] text-outline">Inserir o primeiro item nesta grade</span>
+                        </div>
+                      </button>
+                      ) : <>
                       <button
                         onClick={() => handleCopyGrid()}
                         className="p-3 bg-surface-panel hover:bg-surface-container border border-border-subtle hover:border-primary/50 rounded flex items-center gap-2.5 text-left transition-colors cursor-pointer group"
@@ -2270,6 +2287,7 @@ export function PlaylistScheduleView({
                           <span className="text-[11px] text-outline">Começar grade limpa do zero</span>
                         </div>
                       </button>
+                      </>}
 
                       <button
                         onClick={handleImport}
