@@ -1,4 +1,5 @@
 import { confirmAction } from '../domain/confirm.js'
+import { LOUDNESS_TARGETS, TRUE_PEAK_CEILINGS } from '../domain/loudness-targets.js'
 import { MultichannelProgrammingPanel } from '../components/MultichannelProgrammingPanel.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect, useCallback,useRef } from 'react'
@@ -669,17 +670,14 @@ export function SettingsView({
                     {/* Loudness Target */}
                     <div className="flex flex-col gap-1.5">
                       <label className="font-label-caps text-[11px] text-outline uppercase font-bold">
-                        Target de Loudness (EBU R128)
+                        Alvo de loudness integrado (BS.1770)
                       </label>
                       <select
                         value={targetLufs}
                         onChange={(e) => setTargetLufs(Number(e.target.value))}
                         className="bg-surface-panel text-on-surface px-3 py-2 rounded border border-border-subtle font-label-mono text-[12px] outline-none focus:border-primary cursor-pointer"
                       >
-                        <option value={-24}>-24.0 LUFS (ATSC A/85 · comum na TV brasileira)</option>
-                        <option value={-23}>-23.0 LUFS (EBU R128)</option>
-                        <option value={-16}>-16.0 LUFS (Podcasts / Apple)</option>
-                        <option value={-14}>-14.0 LUFS (Web / YouTube)</option>
+                        {LOUDNESS_TARGETS.map(target => <option key={target.value} value={target.value}>{target.label}</option>)}
                       </select>
                     </div>
 
@@ -693,9 +691,7 @@ export function SettingsView({
                         onChange={(e) => setCeilingDbtp(Number(e.target.value))}
                         className="bg-surface-panel text-on-surface px-3 py-2 rounded border border-border-subtle font-label-mono text-[12px] outline-none focus:border-primary cursor-pointer"
                       >
-                        <option value={-1.0}>-1.0 dBTP (EBU R128 Rigoroso)</option>
-                        <option value={-0.5}>-0.5 dBTP (Padrão Masterização)</option>
-                        <option value={-2.0}>-2.0 dBTP (Compressão Lossy)</option>
+                        {TRUE_PEAK_CEILINGS.map(ceiling => <option key={ceiling.value} value={ceiling.value}>{ceiling.label}</option>)}
                       </select>
                     </div>
                   </div>
