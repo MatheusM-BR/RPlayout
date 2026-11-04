@@ -58,7 +58,14 @@ apps/web/src/components/scopes/ScopeDeck.tsx   painel (QC e PGM)
 - **WebGL2.** Cada amostra vira um ponto (`gl_VertexID` → `texelFetch`)
   somado com blending aditivo em textura `R32F` (com `EXT_float_blend`) ou
   `R16F`. Acima de 1280 px de largura amostra 1 em 2 por eixo. Medições
-  saem do histograma (6 KB lidos a 2 Hz; resolução de 0,46%).
+  saem do histograma (6 KB lidos a 2 Hz; resolução de 0,46%), **sem parar a
+  GPU** (r88-37): `readPixels` para um PBO (`PIXEL_PACK_BUFFER`, a cópia fica
+  na fila da GPU), `fenceSync` + `flush`, e a cada quadro seguinte
+  `clientWaitSync(cerca, 0, 0)` — tempo zero, nunca espera. Só quando a cerca
+  já passou os 6 KB vêm com `getBufferSubData`. Uma leitura pendente por vez;
+  troca de configuração descarta a pendente. As medições saem da mesma função
+  pura (`histogramStats`) que a leitura síncrona antiga usava: mesmo
+  histograma, mesmo resultado, um ou dois quadros depois.
 - **CPU.** Sem GPU: WASM sobre 640×360 a 10 Hz; sem WASM, `cpu-js.ts`
   (mesmo resultado do WASM, teste exato).
 - **Gratículo e cursor** num canvas 2D por cima, redesenhado só quando muda
@@ -172,6 +179,29 @@ O tempo de GPU em 1080p com GPU real fica para o Windows de produção
 GPU integrada atual faz em ~1 ms; o render dos painéis é limitado pelo
 tamanho do canvas (≈1 M fragmentos).
 
+### WebGL2: leitura do histograma sem "GPU stall" (r88-37)
+
+`node scripts/bench-scopes.mjs --swiftshader --quick` (Chromium da Playwright,
+SwiftShader, 640×360, passo 2) mede o `render()` de um quadro que pede a
+leitura das medições, sem `gl.finish()` — é o tempo em que a página fica
+parada:
+
+| leitura das medições | `render()` do quadro com leitura | quando chega o resultado |
+|---|---|---|
+| síncrona antiga (`readPixels` para a CPU) | 922 a 1652 ms (espera a GPU emulada terminar o quadro) | no mesmo quadro |
+| **assíncrona (PBO + `fenceSync`)** | **17,8 a 20,6 ms** (igual a um quadro sem leitura) | quando a GPU termina; a página segue desenhando |
+
+Paridade: `asyncEqualsSync: true` nas barras EBU 75% e no quadro natural (as
+medições da leitura assíncrona são idênticas às da síncrona sobre o mesmo
+histograma), e as densidades WebGL2 × WASM continuam idênticas (L1 = 0).
+`apps/web/src/scopes/webgl2.test.ts` prova, com um GL falso que só "executa" o
+`readPixels` quando a cerca passa: o `readPixels` vai para o PBO (deslocamento,
+nunca array da CPU), toda consulta usa tempo zero, uma pendente por vez, e o
+resultado é igual ao da leitura síncrona e fica a uma faixa do WASM exato.
+No SwiftShader a GPU é a CPU: os números absolutos não valem para produção, a
+diferença sim (a leitura síncrona trava a página pelo tempo da GPU inteira;
+com GPU real são poucos ms, mas é um ponto de sincronização a cada 500 ms).
+
 ## Loudness do arquivo inteiro
 
 Já existia: a sonda decodifica o áudio inteiro e mede com o mesmo
@@ -194,8 +224,8 @@ acima de 1 LU). Nesta rodada entraram os testes de conformidade EBU Tech
   uma faixa do histograma; gamut/croma não medidos (mostra "—").
 - Falsa cor sobre a imagem na CPU (sem GPU) a 10 Hz e 640×360.
 - O diamante mostra sub-black (soma negativa) colado ao centro.
-- WebGL2 lê o histograma com `readPixels` síncrono a 2 Hz (6 KB): o driver
-  avisa "GPU stall"; é curto, mas um PBO assíncrono seria o próximo passo.
+- ~~WebGL2 lê o histograma com `readPixels` síncrono.~~ Leitura assíncrona
+  por PBO e cerca desde a r88-37 (ver Desempenho).
 - SwiftShader (CI sem GPU) derruba o processo da GPU com `texture_external`,
   com vídeo e com canvas WebGPU; a bancada usa PNG, `copyExternalImageToTexture`
   e render fora de tela. Na interface, se a GPU cair o painel passa para WebGL2.

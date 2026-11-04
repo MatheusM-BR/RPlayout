@@ -3428,7 +3428,12 @@ impl Channel {
             // Source; connect their chains now without inventing dimensions
             // or pushing placeholder caps. Otherwise the first frame reaches
             // an unlinked appsrc and reception terminates with NotLinked.
-            let name = static_kind.or_else(|| caps.structure(0).map(|structure| structure.name().as_str()));
+            // Receptor compartilhado: o bin do item expõe a trilha antes de o
+            // item tocar, e o appsrc parado responde ANY; o nome diz o papel.
+            let ingest_kind = caps.is_any().then(|| pad.name()).and_then(|pad_name| {
+                if pad_name.starts_with("video") { Some("video/x-raw") } else if pad_name.starts_with("audio") { Some("audio/x-raw") } else { None }
+            });
+            let name = static_kind.or(ingest_kind).or_else(|| caps.structure(0).map(|structure| structure.name().as_str()));
             let Some(name) = name else { return; };
 
             if name.starts_with("video/") {

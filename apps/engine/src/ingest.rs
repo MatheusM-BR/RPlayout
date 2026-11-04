@@ -1057,12 +1057,62 @@ mod tests {
         drop(_other);
         let (fallen, fallen_gap, fallen_service) = measure(&mut channel, 3.0);
         eprintln!("[teste] PGM pelo receptor: sozinho {base:.1} q/s (maior intervalo {base_gap:?}); multiview 12× lento + receptor de monitoramento travado ao subir {slow:.1} q/s ({slow_gap:?}, serviço mais lento {slow_service:?}); sonda presa {stuck_rate:.1} q/s ({stuck_gap:?}); receptor de monitoramento caído {fallen:.1} q/s ({fallen_gap:?}, serviço {fallen_service:?})");
+        // A máquina de teste é compartilhada (2 núcleos, outros processos): o
+        // PGM aqui chega por SRT e já oscila sozinho. A régua é a mesma medida
+        // sem consumidor nenhum, com folga para o ruído da máquina.
+        let gap_limit = Duration::from_millis(200).max(base_gap * 5 / 2);
         for (label, rate, worst) in [("lento", slow, slow_gap), ("sonda presa", stuck_rate, stuck_gap), ("monitoramento caído", fallen, fallen_gap)] {
-            assert!(rate >= 22.5, "{label}: o PGM caiu para {rate:.1} q/s");
-            assert!(worst < Duration::from_millis(200), "{label}: quadro do PGM atrasou {worst:?}");
+            assert!(rate >= (base - 2.5).min(22.5), "{label}: o PGM caiu para {rate:.1} q/s (sozinho {base:.1})");
+            assert!(worst < gap_limit, "{label}: quadro do PGM atrasou {worst:?} (sozinho {base_gap:?})");
         }
         assert!(slow_service < Duration::from_millis(100), "abrir o receptor de monitoramento segurou o laço: {slow_service:?}");
         assert!(fallen_service < Duration::from_millis(100), "receptor caído segurou o laço: {fallen_service:?}");
         assert_eq!(channel.0.on_air_id().as_deref(), Some("pgm-1"));
+    }
+
+    fn ticks() -> u64 {
+        let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+        let fields: Vec<&str> = stat.rsplit_once(')').unwrap().1.split_whitespace().collect();
+        fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+    }
+    fn rss_mb() -> f64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        status.lines().find_map(|line| line.strip_prefix("VmRSS:")).and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<f64>().ok()).unwrap() / 1024.0
+    }
+
+    /// Custo de manter entradas recebidas o tempo todo (receptor de
+    /// monitoramento, SRT H.264 720p25 + AAC) e do mosaico lendo delas.
+    /// `cargo test --release medir_custo_ingest -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn medir_custo_ingest() {
+        if !available() { eprintln!("sem plugins; pulado"); return; }
+        let count = 4u16;
+        let senders: Vec<Sender> = (0..count).map(|i| sender(port(5) + i, 1280, 720)).collect();
+        std::thread::sleep(Duration::from_millis(1500));
+        let mut channel = channel("ingest-custo", 1280, 720);
+        let measure = |channel: &mut Running, seconds: f64| -> f64 {
+            std::thread::sleep(Duration::from_millis(1500));
+            let (start, at) = (ticks(), Instant::now());
+            while at.elapsed().as_secs_f64() < seconds { channel.0.service_outputs(); std::thread::sleep(Duration::from_millis(40)); }
+            (ticks() - start) as f64 / at.elapsed().as_secs_f64()
+        };
+        let base = measure(&mut channel, 6.0);
+        let base_rss = rss_mb();
+        let mut rows = Vec::new();
+        for n in 1..=count {
+            let sources: Vec<(String, String)> = (0..n).map(|i| (format!("cam-{i}"), endpoint(port(5) + i))).collect();
+            channel.0.set_ingest_watched(sources).unwrap();
+            let cpu = measure(&mut channel, 6.0);
+            rows.push((n, cpu - base, rss_mb() - base_rss));
+        }
+        // Mosaico LEVE 2×2 lendo os 4 receptores (escala por célula + composição, sem codificar).
+        let cells: Vec<CellSource> = (0..4u16).map(|i| source_cell(&format!("cam-{i}"), port(5) + i)).collect();
+        watch_multiview(&mut channel, cells, MvHooks::default());
+        let with_mosaic = measure(&mut channel, 6.0);
+        let frames = channel.0.multiview_state().unwrap().frames;
+        for (n, cpu, rss) in &rows { eprintln!("[medida] {n} entrada(s) recebida(s): +{cpu:.0}% de um núcleo, +{rss:.0} MB RSS ({:.0}% e {:.0} MB por entrada)", cpu / *n as f64, rss / *n as f64); }
+        eprintln!("[medida] + mosaico LEVE 2×2 sobre os 4 receptores (sem codificar): +{:.0}% de um núcleo; {frames} quadros compostos", with_mosaic - base - rows.last().unwrap().1);
+        drop(senders);
     }
 }
