@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { installationVault, SECRET_PREFIX } from '../domain/secret-vault.js'
 import { sanitizeDiagnostic } from '../domain/sanitize-diagnostic.js'
+import { assertLiveOutagesWithoutCredential } from './live-outages.js'
 import { envelopeColumns, protectedColumns, needsEnvelope, isEnvelope } from './protected-columns.js'
 
 function hasIncidentContextColumn(sqlite:Database.Database){
@@ -58,6 +59,8 @@ export function validateDatabaseSecrets(sqlite: Database.Database): { protectedS
       if (needsEnvelope(row.value, context)) throw new Error('Backup contém credencial sem proteção em '+context+'; conclua a migração do cofre antes do backup.')
     }
   }
+  // Paradas do ao vivo (migração 59): só identificador e nome mascarado.
+  assertLiveOutagesWithoutCredential(sqlite)
   return { protectedSecrets: 'verified', vaultFingerprint: vault.fingerprint }
 }
 

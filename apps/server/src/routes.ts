@@ -28,6 +28,7 @@ import {inspectInsertion,requireInsertionReview,OperationalInsertions,type Inser
 import {installationVault,assertRecoveryPassword} from './domain/secret-vault.js'
 import {setVaultRecoveryPassword,vaultRecoveryETag,vaultRecoveryStatus,VaultRecoveryConflict} from './domain/vault-recovery.js'
 import {AttemptLimiter} from './domain/attempt-limiter.js'
+import {storedSourceKey} from './domain/source-address.js'
 import {sealStoredValue} from './db/protected-columns.js'
 import {inspectCompensation,commitCompensation,compensationReceipt} from './domain/operational-compensation.js'
 import {inspectAlignment,commitAlignment} from './domain/operational-alignment.js'
@@ -6174,7 +6175,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = app.runtimes.get(id), now = Date.now()
     return reply.header('cache-control', 'private, no-store').send({ channelId: id, policy: stored.policy, revision: stored.revision, updatedAt: stored.updatedAt, updatedBy: stored.updatedBy,
       nativeEngine: runtime ? runtime.transport instanceof EngineTransport : false,
-      inputs: runtime ? runtime.liveWatchdog.status(now, stored.policy) : [],
+      // Endereço bruto (passphrase SRT) não sai para o navegador: só o identificador.
+      inputs: runtime ? runtime.liveWatchdog.status(now, stored.policy).map(input => ({ ...input, sourceKey: storedSourceKey(input.sourceKey) })) : [],
       events: runtime ? runtime.liveWatchdog.history.slice(-30).reverse().map(event => ({ at: new Date(event.at).toISOString(), sourceName: event.sourceName, kind: event.kind, message: event.message })) : [] })
   })
   server.put('/api/channels/:id/live-watchdog', async (request, reply) => {

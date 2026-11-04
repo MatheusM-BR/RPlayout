@@ -73,6 +73,7 @@ import {
 import { RelaySupervisor } from './domain/relays.js'
 import { destinations, guestKeys, liveSources as liveSourcesTable } from './db/schema.js'
 import { configuredSourceEndpoint } from './domain/item-source-binding.js'
+import { displaySourceAddress, storedSourceKey } from './domain/source-address.js'
 import { existsSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { ContinuityCache } from './domain/continuity-cache.js'
@@ -1347,7 +1348,7 @@ export class ChannelRuntime {
     canMonitor: () => this.temMonitor('pvw') || (this.transport instanceof EngineTransport && this.transport.supportsIngest()),
     contingencyOrigin: () => this.watchdogContingencyOrigin(),
     openOutage: sourceKey => {
-      const row=this.db.$client.prepare('SELECT id,started_at AS startedAt,reasons,action FROM live_outages WHERE channel_id=? AND source_key=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1').get(this.channel.id,sourceKey) as {id:string;startedAt:string;reasons:string;action:string}|undefined
+      const row=this.db.$client.prepare('SELECT id,started_at AS startedAt,reasons,action FROM live_outages WHERE channel_id=? AND source_key=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1').get(this.channel.id,storedSourceKey(sourceKey)) as {id:string;startedAt:string;reasons:string;action:string}|undefined
       if(!row)return null
       let reasons:import('@rplayout/protocol').WatchdogDetection[]=[];try{reasons=JSON.parse(row.reasons)}catch{}
       return {id:row.id,startedAt:Date.parse(row.startedAt),reasons,action:row.action as import('@rplayout/protocol').LiveOutageAction}
@@ -1405,7 +1406,7 @@ export class ChannelRuntime {
     const sourceId=entry.nativeCatalogBindings?.[bus]??item?.sourceRef??null
     const catalog=sourceId?this.watchdogCatalog.rows.get(sourceId):undefined
     const scheme=/^([a-z0-9]+):/i.exec(entry.source)?.[1]?.toUpperCase()??null
-    return {sourceKey:entry.source,sourceId,name:catalog?.name??item?.title??entry.source.split('?')[0]!,kind:catalog?.kind??scheme,itemId,
+    return {sourceKey:entry.source,sourceId,name:catalog?.name??item?.title??displaySourceAddress(entry.source),kind:catalog?.kind??scheme,itemId,
       sample:(entry.measurements?.[bus] as WatchdogSample|undefined)??null}
   }
   private watchdogPolicyCache:StoredLiveWatchdogPolicy|null=null

@@ -45,7 +45,7 @@ import {migrateChannelMirrors,migrateMirrorUnlock,migrateMirrorUnlockExpiry} fro
 import {migrateAssetCutMarks} from './asset-cut-marks.js'
 import {migrateAuditImmutable} from './audit-immutable.js'
 import {migrateLiveWatchdogPolicies} from './live-watchdog-policies.js'
-import {migrateLiveOutages} from './live-outages.js'
+import {migrateLiveOutages,migrateLiveOutageSourceKeys} from './live-outages.js'
 import {assertNoUncertainUpgradeProfile} from '../domain/upgrade-profile-adoption.js'
 import {assertNoUnboundReturnCandidate} from './return-candidate-admission.js'
 
@@ -634,6 +634,7 @@ export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.D
     migrateLiveWatchdogPolicies(sqlite)
     migrateLiveOutages(sqlite)
     migrateCredentialOnlyVault(sqlite)
+    migrateLiveOutageSourceKeys(sqlite)
     assertSchemaCompatibility(sqlite,true)
     assertNoUncertainUpgradeProfile(sqlite)
     options.onOpened?.(sqlite)

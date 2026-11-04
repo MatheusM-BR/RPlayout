@@ -25,6 +25,8 @@ describe('restaurar-sem-cofre de ponta a ponta (backup r88-37, migração 58)',(
     const source=join(directory,'backup.db'),target=join(directory,'novo.db')
     const now=new Date().toISOString()
     const seed=openDatabase(source)
+    // Backup da r88-37: esquema até a migração 58 (a 59 só converte dados).
+    seed.sqlite.prepare('DELETE FROM schema_migrations WHERE version>58').run()
     expect(seed.sqlite.prepare('SELECT max(version) v FROM schema_migrations').get()).toEqual({v:58})
     const enc=(value:string)=>installationVault().encrypt(value,'operator_decisions.payload')
     const insert=seed.sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,item_id,kind,payload,created_at) VALUES(?,?,NULL,?,?,?)')
