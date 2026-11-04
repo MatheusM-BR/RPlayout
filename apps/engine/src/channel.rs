@@ -847,6 +847,17 @@ fn open_failure(spec: &ItemSpec, where_: &str) -> String {
     }
 }
 
+/// Papel de uma trilha do receptor compartilhado que ainda responde ANY (o
+/// appsrc parado). Vale só para o bin `ingest-*` do item: com o ingest
+/// desligado (r88-36), um pad ANY de decodificador continua ignorado, como
+/// antes, mesmo que se chame `video_0`/`audio_0`.
+pub(crate) fn ingest_pad_kind(pad: &gst::Pad) -> Option<&'static str> {
+    let parent = pad.parent_element()?;
+    if !parent.name().starts_with("ingest-") || parent.downcast_ref::<gst::Bin>().is_none() { return None; }
+    let name = pad.name();
+    if name.starts_with("video") { Some("video/x-raw") } else if name.starts_with("audio") { Some("audio/x-raw") } else { None }
+}
+
 /// De onde o item tira o sinal: arquivo do acervo ou fonte ao vivo.
 ///
 /// Fonte com esquema de URI (`srt://`, `rtsp://`, `rtmp://`) entra pelo mesmo
@@ -3436,9 +3447,7 @@ impl Channel {
             // an unlinked appsrc and reception terminates with NotLinked.
             // Receptor compartilhado: o bin do item expõe a trilha antes de o
             // item tocar, e o appsrc parado responde ANY; o nome diz o papel.
-            let ingest_kind = caps.is_any().then(|| pad.name()).and_then(|pad_name| {
-                if pad_name.starts_with("video") { Some("video/x-raw") } else if pad_name.starts_with("audio") { Some("audio/x-raw") } else { None }
-            });
+            let ingest_kind = caps.is_any().then(|| ingest_pad_kind(pad)).flatten();
             let name = static_kind.or(ingest_kind).or_else(|| caps.structure(0).map(|structure| structure.name().as_str()));
             let Some(name) = name else { return; };
 

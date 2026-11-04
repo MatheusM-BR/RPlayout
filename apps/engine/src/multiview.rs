@@ -1227,6 +1227,37 @@ mod tests {
     const BLUE: f64 = 41.0;
     const WHITE: f64 = 235.0;
 
+    /// B5 (r88-37): com o ingest desligado, a mesma fonte (mesmo decodificador
+    /// e mesmo pad) que só troca de barramento (TAKE: PVW → PGM) mantém a sonda
+    /// e o último quadro; só o tally muda. Na r88-36 a sonda era reinstalada no
+    /// MESMO pad e o último quadro apagado: a diferença é só não piscar. Outro
+    /// decodificador (identidade nova) continua reinstalando do zero.
+    #[test]
+    fn troca_de_barramento_da_mesma_fonte_so_muda_o_tally() {
+        gst::init().unwrap();
+        let red = source("red", 320, 180);
+        let cell = CellSource::Source { id: "cam".into(), endpoint: None };
+        let mut multiview = Multiview::new("mv-teste-tally", 25, 1, None);
+        multiview.configure(Composition { layout: Layout::Grid2x2, cells: vec![cell, CellSource::Empty, CellSource::Empty, CellSource::Empty], quality: Quality::Leve }).unwrap();
+        multiview.set_wanted(true);
+        let mut points = TapPoints { sources: vec![("cam".into(), point(&red, 7, "pvw"))], ..TapPoints::default() };
+        serve(&mut multiview, &points, Duration::from_millis(400));
+        let (_, buffer, seq_before, _) = multiview.cells[0].tap.snapshot();
+        assert!(buffer.is_some() && seq_before > 0, "sonda não recebeu quadro");
+        assert_eq!(multiview.cells[0].installed.as_ref().unwrap().bus, "pvw");
+        points.sources = vec![("cam".into(), point(&red, 7, "pgm"))];
+        multiview.service(&points);
+        let (_, buffer, seq_after, _) = multiview.cells[0].tap.snapshot();
+        assert!(buffer.is_some() && seq_after >= seq_before, "o último quadro não pode sumir na troca de barramento");
+        assert_eq!(multiview.cells[0].installed.as_ref().unwrap().bus, "pgm");
+        // Decodificador novo no mesmo pad: reinstala e começa limpo.
+        points.sources = vec![("cam".into(), point(&red, 8, "pgm"))];
+        multiview.service(&points);
+        let identity = multiview.cells[0].installed.as_ref().unwrap().identity;
+        assert_eq!(identity, 8);
+        drop(multiview);
+    }
+
     #[test]
     fn composes_each_source_in_its_cell_holds_frozen_and_marks_no_signal() {
         gst::init().unwrap();

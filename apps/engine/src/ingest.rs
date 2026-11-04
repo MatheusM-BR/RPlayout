@@ -1328,4 +1328,27 @@ mod tests {
         assert_eq!(sdi_channels(&receiver.spec.lock().unwrap()), 2);
         drop(on_air);
     }
+
+    // ---- r88-37 revisão (B5): pad ANY só tem papel pelo nome no bin do ingest ----
+
+    #[test]
+    fn pad_any_so_ganha_papel_pelo_nome_no_bin_do_receptor() {
+        gst::init().unwrap();
+        let ghost = |bin: &gst::Bin, name: &str| {
+            let pad = gst::GhostPad::builder(gst::PadDirection::Src).name(name).build();
+            bin.add_pad(&pad).unwrap();
+            pad.upcast::<gst::Pad>()
+        };
+        let ingest = gst::Bin::with_name("ingest-item-1-7");
+        assert_eq!(super::super::ingest_pad_kind(&ghost(&ingest, "video")), Some("video/x-raw"));
+        assert_eq!(super::super::ingest_pad_kind(&ghost(&ingest, "audio_1")), Some("audio/x-raw"));
+        assert_eq!(super::super::ingest_pad_kind(&ghost(&ingest, "text_0")), None);
+        // Ingest desligado: o decodificador do próprio item (decodebin3 nomeia
+        // video_0/audio_0) com pad ANY continua ignorado, como na r88-36.
+        let decoder = gst::Bin::with_name("decodebin3-0");
+        assert_eq!(super::super::ingest_pad_kind(&ghost(&decoder, "video_0")), None);
+        assert_eq!(super::super::ingest_pad_kind(&ghost(&decoder, "audio_0")), None);
+        let loose = gst::GhostPad::builder(gst::PadDirection::Src).name("video").build();
+        assert_eq!(super::super::ingest_pad_kind(loose.upcast_ref()), None);
+    }
 }

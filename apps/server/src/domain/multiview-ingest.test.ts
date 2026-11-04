@@ -11,7 +11,7 @@ describe('multiview composto: ingest único por entrada',()=>{
       {id:'off',kind:'SRT',targetUrl:'srt://10.0.0.6:9000',enabled:false},
     ]
     const composition={layout:'MV_2X2' as const,quality:'LEVE' as const,cells:[{kind:'source' as const,id:'cam-1'},{kind:'source' as const,id:'ndi-1'},{kind:'source' as const,id:'off'},{kind:'pgm' as const}]}
-    const engine=engineComposition(composition,sources)
+    const engine=engineComposition(composition,sources,{ingestShared:true})
     expect(engine.cells).toEqual([
       {kind:'source',id:'cam-1',endpoint:'srt://10.0.0.5:9000?mode=caller&passphrase=segredo123'},
       {kind:'source',id:'ndi-1',endpoint:'ndi:ESTUDIO (CAM 2)'},
@@ -20,6 +20,14 @@ describe('multiview composto: ingest único por entrada',()=>{
     ])
     // A composição salva/mostrada não ganha o endereço.
     expect(JSON.stringify(composition)).not.toContain('srt://')
+  })
+
+  it('com o ingest desligado, o endereço do cadastro (com passphrase) não vai ao engine: só o id',()=>{
+    const sources=[{id:'cam-1',kind:'SRT',targetUrl:'srt://10.0.0.5:9000?mode=caller&passphrase=segredo123',enabled:true},{id:'ndi-1',kind:'NDI',targetUrl:'ESTUDIO (CAM 2)',enabled:true}]
+    const composition={layout:'MV_2X2' as const,quality:'LEVE' as const,cells:[{kind:'source' as const,id:'cam-1'},{kind:'source' as const,id:'ndi-1',endpoint:'srt://x?passphrase=velha'} as never,{kind:'pvw' as const},{kind:'empty' as const}]}
+    const engine=engineComposition(composition,sources,{ingestShared:false})
+    expect(engine.cells).toEqual([{kind:'source',id:'cam-1'},{kind:'source',id:'ndi-1'},{kind:'pvw'},{kind:'empty'}])
+    expect(JSON.stringify(engine)).not.toContain('passphrase')
   })
 
   it('na contingência, o watchdog observa a entrada pelo receptor compartilhado, sem PVW',async()=>{

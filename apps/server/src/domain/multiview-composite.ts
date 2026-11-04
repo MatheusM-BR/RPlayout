@@ -100,7 +100,11 @@ export function saveComposite(db:Db,channelId:string,body:unknown,ifMatch:unknow
  * desconhecida vai sem endereço: só aparece onde já estiver aberta. O
  * endereço nunca é gravado nem volta ao navegador.
  */
-export function engineComposition(composition:MultiviewComposition,sources:ReadonlyArray<{id:string;kind:string;targetUrl:string;enabled:boolean}>):MultiviewComposition{
+export function engineComposition(composition:MultiviewComposition,sources:ReadonlyArray<{id:string;kind:string;targetUrl:string;enabled:boolean}>,options:{ingestShared:boolean}):MultiviewComposition{
+  // Sem receptor compartilhado (RPLAYOUT_INGEST_SHARED=0, o padrão), o engine
+  // só acha a entrada onde ela já está aberta e não usa o endereço: ele não vai
+  // (pode levar passphrase SRT), só o id.
+  if(!options.ingestShared)return {...composition,cells:composition.cells.map(cell=>cell.kind==='source'?{kind:'source',id:cell.id}:cell)}
   const byId=new Map(sources.filter(source=>source.enabled&&source.targetUrl).map(source=>[source.id,configuredSourceEndpoint(source)]))
   return {...composition,cells:composition.cells.map(cell=>{
     if(cell.kind!=='source')return cell

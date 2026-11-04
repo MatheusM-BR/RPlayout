@@ -1897,7 +1897,7 @@ export class ChannelRuntime {
       this.multiviewComposition = composition
       // Para o engine, cada entrada vai com o endereço do cadastro: o receptor
       // compartilhado mostra todas as entradas, não só as que estão no ar.
-      transport.configureMultiview(engineComposition(composition, sources))
+      transport.configureMultiview(engineComposition(composition, sources, { ingestShared: transport.supportsIngest() }))
     }).catch((error: unknown) => console.error('[multiview] layout não aplicado:', error instanceof Error ? error.message : error))
       .finally(() => { this.multiviewSyncing = false })
   }
