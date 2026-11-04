@@ -2,6 +2,7 @@ import { confirmAction, notify } from '../domain/confirm.js'
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
 import { MirrorStatus } from '../components/MirrorStatus.js'
 import { useEscape } from '../domain/use-escape.js'
+import { insertBlockReason, qcStatusLabel } from '../domain/insert-block.js'
 import { UndoRedoButtons } from '../components/UndoRedoButtons.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
@@ -907,6 +908,8 @@ export function PlaylistScheduleView({
 
   // Inserir item da Biblioteca MAM na Grade
   const handleInsertFromMam = async (asset: LibraryAsset & { isLiveSource?: boolean; sourceRef?: string }) => {
+    const blocked = insertBlockReason(asset)
+    if (blocked) { void notify(blocked); return }
     try {
       const target=await ensureEditorialView(),rId=target.rundown.id
       if (asset.isLiveSource) {
@@ -1545,6 +1548,11 @@ export function PlaylistScheduleView({
                                 IGNORADO
                               </span>
                             )}
+                            {!asset.ignored && insertBlockReason(asset) && (
+                              <span data-testid="mam-qc-status" title={insertBlockReason(asset) ?? undefined} className={`font-label-caps text-[11px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap ${asset.qcStatus === 'REJECTED' || asset.qcStatus === 'BLOCKED' || asset.probeError ? 'bg-error/20 text-error border-error/40' : 'bg-armed-amber/10 text-armed-amber border-armed-amber/40'}`}>
+                                {qcStatusLabel(asset)}
+                              </span>
+                            )}
                           </div>
 
                           <div className="flex items-center gap-2 shrink-0 font-label-mono text-[12px] text-outline">
@@ -1556,8 +1564,9 @@ export function PlaylistScheduleView({
                                 e.stopPropagation()
                                 handleInsertFromMam(asset)
                               }}
-                              className="px-1.5 py-0.5 rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[11px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm"
-                              title="Inserir na grade do dia selecionado"
+                              disabled={Boolean(insertBlockReason(asset))}
+                              className="px-1.5 py-0.5 rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[11px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-primary/20 disabled:hover:text-primary"
+                              title={insertBlockReason(asset) ?? 'Inserir na grade do dia selecionado'}
                             >
                               <span className="material-symbols-outlined text-[11px]">add</span>
                               <span>Inserir</span>
