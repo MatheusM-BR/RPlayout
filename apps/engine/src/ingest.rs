@@ -154,6 +154,8 @@ impl Sub {
     }
 
     fn deliver_video(&self, sample: &gst::Sample) {
+        // Trilha que chegou no meio da ativação do item: expõe agora.
+        if self.active.load(Ordering::Acquire) && self.video.lock().is_ok_and(|video| video.is_none()) { self.ensure_video(); }
         let Ok(video) = self.video.lock() else { return };
         let Some(port) = video.as_ref() else { return };
         // Pad não ligado: empurrar faria o appsrc acusar NOT_LINKED no item.
@@ -163,6 +165,7 @@ impl Sub {
     }
 
     fn deliver_audio(&self, track: usize, sample: &gst::Sample, duration: Option<gst::ClockTime>) {
+        if self.active.load(Ordering::Acquire) && self.audio.lock().is_ok_and(|audio| !audio.contains_key(&track)) { self.ensure_audio(track); }
         let Ok(audio) = self.audio.lock() else { return };
         let Some(port) = audio.get(&track) else { return };
         if port.ghost.peer().is_none() { return; }
@@ -494,6 +497,9 @@ impl Receiver {
         }
     }
 
+    #[cfg(test)]
+    pub fn pipeline_for_test(&self) -> Option<gst::Pipeline> { self.running.lock().ok()?.as_ref().map(|running| running.pipeline.clone()) }
+
     /// Pad do appsink de vídeo da geração atual: ponto de sonda do multiview.
     pub fn tap(&self) -> Option<(gst::Pad, u64)> {
         let running = self.running.lock().ok()?;
@@ -790,3 +796,273 @@ impl Hub {
 }
 
 impl Drop for Hub { fn drop(&mut self) { self.shutdown(); } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::multiview::{CellSource, CellSignal, Composition, Hooks as MvHooks, Layout, Quality, BUS as MV_BUS};
+    use std::sync::Mutex as StdMutex;
+
+    struct Running(Channel);
+    impl Drop for Running { fn drop(&mut self) { self.0.shutdown(); } }
+    struct Sender(std::process::Child);
+    impl Drop for Sender { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+
+    fn available() -> bool {
+        gst::init().unwrap();
+        if gst::ElementFactory::find("rplayoutlimiter").is_none() { crate::limiter_element::register().unwrap(); }
+        ["srtsrc", "srtsink", "x264enc", "avenc_aac", "mpegtsmux", "h264parse", "compositor"].iter().all(|name| gst::ElementFactory::find(name).is_some())
+            && std::process::Command::new("gst-launch-1.0").arg("--version").output().is_ok()
+    }
+
+    fn port(offset: u16) -> u16 { 22_000 + (std::process::id() % 500) as u16 * 8 + offset }
+
+    /// Gerador SRT em processo próprio (listener): a CPU dele não entra na conta do engine.
+    fn sender(port: u16, width: i32, height: i32) -> Sender {
+        let description = format!("videotestsrc is-live=true pattern=ball ! video/x-raw,width={width},height={height},framerate=25/1 \
+            ! x264enc tune=zerolatency speed-preset=ultrafast key-int-max=25 bitrate=1500 ! h264parse ! queue ! mpegtsmux name=m alignment=7 \
+            ! srtsink uri=srt://127.0.0.1:{port}?mode=listener wait-for-connection=false \
+            audiotestsrc is-live=true volume=0.3 ! audio/x-raw,rate=48000,channels=2 ! avenc_aac ! queue ! m.");
+        Sender(std::process::Command::new("gst-launch-1.0").arg("-q").args(description.split_whitespace())
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().expect("gst-launch-1.0"))
+    }
+
+    fn endpoint(port: u16) -> String { format!("srt://127.0.0.1:{port}?mode=caller&latency=120") }
+
+    fn open_channel(name: &str, width: i32, height: i32) -> Running { channel(name, width, height) }
+    fn channel(name: &str, width: i32, height: i32) -> Running {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let mut channel = Running(Channel::new(Config { channel_id: format!("{name}-{unique}"), width, height, fps_n: 25, fps_d: 1, bitrate_kbps: 450,
+            ceiling_dbtp: -1.0, audio_channels: 2, scan: Scan::Progressive, top_field_first: true, outputs: vec![Output::Null], preview: None }).unwrap());
+        channel.0.ingest.set_linger(Duration::from_millis(300));
+        channel.0.start().unwrap();
+        channel
+    }
+
+    fn spec(item: &str, id: &str, port: u16) -> ItemSpec {
+        serde_json::from_value(serde_json::json!({"itemId": item, "source": endpoint(port), "configuredSourceId": id, "trimIn": 0, "trimOut": 0, "gainDb": 0})).unwrap()
+    }
+
+    fn serve_until(channel: &mut Running, limit: Duration, mut done: impl FnMut(&mut Running) -> bool) -> Option<Duration> {
+        let started = Instant::now();
+        while started.elapsed() < limit {
+            channel.0.service_outputs();
+            if channel.0.pending_live_take { let _ = channel.0.service_pending_take(); }
+            if done(channel) { return Some(started.elapsed()); }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    fn armed_ready(channel: &mut Running) -> bool { channel.0.armed.as_ref().is_some_and(|item| item.live_ready()) }
+
+    fn take(channel: &mut Running) {
+        channel.0.take().unwrap();
+        serve_until(channel, Duration::from_secs(10), |channel| !channel.0.pending_live_take).expect("TAKE não confirmou");
+    }
+
+    fn watch_multiview(channel: &mut Running, cells: Vec<CellSource>, hooks: MvHooks) {
+        let multiview = channel.0.attach_multiview_for_test();
+        multiview.set_hooks(hooks);
+        multiview.configure(Composition { layout: Layout::Grid2x2, cells, quality: Quality::Leve }).unwrap();
+        assert!(channel.0.set_monitor(MV_BUS, true));
+    }
+
+    fn source_cell(id: &str, port: u16) -> CellSource { CellSource::Source { id: id.into(), endpoint: Some(endpoint(port)) } }
+
+    /// Conta e mede a cadência dos quadros que o item entrega à superfície dele.
+    fn item_cadence(channel: &Running) -> (Arc<AtomicU64>, Arc<StdMutex<(Option<Instant>, Duration)>>) {
+        let sink = channel.0.on_air.as_ref().unwrap().find_element_for_test("intervideosink").unwrap();
+        let frames = Arc::new(AtomicU64::new(0));
+        let gap = Arc::new(StdMutex::new((None::<Instant>, Duration::ZERO)));
+        let (count, worst) = (Arc::clone(&frames), Arc::clone(&gap));
+        sink.static_pad("sink").unwrap().add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+            count.fetch_add(1, Ordering::Relaxed);
+            let now = Instant::now();
+            let mut state = worst.lock().unwrap();
+            if let Some(last) = state.0 { state.1 = state.1.max(now - last); }
+            state.0 = Some(now);
+            gst::PadProbeReturn::Ok
+        });
+        (frames, gap)
+    }
+
+    #[test]
+    fn uma_fonte_aberta_uma_vez_com_varios_consumidores() {
+        if !available() { eprintln!("sem plugins SRT/x264; teste pulado"); return; }
+        let port = port(0);
+        let _sender = sender(port, 320, 180);
+        std::thread::sleep(Duration::from_millis(500));
+        let mut channel = channel("ingest-um", 320, 180);
+        // Watchdog acompanhando, multiview com a entrada numa célula e o NEXT.
+        channel.0.set_ingest_watched(vec![("cam-1".into(), endpoint(port))]).unwrap();
+        watch_multiview(&mut channel, vec![source_cell("cam-1", port), CellSource::Pgm, CellSource::Next, CellSource::Empty], MvHooks::default());
+        channel.0.load(spec("next-1", "cam-1", port)).unwrap();
+        if serve_until(&mut channel, Duration::from_secs(10), armed_ready).is_none() {
+            let item = channel.0.armed.as_ref().unwrap();
+            let lease = item.ingest.as_ref().unwrap();
+            let sub = lease.sub.as_ref().unwrap();
+            eprintln!("DEBUG frames={} delivered={} video_port={} linked={:?} state={:?} video_ready={} pads={:?}", lease.receiver.frames.load(Ordering::Relaxed), lease.delivered(),
+                sub.video.lock().unwrap().is_some(), sub.video.lock().unwrap().as_ref().map(|p| p.ghost.peer().is_some()), item.pipeline.current_state(), item.video_ready.load(Ordering::Relaxed),
+                sub.bin.pads().iter().map(|p| p.name().to_string()).collect::<Vec<_>>());
+            panic!("NEXT sem quadro pelo receptor");
+        }
+        let state = serve_until(&mut channel, Duration::from_secs(5), |channel| channel.0.multiview_state().is_some_and(|state| state.cells[0].signal == CellSignal::Live))
+            .map(|_| channel.0.multiview_state().unwrap());
+        let state = state.expect("célula da entrada sem quadro");
+        let receivers = channel.0.ingest.receivers();
+        assert_eq!(receivers.len(), 1, "uma entrada, um receptor");
+        let receiver = &receivers[0];
+        assert_eq!(receiver.openings(), 1, "a fonte foi aberta mais de uma vez");
+        assert_eq!(receiver.consumer_kinds(), vec![Consumer::Item, Consumer::Multiview, Consumer::Watchdog]);
+        assert_eq!(state.cells[0].receiver, Some(receiver.id()));
+        assert_eq!(state.cells[0].bus, Some("next"), "o tally segue o barramento do item");
+        // TAKE: o mesmo receptor vai ao ar, sem reabrir; a célula só muda o tally.
+        take(&mut channel);
+        assert_eq!(channel.0.on_air_id().as_deref(), Some("next-1"));
+        serve_until(&mut channel, Duration::from_secs(2), |channel| channel.0.multiview_state().is_some_and(|state| state.cells[0].bus == Some("pgm"))).expect("tally não foi para o PGM");
+        assert_eq!(channel.0.ingest.receivers().len(), 1);
+        assert_eq!(receiver.openings(), 1, "TAKE reabriu a fonte");
+        // Relatório do watchdog: medido uma vez por entrada.
+        let report = channel.0.ingest_reports().pop().unwrap();
+        assert_eq!(report.source_ids, vec!["cam-1".to_string()]);
+        assert!(report.signal.video_present && report.signal.received_frames > 10, "{report:?}");
+        assert_eq!(report.kind, "srt");
+        let json = serde_json::to_string(&channel.0.multiview_state().unwrap()).unwrap();
+        assert!(!json.contains("srt://"), "o endereço não pode sair no estado do multiview: {json}");
+    }
+
+    #[test]
+    fn receptor_desaparece_sem_consumidores() {
+        if !available() { eprintln!("sem plugins SRT/x264; teste pulado"); return; }
+        let port = port(1);
+        let _sender = sender(port, 320, 180);
+        std::thread::sleep(Duration::from_millis(500));
+        let mut channel = channel("ingest-some", 320, 180);
+        channel.0.set_ingest_watched(vec![("cam-1".into(), endpoint(port))]).unwrap();
+        let receiver = channel.0.ingest.receivers().pop().unwrap();
+        serve_until(&mut channel, Duration::from_secs(10), |_| receiver.frames.load(Ordering::Relaxed) > 5).expect("receptor sem quadro");
+        let weak = Arc::downgrade(&receiver);
+        drop(receiver);
+        channel.0.set_ingest_watched(Vec::new()).unwrap();
+        // Ainda na espera (linger): outro consumidor reaproveitaria.
+        channel.0.service_outputs();
+        assert_eq!(channel.0.ingest.receivers().len(), 1);
+        serve_until(&mut channel, Duration::from_secs(3), |channel| channel.0.ingest.receivers().is_empty()).expect("receptor sem consumidor não fechou");
+        // O NULL corre numa thread própria; depois dele não sobra referência.
+        let gone = Instant::now() + Duration::from_secs(3);
+        while weak.upgrade().is_some() && Instant::now() < gone { channel.0.service_outputs(); std::thread::sleep(Duration::from_millis(20)); }
+        assert!(weak.upgrade().is_none(), "receptor fechado continua vivo");
+        // Item que some também solta: LOAD, depois outro LOAD de arquivo… aqui, STOP do armado.
+        channel.0.load(spec("next-1", "cam-1", port)).unwrap();
+        assert_eq!(channel.0.ingest.receivers().len(), 1);
+        if let Some(item) = channel.0.armed.take() { discard(item); }
+        serve_until(&mut channel, Duration::from_secs(3), |channel| channel.0.ingest.receivers().is_empty()).expect("item descartado não soltou o receptor");
+    }
+
+    /// Tempo do LOAD até o item ao vivo ter quadro (o que o TAKE espera).
+    fn time_to_ready(channel: &mut Running, port: u16, item: &str) -> Duration {
+        let started = Instant::now();
+        channel.0.load(spec(item, "cam-1", port)).unwrap();
+        if serve_until(channel, Duration::from_secs(10), armed_ready).is_none() {
+            let item = channel.0.armed.as_ref().unwrap();
+            let lease = item.ingest.as_ref();
+            if let Some(sub) = lease.and_then(|l| l.sub.as_ref()) { let linked = sub.video.lock().unwrap().as_ref().map(|p| p.ghost.peer().is_some()); eprintln!("DEBUG2 active={} linked={:?} now={:?} pads={:?} tracks_video={}", sub.active.load(Ordering::Relaxed), linked, sub.now(), sub.bin.pads().iter().map(|p| p.name().to_string()).collect::<Vec<_>>(), lease.unwrap().receiver.tracks.lock().unwrap().video); }
+            eprintln!("DEBUG {item_id} frames={:?} delivered={:?} state={:?} video_ready={} stats={:?}", lease.map(|l| l.receiver.frames.load(Ordering::Relaxed)), lease.map(|l| l.delivered()),
+                item.pipeline.current_state(), item.video_ready.load(Ordering::Relaxed), item.source_statistics.lock().unwrap().report(true), item_id = item.spec.item_id);
+            panic!("item sem quadro");
+        }
+        started.elapsed()
+    }
+
+    #[test]
+    fn take_reaproveita_o_receptor_e_fica_mais_rapido() {
+        if !available() { eprintln!("sem plugins SRT/x264; teste pulado"); return; }
+        let port = port(2);
+        let _sender = sender(port, 1280, 720);
+        std::thread::sleep(Duration::from_millis(800));
+        let median = |mut values: Vec<Duration>| { values.sort(); values[values.len() / 2] };
+        let (mut direct, mut cold, mut warm) = (Vec::new(), Vec::new(), Vec::new());
+        for round in 0..3 {
+            // Antes: o item abre a fonte no próprio pipeline (r88-36).
+            let mut channel = open_channel("ingest-antes", 1280, 720);
+            channel.0.ingest = Hub::new(false, LINGER);
+            direct.push(time_to_ready(&mut channel, port, &format!("antes-{round}")));
+            drop(channel);
+            // Receptor frio: ninguém recebia a entrada.
+            let mut channel = open_channel("ingest-frio", 1280, 720);
+            cold.push(time_to_ready(&mut channel, port, &format!("frio-{round}")));
+            drop(channel);
+            // Receptor quente: o watchdog (ou o multiview) já recebia.
+            let mut channel = open_channel("ingest-quente", 1280, 720);
+            channel.0.set_ingest_watched(vec![("cam-1".into(), endpoint(port))]).unwrap();
+            let receiver = channel.0.ingest.receivers().pop().unwrap();
+            serve_until(&mut channel, Duration::from_secs(10), |_| receiver.frames.load(Ordering::Relaxed) > 25).expect("receptor sem quadro");
+            warm.push(time_to_ready(&mut channel, port, &format!("quente-{round}")));
+            assert_eq!(receiver.openings(), 1, "o LOAD reabriu a fonte");
+            take(&mut channel);
+            assert_eq!(receiver.openings(), 1, "o TAKE reabriu a fonte");
+            drop(channel);
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        let (direct, cold, warm) = (median(direct), median(cold), median(warm));
+        eprintln!("[medida] LOAD→quadro pronto para TAKE (SRT 720p, mediana de 3): antes (item abre a fonte) {direct:?}; receptor frio {cold:?}; receptor já recebendo {warm:?}");
+        assert!(warm < Duration::from_millis(400), "receptor quente deveria entregar no próximo quadro: {warm:?}");
+        assert!(warm * 2 < direct, "reaproveitar o receptor deveria ser bem mais rápido que abrir: {warm:?} × {direct:?}");
+    }
+
+    #[test]
+    fn consumidor_lento_ou_receptor_travado_nao_atrasam_o_pgm() {
+        if !available() { eprintln!("sem plugins SRT/x264; teste pulado"); return; }
+        let (pgm_port, other_port) = (port(3), port(4));
+        let _pgm = sender(pgm_port, 640, 360);
+        let _other = sender(other_port, 640, 360);
+        std::thread::sleep(Duration::from_millis(600));
+        let mut channel = channel("ingest-isola", 640, 360);
+        channel.0.load(spec("pgm-1", "cam-1", pgm_port)).unwrap();
+        serve_until(&mut channel, Duration::from_secs(10), armed_ready).expect("PGM sem quadro");
+        take(&mut channel);
+        let (frames, gap) = item_cadence(&channel);
+        let measure = |channel: &mut Running, seconds: f64| -> (f64, Duration, Duration) {
+            std::thread::sleep(Duration::from_millis(300));
+            *gap.lock().unwrap() = (None, Duration::ZERO);
+            let before = frames.load(Ordering::Relaxed);
+            let started = Instant::now();
+            let mut slowest_service = Duration::ZERO;
+            while started.elapsed().as_secs_f64() < seconds {
+                let at = Instant::now(); channel.0.service_outputs(); slowest_service = slowest_service.max(at.elapsed());
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            ((frames.load(Ordering::Relaxed) - before) as f64 / started.elapsed().as_secs_f64(), gap.lock().unwrap().1, slowest_service)
+        };
+        let (base, base_gap, _) = measure(&mut channel, 2.0);
+
+        // Multiview 12× mais lento lendo o MESMO receptor do PGM, e uma
+        // segunda entrada só de monitoramento cujo receptor trava 3 s ao subir.
+        channel.0.ingest.set_hooks(Hooks { monitor_start_stall: Some(Duration::from_secs(3)), slow_per_frame: None });
+        watch_multiview(&mut channel, vec![source_cell("cam-1", pgm_port), source_cell("cam-2", other_port), CellSource::Pgm, CellSource::Empty],
+            MvHooks { slow_per_frame: Some(Duration::from_millis(500)), ..MvHooks::default() });
+        let (slow, slow_gap, slow_service) = measure(&mut channel, 3.0);
+        let state = channel.0.multiview_state().unwrap();
+        assert!(state.cells[0].receiver.is_some() && state.cells[1].receiver.is_some(), "{state:?}");
+        assert_eq!(channel.0.ingest.receivers().len(), 2);
+
+        // Sonda do multiview presa por 1 s no receptor do PGM.
+        let tap = channel.0.multiview.as_ref().unwrap().cell_tap(0);
+        let stuck = { let tap = Arc::clone(&tap); std::thread::spawn(move || { let _guard = tap.frame.lock().unwrap(); std::thread::sleep(Duration::from_millis(1000)); }) };
+        let (stuck_rate, stuck_gap, _) = measure(&mut channel, 1.5);
+        stuck.join().unwrap();
+
+        // Receptor só de monitoramento que cai (fonte morre): o PGM nem nota.
+        drop(_other);
+        let (fallen, fallen_gap, fallen_service) = measure(&mut channel, 3.0);
+        eprintln!("[teste] PGM pelo receptor: sozinho {base:.1} q/s (maior intervalo {base_gap:?}); multiview 12× lento + receptor de monitoramento travado ao subir {slow:.1} q/s ({slow_gap:?}, serviço mais lento {slow_service:?}); sonda presa {stuck_rate:.1} q/s ({stuck_gap:?}); receptor de monitoramento caído {fallen:.1} q/s ({fallen_gap:?}, serviço {fallen_service:?})");
+        for (label, rate, worst) in [("lento", slow, slow_gap), ("sonda presa", stuck_rate, stuck_gap), ("monitoramento caído", fallen, fallen_gap)] {
+            assert!(rate >= 22.5, "{label}: o PGM caiu para {rate:.1} q/s");
+            assert!(worst < Duration::from_millis(200), "{label}: quadro do PGM atrasou {worst:?}");
+        }
+        assert!(slow_service < Duration::from_millis(100), "abrir o receptor de monitoramento segurou o laço: {slow_service:?}");
+        assert!(fallen_service < Duration::from_millis(100), "receptor caído segurou o laço: {fallen_service:?}");
+        assert_eq!(channel.0.on_air_id().as_deref(), Some("pgm-1"));
+    }
+}

@@ -361,6 +361,15 @@ fn received_video_frame(buffer: &gst::BufferRef) -> bool {
     )
 }
 
+#[cfg(test)]
+impl Item {
+    /// Elemento do item ou, com receptor compartilhado, do receptor da entrada.
+    fn find_element_for_test(&self, factory: &str) -> Option<gst::Element> {
+        let find = |pipeline: &gst::Pipeline| pipeline.iterate_recurse().into_iter().flatten().find(|element| element.factory().is_some_and(|f| f.name() == factory));
+        find(&self.pipeline).or_else(|| self.ingest.as_ref().and_then(|lease| lease.receiver().pipeline_for_test()).and_then(|pipeline| find(&pipeline)))
+    }
+}
+
 impl Drop for Item {
     fn drop(&mut self) {
         // Inclui os retornos antecipados de load/preview por erro de seek.
@@ -1082,8 +1091,8 @@ mod srt_recovery_tests {
 
     impl Watch {
         fn start(channel: &RunningChannel) -> Self {
-            let pipeline=channel.0.on_air.as_ref().unwrap().pipeline.clone();
-            let find=|name:&str| pipeline.iterate_recurse().into_iter().flatten().find(|element|element.factory().is_some_and(|f|f.name()==name)).unwrap();
+            let item=channel.0.on_air.as_ref().unwrap();
+            let find=|name:&str| item.find_element_for_test(name).unwrap();
             let (sink,source)=(find("intervideosink"),find("srtsrc"));
             let stop=Arc::new(std::sync::atomic::AtomicBool::new(false));
             let renders=Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -4408,8 +4417,7 @@ mod file_preroll_tests {
         let deadline=Instant::now()+Duration::from_secs(3);
         while !channel.0.armed.as_ref().unwrap().live_ready() && Instant::now()<deadline {std::thread::sleep(Duration::from_millis(5));}
         assert!(channel.0.armed.as_ref().unwrap().live_ready());
-        let decoder=channel.0.armed.as_ref().unwrap().pipeline.children().into_iter()
-            .find(|element|element.factory().is_some_and(|factory|factory.name()=="uridecodebin")).unwrap();
+        let decoder=channel.0.armed.as_ref().unwrap().find_element_for_test("uridecodebin").unwrap();
         let pad=decoder.src_pads().into_iter().find(|pad|pad.current_caps().is_some_and(|caps|caps.structure(0).is_some_and(|structure|structure.name().starts_with("video/")))).unwrap();
         let blocked=Arc::new(AtomicBool::new(false));let observed=Arc::clone(&blocked);
         let probe=pad.add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM,move|_,_|{observed.store(true,Ordering::Release);gst::PadProbeReturn::Ok}).unwrap();
@@ -4445,8 +4453,7 @@ mod file_preroll_tests {
         assert_eq!(committed.as_deref(),Some("live-test"));
         assert_eq!(channel.0.on_air_id().as_deref(),Some("live-test"));
         assert!(channel.0.on_air_live_ready().is_some());
-        let decoder=channel.0.on_air.as_ref().unwrap().pipeline.children().into_iter()
-            .find(|element|element.factory().is_some_and(|factory|factory.name()=="uridecodebin")).unwrap();
+        let decoder=channel.0.on_air.as_ref().unwrap().find_element_for_test("uridecodebin").unwrap();
         let pad=decoder.src_pads().into_iter().find(|pad|pad.current_caps().is_some_and(|caps|caps.structure(0).is_some_and(|structure|structure.name().starts_with("video/")))).unwrap();
         let clock=channel.0.live_program_clock.unwrap();
         let previous_decoder=channel.0.decoder_id("pgm").unwrap();

@@ -251,7 +251,7 @@ pub struct MultiviewState {
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
-struct Frame {
+pub(crate) struct Frame {
     caps: Option<gst::Caps>,
     buffer: Option<gst::Buffer>,
     seq: u64,
@@ -264,7 +264,7 @@ struct Frame {
 /// Último quadro de um ponto do engine. A sonda nunca espera: `try_lock`.
 #[derive(Default)]
 pub struct Tap {
-    frame: Mutex<Frame>,
+    pub(crate) frame: Mutex<Frame>,
     /// Há um ponto do engine ligado a esta sonda agora.
     resolved: AtomicBool,
     /// Quadros que a sonda deixou passar sem guardar (multiview ocupado).
@@ -1002,7 +1002,7 @@ thread_local! {
 
 #[cfg(test)]
 impl Multiview {
-    fn cell_tap(&self, index: usize) -> Arc<Tap> { Arc::clone(&self.cells[index].tap) }
+    pub(crate) fn cell_tap(&self, index: usize) -> Arc<Tap> { Arc::clone(&self.cells[index].tap) }
     fn set_tier_urls(&mut self, urls: std::collections::BTreeMap<MonitorTier, String>) {
         if let Some(publisher) = self.publisher.as_mut() { publisher.set_tier_urls(urls); }
     }
