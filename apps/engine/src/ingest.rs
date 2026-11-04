@@ -846,6 +846,13 @@ impl Hub {
 
 impl Drop for Hub { fn drop(&mut self) { self.shutdown(); } }
 
+/// Testes que medem cadência/tempo não rodam junto com os que sobem vários
+/// geradores SRT (máquina de 2 núcleos): um mediria a carga do outro.
+#[cfg(test)]
+pub(crate) static TIMING_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(test)]
+pub(crate) fn timing_guard() -> std::sync::MutexGuard<'static, ()> { TIMING_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -938,6 +945,7 @@ mod tests {
 
     #[test]
     fn uma_fonte_aberta_uma_vez_com_varios_consumidores() {
+        let _serial = timing_guard();
         if !available() { eprintln!("sem plugins SRT/x264; teste pulado"); return; }
         let port = port(0);
         let _sender = sender(port, 320, 180);
@@ -984,6 +992,7 @@ mod tests {
 
     #[test]
     fn receptor_desaparece_sem_consumidores() {
+        let _serial = timing_guard();
         if !available() { eprintln!("sem plugins SRT/x264; teste pulado"); return; }
         let port = port(1);
         let _sender = sender(port, 320, 180);
@@ -1027,6 +1036,7 @@ mod tests {
 
     #[test]
     fn take_reaproveita_o_receptor_e_fica_mais_rapido() {
+        let _serial = timing_guard();
         if !available() { eprintln!("sem plugins SRT/x264; teste pulado"); return; }
         let port = port(2);
         let _sender = sender(port, 1280, 720);
@@ -1063,6 +1073,7 @@ mod tests {
 
     #[test]
     fn consumidor_lento_ou_receptor_travado_nao_atrasam_o_pgm() {
+        let _serial = timing_guard();
         if !available() { eprintln!("sem plugins SRT/x264; teste pulado"); return; }
         let (pgm_port, other_port) = (port(3), port(4));
         let _pgm = sender(pgm_port, 640, 360);
@@ -1136,6 +1147,7 @@ mod tests {
     #[test]
     #[ignore]
     fn medir_custo_ingest() {
+        let _serial = timing_guard();
         if !available() { eprintln!("sem plugins; pulado"); return; }
         let count = 4u16;
         let senders: Vec<Sender> = (0..count).map(|i| sender(port(5) + i, 1280, 720)).collect();

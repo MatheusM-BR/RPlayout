@@ -1152,6 +1152,7 @@ mod srt_recovery_tests {
     /// sink (PTS adiantado do encoder + 0,9 s de latência do pipeline, dos
     /// quais 700 ms eram do `tsdemux`).
     fn reconnect_case(engine_mode: &str, sender_mode: &str, offset: u16) {
+        let _serial = ingest::timing_guard();
         if !srt_available() { eprintln!("sem SRT/x264/aac; teste pulado"); return; }
         let port=port(offset);
         let engine_uri=format!("srt://127.0.0.1:{port}?mode={engine_mode}&latency=120");
@@ -1201,6 +1202,7 @@ mod srt_recovery_tests {
     /// viravam ~3,5 s de perda.
     #[cfg(unix)]
     fn hiccup_case(engine_mode: &str, sender_mode: &str, offset: u16) {
+        let _serial = ingest::timing_guard();
         if !srt_available() { eprintln!("sem SRT/x264/aac; teste pulado"); return; }
         let port=port(offset);
         let engine_uri=format!("srt://127.0.0.1:{port}?mode={engine_mode}&latency=120");

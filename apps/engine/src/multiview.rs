@@ -1295,6 +1295,7 @@ mod tests {
 
     #[test]
     fn layout_change_rebuilds_only_the_multiview() {
+        let _serial = super::super::ingest::timing_guard();
         gst::init().unwrap();
         let pgm = source("red", 1280, 720);
         let (frames, gap) = cadence_meter(&pgm.pad);
@@ -1423,6 +1424,7 @@ mod tests {
     #[test]
     #[ignore]
     fn medir_custo_multiview() {
+        let _serial = super::super::ingest::timing_guard();
         gst::init().unwrap();
         fn ticks() -> u64 {
             let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
@@ -1529,6 +1531,7 @@ mod tests {
     /// que a cadência, depois trava a sonda por 1 s.
     #[test]
     fn slow_or_stuck_multiview_never_delays_the_program() {
+        let _serial = super::super::ingest::timing_guard();
         gst::init().unwrap();
         if gst::ElementFactory::find("rplayoutlimiter").is_none() { crate::limiter_element::register().unwrap(); }
         struct Running(Channel);
