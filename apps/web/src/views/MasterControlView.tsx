@@ -1031,19 +1031,19 @@ export function MasterControlView({
       />
 
       <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto xl:overflow-hidden">
-        {/* Aviso de cadência convertida numa faixa de altura FIXA. Só existe
-            enquanto a grade precisa de revisão: é um estado que nasce fora do
-            ar (conversão em Configurações) e só sai com a publicação na
-            PLAYLIST, então não aparece nem some sob o cursor no meio da
-            operação. Reservar a faixa sempre deixava ~40 px vazios no topo
-            do Master em 1366 e no celular. */}
-        {publicationRequired && <div data-testid="cadence-notice-slot" className="w-full px-margin shrink-0 h-9 flex items-center">
-          <div role="alert" className="w-full h-8 flex items-center gap-2 px-3 rounded bg-armed-amber/10 border border-armed-amber/40 text-armed-amber t-data overflow-hidden" title="A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.">
+        {/* Aviso de cadência convertida numa faixa de altura FIXA. Em telas
+            largas (2xl, 1920) a faixa fica SEMPRE reservada: o aviso aparece
+            quando outra estação converte/publica e não pode empurrar
+            TAKE/CUE/ABORT sob o cursor (r88-37 revisão B2). Em telas estreitas
+            (1366, celular) a faixa vazia custava ~40 px do Master: lá ela só
+            existe enquanto a grade precisa de revisão. */}
+        <div data-testid="cadence-notice-slot" aria-hidden={publicationRequired ? undefined : true} className={`w-full px-margin shrink-0 h-9 items-center ${publicationRequired ? 'flex' : 'hidden 2xl:flex'}`}>
+          {publicationRequired && <div role="alert" className="w-full h-8 flex items-center gap-2 px-3 rounded bg-armed-amber/10 border border-armed-amber/40 text-armed-amber t-data overflow-hidden" title="A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.">
             <span className="material-symbols-outlined text-[16px] shrink-0">lock</span>
             <span className="truncate min-w-0">A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.</span>
             <button type="button" className="ml-auto shrink-0 px-2 h-6 rounded border border-armed-amber/60 t-label font-bold hover:bg-armed-amber/20" onClick={() => onNavigate('playlist')}>REVISAR EM PLAYLIST</button>
-          </div>
-        </div>}
+          </div>}
+        </div>
         {/* 1.1 FAIXA DE STATUS DE ALTURA FIXA (U5): sonda + itens interrompidos */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0 flex flex-col gap-1">
           <PgmProbeBanner channelId={channel.id} showContingency={false} />
@@ -1178,14 +1178,19 @@ export function MasterControlView({
                     </div>
                   </div>
 
-                  {takeReason&&<div role="status" className="text-[11px] text-armed-amber text-center">{takeReason}</div>}
                   {transportRefusal&&<div role="alert" data-testid="transport-refusal" className="flex items-start gap-1.5 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 text-[12px] text-on-surface">
                     <span className="material-symbols-outlined text-[15px] text-on-air-crimson shrink-0">block</span>
                     <span className="flex-1 min-w-0 break-words"><strong className="text-on-air-crimson">{transportRefusal.action.toUpperCase()} recusado:</strong> {dedupeNotice(transportRefusal.message)} <span className="text-outline">(este comando não alterou o PGM)</span></span>
                     {onDismissTransportRefusal&&<button type="button" onClick={onDismissTransportRefusal} className="shrink-0 text-outline hover:text-on-surface" aria-label="Fechar aviso de comando recusado"><span className="material-symbols-outlined text-[15px]">close</span></button>}
                   </div>}
-                  {!takeReason&&direct&&'itemId' in direct&&<div role="status" className="text-[11px] text-accent-ice text-center">Sem PVW nesta instalação: o TAKE DIRETO leva “{direct.title}” ao ar, com confirmação.</div>}
-                  {!takeReason&&takeLive&&<div role="status" className="text-[11px] text-accent-ice text-center">Ao vivo fora da grade: o TAKE insere “{takeLive.title}” logo após o item no ar e coloca no ar.</div>}
+                  {/* Motivo do TAKE numa faixa de altura fixa (duas linhas): o
+                      motivo que aparece ou some (outra estação publica, CUE
+                      pronto) não desloca TAKE/CUE/ABORT sob o cursor. */}
+                  <div data-testid="take-reason-slot" className="h-[30px] shrink-0 flex items-center justify-center overflow-hidden">
+                    {takeReason&&<div role="status" title={takeReason} className="text-[11px] leading-[14px] text-armed-amber text-center line-clamp-2">{takeReason}</div>}
+                    {!takeReason&&direct&&'itemId' in direct&&<div role="status" className="text-[11px] leading-[14px] text-accent-ice text-center line-clamp-2">Sem PVW nesta instalação: o TAKE DIRETO leva “{direct.title}” ao ar, com confirmação.</div>}
+                    {!takeReason&&takeLive&&<div role="status" className="text-[11px] leading-[14px] text-accent-ice text-center line-clamp-2">Ao vivo fora da grade: o TAKE insere “{takeLive.title}” logo após o item no ar e coloca no ar.</div>}
+                  </div>
                   <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
                     <button
                       onClick={() => void handleTake()}
