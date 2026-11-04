@@ -34,7 +34,8 @@ it('contexto protegido no SQLite, validado em48 e lido somente no canal autoriza
   value.db.insert(healthEvents).values({id:'context',channelId:'a',component:'SIGNAL',state:'black',occurredAt:new Date().toISOString(),context:context()}).run()
   const stored=value.sqlite.prepare('SELECT context FROM health_events').get() as {context:string}
   const raw=String(stored.context)
-  expect(raw).not.toContain('Jornal');expect(()=>validateIncidentContexts(value.sqlite)).not.toThrow()
+  // r88-37: contexto de alerta é texto normal (não é segredo).
+  expect(JSON.parse(raw).itemName).toBe('Jornal São José');expect(()=>validateIncidentContexts(value.sqlite)).not.toThrow()
   expect(readHealthIncidentPage(value.db,['b'],{}).events).toEqual([])
   expect(readHealthIncidentPage(value.db,['a'],{}).events[0]?.context?.itemName).toBe('Jornal São José')
   value.sqlite.exec("UPDATE health_events SET channel_id='b'");expect(()=>validateIncidentContexts(value.sqlite)).toThrow('outro canal')

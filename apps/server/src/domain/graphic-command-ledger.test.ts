@@ -64,7 +64,8 @@ it('pedido e envio são duráveis antes do trabalho; confirmado só depois da re
   const work=vi.fn(async(send:()=>void)=>{expect(ledger.list()[0]!.state).toBe('ACCEPTED');send();expect(ledger.list()[0]!.state).toBe('SENDING');return 'applied'})
   const result=await ledger.execute(input,()=>{},work)
   expect(result).toMatchObject({result:'applied',receipt:{state:'CONFIRMED',replayed:false,physicalOutputValidated:false}})
-  expect(db.sqlite.prepare('SELECT payload FROM operator_decisions').all().every(row=>!JSON.stringify(row).includes('PRIVATE_GRAPHIC_FIELD'))).toBe(true)
+  // r88-37: texto de grafismo não é credencial; a auditoria guarda em claro.
+  expect(db.sqlite.prepare('SELECT payload FROM operator_decisions').all().every(row=>!JSON.stringify(row).includes('rplayout-secret:'))).toBe(true)
   const repeat=await ledger.execute(input,()=>{},work);expect(repeat.receipt.replayed).toBe(true);expect(work).toHaveBeenCalledTimes(1)
   await expect(ledger.execute({...input,selection:{action:'HIDE'}},()=>{},work)).rejects.toMatchObject({status:409})
 })

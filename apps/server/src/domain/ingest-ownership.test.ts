@@ -49,7 +49,7 @@ it('recuperação automática registra prova/intent protegidos uma vez na mesma 
   expect(audits[0]!.payload).toMatchObject({batchId:'old',roots,measure:false,proof:'LOCAL_PROCESS_ABSENT',recoveryActor:'SCANNER_WORKER',automaticTake:false,processKilled:false})
   expect(audits[0]!.payload.previousOwnerFingerprint).toMatch(/^[a-f0-9]{64}$/)
   for(const field of ['owner_pid','owner_host','owner_boot'])expect(field in audits[0]!.payload).toBe(false)
-  const raw=db.sqlite.prepare('SELECT payload FROM operator_decisions').get() as {payload:string};expect(raw.payload).not.toContain(roots[0]);expect(raw.payload).not.toContain('LOCAL_PROCESS_ABSENT')
+  const raw=db.sqlite.prepare('SELECT payload FROM operator_decisions').get() as {payload:string};expect(JSON.parse(raw.payload)).toMatchObject({proof:'LOCAL_PROCESS_ABSENT'}) // r88-37: em claro
   expect(vi.mocked(process.kill).mock.calls.every(args=>args[1]===0)).toBe(true)
 })
 it.each(['pending','claim'] as const)('falha de auditoria reverte posse/revisão e impede %s',method=>{
