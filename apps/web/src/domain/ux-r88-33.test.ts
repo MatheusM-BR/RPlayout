@@ -10,6 +10,8 @@ describe('UI/UX operacional (r88-33)', () => {
     const slot = master.indexOf('data-testid="cadence-notice-slot"')
     expect(slot).toBeGreaterThan(0)
     expect(master.slice(slot - 20, slot + 200)).toMatch(/\bh-9\b/)
+    // Sem aviso, nenhuma faixa vazia no topo (reteste r88-35: ~40 px em 1366/celular).
+    expect(master.slice(slot - 40, slot)).toContain('{publicationRequired && <div')
     expect(master).toContain('A cadência foi convertida')
   })
   it('tokens de texto mínimo existem e respeitam os pisos', () => {
