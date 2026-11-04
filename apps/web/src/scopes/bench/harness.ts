@@ -155,6 +155,29 @@ async function timeBackends(wasm: ScopesWasm, video: LiveSource, iterations: num
       }
       out[`webgl2_stride${stride}`] = {cpuMs: median(cpu), withFinishMs: median(total), gpuMs: gl.timing().gpuMs, sampled: `${gl.timing().sampledWidth}x${gl.timing().sampledHeight}`}
     }
+    // Leitura do histograma: síncrona antiga (readPixels espera a GPU) ×
+    // assíncrona (PBO + fenceSync). Mede o render() de um quadro que pede a
+    // leitura (a cada 500 ms), sem gl.finish(): é o tempo que a thread da
+    // página fica parada. No assíncrono também se conta quantos quadros a
+    // cerca levou para passar.
+    for (const mode of ['sync', 'async'] as const) {
+      gl.debugSetReadback(mode)
+      const cpu: number[] = [], waits: number[] = []
+      for (let i = 0; i < Math.max(4, iterations / 6); i++) {
+        await new Promise(r => setTimeout(r, 520))
+        gl.render(video, view(2)); gl.finish()
+        await new Promise(r => setTimeout(r, 520))
+        const t0 = performance.now(); gl.render(video, view(2)); cpu.push(performance.now() - t0)
+        if (mode === 'async') {
+          // Até a cerca passar, só consultas sem espera (clientWaitSync 0) a
+          // cada 4 ms; mede quanto a GPU leva para entregar o histograma.
+          await gl.settleStats(30_000)
+          waits.push(performance.now() - t0)
+        }
+        gl.finish()
+      }
+      out[`webgl2_stats_${mode}`] = {renderWithReadMs: median(cpu), ...(mode === 'async' ? {msUntilResult: median(waits)} : {})}
+    }
     gl.destroy()
   } else out.webgl2 = 'indisponível'
   for (const [label, w, h] of [['wasm_1080p', 1920, 1080], ['wasm_640x360', 640, 360]] as const) {
@@ -221,6 +244,7 @@ async function parity(wasm: ScopesWasm, video: LiveSource) {
     console.warn('[bench] WebGL2 render')
     const read = gl.debugRead()
     console.warn('[bench] WebGL2 lido')
+    await gl.settleStats()
     if (read) out.webgl2 = {
       histL1: ['Y', 'Cb', 'Cr', 'R', 'G', 'B'].map((_, ch) => +histDistance(read.hist, cpu.hist, config.histBins, ch).toFixed(5)),
       waveL1: +histDistance(read.wave, cpu.wave, config.waveColumns * config.waveRows * 6, 0).toFixed(5),
@@ -228,6 +252,10 @@ async function parity(wasm: ScopesWasm, video: LiveSource) {
       diamondL1: +histDistance(read.diamond, cpu.diamond, config.diamondSize ** 2 * 2, 0).toFixed(5),
       stats: gl.stats() ? compareStats(gl.stats()!, cpu.stats) : null,
     }
+    // Leitura assíncrona (PBO) × síncrona antiga sobre o mesmo histograma.
+    const asyncStats = await gl.settleStats()
+    const syncStats = gl.debugStatsSync()
+    if (out.webgl2) (out.webgl2 as Record<string, unknown>).asyncEqualsSync = asyncStats !== null && JSON.stringify(asyncStats) === JSON.stringify(syncStats)
     gl.destroy()
   }
   return out

@@ -5,6 +5,7 @@ import {autoMultiviewCells,multiviewLayoutUnits,type MultiviewCellSource,type Mu
 import type {Db} from '../db/client.js'
 import {channels,liveSources,operatorDecisions} from '../db/schema.js'
 import {CollaborativeEditError} from './collaborative-edit.js'
+import {configuredSourceEndpoint} from './item-source-binding.js'
 
 /**
  * Layout salvo do multiview composto, por canal.
@@ -92,6 +93,22 @@ export function saveComposite(db:Db,channelId:string,body:unknown,ifMatch:unknow
 }
 
 /** O que o engine recebe: células salvas ou o preenchimento automático. */
+/**
+ * Composição como vai para o engine (ingest único por entrada): cada célula
+ * de entrada leva o endereço do cadastro, e o engine recebe a entrada num
+ * receptor compartilhado mesmo fora de PGM/PVW. Entrada desativada ou
+ * desconhecida vai sem endereço: só aparece onde já estiver aberta. O
+ * endereço nunca é gravado nem volta ao navegador.
+ */
+export function engineComposition(composition:MultiviewComposition,sources:ReadonlyArray<{id:string;kind:string;targetUrl:string;enabled:boolean}>):MultiviewComposition{
+  const byId=new Map(sources.filter(source=>source.enabled&&source.targetUrl).map(source=>[source.id,configuredSourceEndpoint(source)]))
+  return {...composition,cells:composition.cells.map(cell=>{
+    if(cell.kind!=='source')return cell
+    const endpoint=byId.get(cell.id)
+    return endpoint?{kind:'source',id:cell.id,endpoint}:{kind:'source',id:cell.id}
+  })}
+}
+
 export function effectiveComposition(saved:SavedComposite,sources:ReadonlyArray<{id:string;role:string;enabled:boolean;createdAt?:string}>):MultiviewComposition{
   const ordered=[...sources].filter(source=>source.enabled).sort((a,b)=>(a.role==='BACKUP'?1:0)-(b.role==='BACKUP'?1:0))
   const size=multiviewLayoutUnits(saved.layout).length

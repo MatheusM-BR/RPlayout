@@ -1,5 +1,5 @@
 import {useEffect,useMemo,useRef,useState,type ReactNode} from 'react'
-import {MULTIVIEW_LAYOUTS,MULTIVIEW_QUALITIES,WATCHDOG_STATE_LABELS,multiviewCellLabel,multiviewLayoutUnits,type MultiviewCellSource,type MultiviewCompositeLayout,type MultiviewEngineState,type MultiviewQuality,type MonitorTier,type WatchdogInputStatus} from '@rplayout/protocol'
+import {MULTIVIEW_LAYOUTS,MULTIVIEW_QUALITIES,WATCHDOG_STATE_LABELS,multiviewCellHealth,multiviewCellLabel,multiviewLayoutUnits,type MultiviewCellSource,type MultiviewCompositeLayout,type MultiviewEngineState,type MultiviewQuality,type MonitorTier,type WatchdogInputStatus} from '@rplayout/protocol'
 import {api,type MultiviewCompositeView} from '../../api.js'
 import type {Live,MeterReading,Monitors} from '../../types.js'
 import {Whep} from '../Whep.js'
@@ -191,8 +191,13 @@ const signalBadge=(state:CellState|undefined):{text:string;tone:string}|null=>{
   switch(state.signal){
     case 'noSignal':return {text:'SEM SINAL',tone:'border-on-air-crimson bg-on-air-crimson/80 text-white'}
     case 'held':return {text:`SEM QUADRO NOVO ${state.ageMs!==null?(state.ageMs/1000).toFixed(1)+' s':''}`.trim(),tone:'border-armed-amber bg-black/70 text-armed-amber'}
-    case 'unavailable':return {text:'FORA DOS BARRAMENTOS',tone:'border-border-subtle bg-black/70 text-outline'}
-    default:return null
+    // Com receptor compartilhado a entrada está sendo aberta; sem ele, só
+    // aparece onde o engine a tiver aberta (PGM, PVW, NEXT, QC, contingência).
+    case 'unavailable':return state.receiver!=null?{text:'ABRINDO ENTRADA',tone:'border-border-subtle bg-black/70 text-outline'}:{text:'FORA DOS BARRAMENTOS',tone:'border-border-subtle bg-black/70 text-outline'}
+    default:
+      // Quadros chegando, mas a imagem parada (medida na entrada, como o watchdog).
+      if(multiviewCellHealth(state)==='CONGELADO')return {text:`CONGELADO ${((state.frozenMs??0)/1000).toFixed(0)} s`,tone:'border-armed-amber bg-armed-amber/85 text-black'}
+      return null
   }
 }
 
@@ -203,7 +208,7 @@ function Cell({unit,cell,state,label,tally,meter,watchdog,onOpen}:{unit:readonly
   const small=w<=3
   const border=tally==='pgm'?'border-on-air-crimson':tally==='pvw'?'border-status-ok':'border-white/15'
   return <button type="button" disabled={empty} onClick={onOpen} aria-label={empty?'Célula vazia':`${label}: abrir monitor individual`}
-    data-testid="multiview-cell" data-tally={tally??'none'} data-signal={state?.signal??'unknown'}
+    data-testid="multiview-cell" data-tally={tally??'none'} data-signal={state?.signal??'unknown'} data-health={multiviewCellHealth(state)??'unknown'}
     className={`absolute border-2 ${border} text-left outline-none focus-visible:ring-2 focus-visible:ring-primary enabled:cursor-pointer enabled:hover:bg-white/5`}
     style={{left:`${x/12*100}%`,top:`${y/12*100}%`,width:`${w/12*100}%`,height:`${h/12*100}%`}}>
     {!empty&&<>
@@ -211,6 +216,7 @@ function Cell({unit,cell,state,label,tally,meter,watchdog,onOpen}:{unit:readonly
       {badge&&<span className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded border px-1.5 py-0.5 font-label-mono font-bold ${small?'text-[9px]':'text-[12px]'} ${badge.tone}`}>{badge.text}</span>}
       {watchdog&&<span title={watchdog.conditions.map(condition=>condition.detection).join(', ')} className={`absolute left-1 top-1 rounded bg-black/75 px-1 font-label-mono font-bold text-armed-amber ${small?'text-[9px]':'text-[11px]'}`}>WD {WATCHDOG_STATE_LABELS[watchdog.state]}{watchdog.waitRemainingMs!==null?` ${Math.ceil(watchdog.waitRemainingMs/1000)} s`:''}</span>}
       {!small&&state&&state.width&&state.height&&state.signal==='live'&&<span className="absolute right-6 top-1 rounded bg-black/55 px-1 font-label-mono text-[10px] text-white/80">{state.width}×{state.height} · {state.fps.toFixed(0)} q/s</span>}
+      {cell.kind==='source'&&multiviewCellHealth(state)==='OK'&&<span data-testid="multiview-cell-ok" className={`absolute right-1 top-1 rounded bg-status-ok/85 px-1 font-label-mono font-bold text-black ${small?'text-[9px]':'text-[10px]'}`}>OK</span>}
       {meter&&<Vu meter={meter}/>}
     </>}
   </button>

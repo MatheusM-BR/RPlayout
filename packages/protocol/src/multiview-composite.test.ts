@@ -31,3 +31,17 @@ describe('multiview composto: geometria e preenchimento',()=>{
     expect(multiviewTierPaths('c1/mv','LEVE')).toEqual({lite:'c1/mv'})
   })
 })
+
+describe('multiview composto: estado real da célula (ingest único)',()=>{
+  it('sem sinal, congelado e OK',async()=>{
+    const {multiviewCellHealth,MULTIVIEW_FROZEN_MS}=await import('./multiview-composite.js')
+    expect(multiviewCellHealth({signal:'noSignal',frozenMs:null})).toBe('SEM_SINAL')
+    expect(multiviewCellHealth({signal:'live',frozenMs:MULTIVIEW_FROZEN_MS})).toBe('CONGELADO')
+    expect(multiviewCellHealth({signal:'held',frozenMs:MULTIVIEW_FROZEN_MS+500})).toBe('CONGELADO')
+    expect(multiviewCellHealth({signal:'live',frozenMs:400})).toBe('OK')
+    expect(multiviewCellHealth({signal:'live'})).toBe('OK')
+    expect(multiviewCellHealth({signal:'unavailable',frozenMs:null})).toBe('INDISPONIVEL')
+    expect(multiviewCellHealth({signal:'empty'})).toBe('VAZIA')
+    expect(multiviewCellHealth(undefined)).toBeNull()
+  })
+})

@@ -138,8 +138,27 @@ type EngineEvent =
   | { event: 'output'; frames: number }
   | ({ event: 'publisher'; outputId?: string } & PublisherState)
   | ({ event: 'multiviewState' } & MultiviewEngineState)
+  | { event: 'ingestState'; receivers: IngestReceiverReport[] }
   | { event: 'error'; message: string }
   | { event: 'warning'; message: string }
+
+/** Receptor compartilhado de uma entrada (ingest único), como o engine informa. */
+export interface IngestReceiverReport {
+  receiverId: number
+  kind: string
+  sourceIds: string[]
+  consumers: Array<'item' | 'multiview' | 'watchdog'>
+  items: number
+  openings: number
+  generation: number
+  failed: boolean
+  error: string | null
+  frames: number
+  uptimeMs: number
+  latencyMs?: number | null
+  /** Mesma medição da telemetria por barramento (amostra do watchdog). */
+  signal: Record<string, unknown>
+}
 
 export type EnginePlaylistBoundary = { kind: 'HOLD'; reason: string } | {
   kind: 'TAKE'; view: RundownView; itemId: string; stillCurrent: () => boolean
@@ -451,6 +470,10 @@ export class EngineTransport implements Transport {
   private desiredMultiview: MultiviewComposition | null = null
   private multiviewEngineState: MultiviewEngineState | null = null
   private multiviewEngineStateAt = 0
+  private ingestReceivers: IngestReceiverReport[] = []
+  private ingestReceiversAt = 0
+  private nativeIngestShared = false
+  private desiredIngestWatch = ''
   private recoveryCursor: { itemId: string; frames: Frames;programTrim?:ProgramTrim;programHold?:'HELD'|'UNCONFIRMED';liveProgramBinding?:LiveProgramBinding } | null = null
   private programEndReason = 'STOP'
   private pendingProgramExit: {itemId:string;frames:number;reason:string;targetItemId:string} | null = null
@@ -853,6 +876,9 @@ export class EngineTransport implements Transport {
       }
       case 'ready':
         this.nativeReplacementCapability=readNativeLiveReplacementCapability(event)
+        this.nativeIngestShared=(event as {ingestShared?:unknown}).ingestShared===true
+        // Engine novo: o acompanhamento do watchdog recomeça vazio.
+        this.desiredIngestWatch=''
         this.nativePreviewAdmission=event.previewAdmission===true
         if(this.options.holdProgramOutputs&&this.options.preview&&!this.nativePreviewAdmission){this.fail('Engine não suporta preview retido; preparo recusado.');const child=this.child;this.close();child.kill('SIGKILL');break}
         this.nativeProgramAdmission=event.programAdmission===true
@@ -1048,6 +1074,9 @@ export class EngineTransport implements Transport {
         this.multiviewEngineState=state;this.multiviewEngineStateAt=Date.now()
         break
       }
+      case 'ingestState':
+        this.ingestReceivers=Array.isArray(event.receivers)?event.receivers:[];this.ingestReceiversAt=Date.now()
+        break
       case 'publisher':
         this.publisherStates.set(event.outputId ?? event.url, {
           ...(event.outputId?{outputId:event.outputId}:{}),
@@ -2741,6 +2770,20 @@ export class EngineTransport implements Transport {
     if (JSON.stringify(composition) === JSON.stringify(this.desiredMultiview)) return
     this.desiredMultiview = composition
     this.send({ cmd: 'multiview', composition })
+  }
+  /** O engine recebe cada entrada uma vez, num receptor compartilhado. */
+  supportsIngest(): boolean { return this.nativeIngestShared }
+  /** Receptores compartilhados vivos (nulo/vazio se a informação é velha). */
+  ingestState(maxAgeMs = 3000): IngestReceiverReport[] {
+    return Date.now() - this.ingestReceiversAt <= maxAgeMs ? this.ingestReceivers : []
+  }
+  /** Entradas que o watchdog acompanha fora do PVW (substitui a lista; vazia solta). */
+  async watchIngest(sources: Array<{ id: string; endpoint: string }>): Promise<void> {
+    if (!this.nativeIngestShared) throw new Error('Engine sem receptor compartilhado de entradas.')
+    const key = JSON.stringify(sources)
+    if (key === this.desiredIngestWatch) return
+    await this.request({ cmd: 'ingestWatch', sources })
+    this.desiredIngestWatch = key
   }
   /** Último estado do multiview informado pelo engine (nulo se velho). */
   multiviewState(maxAgeMs = 5000): MultiviewEngineState | null {

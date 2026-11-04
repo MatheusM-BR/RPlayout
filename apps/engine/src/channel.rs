@@ -30,6 +30,8 @@ use crate::live_replacement::{Journal as ReplacementJournal, Phase as Replacemen
 /// Multiview composto (R88-36). Módulo filho para ler os itens sem abrir campos.
 #[path = "multiview.rs"]
 pub mod multiview;
+#[path = "ingest.rs"]
+pub mod ingest;
 
 /// Para onde o programa sai. Todas as saídas penduram no mesmo par de tees,
 /// então o canal codifica uma vez, não uma vez por destino.
@@ -199,6 +201,10 @@ struct Item {
     /// Raw preview branch, before crop/240p scaling. Closed by default.
     qc_valve: Option<gst::Element>,
     qc_ready: Arc<AtomicBool>,
+    /// Fonte ao vivo recebida pelo receptor compartilhado (ingest único por
+    /// entrada). Solta o receptor quando o item morre (só segurar já basta).
+    #[allow(dead_code)]
+    ingest: Option<ingest::Lease>,
 }
 
 #[derive(Default)]
@@ -236,6 +242,9 @@ impl Item {
     /// out at both the decoder and the intersink, not latch on its first frame.
     fn live_ready(&self) -> bool {
         self.spec.is_live() && self.routing_ready().unwrap_or(false)
+            // Receptor compartilhado: o sinal conta no decodificador da entrada,
+            // como antes, não só na entrega ao item (a fila no meio não é sinal).
+            && self.ingest.as_ref().is_none_or(|lease| lease.receiver().video_recent())
             && self.source_statistics.lock().is_ok_and(|statistics| statistics.live_ready(
                 self.video_ready.load(Ordering::Acquire), self.requires_audio(),
                 self.audio_ready.load(Ordering::Acquire),
@@ -353,6 +362,15 @@ fn received_video_frame(buffer: &gst::BufferRef) -> bool {
     buffer.size() > 0 && !buffer.flags().intersects(
         gst::BufferFlags::GAP | gst::BufferFlags::CORRUPTED | gst::BufferFlags::DECODE_ONLY
     )
+}
+
+#[cfg(test)]
+impl Item {
+    /// Elemento do item ou, com receptor compartilhado, do receptor da entrada.
+    fn find_element_for_test(&self, factory: &str) -> Option<gst::Element> {
+        let find = |pipeline: &gst::Pipeline| pipeline.iterate_recurse().into_iter().flatten().find(|element| element.factory().is_some_and(|f| f.name() == factory));
+        find(&self.pipeline).or_else(|| self.ingest.as_ref().and_then(|lease| lease.receiver().pipeline_for_test()).and_then(|pipeline| find(&pipeline)))
+    }
 }
 
 impl Drop for Item {
@@ -737,6 +755,8 @@ pub struct Channel {
     /// vira publicador depois da admissão do preview, como o QC: o mosaico
     /// mostra PGM/PVW deste nó e não pode publicar antes de ele ser o dono.
     held_multiview: Option<(Output, Option<multiview::Composition>)>,
+    /// Receptores compartilhados das entradas ao vivo (ingest único por entrada).
+    ingest: ingest::Hub,
 }
 
 /// A regra de comutação é deliberadamente pequena e isolada para que uma
@@ -1074,8 +1094,8 @@ mod srt_recovery_tests {
 
     impl Watch {
         fn start(channel: &RunningChannel) -> Self {
-            let pipeline=channel.0.on_air.as_ref().unwrap().pipeline.clone();
-            let find=|name:&str| pipeline.iterate_recurse().into_iter().flatten().find(|element|element.factory().is_some_and(|f|f.name()==name)).unwrap();
+            let item=channel.0.on_air.as_ref().unwrap();
+            let find=|name:&str| item.find_element_for_test(name).unwrap();
             let (sink,source)=(find("intervideosink"),find("srtsrc"));
             let stop=Arc::new(std::sync::atomic::AtomicBool::new(false));
             let renders=Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1132,6 +1152,7 @@ mod srt_recovery_tests {
     /// sink (PTS adiantado do encoder + 0,9 s de latência do pipeline, dos
     /// quais 700 ms eram do `tsdemux`).
     fn reconnect_case(engine_mode: &str, sender_mode: &str, offset: u16) {
+        let _serial = ingest::timing_guard();
         if !srt_available() { eprintln!("sem SRT/x264/aac; teste pulado"); return; }
         let port=port(offset);
         let engine_uri=format!("srt://127.0.0.1:{port}?mode={engine_mode}&latency=120");
@@ -1181,6 +1202,7 @@ mod srt_recovery_tests {
     /// viravam ~3,5 s de perda.
     #[cfg(unix)]
     fn hiccup_case(engine_mode: &str, sender_mode: &str, offset: u16) {
+        let _serial = ingest::timing_guard();
         if !srt_available() { eprintln!("sem SRT/x264/aac; teste pulado"); return; }
         let port=port(offset);
         let engine_uri=format!("srt://127.0.0.1:{port}?mode={engine_mode}&latency=120");
@@ -1975,6 +1997,7 @@ impl Channel {
             meter_scratch: Vec::with_capacity(16_384),
             multiview: None,
             held_multiview: None,
+            ingest: ingest::Hub::from_env(),
         };
 
         if program_outputs_held { channel.attach_output(0,&Output::Null,&tee_video,&tee_audio)?; }
@@ -2821,6 +2844,7 @@ impl Channel {
         if self.qc_deadline.is_some() && self.qc_item.as_ref().is_some_and(|item| item.qc_ready.load(Ordering::Acquire)) {
             for publisher in &mut self.publishers { if publisher.role() == "qc" { publisher.set_wanted(true); } }
         }
+        self.ingest.service();
         let multiview = self.service_multiview();
         self.publishers
             .iter_mut()
@@ -2836,6 +2860,20 @@ impl Channel {
 
     pub fn bus(&self) -> gst::Bus {
         self.pipeline.bus().expect("pipeline sempre tem bus")
+    }
+
+    pub fn ingest_shared(&self) -> bool { self.ingest.enabled() }
+
+    /// Receptores compartilhados e a medição de cada entrada.
+    pub fn ingest_reports(&self) -> Vec<ingest::IngestReport> { self.ingest.reports() }
+
+    /// Entradas acompanhadas pelo watchdog fora do PVW.
+    pub fn set_ingest_watched(&mut self, sources: Vec<(String, String)>) -> Result<()> {
+        if !self.ingest.enabled() { return Err(anyhow!("ingest compartilhado desligado (RPLAYOUT_INGEST_SHARED=0)")); }
+        for (id, endpoint) in &sources {
+            if id.is_empty() || id.len() > 256 || endpoint.trim().is_empty() || endpoint.len() > 2048 { return Err(anyhow!("entrada inválida para o watchdog")); }
+        }
+        self.ingest.set_watched(sources)
     }
 
     /// Bus do item no ar, para captar o fim do trecho e os erros dele.
@@ -3201,7 +3239,12 @@ impl Channel {
         crate::audio_bus::validate_pairs(&spec.auxiliary_pairs, self.config.audio_channels)?;
         let pipeline = gst::Pipeline::with_name(&format!("item-{}", spec.item_id));
 
-        let src = source_for(spec)?;
+        // Fonte ao vivo: lida do receptor compartilhado da entrada (aberta uma
+        // vez só, para PGM, PVW, multiview e watchdog). Arquivo: aberto aqui.
+        let (src, ingest_lease) = if spec.is_live() && self.ingest.enabled() {
+            let (input, lease) = self.ingest.subscribe(spec)?;
+            (input, Some(lease))
+        } else { (source_for(spec)?, None) };
 
         let vconv = make("videoconvert")?;
         // Fonte entrelaçada vira progressiva aqui. O compositor não trabalha em
@@ -3390,7 +3433,12 @@ impl Channel {
             // Source; connect their chains now without inventing dimensions
             // or pushing placeholder caps. Otherwise the first frame reaches
             // an unlinked appsrc and reception terminates with NotLinked.
-            let name = static_kind.or_else(|| caps.structure(0).map(|structure| structure.name().as_str()));
+            // Receptor compartilhado: o bin do item expõe a trilha antes de o
+            // item tocar, e o appsrc parado responde ANY; o nome diz o papel.
+            let ingest_kind = caps.is_any().then(|| pad.name()).and_then(|pad_name| {
+                if pad_name.starts_with("video") { Some("video/x-raw") } else if pad_name.starts_with("audio") { Some("audio/x-raw") } else { None }
+            });
+            let name = static_kind.or(ingest_kind).or_else(|| caps.structure(0).map(|structure| structure.name().as_str()));
             let Some(name) = name else { return; };
 
             if name.starts_with("video/") {
@@ -3464,6 +3512,12 @@ impl Channel {
                 }
             }
         }
+        // Receptor compartilhado: só agora, com o `pad-added` ligado, as
+        // trilhas que ele já conhece aparecem no bin do item.
+        if let Some(lease) = ingest_lease.as_ref() {
+            lease.set_statistics(Arc::clone(&source_statistics));
+            lease.activate(&pipeline);
+        }
 
         Ok(Item {
             decoder_id: NEXT_DECODER_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
@@ -3486,6 +3540,7 @@ impl Channel {
             meter_sink,
             qc_valve,
             qc_ready,
+            ingest: ingest_lease,
         })
     }
 
@@ -3891,6 +3946,7 @@ impl Channel {
         if let Some(item) = self.armed.take() {
             discard(item);
         }
+        self.ingest.shutdown();
 
         self.pipeline.send_event(gst::event::Eos::new());
         if let Some(bus) = self.pipeline.bus() {
@@ -4371,8 +4427,7 @@ mod file_preroll_tests {
         let deadline=Instant::now()+Duration::from_secs(3);
         while !channel.0.armed.as_ref().unwrap().live_ready() && Instant::now()<deadline {std::thread::sleep(Duration::from_millis(5));}
         assert!(channel.0.armed.as_ref().unwrap().live_ready());
-        let decoder=channel.0.armed.as_ref().unwrap().pipeline.children().into_iter()
-            .find(|element|element.factory().is_some_and(|factory|factory.name()=="uridecodebin")).unwrap();
+        let decoder=channel.0.armed.as_ref().unwrap().find_element_for_test("uridecodebin").unwrap();
         let pad=decoder.src_pads().into_iter().find(|pad|pad.current_caps().is_some_and(|caps|caps.structure(0).is_some_and(|structure|structure.name().starts_with("video/")))).unwrap();
         let blocked=Arc::new(AtomicBool::new(false));let observed=Arc::clone(&blocked);
         let probe=pad.add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM,move|_,_|{observed.store(true,Ordering::Release);gst::PadProbeReturn::Ok}).unwrap();
@@ -4408,8 +4463,7 @@ mod file_preroll_tests {
         assert_eq!(committed.as_deref(),Some("live-test"));
         assert_eq!(channel.0.on_air_id().as_deref(),Some("live-test"));
         assert!(channel.0.on_air_live_ready().is_some());
-        let decoder=channel.0.on_air.as_ref().unwrap().pipeline.children().into_iter()
-            .find(|element|element.factory().is_some_and(|factory|factory.name()=="uridecodebin")).unwrap();
+        let decoder=channel.0.on_air.as_ref().unwrap().find_element_for_test("uridecodebin").unwrap();
         let pad=decoder.src_pads().into_iter().find(|pad|pad.current_caps().is_some_and(|caps|caps.structure(0).is_some_and(|structure|structure.name().starts_with("video/")))).unwrap();
         let clock=channel.0.live_program_clock.unwrap();
         let previous_decoder=channel.0.decoder_id("pgm").unwrap();
