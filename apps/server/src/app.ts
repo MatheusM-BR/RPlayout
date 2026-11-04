@@ -1,4 +1,5 @@
 import { ClockMonitor, clockConfigFromEnv } from './domain/clock-monitor.js'
+import { joinNotice } from './domain/insertion-conflicts.js'
 import { and, eq } from 'drizzle-orm'
 import { randomUUID,createHash } from 'node:crypto'
 import {captureGraphicDisplay} from './domain/graphic-composition.js'
@@ -1211,7 +1212,7 @@ export class ChannelRuntime {
     } catch(error) {
       const state=ledger.read(run.id)?.state
       if(state==='QUEUED'||state==='PREPARING'&&claimed)ledger.phase(run.id,[state],'FAILED',()=>true,{message:error instanceof Error?error.message:String(error)})
-      return {kind:'HOLD',reason:'Passagem não preparada; PGM anterior preservado. '+(error instanceof Error?error.message:String(error))}
+      return {kind:'HOLD',reason:joinNotice('Passagem não preparada; PGM anterior preservado.',error instanceof Error?error.message:String(error))}
     }
   }
 

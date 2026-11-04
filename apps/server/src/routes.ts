@@ -1,4 +1,5 @@
 import {readHealthPending} from './domain/health-pending.js'
+import { insertionConflicts } from './domain/insertion-conflicts.js'
 import { randomUUID } from 'node:crypto'
 import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
 import { transportRefusalStatus } from './domain/transport-refusal.js'
@@ -4591,7 +4592,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         const reason=runtime.reconfigurationStatus().reason;if(reason)throw new CollaborativeEditError(409,{error:reason})
         const plan=inspectInsertion(app.db,runtime.insertionContext(),body.data,view=>runtime.insertionTiming(view,body.data))
         reply.header('Cache-Control','private, no-store')
-        return {reviewToken:plan.reviewToken,input:plan.input,item:{id:plan.itemId,title:plan.view.items.find(row=>row.item.id===plan.itemId)!.item.title},sourceRevisionId:plan.context.revisionId,conflicts:runtime.insertionTiming(plan.view,body.data).schedule.conflicts,nativeEngine:runtime.transport instanceof EngineTransport,estimatedTiming:true,notice:'Intervenção somente na revisão operacional. Não publica rascunhos. Timing é recalculado na execução; uma entrada descoberta ainda precisa entregar quadro. NEXT não altera PGM/CUE; NOW corta somente após confirmação.'}
+        return {reviewToken:plan.reviewToken,input:plan.input,item:{id:plan.itemId,title:plan.view.items.find(row=>row.item.id===plan.itemId)!.item.title},sourceRevisionId:plan.context.revisionId,conflicts:insertionConflicts(runtime.executionView?runtime.insertionTiming(runtime.executionView,body.data).schedule.conflicts:[],runtime.insertionTiming(plan.view,body.data).schedule.conflicts,plan.itemId),nativeEngine:runtime.transport instanceof EngineTransport,estimatedTiming:true,notice:'Intervenção somente na revisão operacional. Não publica rascunhos. Timing é recalculado na execução; uma entrada descoberta ainda precisa entregar quadro. NEXT não altera PGM/CUE; NOW corta somente após confirmação.'}
       })
     }catch(error){return insertionError(reply,error)}
   })

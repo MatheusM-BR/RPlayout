@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState} from 'react'
+import {dedupeNotice} from '../../domain/notice-text.js'
 import type {ManagedLiveSource,Rate} from '@rplayout/protocol'
 import {api,type OperationalInsertionInput,type OperationalInsertionReview} from '../../api.js'
 import type {LibraryAsset} from '../../types.js'
@@ -60,7 +61,7 @@ function InsertionContent({channelId,rate,assets,defaultOpen=false}:{channelId:s
         confirmation={review?.input.mode==='NOW'?`Autorizo inserir “${review.item.title}” AGORA e interromper o PGM somente após quadro confirmado. Rascunhos não serão publicados.`:`Autorizo inserir “${review?.item.title??''}” como PRÓXIMO, preservando PGM/CUE e respeitando o Auto Next do item atual.`}
         disabled={pending||!review||review.input.mode==='NOW'&&!review.nativeEngine} onConfirm={()=>perform('CONFIRM')}/>
       {pending&&<p role="status">Preparando e conferindo revisão/sinal… Não repita o pedido.</p>}
-      {message&&<p role="status" className="text-armed-amber">{message}</p>}
+      {message&&<p role="status" className="text-armed-amber">{dedupeNotice(message)}</p>}
     </div>}
   </section>
 }

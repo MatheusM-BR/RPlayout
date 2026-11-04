@@ -12,6 +12,7 @@ import {itemDisplayTitle} from '../domain/item-title.js'
 import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags,LiveSourceReview,RootCatalogReview,RootAddReview } from '@rplayout/protocol'
 import { qcApproved,programDurationFrames,durationIn } from '@rplayout/protocol'
 import { AbortButton, transportColumns } from '../components/broadcast/AbortButton.js'
+import { dedupeNotice } from '../domain/notice-text.js'
 import { clock, dur, formatStandardRate } from '../format.js'
 import {PreviewFrameStatus} from '../components/broadcast/PreviewFrameStatus.js'
 import type {
@@ -1172,7 +1173,7 @@ export function MasterControlView({
                   {takeReason&&<div role="status" className="text-[11px] text-armed-amber text-center">{takeReason}</div>}
                   {transportRefusal&&<div role="alert" data-testid="transport-refusal" className="flex items-start gap-1.5 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 text-[12px] text-on-surface">
                     <span className="material-symbols-outlined text-[15px] text-on-air-crimson shrink-0">block</span>
-                    <span className="flex-1 min-w-0 break-words"><strong className="text-on-air-crimson">{transportRefusal.action.toUpperCase()} recusado:</strong> {transportRefusal.message} <span className="text-outline">(este comando não alterou o PGM)</span></span>
+                    <span className="flex-1 min-w-0 break-words"><strong className="text-on-air-crimson">{transportRefusal.action.toUpperCase()} recusado:</strong> {dedupeNotice(transportRefusal.message)} <span className="text-outline">(este comando não alterou o PGM)</span></span>
                     {onDismissTransportRefusal&&<button type="button" onClick={onDismissTransportRefusal} className="shrink-0 text-outline hover:text-on-surface" aria-label="Fechar aviso de comando recusado"><span className="material-symbols-outlined text-[15px]">close</span></button>}
                   </div>}
                   {!takeReason&&direct&&'itemId' in direct&&<div role="status" className="text-[11px] text-accent-ice text-center">Sem PVW nesta instalação: o TAKE DIRETO leva “{direct.title}” ao ar, com confirmação.</div>}
