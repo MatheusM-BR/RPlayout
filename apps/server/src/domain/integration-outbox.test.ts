@@ -89,7 +89,9 @@ describe('entregas externas duráveis e isoladas do PGM',() => {
     const send=vi.fn().mockResolvedValue(new Response(null,{status:204}));vi.stubGlobal('fetch',send)
     await emitIntegrationEvent(database.db,'source.lost',{message:'PAYLOAD-SECRET'},'ch')
     expect(send).not.toHaveBeenCalled()
-    expect(JSON.stringify(database.sqlite.prepare('SELECT target,payload FROM integration_deliveries').all())).not.toMatch(/SEGREDO|PAYLOAD-SECRET/)
+    // r88-37: a URL do webhook (credencial) continua envelope; o payload do evento é texto normal.
+    expect(JSON.stringify(database.sqlite.prepare('SELECT target FROM integration_deliveries').all())).not.toMatch(/SEGREDO/)
+    expect(JSON.stringify(database.sqlite.prepare('SELECT payload FROM integration_deliveries').all())).toContain('PAYLOAD-SECRET')
     await outbox.tick()
     expect(send).toHaveBeenCalledTimes(1)
     const rows=await database.db.select().from(integrationDeliveries)

@@ -1,3 +1,4 @@
+import {sealStoredValue} from '../db/protected-columns.js'
 import { cpus, freemem, totalmem, platform } from 'node:os'
 import { statfs, readFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
@@ -206,7 +207,7 @@ export class HostMetrics {
       const changes=this.incidents.evaluate(sample)
       persistMetricHistory(this.sqlite,sample,Date.now(),()=>{
         for(const change of changes){
-          const message=installationVault().encrypt(change.message,'health_events.message')
+          const message=sealStoredValue(change.message,'health_events.message')
           if(change.kind==='open')this.sqlite.prepare('INSERT INTO health_events (id,component,state,severity,message,occurred_at) VALUES (?,?,?,?,?,?)').run(change.id,'HOST','degraded','WARN',message,sample.generatedAt)
           else {
             this.sqlite.prepare('UPDATE health_events SET resolved_at=? WHERE id=? AND resolved_at IS NULL').run(sample.generatedAt,change.id)

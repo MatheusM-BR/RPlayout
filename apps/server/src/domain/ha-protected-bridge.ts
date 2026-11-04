@@ -2,7 +2,11 @@ import type Database from 'better-sqlite3'
 import {createHmac,createHash} from 'node:crypto'
 import {z} from 'zod'
 import {SecretVault,installationVault} from './secret-vault.js'
-import {protectedColumns} from '../db/protected-columns.js'
+import {envelopeColumns as protectedColumns} from '../db/protected-columns.js'
+import {SECRET_PREFIX} from './secret-vault.js'
+// r88-37: a ponte leva todo ENVELOPE, inclusive o histórico das colunas que
+// deixaram de ser segredo; valor em claro viaja como está no banco.
+const envelopeOnly=" AND substr(\"COLUMN\",1,"+SECRET_PREFIX.length+")='"+SECRET_PREFIX+"'"
 import {assertSchemaCompatibility} from '../db/schema-compatibility.js'
 import {haOwnershipEvidence,exportOwnershipEvidence,importOwnershipEvidence} from './ha-return-ownership-evidence.js'
 
@@ -30,7 +34,7 @@ export function exportProtectedBridge(db:Database.Database,exportId:string,pairi
       if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue
       const fields=db.pragma('table_info('+quote(table)+')') as Array<{name:string;pk:number}>,keys=fields.filter(field=>field.pk>0).sort((a,b)=>a.pk-b.pk).map(field=>field.name)
       if(!fields.some(field=>field.name===column)||!keys.length||keys.includes(column))throw new Error('Tabela protegida sem identidade estável.')
-      for(const row of db.prepare('SELECT '+[...keys,column].map(quote).join(',')+' FROM '+quote(table)+' WHERE '+quote(column)+' IS NOT NULL ORDER BY '+keys.map(quote).join(',')).iterate() as Iterable<Record<string,unknown>>){
+      for(const row of db.prepare('SELECT '+[...keys,column].map(quote).join(',')+' FROM '+quote(table)+' WHERE '+quote(column)+' IS NOT NULL'+envelopeOnly.replace('"COLUMN"',quote(column))+' ORDER BY '+keys.map(quote).join(',')).iterate() as Iterable<Record<string,unknown>>){
         const cipher=row[column];if(typeof cipher!=='string'||cipher.length>8*1024*1024)throw new Error('Campo protegido inválido/excede limite.')
         if(keys.some(name=>!['string','number'].includes(typeof row[name])||typeof row[name]==='number'&&!Number.isSafeInteger(row[name])))throw new Error('Identidade protegida não pode ser serializada sem perda.')
         const key=JSON.stringify(keys.map(name=>[name,row[name]])),plain=source.decrypt(cipher,table+'.'+column),sourceHash=hash(cipher),payload=pairing.encrypt(plain,context(exportId,table,column,key))
@@ -56,7 +60,7 @@ export function importProtectedBridge(db:Database.Database,exportId:string,pairi
     const rows=db.prepare('SELECT * FROM ha_protected_field_bridge ORDER BY rowid').all() as Array<{table_name:string;column_name:string;key_json:string;source_cipher_hash:string;payload:string}>
     if(rows.length!==proof.entries||rows.length>100000)throw new Error('Inventário de ponte incompleto.')
     let required=0
-    for(const [table,column] of protectedColumns){if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;required+=(db.prepare('SELECT count(*) AS n FROM '+quote(table)+' WHERE '+quote(column)+' IS NOT NULL').get() as {n:number}).n}
+    for(const [table,column] of protectedColumns){if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;if(!(db.pragma('table_info('+quote(table)+')') as Array<{name:string}>).some(field=>field.name===column))continue;required+=(db.prepare('SELECT count(*) AS n FROM '+quote(table)+' WHERE '+quote(column)+' IS NOT NULL'+envelopeOnly.replace('"COLUMN"',quote(column))).get() as {n:number}).n}
     if(required!==rows.length)throw new Error('Ponte não cobre todos os campos protegidos conhecidos.')
     for(const row of rows){
       if(!allowed.has(row.table_name+'.'+row.column_name))throw new Error('Campo de ponte não autorizado.')

@@ -1,3 +1,4 @@
+import {openStoredValue} from './protected-columns.js'
 import type Database from 'better-sqlite3'
 import {IncidentContextSchema} from '@rplayout/protocol'
 import {installationVault} from '../domain/secret-vault.js'
@@ -8,7 +9,7 @@ export function validateIncidentContexts(sqlite:Database.Database){
   if(!applied){if(column)throw new Error('Migração de contexto de incidentes incompleta.');return}
   if(!column||column.type.toUpperCase()!=='TEXT'||column.notnull!==0)throw new Error('Schema de contexto de incidentes inválido.')
   for(const row of sqlite.prepare('SELECT channel_id,context FROM health_events WHERE context IS NOT NULL').all() as {channel_id:string|null;context:string}[]){
-    const context=IncidentContextSchema.safeParse(JSON.parse(installationVault(false).decrypt(row.context,'health_events.context')))
+    const context=IncidentContextSchema.safeParse(JSON.parse(openStoredValue(row.context,'health_events.context')))
     if(!context.success||context.data.channelId!==row.channel_id)throw new Error('Contexto de incidente inválido ou de outro canal.')
   }
 }

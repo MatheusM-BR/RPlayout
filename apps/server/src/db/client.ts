@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import * as schema from './schema.js'
 import { createHash } from 'node:crypto'
 import { migrateSecretVault,finishVaultCleanup } from './vault-migration.js'
+import { migrateCredentialOnlyVault } from './credential-only-vault.js'
 import {migrateEditorialRevisions} from './editorial-revisions.js'
 import {migrateTrimCadence} from './trim-cadence.js'
 import {migrateAudioBus} from './audio-bus.js'
@@ -629,6 +630,7 @@ export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.D
     migrateAuditImmutable(sqlite)
     migrateLiveWatchdogPolicies(sqlite)
     migrateLiveOutages(sqlite)
+    migrateCredentialOnlyVault(sqlite)
     assertSchemaCompatibility(sqlite,true)
     assertNoUncertainUpgradeProfile(sqlite)
     options.onOpened?.(sqlite)

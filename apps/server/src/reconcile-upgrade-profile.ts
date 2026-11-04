@@ -1,3 +1,4 @@
+import {sealStoredValue} from './db/protected-columns.js'
 import Database from 'better-sqlite3'
 import {drizzle} from 'drizzle-orm/better-sqlite3'
 import {createHash,randomUUID} from 'node:crypto'
@@ -67,7 +68,7 @@ async function main(){
     sql.transaction(()=>{
       lease!.assertHeld();fence.assertOwned();distribution.assertPredecessorReleased()
       if(JSON.stringify(pendingUpgradeProfiles(sql!).get(id!))!==JSON.stringify(initial)||digest(target)!==actual)throw new Error('Diário/perfil mudou durante a reconciliação.')
-      sql!.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),'@upgrade',phase,installationVault(false).encrypt(JSON.stringify({...initial,phase,reconciledAt:new Date().toISOString(),reconciliation:'OBSERVED_FILE_ONLY',historicalPublicationAckKnown:false}),'operator_decisions.payload'),'@upgrade',new Date().toISOString())
+      sql!.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),'@upgrade',phase,sealStoredValue(JSON.stringify({...initial,phase,reconciledAt:new Date().toISOString(),reconciliation:'OBSERVED_FILE_ONLY',historicalPublicationAckKnown:false}),'operator_decisions.payload'),'@upgrade',new Date().toISOString())
     }).immediate()
     process.stdout.write(JSON.stringify({adoptionId:id,phase,reconciled:true,recoveredMaintenance,profileChanged:false,automaticTake:false,physicalOutputValidated:false,historicalPublicationAckKnown:false})+'\n')
   }finally{

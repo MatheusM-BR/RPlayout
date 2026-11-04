@@ -31,7 +31,12 @@ it('ciphertext adulterado impede relatório de legibilidade — NOT_RUN',()=>{
   const db=new Database(':memory:'),vault=installationVault(false)
   try{
     db.exec('CREATE TABLE output_profiles(id TEXT PRIMARY KEY,target TEXT)')
-    db.prepare('INSERT INTO output_profiles VALUES(?,?)').run('p','unprotected')
+    // r88-37: caminho sem credencial é texto normal; credencial em claro e envelope adulterado não.
+    db.prepare('INSERT INTO output_profiles VALUES(?,?)').run('file','D:/Gravacoes/pgm.ts')
+    expect(inspectRekeyedFields(db,{exportId:randomUUID(),vaultFingerprint:vault.fingerprint}).fields).toBe(1)
+    db.prepare('INSERT INTO output_profiles VALUES(?,?)').run('p','rtmp://h/app/stream-key')
+    expect(()=>inspectRekeyedFields(db,{exportId:randomUUID(),vaultFingerprint:vault.fingerprint})).toThrow()
+    db.prepare("UPDATE output_profiles SET target=? WHERE id='p'").run(vault.encrypt('rtmp://h/app/k','output_profiles.target').slice(0,-4)+'AAAA')
     expect(()=>inspectRekeyedFields(db,{exportId:randomUUID(),vaultFingerprint:vault.fingerprint})).toThrow()
   }finally{db.close()}
 })

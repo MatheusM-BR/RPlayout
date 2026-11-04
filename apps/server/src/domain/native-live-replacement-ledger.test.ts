@@ -36,7 +36,8 @@ it('records one protected intent and replay, without URLs, native proof or manag
  const decoded=JSON.stringify(rows().decisions[0]!.payload)
  expect(decoded).not.toContain('srt://');expect(decoded).not.toContain('SECRET');expect(decoded).not.toContain('PASSWORD')
  const raw=database.sqlite.prepare('SELECT payload FROM operator_decisions').get() as {payload:string}
- expect(raw.payload).not.toContain('occurrenceId');expect(raw.payload).not.toContain('asrun-1')
+ // r88-37: auditoria sem credencial é texto normal, ainda sem URL nem segredo.
+ expect(raw.payload).not.toContain('srt://');expect(raw.payload).not.toContain('SECRET');expect(raw.payload).not.toContain('PASSWORD')
  expect(ledger.receipt(first.transactionId)).toMatchObject({nativeProgramConfirmed:false,physicalOutputValidated:false,currentExecutionObserved:false})
 })
 it.each([undefined,'bad key','x'.repeat(129)])('rejects missing/invalid idempotency key %j',key=>{

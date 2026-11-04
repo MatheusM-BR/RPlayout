@@ -11,6 +11,11 @@
 // Grade em edição (itens de VT), acervo, QC, usuários, AIRED, categorias e artes
 // ficam como estavam.
 //
+// A partir da r88-37 (migração 58) só credencial fica cifrada: grade, auditoria
+// nova, alertas e snapshots sem credencial estão em claro e são mantidos. Só o
+// que ainda é envelope sai. Se o backup tem senha de recuperação cadastrada,
+// prefira restore-rplayout-backup.ps1 -RecoveryPasswordFile: ele recupera tudo.
+//
 // Uso: node restaurar-sem-cofre.cjs <backup.db> <novo.db> [--relatorio <arquivo.json>]
 // O better-sqlite3 vem da instalação do RPlayout (apps/server/node_modules) ou do
 // repositório; informe RPLAYOUT_SQLITE_MODULE com o caminho, se precisar.
@@ -64,10 +69,15 @@ function main(argv) {
     const triggers = db.prepare("SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger' AND sql IS NOT NULL ORDER BY rowid").all()
     db.transaction(() => {
       for (const { name } of triggers) db.exec(`DROP TRIGGER "${name}"`)
-      // 1. Auditoria: payload cifrado ilegível. Os selos cobrem essas linhas, então saem juntos.
-      if (tableExists('operator_decisions')) report.removed.operator_decisions = db.prepare('DELETE FROM operator_decisions').run().changes
-      for (const table of ['audit_sealed_rows', 'audit_seals', 'graphic_command_pending']) if (tableExists(table)) report.removed[table] = db.prepare(`DELETE FROM "${table}"`).run().changes
-      if (tableExists('sqlite_sequence')) db.prepare("DELETE FROM sqlite_sequence WHERE name='audit_seals'").run()
+      // 1. Auditoria: payload cifrado ilegível (até a r88-36 era tudo; depois só o
+      // histórico antigo). Os selos cobrem essas linhas, então saem juntos; as
+      // linhas em claro que ficam são seladas de novo pelo servidor.
+      const auditRemoved = tableExists('operator_decisions') ? db.prepare('DELETE FROM operator_decisions WHERE payload LIKE ?').run(PREFIX + '%').changes : 0
+      if (tableExists('operator_decisions')) report.removed.operator_decisions = auditRemoved
+      if (auditRemoved) {
+        for (const table of ['audit_sealed_rows', 'audit_seals', 'graphic_command_pending']) if (tableExists(table)) report.removed[table] = db.prepare(`DELETE FROM "${table}"`).run().changes
+        if (tableExists('sqlite_sequence')) db.prepare("DELETE FROM sqlite_sequence WHERE name='audit_seals'").run()
+      }
       // 2. Itens ao vivo da grade (fonte cifrada) e seus dependentes.
       const liveItems = db.prepare(`SELECT id FROM rundown_items WHERE source_ref LIKE '${PREFIX}%' OR live_endpoint LIKE '${PREFIX}%'`).all().map(row => row.id)
       for (const table of ['item_graphics', 'secondary_events']) if (tableExists(table) && liveItems.length) report.removed[table + ' (itens ao vivo)'] = db.prepare(`DELETE FROM "${table}" WHERE item_id IN (${liveItems.map(() => '?').join(',')})`).run(...liveItems).changes
@@ -126,7 +136,9 @@ function main(argv) {
         }
       }
       // 4. Chave antiga esquecida: o servidor cria um cofre novo na primeira partida.
+      // A chave antiga embrulhada pela senha de recuperação não serve à chave nova.
       if (tableExists('vault_metadata')) db.prepare('DELETE FROM vault_metadata').run()
+      if (tableExists('vault_recovery')) report.removed['vault_recovery (chave antiga)'] = db.prepare('DELETE FROM vault_recovery').run().changes
       // 5. Dependentes órfãos das linhas apagadas.
       for (let pass = 0; pass < 5; pass++) {
         const orphans = db.prepare('PRAGMA foreign_key_check').all()

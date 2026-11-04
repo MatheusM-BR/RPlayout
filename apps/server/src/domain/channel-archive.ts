@@ -1,3 +1,4 @@
+import {sealStoredValue} from '../db/protected-columns.js'
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { Checkpoints,stoppedCheckpoint } from './checkpoints.js'
@@ -22,7 +23,7 @@ export function setChannelArchived(sqlite:Database.Database,id:string,archive:bo
     }
     sqlite.prepare('UPDATE channels SET archived_at=? WHERE id=?').run(archivedAt,id)
     sqlite.prepare('INSERT INTO operator_decisions (id,rundown_id,item_id,kind,payload,actor_username,created_at) VALUES (?,?,?,?,?,?,?)')
-      .run(randomUUID(),'@security',null,archive ? 'CHANNEL_ARCHIVED' : 'CHANNEL_REACTIVATED',installationVault().encrypt(JSON.stringify({channelId:id,historyPreserved:true,automaticTake:false}),'operator_decisions.payload'),actor,at)
+      .run(randomUUID(),'@security',null,archive ? 'CHANNEL_ARCHIVED' : 'CHANNEL_REACTIVATED',sealStoredValue(JSON.stringify({channelId:id,historyPreserved:true,automaticTake:false}),'operator_decisions.payload'),actor,at)
     return {archived:archive,archivedAt,alreadyApplied:false}
   })()
 }

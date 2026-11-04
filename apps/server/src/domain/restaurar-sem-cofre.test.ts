@@ -78,6 +78,34 @@ describe('restaurar-sem-cofre', () => {
     db.close()
   })
 
+  it('backup r88-37 (migração 58): mantém o que já está em claro e esquece a recuperação da chave antiga', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rsc-'))
+    const source = join(dir, 'orig.db'), target = join(dir, 'novo.db')
+    fixture(source)
+    const db = new Database(source)
+    db.exec(`
+      INSERT INTO schema_migrations VALUES (58,'credential-only-vault-and-recovery','t');
+      CREATE TABLE vault_recovery(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),updated_at TEXT NOT NULL);
+      INSERT INTO vault_recovery VALUES (1,'{}',1,'t');
+      INSERT INTO operator_decisions VALUES ('d2','@http','{"route":"/api/x"}');
+      UPDATE health_events SET message='CPU alta', context=NULL;
+      INSERT INTO live_sources VALUES ('ndi','ndi://ESTUDIO',NULL);
+    `)
+    db.close()
+    const report = tool.main([source, target])
+    const out = new Database(target, { readonly: true })
+    const n = (sql: string) => (out.prepare(sql).get() as { n: number }).n
+    expect(n("SELECT count(*) n FROM operator_decisions WHERE id='d2'")).toBe(1)
+    expect(n('SELECT count(*) n FROM operator_decisions')).toBe(1)
+    expect(report.removed.operator_decisions).toBe(1)
+    expect(n("SELECT count(*) n FROM health_events WHERE message='CPU alta'")).toBe(1)
+    expect(n("SELECT count(*) n FROM live_sources WHERE id='ndi'")).toBe(1)
+    expect(n("SELECT count(*) n FROM live_sources")).toBe(1)
+    expect(n('SELECT count(*) n FROM vault_recovery')).toBe(0)
+    expect(n('SELECT count(*) n FROM schema_migrations WHERE version=58')).toBe(1)
+    out.close()
+  })
+
   it('recusa sobrescrever um destino existente', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rsc-'))
     const source = join(dir, 'orig.db')

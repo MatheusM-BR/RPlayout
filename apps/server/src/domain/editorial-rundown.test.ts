@@ -37,7 +37,8 @@ describe('cópia integral e atômica da intenção editorial',()=>{
     const event=db.select().from(secondaryEvents).where(eq(secondaryEvents.itemId,live.id)).get()!
     expect(event.definition).toMatchObject({id:event.id,rundownItemId:live.id,offsetFrames:25,payload:{title:'Ação'}})
     expect(event.id).not.toBe('event')
-    expect(JSON.stringify(sqlite.prepare('SELECT source_ref,live_endpoint FROM rundown_items WHERE id=?').get(live.id))).not.toContain('Câmera')
+    // r88-37: endereço NDI não é credencial; fica em claro.
+    expect(sqlite.prepare('SELECT source_ref FROM rundown_items WHERE id=?').get(live.id)).toEqual({source_ref:'ndi:Câmera — QA'})
     for(const table of ['operational_playlist_revisions','secondary_event_runs','as_run'])expect(sqlite.prepare(`SELECT count(*) n FROM ${table}`).get()).toEqual({n:0})
     expect(db.select().from(rundownItems).where(eq(rundownItems.rundownId,'source')).all()).toHaveLength(2)
   })

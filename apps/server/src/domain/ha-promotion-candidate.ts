@@ -1,3 +1,4 @@
+import {openStoredValue} from '../db/protected-columns.js'
 import type Database from 'better-sqlite3'
 import {z} from 'zod'
 import {installationVault} from './secret-vault.js'
@@ -62,7 +63,7 @@ export function readHaPromotionCandidate(sql:Database.Database,context:string,re
   for(const [sourceId,localId] of mapping){
     const sourceRevision=source.revisions.find(row=>row.id===sourceId),row=rows.find(row=>row.id===localId)
     if(!sourceRevision||!row||sourceRevision.rundownId!==row.rundown_id||sourceRevision.revision!==row.revision||sourceRevision.state!==row.state||Boolean(sourceRevision.active)!==Boolean(row.active))throw new Error('Edição HA ausente, alterada ou de outra grade.')
-    const payload=readOperationalPayload(JSON.parse(installationVault(false).decrypt(row.payload,'operational_playlist_revisions.payload')))
+    const payload=readOperationalPayload(JSON.parse(openStoredValue(row.payload,'operational_playlist_revisions.payload')))
     const paths=new Map<string,string>(),assets=new Map<string,MediaAsset>()
     for(const asset of payload.assets??[]){
       if(!/^[a-f0-9]{64}$/i.test(asset.contentHash)||!asset.path)throw new Error('Mídia HA local sem SHA/caminho.')

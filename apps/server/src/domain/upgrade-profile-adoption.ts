@@ -1,3 +1,4 @@
+import {sealStoredValue,openStoredValue} from '../db/protected-columns.js'
 import type Database from 'better-sqlite3'
 import type {App} from '../app.js'
 import {createHash,randomUUID} from 'node:crypto'
@@ -18,7 +19,7 @@ const adoptionBinding=(value:Record<string,unknown>)=>JSON.stringify([value.id,v
 export function pendingUpgradeProfiles(sqlite:Database.Database){
   const pending=new Map<string,Record<string,unknown>>()
   for(const row of sqlite.prepare('SELECT kind,payload FROM operator_decisions WHERE kind IN (?,?,?,?) ORDER BY rowid').iterate(...phases) as Iterable<{kind:string;payload:string}>){
-    const value=JSON.parse(installationVault(false).decrypt(row.payload,'operator_decisions.payload'))
+    const value=JSON.parse(openStoredValue(row.payload,'operator_decisions.payload'))
     if(value.version!==1||typeof value.id!=='string'||value.phase!==row.kind)throw new Error('Diário de adoção de perfil inválido.')
     if(row.kind===phases[0]){if(pending.has(value.id))throw new Error('Intenção de perfil duplicada.');pending.set(value.id,value)}
     else{
@@ -51,7 +52,7 @@ export function prepareUpgradeProfileAdoption(candidateFile:string,installRoot:s
     if(!activation||activation.phase!=='CONFIRMED'||!instance||instance.phase!=='OPEN'||instance.pid!==process.pid||!app.restoredAdmission||!app.hostFence)throw new Error('Perfil exige ativação nativa confirmada nesta instância.')
     const authorize=()=>{app.hostFence!.assertOwned();app.restoredAdmission!.maintenance.assertHeldOn(app.sqlite);if(readRestoredActivations(app.sqlite).at(-1)?.id!==activation.id)throw new Error('Ativação mudou.');if(hash(regularContent(candidatePath))!==candidateHash)throw new Error('Candidato mudou.');if(hash(regularContent(target))!==baseline)throw new Error('Perfil ativo mudou; não será substituído.')}
     const proof=async()=>{await app.hostFence!.freshProof();authorize()}
-    const audit=(phase:typeof phases[number])=>app.sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),'@upgrade',phase,installationVault(false).encrypt(JSON.stringify({version:1,id,phase,activationId:activation.id,requestId:activation.requestId,previousHash:baseline,candidateHash,previousProfile:archive,automaticTake:false,physicalOutputValidated:false}),'operator_decisions.payload'),'@upgrade',new Date().toISOString())
+    const audit=(phase:typeof phases[number])=>app.sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),'@upgrade',phase,sealStoredValue(JSON.stringify({version:1,id,phase,activationId:activation.id,requestId:activation.requestId,previousHash:baseline,candidateHash,previousProfile:archive,automaticTake:false,physicalOutputValidated:false}),'operator_decisions.payload'),'@upgrade',new Date().toISOString())
     await proof();audit(phases[0])
     try{
       if(existsSync(archive))throw new Error('Arquivo anterior já existe; não será substituído.')
