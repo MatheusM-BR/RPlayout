@@ -11,6 +11,7 @@ import { wallClock, localDateKey, gradeInstant } from '../domain/wall-clock.js'
 import {itemDisplayTitle} from '../domain/item-title.js'
 import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags,LiveSourceReview,RootCatalogReview,RootAddReview } from '@rplayout/protocol'
 import { qcApproved,programDurationFrames,durationIn } from '@rplayout/protocol'
+import { AbortButton, transportColumns } from '../components/broadcast/AbortButton.js'
 import { clock, dur, formatStandardRate } from '../format.js'
 import {PreviewFrameStatus} from '../components/broadcast/PreviewFrameStatus.js'
 import type {
@@ -1179,7 +1180,7 @@ export function MasterControlView({
                   <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
                     <button
                       onClick={() => void handleTake()}
-                      className="col-span-6 h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+                      className={`${transportColumns(abortArmed).take} h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100`}
                       id="btn-take"
                       disabled={takeReason!==null}
                       title={takeReason??(noPreviewBus?'TAKE DIRETO: leva ao ar o item selecionado (ou o próximo), com confirmação; não há PVW nesta instalação':'Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE')}
@@ -1198,7 +1199,7 @@ export function MasterControlView({
                         if (target && !publicationRequired) onCue(target.item.id)
                       }}
                       disabled={noPreviewBus}
-                      className="col-span-4 h-12 disabled:opacity-40 disabled:cursor-not-allowed bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer"
+                      className={`${transportColumns(abortArmed).cue} h-12 disabled:opacity-40 disabled:cursor-not-allowed bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer`}
                       title={noPreviewBus ? 'Sem barramento de preview (PVW) nesta instalação: não há CUE. Selecione o item e use TAKE DIRETO.' : 'Abre em CUE no PVW o item selecionado; sem seleção, abre o Próximo (F2)'}
                     >
                       <div className="flex items-center gap-0.5">
@@ -1208,21 +1209,7 @@ export function MasterControlView({
                       <span className="font-label-mono text-[12px] text-surface-base/80 font-medium">F2</span>
                     </button>
 
-                    <button
-                      onClick={handleArmAbort}
-                      disabled={!canStop}
-                      className={`col-span-2 h-12 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg border border-border-subtle flex flex-col items-center justify-center transition-all cursor-pointer ${
-                        abortArmed
-                          ? 'bg-on-air-crimson text-white animate-pulse border-on-air-glow'
-                          : 'bg-surface-container hover:bg-error-container text-outline hover:text-on-error-container'
-                      }`}
-                      title={!canStop ? deniedReason('parar o canal (ABORT)') : abortArmed ? 'CLIQUE PARA CONFIRMAR PARADA IMEDIATA' : 'Parada de emergência com trava de segurança (ABORT)'}
-                    >
-                      <span className="material-symbols-outlined text-[15px]">stop</span>
-                      <span className="font-label-mono text-[12px] uppercase font-bold">
-                        {abortArmed ? `CONFIRMAR ${abortCountdown}s · Esc cancela` : 'ABORT'}
-                      </span>
-                    </button>
+                    <AbortButton armed={abortArmed} countdown={abortCountdown} canStop={canStop} deniedTitle={deniedReason('parar o canal (ABORT)')} onClick={handleArmAbort} />
                   </div>
 
                   <div className="flex items-center justify-between font-label-mono text-[12px] text-outline pt-0.5 border-t border-border-subtle/40">
