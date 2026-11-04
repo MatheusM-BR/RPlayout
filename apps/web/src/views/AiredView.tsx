@@ -415,7 +415,7 @@ export function AiredView({
                     setStartTime(e.target.value)
                     setQuickPreset(null)
                   }}
-                  className="bg-transparent text-primary font-label-mono text-[12px] font-bold outline-none cursor-pointer border-l border-border-subtle pl-1.5 w-[86px]"
+                  className="bg-transparent text-primary font-label-mono text-[12px] font-bold outline-none cursor-pointer border-l border-border-subtle pl-1.5 w-[7.5rem] min-w-0 tabular-nums"
                   title="Hora Inicial"
                 />
               </div>
@@ -442,7 +442,7 @@ export function AiredView({
                     setEndTime(e.target.value)
                     setQuickPreset(null)
                   }}
-                  className="bg-transparent text-primary font-label-mono text-[12px] font-bold outline-none cursor-pointer border-l border-border-subtle pl-1.5 w-[86px]"
+                  className="bg-transparent text-primary font-label-mono text-[12px] font-bold outline-none cursor-pointer border-l border-border-subtle pl-1.5 w-[7.5rem] min-w-0 tabular-nums"
                   title="Hora Final"
                 />
               </div>
