@@ -35,3 +35,12 @@ export function sourceName(reference: string, sources: readonly { reference: str
 export function inputName(current: string, recommendation: string | undefined, manuallyEdited: boolean) {
   return manuallyEdited ? current : recommendation || ''
 }
+
+/** Protocolo inicial de uma entrada NOVA depois da descoberta: se a família
+ * pedida (NDI, SDI, OMT) não existe nesta instalação, abre em SRT, que não
+ * depende de placa nem de plugin (B10: abria em NDI sem NDI instalado). */
+export function availableInputKind<K extends string>(kind: K, sources: { sdi?: { available: boolean }; ndi?: { available: boolean }; omt?: { available: boolean } } | null): K | 'SRT' {
+  if (!sources) return kind
+  const family = kind === 'NDI' ? sources.ndi : kind === 'SDI' ? sources.sdi : kind === 'OMT' ? sources.omt : undefined
+  return family && !family.available ? 'SRT' : kind
+}

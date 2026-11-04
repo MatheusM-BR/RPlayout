@@ -1,4 +1,5 @@
 import { confirmAction } from '../domain/confirm.js'
+import { publishedStreamUrls } from '../domain/stream-endpoints.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useEffect, useCallback,useRef } from 'react'
 import type { Channel } from '@rplayout/protocol'
@@ -236,7 +237,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
       .catch(() => onMessage('Não foi possível copiar automaticamente.'))
   }
 
-  const channelDist = distribution?.channels?.find((c) => c.channelId === channel.id)
+  const streams = publishedStreamUrls(distribution, channel.id)
 
   return (
     <div className="flex flex-col gap-5 pb-16">
@@ -288,7 +289,8 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
       </div>}
 
       {/* 2. ENDEREÇOS LOCAIS DE STREAMING (WEBRTC, RTMP, SRT) */}
-      {channelDist?.urls && Object.keys(channelDist.urls).length > 0 && (
+      {streams.reason && <p role="status" data-testid="no-media-server" className="text-[12px] text-outline bg-surface-card rounded-xl border border-border-subtle p-3">{streams.reason}</p>}
+      {streams.urls && (
         <div className="bg-surface-card rounded-xl border border-border-subtle p-4 shadow-sm flex flex-col gap-2.5">
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-accent-ice text-[18px]">cell_tower</span>
@@ -297,7 +299,7 @@ function SaidasTransmissaoContent({channel,onMessage,onChanged}:Props){
             </span>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {Object.entries(channelDist.urls).map(([proto, url]) => (
+            {Object.entries(streams.urls).map(([proto, url]) => (
               <div
                 key={proto}
                 onClick={() => handleCopy(url)}

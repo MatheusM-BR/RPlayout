@@ -110,6 +110,20 @@ export const BACKUP_EVERY_HOURS = Number(process.env.RPLAYOUT_BACKUP_HOURS ?? '2
 export const HEALTH_RETENTION_DAYS = Number(process.env.RPLAYOUT_HEALTH_RETENTION_DAYS ?? '30')
 /** HTTP mutation audit window (route/actor/status). Operational records are kept. */
 export const HTTP_AUDIT_RETENTION_DAYS = Number(process.env.RPLAYOUT_HTTP_AUDIT_RETENTION_DAYS ?? '90')
+/** Incidente já RESOLVIDO e nunca reconhecido: sai depois desta janela.
+ * Sem ela, todo alerta crítico que se recupera sozinho (silêncio de um VT
+ * mudo em loop, por exemplo) ficava para sempre: ~220 por dia na produção.
+ * Pendente de verdade (sem resolução) continua preservado. Zero desliga. */
+export const HEALTH_RESOLVED_RETENTION_DAYS = Number(process.env.RPLAYOUT_HEALTH_RESOLVED_RETENTION_DAYS ?? '90')
+/** Histórico de métricas do host: dias guardados, horas em resolução cheia
+ * (10 s) e intervalo das amostras mais velhas que isso. */
+export const METRIC_RETENTION = {
+  days: Number(process.env.RPLAYOUT_METRIC_RETENTION_DAYS ?? '14'),
+  fullResolutionHours: Number(process.env.RPLAYOUT_METRIC_FULL_HOURS ?? '24'),
+  coarseSeconds: Number(process.env.RPLAYOUT_METRIC_COARSE_SECONDS ?? '60'),
+}
+/** WAL acima disto é truncado depois do checkpoint (MB). Zero desliga. */
+export const WAL_TRUNCATE_MB = Number(process.env.RPLAYOUT_WAL_TRUNCATE_MB ?? '64')
 /** Preenchimento contínuo opt-in; desativado por padrão para preservar controle manual. */
 
 /** Binário de descoberta de fontes ao vivo. Vazio deixa só os convidados. */

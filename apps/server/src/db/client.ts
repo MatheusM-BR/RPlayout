@@ -417,6 +417,9 @@ export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.D
   const assertAdmission=()=>{if(options.maintenance)options.maintenance.assertHeldOn(sqlite);else assertStorageAdmissionOpen(sqlite);options.assertAdmission?.(sqlite)}
   try{assertSchemaCompatibility(sqlite);assertNoUnboundReturnCandidate(sqlite);assertAdmission()}catch(error){sqlite.close();throw error}
   sqlite.pragma('journal_mode = WAL')
+  // Depois de cada checkpoint completo o -wal volta a no máximo 64 MB (sem
+  // isto o arquivo fica no maior tamanho que já teve).
+  sqlite.pragma('journal_size_limit = 67108864')
   sqlite.pragma('foreign_keys = ON')
   sqlite.pragma('synchronous = FULL')
   let vaultCleanup=false

@@ -270,3 +270,55 @@ Dados da produção, r88-35: 233 MB, 1124 MB em 2 h, platô de 820 a 965 MB, 857
   - `measure.js <tela> 30 [hidden]`: req/s, CPU, RSS e WebSocket por tipo.
   - `soak.js <min> <csv> <snapshots>`: RSS, CPU, req/s, heap e chamadas ao banco a cada 30 s.
   - `heapdiff.js`: compara dois snapshots por construtor.
+
+## 9. Retenção e crescimento no tempo (r88-37)
+
+Soak acelerado de 2 h por versão, Linux, porta 4250, servidor empacotado.
+Grade em loop de 4 VTs de 4 s (um preto e mudo: alarme a cada volta), uma aba
+de Chromium no Master (recarregada a cada 5 min) e, a cada minuto, inserir +
+desfazer, um WebSocket aberto e fechado e leituras de alertas, notificações,
+as-run, histórico do host, processos e distribuição.
+
+| Ao fim de 2 h | Antes (r88-36) | Depois (r88-37) |
+|---|---|---|
+| RSS do Node | 163 → 237 MB | 190 → 246 MB |
+| `heapUsed` / `heapTotal` | 36–54 / 70–84 MB, sem tendência | 40–56 / 71–83 MB, sem tendência |
+| `external` / `arrayBuffers` | 2,7 / 16 MB | 2,7 / 16 MB |
+| Handles do Node | 18 (estável) | 18 (estável) |
+| Processo do banco (RSS) | 65 → 86 MB | 64 → 79 MB |
+| Banco / WAL | 4,27 / 3,99 MB | 3,08 / 0,07–0,39 MB (truncado a cada 10 min) |
+| `host_metric_samples` | 719 (+6/min) | 272 (resolução cheia só nos últimos 30 min, acelerado) |
+| `health_events` | 389 | 29 (retenção acelerada) |
+| `as_run` | 1 761 | 1 761 |
+
+No "depois" a retenção foi acelerada por ambiente para caber em 2 h:
+`RPLAYOUT_METRIC_FULL_HOURS=0.5`, `RPLAYOUT_HEALTH_RETENTION_DAYS=0.02`,
+`RPLAYOUT_HEALTH_RESOLVED_RETENTION_DAYS=0.02`, `RPLAYOUT_WAL_TRUNCATE_MB=2`.
+
+**Banco de produção (cópia de `orig.db`, 390 MB, 14 dias):**
+- `host_metric_samples` ocupava 279 MB (71 436 linhas, ~8 600 por dia, ~25 MB/dia): era o crescimento de ~45 MB/dia.
+- A compactação nova deixa 19 025 linhas e libera 207 MB para reuso; com `VACUUM` manual o arquivo cai para 168 MB. Lotes de 5 000 levam 150–650 ms.
+- `health_events`: 9 408 linhas (~3,3 kB), 3 088 críticos resolvidos sem ciente que antes nunca saíam.
+- `operator_decisions`: 58 mil, quase tudo `@http API_MUTATION` de 21–22/10 (heartbeat antigo); já tem retenção de 90 dias e hoje entram ~60 por dia.
+
+**Configuração nova:**
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `RPLAYOUT_METRIC_RETENTION_DAYS` | 14 | dias de histórico do host |
+| `RPLAYOUT_METRIC_FULL_HOURS` | 24 | horas em resolução cheia (10 s) |
+| `RPLAYOUT_METRIC_COARSE_SECONDS` | 60 | intervalo depois disso |
+| `RPLAYOUT_HEALTH_RESOLVED_RETENTION_DAYS` | 90 | incidente resolvido e sem ciente sai depois disso (0 desliga) |
+| `RPLAYOUT_WAL_TRUNCATE_MB` | 64 | acima disso o checkpoint é `TRUNCATE` (0 desliga) |
+
+Além disso: `journal_size_limit` de 64 MB na abertura do banco, e o histórico de
+desfazer em memória limitado às 8 grades editadas por último.
+
+**Memória do Node:** o heap do V8 não cresce em 2 h (nenhum vazamento de
+objeto JS); o RSS sobe ~20 MB/h nas duas versões, com heap, `external` e handles
+estáveis, ou seja memória nativa. Isso pede um soak de 24 h no Windows antes de
+qualquer `--max-old-space-size`.
+
+**Fica sem retenção, por desenho:** `as_run` e `execution_owner_asrun` (registro
+regulatório, ~2 250 linhas e ~1,3 MB por dia na produção) e `ingest_batches`
+(uma linha por varredura automática, ~1 430 por dia, ~0,3 MB).

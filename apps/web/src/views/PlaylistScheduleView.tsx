@@ -2,6 +2,8 @@ import { confirmAction, notify } from '../domain/confirm.js'
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
 import { MirrorStatus } from '../components/MirrorStatus.js'
 import { useEscape } from '../domain/use-escape.js'
+import { insertBlockReason, qcStatusLabel } from '../domain/insert-block.js'
+import { UndoRedoButtons } from '../components/UndoRedoButtons.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { dayCoverage } from '../domain/day-coverage.js'
@@ -11,7 +13,7 @@ import { playlistImportTarget, type PlaylistImportTarget } from '../domain/playl
 import type { Channel, ManagedLiveSource, Rundown, AssetMetadataReview } from '@rplayout/protocol'
 import { durationIn, qcApproved } from '@rplayout/protocol'
 import { clock, dur } from '../format.js'
-import type { RundownView, ItemView, LibraryAsset, LibraryFolder, Categoria, Snapshot } from '../types.js'
+import type { RundownView, ItemView, LibraryAsset, LibraryFolder, Categoria, Snapshot, HistoryState } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { CanonicalProtocolSelector, type ProtocolResult } from '../components/broadcast/CanonicalProtocolSelector.js'
@@ -24,7 +26,8 @@ import {OperationalRollbackDialog} from '../components/OperationalRollbackDialog
 import { canonicalLiveSourceRef, liveDefaultFrames, liveProtocolLabel } from '../liveSource.js'
 import { collapsedRows, findRepeatRuns } from '../domain/repeat-runs.js'
 import { ProtectedTimingZonesDialog } from '../components/ProtectedTimingZonesDialog.js'
-import { editorialContext, editorialSelection } from '../domain/editorial-context.js'
+import { editorialContext, editorialSelection, emptyDayState, undoBlockedReason } from '../domain/editorial-context.js'
+import { revisionDiffLines } from '../domain/revision-diff.js'
 import { SchedulePublicationPanel } from '../components/broadcast/SchedulePublicationPanel.js'
 import {AssetMetadataEditor} from '../components/AssetMetadataEditor.js'
 import {isCatalogMediaAsset} from '../domain/asset-metadata-review.js'
@@ -35,6 +38,9 @@ interface Props {
   channel: Channel
   channels?: Channel[]
   view: RundownView
+  history?: HistoryState
+  onUndo?: () => void
+  onRedo?: () => void
   folders?: LibraryFolder[]
   libraryLoaded?: boolean
   categorias?: Categoria[]
@@ -87,6 +93,9 @@ export function PlaylistScheduleView({
   channel,
   channels = [channel],
   view,
+  history,
+  onUndo,
+  onRedo,
   folders = [],
   libraryLoaded = true,
   categorias = [],
@@ -476,6 +485,9 @@ export function PlaylistScheduleView({
   // Identidade editorial é data + canal, nunca um fallback para o Master.
   const activeView = editorialContext(view,dateRundownView,selectedDate,channel.id)
   const isLoadedEditorial = activeView?.rundown.id === view.rundown.id
+  // Dia sem itens: "sem grade" oferece criar/copiar; "grade vazia" já existe
+  // (B4: depois de "Criar Grade em Branco" a tela repetia "nenhuma grade").
+  const emptyDay = emptyDayState(activeView)
   useEffect(() => {
     setSelectedItemIds(new Set())
     lastClickedIndexRef.current = null
@@ -548,6 +560,8 @@ export function PlaylistScheduleView({
     rollbackReads.current.cancel();rollbackInspecting.current=false
     setIsInspectingRollback(false);setRollbackReview(null);setShowOperationalReview(false)
   }
+  // B5: o manual promete "Esc = fechar diálogo"; publicando, o fechar já é recusado acima.
+  useEscape(showOperationalReview && !rollbackReview, closeOperationalReview)
   const refreshOperationalReview=async()=>{
     if(!reviewRundownId || operationalBusy.current || rollbackInspecting.current || isLoadingOperational)return
     const reading=editorialRefreshReads.current.start(false)
@@ -894,6 +908,8 @@ export function PlaylistScheduleView({
 
   // Inserir item da Biblioteca MAM na Grade
   const handleInsertFromMam = async (asset: LibraryAsset & { isLiveSource?: boolean; sourceRef?: string }) => {
+    const blocked = insertBlockReason(asset)
+    if (blocked) { void notify(blocked); return }
     try {
       const target=await ensureEditorialView(),rId=target.rundown.id
       if (asset.isLiveSource) {
@@ -1532,6 +1548,11 @@ export function PlaylistScheduleView({
                                 IGNORADO
                               </span>
                             )}
+                            {!asset.ignored && insertBlockReason(asset) && (
+                              <span data-testid="mam-qc-status" title={insertBlockReason(asset) ?? undefined} className={`font-label-caps text-[11px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap ${asset.qcStatus === 'REJECTED' || asset.qcStatus === 'BLOCKED' || asset.probeError ? 'bg-error/20 text-error border-error/40' : 'bg-armed-amber/10 text-armed-amber border-armed-amber/40'}`}>
+                                {qcStatusLabel(asset)}
+                              </span>
+                            )}
                           </div>
 
                           <div className="flex items-center gap-2 shrink-0 font-label-mono text-[12px] text-outline">
@@ -1543,8 +1564,9 @@ export function PlaylistScheduleView({
                                 e.stopPropagation()
                                 handleInsertFromMam(asset)
                               }}
-                              className="px-1.5 py-0.5 rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[11px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm"
-                              title="Inserir na grade do dia selecionado"
+                              disabled={Boolean(insertBlockReason(asset))}
+                              className="px-1.5 py-0.5 rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[11px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-primary/20 disabled:hover:text-primary"
+                              title={insertBlockReason(asset) ?? 'Inserir na grade do dia selecionado'}
                             >
                               <span className="material-symbols-outlined text-[11px]">add</span>
                               <span>Inserir</span>
@@ -2198,6 +2220,7 @@ export function PlaylistScheduleView({
                     REV. {operationalRevision}
                   </span>
                 )}
+                <UndoRedoButtons history={history} onUndo={onUndo} onRedo={onRedo} blockedReason={undoBlockedReason(isLoadedEditorial)} />
                 <button onClick={openOperationalReview} className="px-2 py-1.5 rounded border border-border-subtle text-[11px] text-on-surface hover:bg-surface-panel" title="Comparar a grade editorial, consultar histórico e restaurar revisões">Revisões</button>
               </div>
             </div>
@@ -2240,15 +2263,29 @@ export function PlaylistScheduleView({
                       <span className="material-symbols-outlined text-[28px] text-accent-ice">calendar_month</span>
                     </div>
                     <div className="flex flex-col gap-1 max-w-md">
-                      <h3 className="font-headline-sm text-sm font-bold text-on-surface uppercase">
-                        Nenhuma Grade Cadastrada para {selectedDateFormatted}
+                      <h3 className="font-headline-sm text-sm font-bold text-on-surface uppercase" data-testid="empty-day-title">
+                        {emptyDay === 'EMPTY_GRID' ? `Grade de ${selectedDateFormatted} criada · sem eventos` : `Nenhuma Grade Cadastrada para ${selectedDateFormatted}`}
                       </h3>
                       <p className="text-outline text-xs">
-                        Este dia ainda não possui eventos programados. Escolha uma das opções abaixo para iniciar a grade linear desta data:
+                        {emptyDay === 'EMPTY_GRID'
+                          ? 'A grade desta data já existe e está vazia. Insira itens pelo acervo (Inserir), por + Evento, importe uma lista ou preencha pelo Auto-Fill:'
+                          : 'Este dia ainda não possui eventos programados. Escolha uma das opções abaixo para iniciar a grade linear desta data:'}
                       </p>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg pt-2">
+                      {emptyDay === 'EMPTY_GRID' ? (
+                      <button
+                        onClick={() => void handleAddItem()}
+                        className="p-3 bg-surface-panel hover:bg-surface-container border border-border-subtle hover:border-primary/50 rounded flex items-center gap-2.5 text-left transition-colors cursor-pointer group sm:col-span-2"
+                      >
+                        <span className="material-symbols-outlined text-primary text-[22px] group-hover:scale-110 transition-transform">add_circle</span>
+                        <div className="flex flex-col">
+                          <span className="font-bold text-xs text-on-surface">+ Evento</span>
+                          <span className="text-[11px] text-outline">Inserir o primeiro item nesta grade</span>
+                        </div>
+                      </button>
+                      ) : <>
                       <button
                         onClick={() => handleCopyGrid()}
                         className="p-3 bg-surface-panel hover:bg-surface-container border border-border-subtle hover:border-primary/50 rounded flex items-center gap-2.5 text-left transition-colors cursor-pointer group"
@@ -2270,6 +2307,7 @@ export function PlaylistScheduleView({
                           <span className="text-[11px] text-outline">Começar grade limpa do zero</span>
                         </div>
                       </button>
+                      </>}
 
                       <button
                         onClick={handleImport}
@@ -2521,14 +2559,14 @@ export function PlaylistScheduleView({
               {isInspectingRollback && <p role="status">Conferindo a revisão para restauração…</p>}
               {operationalReviewError && <p role="alert" className="text-error bg-error-container/20 p-3 rounded">{operationalReviewError}</p>}
               {operationalSimulation && <>
-                <p>{operationalSimulation.activeRevision === null ? 'Ainda não há revisão publicada.' : `Revisão publicada: ${operationalSimulation.activeRevision}.`} {operationalSimulation.differences.added.length} inclusão(ões), {operationalSimulation.differences.removed.length} remoção(ões), {operationalSimulation.differences.changed.length} alteração(ões).</p>
+                {(() => { const diff = revisionDiffLines(operationalSimulation); return <>
+                <p>{operationalSimulation.activeRevision === null ? 'Ainda não há revisão publicada.' : `Revisão publicada: ${operationalSimulation.activeRevision}.`} {operationalSimulation.differences.added.length} inclusão(ões), {operationalSimulation.differences.removed.length} remoção(ões), {diff.contentChanges} alteração(ões){diff.moved ? `, ${diff.moved} reordenado(s)` : ''}.</p>
                 <ul className="max-h-48 overflow-auto space-y-1 text-xs">
-                  {operationalSimulation.differences.added.map(id => <li key={`add-${id}`} className="text-status-ok-bright">+ {operationalSimulation.simulated.items.find(item => item.id === id)?.title ?? id}</li>)}
-                  {operationalSimulation.differences.removed.map(id => <li key={`remove-${id}`} className="text-error">− Item removido: {id}</li>)}
-                  {operationalSimulation.differences.changed.map(change => <li key={change.itemId}>{operationalSimulation.simulated.items.find(item => item.id === change.itemId)?.title ?? change.itemId}: {change.fields.join(', ')}</li>)}
+                  {diff.lines.map(line => <li key={line.key} className={line.kind === 'added' ? 'text-status-ok-bright' : line.kind === 'removed' ? 'text-error' : line.kind === 'moved' ? 'text-outline' : undefined}>{line.text}</li>)}
                   {operationalSimulation.differences.graphicsChanged?.map(id => <li key={`graphics-${id}`}>{operationalSimulation.simulated.items.find(item => item.id === id)?.title ?? id}: grafismo/deixa alterado — só passa à execução após publicar.</li>)}
                   {operationalSimulation.differences.timingPolicyChanged && <li className="text-armed-amber">Zonas protegidas alteradas — só passam à execução após publicar.</li>}
                 </ul>
+                </>})()}
                 <p className={operationalSimulation.simulated.schedule.conflicts.length ? 'text-armed-amber' : 'text-status-ok-bright'}>{operationalSimulation.simulated.schedule.conflicts.length} conflito(s) de timing na simulação. A publicação não elimina esses conflitos.</p>
                 <ul className="space-y-1 text-xs text-armed-amber">{operationalSimulation.simulated.schedule.conflicts.map((conflict, index) => <li key={index}>{conflict.message}</li>)}</ul>
               </>}

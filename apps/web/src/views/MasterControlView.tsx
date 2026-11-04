@@ -11,10 +11,14 @@ import { wallClock, localDateKey, gradeInstant } from '../domain/wall-clock.js'
 import {itemDisplayTitle} from '../domain/item-title.js'
 import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, TimingFlags,LiveSourceReview,RootCatalogReview,RootAddReview } from '@rplayout/protocol'
 import { qcApproved,programDurationFrames,durationIn } from '@rplayout/protocol'
+import { AbortButton, transportColumns } from '../components/broadcast/AbortButton.js'
+import { dedupeNotice } from '../domain/notice-text.js'
+import { UndoRedoButtons } from '../components/UndoRedoButtons.js'
 import { clock, dur, formatStandardRate } from '../format.js'
 import {PreviewFrameStatus} from '../components/broadcast/PreviewFrameStatus.js'
 import type {
   Categoria,
+  HistoryState,
   ItemView,
   LibraryAsset,
   LibraryFolder,
@@ -51,6 +55,9 @@ interface Props {
   channels: Channel[]
   view: RundownView
   live: Live
+  history?: HistoryState
+  onUndo?: () => void
+  onRedo?: () => void
   folders: LibraryFolder[]
   libraryLoaded?: boolean
   scan: ScanStatus | null
@@ -184,6 +191,9 @@ export function MasterControlView({
   channel,
   channels,
   view,
+  history,
+  onUndo,
+  onRedo,
   live,
   folders,
   libraryLoaded = true,
@@ -1021,14 +1031,19 @@ export function MasterControlView({
       />
 
       <main className="w-full bg-surface-base flex-1 min-h-0 flex flex-col overflow-y-auto xl:overflow-hidden">
-        {/* Faixa de altura FIXA reservada sempre: o aviso entra e sai sem empurrar a grade nem TAKE/ABORT. */}
-        <div data-testid="cadence-notice-slot" className="w-full px-margin shrink-0 h-9 flex items-center">
-          {publicationRequired && <div role="alert" className="w-full h-8 flex items-center gap-2 px-3 rounded bg-armed-amber/10 border border-armed-amber/40 text-armed-amber t-data overflow-hidden" title="A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.">
+        {/* Aviso de cadência convertida numa faixa de altura FIXA. Só existe
+            enquanto a grade precisa de revisão: é um estado que nasce fora do
+            ar (conversão em Configurações) e só sai com a publicação na
+            PLAYLIST, então não aparece nem some sob o cursor no meio da
+            operação. Reservar a faixa sempre deixava ~40 px vazios no topo
+            do Master em 1366 e no celular. */}
+        {publicationRequired && <div data-testid="cadence-notice-slot" className="w-full px-margin shrink-0 h-9 flex items-center">
+          <div role="alert" className="w-full h-8 flex items-center gap-2 px-3 rounded bg-armed-amber/10 border border-armed-amber/40 text-armed-amber t-data overflow-hidden" title="A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.">
             <span className="material-symbols-outlined text-[16px] shrink-0">lock</span>
             <span className="truncate min-w-0">A cadência foi convertida. Esta grade está bloqueada para CUE/TAKE até ser revisada e publicada em PLAYLIST. O histórico foi preservado.</span>
             <button type="button" className="ml-auto shrink-0 px-2 h-6 rounded border border-armed-amber/60 t-label font-bold hover:bg-armed-amber/20" onClick={() => onNavigate('playlist')}>REVISAR EM PLAYLIST</button>
-          </div>}
-        </div>
+          </div>
+        </div>}
         {/* 1.1 FAIXA DE STATUS DE ALTURA FIXA (U5): sonda + itens interrompidos */}
         <div className="w-full px-margin pt-2 pb-1 shrink-0 flex flex-col gap-1">
           <PgmProbeBanner channelId={channel.id} showContingency={false} />
@@ -1156,7 +1171,7 @@ export function MasterControlView({
                         <span className={`material-symbols-outlined text-[13px] ${soundOn ? 'text-status-ok' : 'text-outline'}`}>{soundOn ? 'volume_up' : 'volume_off'}</span>
                         <span className={`font-label-caps text-[11px] font-semibold ${soundOn ? 'text-status-ok' : 'text-outline'}`}>SOM</span>
                       </button>
-                      {onLockPanel && <button type="button" onClick={onLockPanel} title="Bloqueia cliques e teclas de operação nesta estação (transmissões longas). Desbloqueia com um clique no aviso do topo." className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle hover:bg-surface-container-high transition-colors" id="lock-toggle">
+                      {onLockPanel && <button type="button" onClick={onLockPanel} title="Bloqueia cliques e teclas de operação nesta estação (transmissões longas). Para desbloquear, use DESBLOQUEAR no aviso PAINEL BLOQUEADO, no canto inferior direito da tela." className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle hover:bg-surface-container-high transition-colors" id="lock-toggle">
                         <span className="material-symbols-outlined text-[13px] text-on-surface-variant">lock</span>
                         <span className="font-label-caps text-[11px] font-semibold text-on-surface-variant">BLOQUEAR</span>
                       </button>}
@@ -1166,7 +1181,7 @@ export function MasterControlView({
                   {takeReason&&<div role="status" className="text-[11px] text-armed-amber text-center">{takeReason}</div>}
                   {transportRefusal&&<div role="alert" data-testid="transport-refusal" className="flex items-start gap-1.5 rounded border border-on-air-crimson/50 bg-on-air-crimson/10 px-2 py-1 text-[12px] text-on-surface">
                     <span className="material-symbols-outlined text-[15px] text-on-air-crimson shrink-0">block</span>
-                    <span className="flex-1 min-w-0 break-words"><strong className="text-on-air-crimson">{transportRefusal.action.toUpperCase()} recusado:</strong> {transportRefusal.message} <span className="text-outline">(este comando não alterou o PGM)</span></span>
+                    <span className="flex-1 min-w-0 break-words"><strong className="text-on-air-crimson">{transportRefusal.action.toUpperCase()} recusado:</strong> {dedupeNotice(transportRefusal.message)} <span className="text-outline">(este comando não alterou o PGM)</span></span>
                     {onDismissTransportRefusal&&<button type="button" onClick={onDismissTransportRefusal} className="shrink-0 text-outline hover:text-on-surface" aria-label="Fechar aviso de comando recusado"><span className="material-symbols-outlined text-[15px]">close</span></button>}
                   </div>}
                   {!takeReason&&direct&&'itemId' in direct&&<div role="status" className="text-[11px] text-accent-ice text-center">Sem PVW nesta instalação: o TAKE DIRETO leva “{direct.title}” ao ar, com confirmação.</div>}
@@ -1174,7 +1189,7 @@ export function MasterControlView({
                   <div className="grid grid-cols-12 gap-1.5 items-center my-1 text-center">
                     <button
                       onClick={() => void handleTake()}
-                      className="col-span-6 h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+                      className={`${transportColumns(abortArmed).take} h-12 bg-on-air-crimson hover:bg-on-air-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-lg text-[18px] uppercase font-bold tracking-wider flex items-center justify-center gap-1 shadow transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100`}
                       id="btn-take"
                       disabled={takeReason!==null}
                       title={takeReason??(noPreviewBus?'TAKE DIRETO: leva ao ar o item selecionado (ou o próximo), com confirmação; não há PVW nesta instalação':'Levar ao PGM o CUE confirmado no PVW (Espaço); Próximo não substitui o CUE')}
@@ -1193,7 +1208,7 @@ export function MasterControlView({
                         if (target && !publicationRequired) onCue(target.item.id)
                       }}
                       disabled={noPreviewBus}
-                      className="col-span-4 h-12 disabled:opacity-40 disabled:cursor-not-allowed bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer"
+                      className={`${transportColumns(abortArmed).cue} h-12 disabled:opacity-40 disabled:cursor-not-allowed bg-armed-amber hover:bg-armed-glow active:scale-[0.98] text-surface-base rounded-lg font-headline-md text-[14px] uppercase font-bold tracking-wide flex flex-col items-center justify-center shadow transition-all cursor-pointer`}
                       title={noPreviewBus ? 'Sem barramento de preview (PVW) nesta instalação: não há CUE. Selecione o item e use TAKE DIRETO.' : 'Abre em CUE no PVW o item selecionado; sem seleção, abre o Próximo (F2)'}
                     >
                       <div className="flex items-center gap-0.5">
@@ -1203,21 +1218,7 @@ export function MasterControlView({
                       <span className="font-label-mono text-[12px] text-surface-base/80 font-medium">F2</span>
                     </button>
 
-                    <button
-                      onClick={handleArmAbort}
-                      disabled={!canStop}
-                      className={`col-span-2 h-12 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg border border-border-subtle flex flex-col items-center justify-center transition-all cursor-pointer ${
-                        abortArmed
-                          ? 'bg-on-air-crimson text-white animate-pulse border-on-air-glow'
-                          : 'bg-surface-container hover:bg-error-container text-outline hover:text-on-error-container'
-                      }`}
-                      title={!canStop ? deniedReason('parar o canal (ABORT)') : abortArmed ? 'CLIQUE PARA CONFIRMAR PARADA IMEDIATA' : 'Parada de emergência com trava de segurança (ABORT)'}
-                    >
-                      <span className="material-symbols-outlined text-[15px]">stop</span>
-                      <span className="font-label-mono text-[12px] uppercase font-bold">
-                        {abortArmed ? `CONFIRMAR ${abortCountdown}s · Esc cancela` : 'ABORT'}
-                      </span>
-                    </button>
+                    <AbortButton armed={abortArmed} countdown={abortCountdown} canStop={canStop} deniedTitle={deniedReason('parar o canal (ABORT)')} onClick={handleArmAbort} />
                   </div>
 
                   <div className="flex items-center justify-between font-label-mono text-[12px] text-outline pt-0.5 border-t border-border-subtle/40">
@@ -1483,6 +1484,8 @@ export function MasterControlView({
                         </span>
                         <span className="hidden 2xl:inline">{followOnAir ? 'TRAVADO NO AR' : 'ROLAGEM LIVRE'}</span>
                       </button>
+
+                      <UndoRedoButtons history={history} onUndo={onUndo} onRedo={onRedo} compact />
 
                       <button
                         title="Adicionar linha na grade"

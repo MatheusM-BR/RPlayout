@@ -55,7 +55,7 @@ export function AuditPanel({ onClose, isModal = true }: Props) {
   )
 
   const csv = '\uFEFF' + csvRows([
-    ['usuário', 'ação', 'item', 'data UTC (relógio local)', 'detalhes'],
+    ['usuário', 'ação', 'item', 'data (UTC, ISO 8601)', 'detalhes'],
     ...filtered.map(entry => [entry.actorUsername ?? 'sessão local', entry.kind, entry.itemId ?? '', entry.createdAt,auditDetails(entry.kind,entry.payload)]),
   ], ';')
 

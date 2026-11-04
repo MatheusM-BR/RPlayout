@@ -177,8 +177,10 @@ export function BroadcastHeader({
           <ContinuityCacheBadge className="hidden 2xl:inline-flex" channelId={channel.id} />
         </div>
 
-        {/* Navegação: segunda linha em telas estreitas, rolável */}
-          <nav className="order-4 lg:order-3 w-full lg:w-auto lg:ml-auto flex items-center gap-space-xs bg-surface-panel p-space-xs rounded border border-border-subtle overflow-x-auto" aria-label={`Telas do perfil ${profileInfo.label}`}>
+        {/* Navegação: segunda linha em telas estreitas, rolável. Em 2xl (1536+)
+            ela não encolhe: quem cede espaço é o nome do canal (trunca), e
+            nenhuma aba some cortada pela borda (B3: "AJUDA" saía "DOC"). */}
+          <nav data-testid="workspace-nav" className="order-4 lg:order-3 w-full lg:w-auto lg:ml-auto 2xl:shrink-0 flex items-center gap-space-xs bg-surface-panel p-space-xs rounded border border-border-subtle overflow-x-auto" aria-label={`Telas do perfil ${profileInfo.label}`}>
             {navWorkspaces(profile, activeWorkspace).map(id => (
               <button
                 key={id}

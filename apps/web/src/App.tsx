@@ -19,7 +19,7 @@ import { loadSessionOperation } from './domain/session-load.js'
 import {JoinedRead} from './domain/joined-read.js'
 import { clientContext, ContextCommandQueue, SupersededContextError } from './domain/client-context.js'
 import { commitSnapshot } from './domain/snapshot-commit.js'
-import { clock, dur } from './format.js'
+import { clock, dur, newChannelFormatLabel } from './format.js'
 import type {
   HistoryState,
   ItemView,
@@ -1222,7 +1222,8 @@ export function App() {
             </button>
           </div>}
           {['Supervisor','Gestor','Administrador'].includes(sessionRole ?? '') && <p className="hint">
-            O canal nasce no padrão broadcast 1080i59.94 (ou 1080p59.94), com uma grade vazia. Depois aponte
+            O canal nasce em {newChannelFormatLabel()} (1920×1080 progressivo), com uma grade vazia; o formato
+            pode ser trocado em Configurações › Canal antes de ir ao ar. Depois aponte
             <code>RPLAYOUT_MEDIA</code> para a sua pasta de vídeos e use <b>LER PASTA</b>: o
             acervo é lido do disco, com duração, loudness e miniatura de cada arquivo.
           </p>}
@@ -1260,7 +1261,11 @@ export function App() {
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
       {panelLock === 'on' && <>
         <div aria-hidden="true" className="fixed inset-0 z-[110] cursor-not-allowed bg-black/10" />
-        <div role="alert" className="fixed left-1/2 bottom-4 z-[111] flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-3 rounded-lg border border-armed-amber bg-surface-panel px-4 py-2 shadow-2xl">
+        {/* Canto inferior direito, na largura da coluna dos monitores (sobre as
+            ferramentas de overlay, que não se usam com o painel bloqueado). No
+            centro, o aviso cobria o medidor de áudio do PGM, que é o que se
+            acompanha numa transmissão longa (B15). */}
+        <div role="alert" data-testid="panel-lock-notice" className="fixed right-4 bottom-4 z-[111] flex w-[min(360px,calc(100vw-32px))] flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-armed-amber bg-surface-panel px-4 py-2 shadow-2xl">
           <span className="material-symbols-outlined text-armed-amber">lock</span>
           <span className="font-label-caps text-[12px] font-bold text-armed-amber">PAINEL BLOQUEADO</span>
           <span className="hidden sm:inline text-[12px] text-on-surface-variant">Cliques e teclas de operação desativados nesta estação. O canal segue no ar.</span>
@@ -1269,6 +1274,9 @@ export function App() {
       </>}
       {currentWorkspace === 'master' && (
         <MasterControlView
+          history={history}
+          onUndo={() => void undo('undo')}
+          onRedo={() => void undo('redo')}
           onLockPanel={() => setPanelLock('on')}
           libraryLoaded={libraryLoaded}
           channel={view.channel}
@@ -1326,6 +1334,9 @@ export function App() {
 
       {currentWorkspace === 'playlist' && (
         <PlaylistScheduleView
+          history={history}
+          onUndo={() => void undo('undo')}
+          onRedo={() => void undo('redo')}
           libraryLoaded={libraryLoaded}
           channel={view.channel}
           channels={channels}

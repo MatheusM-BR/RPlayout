@@ -73,3 +73,18 @@ it('expurgo de incidentes em lotes: banco grande não segura o armazenamento de 
   expect(pruneHealthHistory(value.sqlite,30,now,5)).toBe(0)
   expect(value.db.select().from(healthEvents).all().map(row=>row.id)).toEqual(['crit'])
 })
+import {pruneResolvedHealth} from './health-retention.js'
+it('resolvido e nunca reconhecido sai depois da janela; pendente sem resolução fica',()=>{
+  const old='2026-01-01T00:00:00.000Z',recent='2026-10-09T00:00:00.000Z'
+  for(const [id,extra]of [
+    ['crit-auto-recuperado',{severity:'CRITICAL',resolvedAt:old}],
+    ['crit-pendente',{severity:'CRITICAL'}],
+    ['warn-pendente',{severity:'WARN'}],
+    ['crit-resolvido-recente',{severity:'CRITICAL',resolvedAt:recent}],
+    ['crit-com-ciente',{severity:'CRITICAL',resolvedAt:old,acknowledgedAt:old}],
+  ] as const)value.db.insert(healthEvents).values({id,component:'SIGNAL',state:'silence',occurredAt:old,...extra}).run()
+  expect(pruneResolvedHealth(value.sqlite,90,Date.parse('2026-10-10T00:00:00.000Z'))).toBe(1)
+  expect(value.sqlite.prepare('SELECT id FROM health_events ORDER BY id').all().map((r:any)=>r.id)).toEqual(['crit-com-ciente','crit-pendente','crit-resolvido-recente','warn-pendente'])
+  expect(pruneResolvedHealth(value.sqlite,0)).toBe(0)
+  expect(pruneResolvedHealth(value.sqlite,Number.NaN)).toBe(0)
+})

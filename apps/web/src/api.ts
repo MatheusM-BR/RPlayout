@@ -254,7 +254,7 @@ export interface OperationalSimulation {
   review:OperationalReview
   simulated: { rundown: Rundown; items: RundownItem[]; schedule: ResolveResult }
   activeRevision: number | null
-  differences: { added: string[]; removed: string[]; changed: Array<{ itemId: string; fields: string[] }>; graphicsChanged?: string[]; timingPolicyChanged?: boolean }
+  differences: { added: string[]; removed: string[]; removedTitles?: Record<string, string>; changed: Array<{ itemId: string; fields: string[] }>; graphicsChanged?: string[]; timingPolicyChanged?: boolean }
 }
 
 /**
