@@ -10,6 +10,12 @@
  *
  * As medições numéricas saem do histograma (lido a 2 Hz, 6 KB): mínimo/máximo
  * com a resolução de uma faixa (0,46%) e frações abaixo de 0%/acima de 100%.
+ * A leitura é assíncrona (`HistogramReadback`): `readPixels` para um PBO,
+ * `fenceSync` e, nos quadros seguintes, `clientWaitSync(…, 0)` sem esperar;
+ * só quando a cerca já passou os 6 KB são copiados com `getBufferSubData`.
+ * Nada no quadro espera a GPU terminar (antes: `readPixels` síncrono, o
+ * "GPU stall" do driver). O resultado é o mesmo histograma, um ou dois
+ * quadros depois (a 2 Hz, invisível).
  */
 import {drawSpecs, sampledArea, type LiveScopes, type LiveSource, type LiveTiming, type LiveView} from './live.js'
 import {MATRIX, type FalseColorMode, type MatrixCode, type ScopeConfig, type ScopeStats} from './wasm.js'
@@ -229,6 +235,102 @@ void main() {
 }`
 
 type GL = WebGL2RenderingContext
+
+/**
+ * Medições a partir do histograma lido (RGBA float, `bins × 6`, canal no R).
+ * Função pura: a mesma conta para a leitura assíncrona e para a síncrona
+ * antiga, então o resultado é idêntico (teste em `webgl2.test.ts`).
+ */
+export function histogramStats(c: ScopeConfig, data: Float32Array): ScopeStats {
+  const bins = (ch: number) => Array.from({length: c.histBins}, (_, b) => data[(ch * c.histBins + b) * 4]!)
+  const level = (b: number) => c.levelMin + (b + 0.5) * (c.levelMax - c.levelMin) / c.histBins
+  const y = bins(0)
+  const count = y.reduce((a, v) => a + v, 0)
+  const first = y.findIndex(v => v > 0), last = y.length - 1 - [...y].reverse().findIndex(v => v > 0)
+  let below = 0, above = 0, sum = 0, r103 = 0
+  y.forEach((v, b) => { const l = level(b); sum += v * l; if (l < -0.05) below += v; if (l > 100.05) above += v; if (l < -1 || l > 103) r103 += v })
+  let rgbMin = Infinity, rgbMax = -Infinity
+  for (const ch of [3, 4, 5]) { const h = bins(ch); const lo = h.findIndex(v => v > 0), hi = h.length - 1 - [...h].reverse().findIndex(v => v > 0); if (lo >= 0) { rgbMin = Math.min(rgbMin, level(lo)); rgbMax = Math.max(rgbMax, level(hi)) } }
+  const lumaMin = first >= 0 ? level(first) : 0, lumaMax = first >= 0 ? level(last) : 0
+  return {
+    count, lumaMin, lumaMax, lumaAvg: count ? sum / count : 0, belowBlack: below, aboveWhite: above, lumaR103: r103,
+    rgbMin: Number.isFinite(rgbMin) ? rgbMin : 0, rgbMax: Number.isFinite(rgbMax) ? rgbMax : 0,
+    gamutR103: Number.NaN, gamutStrict: Number.NaN, chromaMax: Number.NaN, chromaIllegal: Number.NaN,
+    lumaIllegal: count > 0 && (lumaMin < -1 || lumaMax > 103), gamutIllegal: false, chromaIllegalAny: false,
+  }
+}
+
+/** Subconjunto do WebGL2 que a leitura assíncrona usa (permite teste sem GPU). */
+export type ReadbackGl = Pick<GL,
+  'createBuffer' | 'deleteBuffer' | 'bindBuffer' | 'bufferData' | 'bindFramebuffer' | 'readPixels' | 'fenceSync' | 'clientWaitSync'
+  | 'deleteSync' | 'flush' | 'getBufferSubData' | 'PIXEL_PACK_BUFFER' | 'STREAM_READ' | 'FRAMEBUFFER' | 'READ_FRAMEBUFFER' | 'RGBA' | 'FLOAT'
+  | 'SYNC_GPU_COMMANDS_COMPLETE' | 'ALREADY_SIGNALED' | 'CONDITION_SATISFIED' | 'WAIT_FAILED'>
+
+/**
+ * Leitura do histograma sem parar a GPU: `readPixels` com PBO ligado (a cópia
+ * fica na fila da GPU e a chamada volta na hora), uma cerca, e uma consulta
+ * `clientWaitSync(cerca, 0, 0)` por quadro, que nunca espera. Só uma leitura
+ * pendente por vez; se a configuração muda, a pendente é descartada.
+ */
+export class HistogramReadback {
+  private pbo: WebGLBuffer | null = null
+  private size = 0
+  private sync: WebGLSync | null = null
+  private config: ScopeConfig | null = null
+  /** Quantas consultas devolveram "ainda não" (bancada). */
+  notReady = 0
+
+  get pending(): boolean { return this.sync !== null }
+
+  /** Encomenda a leitura do histograma de `fbo`. `false` se já há uma pendente. */
+  request(gl: ReadbackGl, fbo: WebGLFramebuffer, c: ScopeConfig): boolean {
+    if (this.sync) return false
+    const bytes = c.histBins * 6 * 4 * 4
+    if (!this.pbo || this.size !== bytes) {
+      if (this.pbo) gl.deleteBuffer(this.pbo)
+      this.pbo = gl.createBuffer()
+      this.size = bytes
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo)
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ)
+    } else gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo)
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fbo)
+    gl.readPixels(0, 0, c.histBins, 6, gl.RGBA, gl.FLOAT, 0)
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+    this.sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+    // Sem flush a cerca pode nunca chegar à GPU (e o clientWaitSync com
+    // tempo zero nunca a veria passar).
+    gl.flush()
+    this.config = c
+    return this.sync !== null
+  }
+
+  /** Sem esperar: devolve o histograma se a cerca já passou, senão `null`. */
+  poll(gl: ReadbackGl): {config: ScopeConfig; data: Float32Array} | null {
+    if (!this.sync || !this.pbo || !this.config) return null
+    const status = gl.clientWaitSync(this.sync, 0, 0)
+    if (status === gl.WAIT_FAILED) { this.cancel(gl); return null }
+    if (status !== gl.ALREADY_SIGNALED && status !== gl.CONDITION_SATISFIED) { this.notReady++; return null }
+    const data = new Float32Array(this.size / 4)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo)
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, data)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+    const config = this.config
+    gl.deleteSync(this.sync); this.sync = null; this.config = null
+    return {config, data}
+  }
+
+  cancel(gl: ReadbackGl) {
+    if (this.sync) gl.deleteSync(this.sync)
+    this.sync = null; this.config = null
+  }
+
+  dispose(gl: ReadbackGl) {
+    this.cancel(gl)
+    if (this.pbo) gl.deleteBuffer(this.pbo)
+    this.pbo = null; this.size = 0
+  }
+}
 interface Target {texture: WebGLTexture; fbo: WebGLFramebuffer; width: number; height: number}
 interface Targets {wave: Target; hist: Target; vector: Target; diamond: Target; key: string}
 
@@ -272,6 +374,9 @@ export class WebGl2Scopes implements LiveScopes {
   private timer: {ext: {TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number}; query: WebGLQuery | null} | null = null
   private lastStatsAt = 0
   private latestStats: ScopeStats | null = null
+  private lastConfig: ScopeConfig | null = null
+  private readonly readback = new HistogramReadback()
+  private readMode: 'async' | 'sync' = 'async'
   private falseCanvas: HTMLCanvasElement | null = null
   private falseMode: FalseColorMode = 'exposure'
   private falseGl: {gl: GL; program: WebGLProgram; texture: WebGLTexture} | null = null
@@ -334,6 +439,7 @@ export class WebGl2Scopes implements LiveScopes {
   private ensure(c: ScopeConfig): Targets {
     const key = `${c.waveColumns}x${c.waveRows}:${c.histBins}:${c.vectorSize}:${c.diamondSize}`
     if (this.targets?.key === key) return this.targets
+    this.readback.cancel(this.gl)
     this.release(this.targets); this.clearReference()
     this.targets = this.allocate(c)
     return this.targets
@@ -430,7 +536,15 @@ export class WebGl2Scopes implements LiveScopes {
     this.pollTimer()
     if (accumulated && source) this.renderFalseColor(source, view.matrix)
     const now = performance.now()
-    if (accumulated && now - this.lastStatsAt > 500) { this.lastStatsAt = now; this.latestStats = this.readStats(view.config, t) }
+    if (accumulated) this.lastConfig = view.config
+    if (this.readMode === 'sync') {
+      if (accumulated && now - this.lastStatsAt > 500) { this.lastStatsAt = now; this.latestStats = this.readStatsSync(view.config, t) }
+    } else {
+      // Primeiro colhe o que já ficou pronto (sem esperar); depois, a 2 Hz,
+      // encomenda a próxima leitura do histograma deste quadro.
+      this.pollStats()
+      if (accumulated && now - this.lastStatsAt > 500 && this.readback.request(this.gl, t.hist.fbo, view.config)) this.lastStatsAt = now
+    }
     this.cpuMs = performance.now() - started
     return accumulated || view.frozen
   }
@@ -444,29 +558,40 @@ export class WebGl2Scopes implements LiveScopes {
     gl.deleteQuery(timer.query); timer.query = null
   }
 
-  /** Medições aproximadas a partir do histograma (6 KB lidos a 2 Hz). */
-  private readStats(c: ScopeConfig, t: Targets): ScopeStats {
+  /** Leitura síncrona antiga (só bancada/paridade): bloqueia até a GPU terminar. */
+  private readStatsSync(c: ScopeConfig, t: Targets): ScopeStats {
     const gl = this.gl
     const data = new Float32Array(c.histBins * 6 * 4)
     gl.bindFramebuffer(gl.FRAMEBUFFER, t.hist.fbo)
     gl.readPixels(0, 0, c.histBins, 6, gl.RGBA, gl.FLOAT, data)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-    const bins = (ch: number) => Array.from({length: c.histBins}, (_, b) => data[(ch * c.histBins + b) * 4]!)
-    const level = (b: number) => c.levelMin + (b + 0.5) * (c.levelMax - c.levelMin) / c.histBins
-    const y = bins(0)
-    const count = y.reduce((a, v) => a + v, 0)
-    const first = y.findIndex(v => v > 0), last = y.length - 1 - [...y].reverse().findIndex(v => v > 0)
-    let below = 0, above = 0, sum = 0, r103 = 0
-    y.forEach((v, b) => { const l = level(b); sum += v * l; if (l < -0.05) below += v; if (l > 100.05) above += v; if (l < -1 || l > 103) r103 += v })
-    let rgbMin = Infinity, rgbMax = -Infinity
-    for (const ch of [3, 4, 5]) { const h = bins(ch); const lo = h.findIndex(v => v > 0), hi = h.length - 1 - [...h].reverse().findIndex(v => v > 0); if (lo >= 0) { rgbMin = Math.min(rgbMin, level(lo)); rgbMax = Math.max(rgbMax, level(hi)) } }
-    const lumaMin = first >= 0 ? level(first) : 0, lumaMax = first >= 0 ? level(last) : 0
-    return {
-      count, lumaMin, lumaMax, lumaAvg: count ? sum / count : 0, belowBlack: below, aboveWhite: above, lumaR103: r103,
-      rgbMin: Number.isFinite(rgbMin) ? rgbMin : 0, rgbMax: Number.isFinite(rgbMax) ? rgbMax : 0,
-      gamutR103: Number.NaN, gamutStrict: Number.NaN, chromaMax: Number.NaN, chromaIllegal: Number.NaN,
-      lumaIllegal: count > 0 && (lumaMin < -1 || lumaMax > 103), gamutIllegal: false, chromaIllegalAny: false,
+    return histogramStats(c, data)
+  }
+
+  /** Bancada: `sync` reproduz o caminho antigo (readPixels síncrono) para medir antes × depois. */
+  debugSetReadback(mode: 'async' | 'sync') { this.readMode = mode }
+
+  /** Bancada/testes: espera (sem bloquear a thread) a leitura pendente chegar. */
+  async settleStats(timeoutMs = 5000): Promise<ScopeStats | null> {
+    const until = performance.now() + timeoutMs
+    while (this.readback.pending && performance.now() < until) {
+      await new Promise(resolve => setTimeout(resolve, 4))
+      this.pollStats()
     }
+    return this.latestStats
+  }
+
+  /** Bancada: há leitura do histograma esperando a cerca. */
+  debugReadPending(): boolean { return this.readback.pending }
+
+  /** Bancada: medições do histograma atual pelo caminho síncrono (referência de paridade). */
+  debugStatsSync(): ScopeStats | null {
+    return this.targets && this.lastConfig ? this.readStatsSync(this.lastConfig, this.targets) : null
+  }
+
+  private pollStats() {
+    const ready = this.readback.poll(this.gl)
+    if (ready) this.latestStats = histogramStats(ready.config, ready.data)
   }
 
   private renderFalseColor(source: LiveSource, matrix: MatrixCode) {
@@ -551,6 +676,7 @@ export class WebGl2Scopes implements LiveScopes {
     this.destroyed = true
     this.release(this.targets); this.release(this.reference)
     const gl = this.gl
+    this.readback.dispose(gl)
     for (const program of Object.values(this.programs)) gl.deleteProgram(program)
     gl.deleteTexture(this.source); gl.deleteVertexArray(this.vao)
   }
