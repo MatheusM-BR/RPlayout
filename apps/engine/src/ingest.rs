@@ -53,7 +53,7 @@ const CLOSE_WAIT: Duration = Duration::from_secs(3);
 const AUDIO_SNAP: Duration = Duration::from_millis(40);
 
 /// Latência declarada pelo appsrc de cada item (`RPLAYOUT_INGEST_ITEM_LATENCY_MS`, 0 a 500).
-pub const ITEM_LATENCY: Duration = Duration::from_millis(40);
+pub const ITEM_LATENCY: Duration = Duration::from_millis(80);
 fn item_latency() -> gst::ClockTime {
     let ms = std::env::var("RPLAYOUT_INGEST_ITEM_LATENCY_MS").ok().and_then(|value| value.trim().parse::<u64>().ok()).filter(|ms| *ms <= 500)
         .unwrap_or(ITEM_LATENCY.as_millis() as u64);
@@ -131,6 +131,9 @@ impl Sub {
         ghost.set_active(true)?;
         // Dispara o `pad-added` do bin: a montagem do item liga a cadeia.
         self.bin.add_pad(&ghost)?;
+        // A trilha pode nascer com o item já tocando: o pipeline do item
+        // recalcula a latência, e a folga declarada pelo appsrc passa a valer.
+        let _ = self.bin.post_message(gst::message::Latency::builder().src(&self.bin).build());
         Ok(Port { src, ghost })
     }
 
@@ -158,6 +161,18 @@ impl Sub {
         clock.time()?.checked_sub(src.base_time()?)
     }
 
+    /// Carimbo no item: a hora (relógio do sistema, o mesmo dos dois
+    /// pipelines) em que o receptor apresentou o quadro pela linha do tempo
+    /// da fonte, menos a base do item. Igual à chegada quando tudo anda em
+    /// dia, mas sem o jitter de agendamento e com os mesmos saltos da fonte
+    /// (o `videorate` do item vê o que via antes). Fora de ±1 s da chegada
+    /// (relógio trocado, segmento novo), vale a chegada.
+    fn stamp(src: &gst_app::AppSrc, ideal: Option<gst::ClockTime>) -> Option<gst::ClockTime> {
+        let now = Self::now(src)?;
+        let pts = ideal.and_then(|ideal| ideal.checked_sub(src.base_time()?));
+        Some(match pts { Some(pts) if pts.max(now) - pts.min(now) <= gst::ClockTime::SECOND => pts, _ => now })
+    }
+
     fn push(port: &Port, sample: &gst::Sample, pts: gst::ClockTime) -> bool {
         let Some(buffer) = sample.buffer() else { return false };
         let mut copy = buffer.copy();
@@ -168,22 +183,23 @@ impl Sub {
         port.src.push_sample(&builder.build()).is_ok()
     }
 
-    fn deliver_video(&self, sample: &gst::Sample) {
+    fn deliver_video(&self, sample: &gst::Sample, ideal: Option<gst::ClockTime>) {
         // Trilha que chegou no meio da ativação do item: expõe agora.
         if self.active.load(Ordering::Acquire) && self.video.lock().is_ok_and(|video| video.is_none()) { self.ensure_video(); }
         let Ok(video) = self.video.lock() else { return };
         let Some(port) = video.as_ref() else { return };
         // Pad não ligado: empurrar faria o appsrc acusar NOT_LINKED no item.
         if port.ghost.peer().is_none() { return; }
-        let Some(pts) = Self::now(&port.src) else { return };
+        let Some(pts) = Self::stamp(&port.src, ideal) else { return };
         if Self::push(port, sample, pts) { self.delivered.fetch_add(1, Ordering::Relaxed); }
     }
 
-    fn deliver_audio(&self, track: usize, sample: &gst::Sample, duration: Option<gst::ClockTime>) {
+    fn deliver_audio(&self, track: usize, sample: &gst::Sample, duration: Option<gst::ClockTime>, ideal: Option<gst::ClockTime>) {
         if self.active.load(Ordering::Acquire) && self.audio.lock().is_ok_and(|audio| !audio.contains_key(&track)) { self.ensure_audio(track); }
         let Ok(audio) = self.audio.lock() else { return };
         let Some(port) = audio.get(&track) else { return };
-        let Some(now) = Self::now(&port.src) else { return };
+        if port.ghost.peer().is_none() { return; }
+        let Some(now) = Self::stamp(&port.src, ideal) else { return };
         let Ok(mut next) = self.audio_next.lock() else { return };
         let pts = match *next {
             Some(expected) if now.max(expected) - now.min(expected) <= gst::ClockTime::from_nseconds(AUDIO_SNAP.as_nanos() as u64) => expected,
@@ -425,7 +441,8 @@ impl Receiver {
                     receiver.frames.fetch_add(1, Ordering::Relaxed);
                     if let Ok(mut statistics) = receiver.statistics.lock() { statistics.last_delivered_video = Some(Instant::now()); }
                     let subs = receiver.subs.lock().map(|subs| Arc::clone(&subs)).unwrap_or_default();
-                    for sub in subs.iter() { sub.deliver_video(&sample); }
+                    let ideal = render_clock(sink, &sample);
+                    for sub in subs.iter() { sub.deliver_video(&sample, ideal); }
                 }
                 Ok(gst::FlowSuccess::Ok)
             }).build());
@@ -451,7 +468,8 @@ impl Receiver {
                     });
                     if first { if let Ok(mut statistics) = receiver.statistics.lock() { statistics.last_delivered_audio = Some(Instant::now()); } }
                     let subs = receiver.subs.lock().map(|subs| Arc::clone(&subs)).unwrap_or_default();
-                    for sub in subs.iter() { sub.deliver_audio(track, &sample, duration); }
+                    let ideal = render_clock(sink, &sample);
+                    for sub in subs.iter() { sub.deliver_audio(track, &sample, duration, ideal); }
                 }
                 Ok(gst::FlowSuccess::Ok)
             }).build());
@@ -552,6 +570,16 @@ impl Receiver {
             if let Some(running) = running { let _ = running.pipeline.set_state(gst::State::Null); }
         }).ok()
     }
+}
+
+/// Hora de relógio em que o appsink do receptor apresenta o quadro:
+/// running time do PTS + base + latência do pipeline.
+fn render_clock(sink: &gst_app::AppSink, sample: &gst::Sample) -> Option<gst::ClockTime> {
+    use gstreamer_base::prelude::BaseSinkExt;
+    let pts = sample.buffer()?.pts()?;
+    let segment = sample.segment()?.downcast_ref::<gst::format::Time>()?;
+    let running = segment.to_running_time(pts)?;
+    Some(running + sink.base_time()? + sink.dynamic_cast_ref::<gstreamer_base::BaseSink>()?.latency())
 }
 
 fn fxhash(text: &str) -> u64 {
