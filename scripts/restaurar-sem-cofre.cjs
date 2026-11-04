@@ -36,6 +36,16 @@ const PROTECTED = [
 ]
 // Colunas que aceitam NULL: limpa o valor e mantém a linha.
 const NULLABLE_KEEP_ROW = new Set(['health_events.message', 'health_events.context'])
+// Índice de comandos de grafismo pendentes (migração 49): o mesmo predicado de
+// "aceito e não resolvido" de apps/server/src/db/graphic-command-pending.ts. O
+// servidor recusa partir se o índice divergir do histórico (o teste confere que
+// os dois textos são iguais).
+const GRAPHIC_TERMINAL = `SELECT 1 FROM operator_decisions t INDEXED BY graphic_command_phase_identity WHERE t.id IN (
+  substr(a.id,1,length(a.id)-9)||':CONFIRMED',substr(a.id,1,length(a.id)-9)||':SIMULATED',
+  substr(a.id,1,length(a.id)-9)||':REJECTED',substr(a.id,1,length(a.id)-9)||':REVIEWED')
+  AND t.rundown_id=a.rundown_id AND t.kind='GRAPHIC_COMMAND_'||substr(t.id,length(a.id)-7)`
+const GRAPHIC_UNRESOLVED = `a.kind='GRAPHIC_COMMAND_ACCEPTED' AND NOT EXISTS(${GRAPHIC_TERMINAL})`
+const GRAPHIC_PENDING_EXPECTED = `SELECT a.id,a.rundown_id AS scope FROM operator_decisions a WHERE ${GRAPHIC_UNRESOLVED}`
 
 function loadSqlite() {
   const candidates = [process.env.RPLAYOUT_SQLITE_MODULE,
@@ -148,6 +158,16 @@ function main(argv) {
           report.removed[row.table + ' (órfãos)'] = (report.removed[row.table + ' (órfãos)'] || 0) + 1
         }
       }
+      // 6. Índice de comandos de grafismo pendentes: reconstruído a partir do que
+      // ficou em operator_decisions. Apagá-lo inteiro deixaria de fora os
+      // comandos aceitos em claro ainda sem resolução, e o servidor recusa a
+      // partida ("Índice de comandos pendentes diverge do histórico").
+      if (tableExists('graphic_command_pending') && tableExists('operator_decisions') && db.prepare('SELECT 1 FROM schema_migrations WHERE version=49').get()) {
+        const indexed = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='graphic_command_phase_identity'").get()
+        const expected = indexed ? GRAPHIC_PENDING_EXPECTED : GRAPHIC_PENDING_EXPECTED.replace(' INDEXED BY graphic_command_phase_identity', '')
+        db.prepare('DELETE FROM graphic_command_pending').run()
+        report.rebuilt = { graphic_command_pending: db.prepare(`INSERT INTO graphic_command_pending(id,scope) ${expected}`).run().changes }
+      }
       for (const { tbl_name, sql } of triggers) if (tableExists(tbl_name)) db.exec(sql)
     })()
     // Conferências finais: nenhum valor cifrado sobrou, chaves estrangeiras e integridade.
@@ -175,4 +195,4 @@ if (require.main === module) {
   try { console.log(JSON.stringify(main(process.argv.slice(2)), null, 2)) }
   catch (error) { console.error('ERRO: ' + error.message); process.exit(1) }
 }
-module.exports = { main }
+module.exports = { main, GRAPHIC_PENDING_EXPECTED }
