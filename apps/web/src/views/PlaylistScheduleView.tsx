@@ -2,6 +2,7 @@ import { confirmAction, notify } from '../domain/confirm.js'
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
 import { MirrorStatus } from '../components/MirrorStatus.js'
 import { useEscape } from '../domain/use-escape.js'
+import { UndoRedoButtons } from '../components/UndoRedoButtons.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { dayCoverage } from '../domain/day-coverage.js'
@@ -11,7 +12,7 @@ import { playlistImportTarget, type PlaylistImportTarget } from '../domain/playl
 import type { Channel, ManagedLiveSource, Rundown, AssetMetadataReview } from '@rplayout/protocol'
 import { durationIn, qcApproved } from '@rplayout/protocol'
 import { clock, dur } from '../format.js'
-import type { RundownView, ItemView, LibraryAsset, LibraryFolder, Categoria, Snapshot } from '../types.js'
+import type { RundownView, ItemView, LibraryAsset, LibraryFolder, Categoria, Snapshot, HistoryState } from '../types.js'
 import type { WorkspaceId } from '../components/WorkspaceShell.js'
 import { BroadcastHeader } from '../components/broadcast/BroadcastHeader.js'
 import { CanonicalProtocolSelector, type ProtocolResult } from '../components/broadcast/CanonicalProtocolSelector.js'
@@ -24,7 +25,7 @@ import {OperationalRollbackDialog} from '../components/OperationalRollbackDialog
 import { canonicalLiveSourceRef, liveDefaultFrames, liveProtocolLabel } from '../liveSource.js'
 import { collapsedRows, findRepeatRuns } from '../domain/repeat-runs.js'
 import { ProtectedTimingZonesDialog } from '../components/ProtectedTimingZonesDialog.js'
-import { editorialContext, editorialSelection, emptyDayState } from '../domain/editorial-context.js'
+import { editorialContext, editorialSelection, emptyDayState, undoBlockedReason } from '../domain/editorial-context.js'
 import { revisionDiffLines } from '../domain/revision-diff.js'
 import { SchedulePublicationPanel } from '../components/broadcast/SchedulePublicationPanel.js'
 import {AssetMetadataEditor} from '../components/AssetMetadataEditor.js'
@@ -36,6 +37,9 @@ interface Props {
   channel: Channel
   channels?: Channel[]
   view: RundownView
+  history?: HistoryState
+  onUndo?: () => void
+  onRedo?: () => void
   folders?: LibraryFolder[]
   libraryLoaded?: boolean
   categorias?: Categoria[]
@@ -88,6 +92,9 @@ export function PlaylistScheduleView({
   channel,
   channels = [channel],
   view,
+  history,
+  onUndo,
+  onRedo,
   folders = [],
   libraryLoaded = true,
   categorias = [],
@@ -2204,6 +2211,7 @@ export function PlaylistScheduleView({
                     REV. {operationalRevision}
                   </span>
                 )}
+                <UndoRedoButtons history={history} onUndo={onUndo} onRedo={onRedo} blockedReason={undoBlockedReason(isLoadedEditorial)} />
                 <button onClick={openOperationalReview} className="px-2 py-1.5 rounded border border-border-subtle text-[11px] text-on-surface hover:bg-surface-panel" title="Comparar a grade editorial, consultar histórico e restaurar revisões">Revisões</button>
               </div>
             </div>

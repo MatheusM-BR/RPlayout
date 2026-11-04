@@ -19,3 +19,10 @@ export function emptyDayState(active: { items: readonly unknown[] } | null): 'NO
   if (!active) return 'NO_GRID'
   return active.items.length ? 'HAS_ITEMS' : 'EMPTY_GRID'
 }
+
+/** Desfazer/refazer atuam no histórico da grade CARREGADA no Master (o mesmo
+ * do Ctrl+Z). Com outra data exibida na PLAYLIST, os botões explicam isso em
+ * vez de desfazer uma grade que não está na tela. */
+export function undoBlockedReason(isLoadedEditorial: boolean): string | null {
+  return isLoadedEditorial ? null : 'Desfazer/refazer valem para a grade carregada no Master; abra a data dela para usar.'
+}

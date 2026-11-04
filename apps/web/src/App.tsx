@@ -1270,6 +1270,9 @@ export function App() {
       </>}
       {currentWorkspace === 'master' && (
         <MasterControlView
+          history={history}
+          onUndo={() => void undo('undo')}
+          onRedo={() => void undo('redo')}
           onLockPanel={() => setPanelLock('on')}
           libraryLoaded={libraryLoaded}
           channel={view.channel}
@@ -1327,6 +1330,9 @@ export function App() {
 
       {currentWorkspace === 'playlist' && (
         <PlaylistScheduleView
+          history={history}
+          onUndo={() => void undo('undo')}
+          onRedo={() => void undo('redo')}
           libraryLoaded={libraryLoaded}
           channel={view.channel}
           channels={channels}

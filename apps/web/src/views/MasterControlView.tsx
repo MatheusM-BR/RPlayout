@@ -13,10 +13,12 @@ import type { Channel, ManagedLiveSource, PreviewTarget, ScheduleEventType, Timi
 import { qcApproved,programDurationFrames,durationIn } from '@rplayout/protocol'
 import { AbortButton, transportColumns } from '../components/broadcast/AbortButton.js'
 import { dedupeNotice } from '../domain/notice-text.js'
+import { UndoRedoButtons } from '../components/UndoRedoButtons.js'
 import { clock, dur, formatStandardRate } from '../format.js'
 import {PreviewFrameStatus} from '../components/broadcast/PreviewFrameStatus.js'
 import type {
   Categoria,
+  HistoryState,
   ItemView,
   LibraryAsset,
   LibraryFolder,
@@ -53,6 +55,9 @@ interface Props {
   channels: Channel[]
   view: RundownView
   live: Live
+  history?: HistoryState
+  onUndo?: () => void
+  onRedo?: () => void
   folders: LibraryFolder[]
   libraryLoaded?: boolean
   scan: ScanStatus | null
@@ -186,6 +191,9 @@ export function MasterControlView({
   channel,
   channels,
   view,
+  history,
+  onUndo,
+  onRedo,
   live,
   folders,
   libraryLoaded = true,
@@ -1476,6 +1484,8 @@ export function MasterControlView({
                         </span>
                         <span className="hidden 2xl:inline">{followOnAir ? 'TRAVADO NO AR' : 'ROLAGEM LIVRE'}</span>
                       </button>
+
+                      <UndoRedoButtons history={history} onUndo={onUndo} onRedo={onRedo} compact />
 
                       <button
                         title="Adicionar linha na grade"
