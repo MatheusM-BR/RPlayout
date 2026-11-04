@@ -288,6 +288,9 @@ export function diffOperationalItems(published: readonly RundownItem[], editoria
   return {
     added: editorial.filter((item) => !old.has(item.id)).map((item) => item.id),
     removed: published.filter((item) => !current.has(item.id)).map((item) => item.id),
+    // O item removido já não está na simulação: sem o título daqui a
+    // conferência só mostrava o ID interno ("urgent:f48501e9-…").
+    removedTitles: Object.fromEntries(published.filter((item) => !current.has(item.id)).map((item) => [item.id, item.title])),
     changed: editorial.filter((item) => old.has(item.id)).flatMap((item) => {
       const previous = old.get(item.id)!
       const fields = Object.keys(item).filter((key) => JSON.stringify(item[key as keyof RundownItem]) !== JSON.stringify(previous[key as keyof RundownItem]))

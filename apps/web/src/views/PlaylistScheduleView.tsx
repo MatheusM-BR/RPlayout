@@ -25,6 +25,7 @@ import { canonicalLiveSourceRef, liveDefaultFrames, liveProtocolLabel } from '..
 import { collapsedRows, findRepeatRuns } from '../domain/repeat-runs.js'
 import { ProtectedTimingZonesDialog } from '../components/ProtectedTimingZonesDialog.js'
 import { editorialContext, editorialSelection, emptyDayState } from '../domain/editorial-context.js'
+import { revisionDiffLines } from '../domain/revision-diff.js'
 import { SchedulePublicationPanel } from '../components/broadcast/SchedulePublicationPanel.js'
 import {AssetMetadataEditor} from '../components/AssetMetadataEditor.js'
 import {isCatalogMediaAsset} from '../domain/asset-metadata-review.js'
@@ -551,6 +552,8 @@ export function PlaylistScheduleView({
     rollbackReads.current.cancel();rollbackInspecting.current=false
     setIsInspectingRollback(false);setRollbackReview(null);setShowOperationalReview(false)
   }
+  // B5: o manual promete "Esc = fechar diálogo"; publicando, o fechar já é recusado acima.
+  useEscape(showOperationalReview && !rollbackReview, closeOperationalReview)
   const refreshOperationalReview=async()=>{
     if(!reviewRundownId || operationalBusy.current || rollbackInspecting.current || isLoadingOperational)return
     const reading=editorialRefreshReads.current.start(false)
@@ -2539,14 +2542,14 @@ export function PlaylistScheduleView({
               {isInspectingRollback && <p role="status">Conferindo a revisão para restauração…</p>}
               {operationalReviewError && <p role="alert" className="text-error bg-error-container/20 p-3 rounded">{operationalReviewError}</p>}
               {operationalSimulation && <>
-                <p>{operationalSimulation.activeRevision === null ? 'Ainda não há revisão publicada.' : `Revisão publicada: ${operationalSimulation.activeRevision}.`} {operationalSimulation.differences.added.length} inclusão(ões), {operationalSimulation.differences.removed.length} remoção(ões), {operationalSimulation.differences.changed.length} alteração(ões).</p>
+                {(() => { const diff = revisionDiffLines(operationalSimulation); return <>
+                <p>{operationalSimulation.activeRevision === null ? 'Ainda não há revisão publicada.' : `Revisão publicada: ${operationalSimulation.activeRevision}.`} {operationalSimulation.differences.added.length} inclusão(ões), {operationalSimulation.differences.removed.length} remoção(ões), {diff.contentChanges} alteração(ões){diff.moved ? `, ${diff.moved} reordenado(s)` : ''}.</p>
                 <ul className="max-h-48 overflow-auto space-y-1 text-xs">
-                  {operationalSimulation.differences.added.map(id => <li key={`add-${id}`} className="text-status-ok-bright">+ {operationalSimulation.simulated.items.find(item => item.id === id)?.title ?? id}</li>)}
-                  {operationalSimulation.differences.removed.map(id => <li key={`remove-${id}`} className="text-error">− Item removido: {id}</li>)}
-                  {operationalSimulation.differences.changed.map(change => <li key={change.itemId}>{operationalSimulation.simulated.items.find(item => item.id === change.itemId)?.title ?? change.itemId}: {change.fields.join(', ')}</li>)}
+                  {diff.lines.map(line => <li key={line.key} className={line.kind === 'added' ? 'text-status-ok-bright' : line.kind === 'removed' ? 'text-error' : line.kind === 'moved' ? 'text-outline' : undefined}>{line.text}</li>)}
                   {operationalSimulation.differences.graphicsChanged?.map(id => <li key={`graphics-${id}`}>{operationalSimulation.simulated.items.find(item => item.id === id)?.title ?? id}: grafismo/deixa alterado — só passa à execução após publicar.</li>)}
                   {operationalSimulation.differences.timingPolicyChanged && <li className="text-armed-amber">Zonas protegidas alteradas — só passam à execução após publicar.</li>}
                 </ul>
+                </>})()}
                 <p className={operationalSimulation.simulated.schedule.conflicts.length ? 'text-armed-amber' : 'text-status-ok-bright'}>{operationalSimulation.simulated.schedule.conflicts.length} conflito(s) de timing na simulação. A publicação não elimina esses conflitos.</p>
                 <ul className="space-y-1 text-xs text-armed-amber">{operationalSimulation.simulated.schedule.conflicts.map((conflict, index) => <li key={index}>{conflict.message}</li>)}</ul>
               </>}

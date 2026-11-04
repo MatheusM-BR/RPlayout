@@ -205,6 +205,12 @@ describe('playlist operacional separada da grade editorial', () => {
     const modified = [{ ...old[0]!, title: 'Novo', sourceRef: 'omt:HOST (PGM)' }]
     expect(diffOperationalItems(old, modified).changed[0]).toEqual({ itemId: 'live', fields: ['title', 'sourceRef'] })
   })
+  it('B5: o diff traz o título do item removido (a simulação não tem mais o item)', () => {
+    const published = [{ id: 'urgent:f48501e9', title: 'SD 4x3' }, { id: 'keep', title: 'Programa' }] as any
+    const diff = diffOperationalItems(published, [published[1]])
+    expect(diff.removed).toEqual(['urgent:f48501e9'])
+    expect(diff.removedTitles).toEqual({ 'urgent:f48501e9': 'SD 4x3' })
+  })
   it('protege a fonte em PGM, permitindo ajustes editoriais que não trocam decoder', async () => {
     await publishOperationalPlaylist(database.db, runtime.channel, 'rd', 'a')
     await database.db.update(rundownItems).set({ title: 'Título corrigido' }).where(eq(rundownItems.id, 'live'))
