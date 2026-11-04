@@ -29,3 +29,18 @@ describe('cadastro consistente de entradas', () => {
     })
   })
 })
+import { availableInputKind } from './protocol-config.js'
+describe('B10: entrada nova não abre num protocolo ausente', () => {
+  const fam = (available: boolean) => ({ available, reason: available ? null : 'sem plugin', sources: [] })
+  it('NDI/SDI/OMT ausentes abrem em SRT; presentes ficam', () => {
+    const none = { sdi: fam(false), ndi: fam(false), omt: fam(false) }
+    expect(availableInputKind('NDI', none)).toBe('SRT')
+    expect(availableInputKind('SDI', none)).toBe('SRT')
+    expect(availableInputKind('OMT', none)).toBe('SRT')
+    expect(availableInputKind('RTMP', none)).toBe('RTMP')
+    expect(availableInputKind('NDI', { ...none, ndi: fam(true) })).toBe('NDI')
+  })
+  it('antes da descoberta não troca nada', () => {
+    expect(availableInputKind('NDI', null)).toBe('NDI')
+  })
+})
