@@ -135,12 +135,14 @@ impl Sub {
         match self.add_port(&format!("audio_{track}"), "audio/x-raw") { Ok(port) => { audio.insert(track, port); } Err(error) => eprintln!("[engine] ingest: trilha de áudio {track} não exposta: {error:#}") }
     }
 
-    /// Tempo do pipeline do item agora (running time), se ele está tocando.
-    fn now(&self) -> Option<gst::ClockTime> {
-        let pipeline = self.pipeline.upgrade()?;
-        if pipeline.current_state() != gst::State::Playing { return None; }
-        let clock = pipeline.clock()?;
-        clock.time()?.checked_sub(pipeline.base_time()?)
+    /// Tempo de execução agora no relógio do item, visto pelo próprio appsrc.
+    /// Num pipeline ao vivo o appsrc já toca enquanto o pipeline ainda está
+    /// em PAUSED esperando o preroll de um sink (o medidor do PVW): pelo
+    /// estado do pipeline, o quadro que destrava esse preroll nunca entraria.
+    fn now(src: &gst_app::AppSrc) -> Option<gst::ClockTime> {
+        if src.current_state() != gst::State::Playing { return None; }
+        let clock = src.clock()?;
+        clock.time()?.checked_sub(src.base_time()?)
     }
 
     fn push(port: &Port, sample: &gst::Sample, pts: gst::ClockTime) -> bool {
@@ -160,7 +162,7 @@ impl Sub {
         let Some(port) = video.as_ref() else { return };
         // Pad não ligado: empurrar faria o appsrc acusar NOT_LINKED no item.
         if port.ghost.peer().is_none() { return; }
-        let Some(pts) = self.now() else { return };
+        let Some(pts) = Self::now(&port.src) else { return };
         if Self::push(port, sample, pts) { self.delivered.fetch_add(1, Ordering::Relaxed); }
     }
 
@@ -168,8 +170,7 @@ impl Sub {
         if self.active.load(Ordering::Acquire) && self.audio.lock().is_ok_and(|audio| !audio.contains_key(&track)) { self.ensure_audio(track); }
         let Ok(audio) = self.audio.lock() else { return };
         let Some(port) = audio.get(&track) else { return };
-        if port.ghost.peer().is_none() { return; }
-        let Some(now) = self.now() else { return };
+        let Some(now) = Self::now(&port.src) else { return };
         let Ok(mut next) = self.audio_next.lock() else { return };
         let pts = match *next {
             Some(expected) if now.max(expected) - now.min(expected) <= gst::ClockTime::from_nseconds(AUDIO_SNAP.as_nanos() as u64) => expected,
@@ -223,7 +224,7 @@ pub struct Receiver {
     openings: AtomicU64,
     /// Medições da entrada, uma vez por entrada (watchdog e multiview).
     statistics: Arc<std::sync::Mutex<SourceStatistics>>,
-    frames: AtomicU64,
+    pub(super) frames: AtomicU64,
     last_error: Mutex<Option<String>>,
     retry_at: Mutex<Option<Instant>>,
     /// Abertura/reabertura em andamento numa thread própria.
@@ -515,6 +516,13 @@ impl Receiver {
         let exact = signal.sampled_content_unchanged_ms.filter(|_| signal.content_sample_age_ms.is_some_and(|age| age <= 1000));
         let still = signal.quality.luma_static_ms.filter(|_| signal.quality.luma_sample_age_ms.is_some_and(|age| age <= 1000));
         match (exact, still) { (None, None) => None, (a, b) => Some(a.unwrap_or(0).max(b.unwrap_or(0))) }
+    }
+
+    /// O decodificador da entrada entregou quadro nos últimos 2 s? É a mesma
+    /// régua que o item usava no pad do decodificador: os quadros que ainda
+    /// estão na fila do receptor esperando a hora não contam como sinal.
+    pub fn video_recent(&self) -> bool {
+        self.statistics.lock().is_ok_and(|statistics| SourceStatistics::recent(statistics.last_video))
     }
 
     pub fn signal(&self) -> SourceSignalReport {
@@ -967,7 +975,7 @@ mod tests {
         if serve_until(channel, Duration::from_secs(10), armed_ready).is_none() {
             let item = channel.0.armed.as_ref().unwrap();
             let lease = item.ingest.as_ref();
-            if let Some(sub) = lease.and_then(|l| l.sub.as_ref()) { let linked = sub.video.lock().unwrap().as_ref().map(|p| p.ghost.peer().is_some()); eprintln!("DEBUG2 active={} linked={:?} now={:?} pads={:?} tracks_video={}", sub.active.load(Ordering::Relaxed), linked, sub.now(), sub.bin.pads().iter().map(|p| p.name().to_string()).collect::<Vec<_>>(), lease.unwrap().receiver.tracks.lock().unwrap().video); }
+            if let Some(sub) = lease.and_then(|l| l.sub.as_ref()) { let linked = sub.video.lock().unwrap().as_ref().map(|p| p.ghost.peer().is_some()); eprintln!("DEBUG2 active={} linked={:?} pads={:?} tracks_video={}", sub.active.load(Ordering::Relaxed), linked, sub.bin.pads().iter().map(|p| p.name().to_string()).collect::<Vec<_>>(), lease.unwrap().receiver.tracks.lock().unwrap().video); }
             eprintln!("DEBUG {item_id} frames={:?} delivered={:?} state={:?} video_ready={} stats={:?}", lease.map(|l| l.receiver.frames.load(Ordering::Relaxed)), lease.map(|l| l.delivered()),
                 item.pipeline.current_state(), item.video_ready.load(Ordering::Relaxed), item.source_statistics.lock().unwrap().report(true), item_id = item.spec.item_id);
             panic!("item sem quadro");

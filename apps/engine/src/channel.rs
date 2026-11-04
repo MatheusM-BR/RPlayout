@@ -242,6 +242,9 @@ impl Item {
     /// out at both the decoder and the intersink, not latch on its first frame.
     fn live_ready(&self) -> bool {
         self.spec.is_live() && self.routing_ready().unwrap_or(false)
+            // Receptor compartilhado: o sinal conta no decodificador da entrada,
+            // como antes, não só na entrega ao item (a fila no meio não é sinal).
+            && self.ingest.as_ref().is_none_or(|lease| lease.receiver().video_recent())
             && self.source_statistics.lock().is_ok_and(|statistics| statistics.live_ready(
                 self.video_ready.load(Ordering::Acquire), self.requires_audio(),
                 self.audio_ready.load(Ordering::Acquire),
