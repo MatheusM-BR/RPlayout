@@ -107,6 +107,24 @@ Como funciona por dentro:
 **Guarde a senha fora da máquina do ar.** Sem ela e sem o `vault.json`
 original, as credenciais de um backup não abrem.
 
+**Trocar a senha não invalida os backups antigos.** Cada backup leva o
+registro de recuperação que valia quando ele foi feito, embrulhado com a senha
+daquela época. A troca só vale para os backups feitos depois dela; quem tem
+um backup antigo e a senha antiga continua abrindo todas as credenciais dele
+(e a chave do cofre, que é a mesma). Por isso:
+
+- **se a senha vazar**, troque a senha **e descarte (apague) todos os backups
+  feitos antes da troca**, em todos os lugares onde houver cópia (disco
+  externo, nuvem, outra máquina). Só trocar a senha não protege esses backups;
+- se a suspeita é de vazamento da própria chave (o `vault.json` ou um backup
+  junto com a senha), trocar a senha não basta: as credenciais cadastradas
+  (chaves de stream, passphrases SRT, tokens) precisam ser trocadas na origem.
+
+A reautenticação para definir ou trocar a senha tem o mesmo limite do login:
+10 tentativas em 15 minutos, contadas por usuário e por estação. Cada falha
+fica na auditoria (`VAULT_RECOVERY_REAUTH_FAILED`, só usuário e estação; a
+senha digitada nunca é gravada).
+
 ## Como restaurar em outra máquina (ou outro usuário Windows)
 
 1. Instale o RPlayout na máquina nova.
@@ -170,6 +188,8 @@ logo em seguida.
 - O registro de recuperação viaja com o backup. Quem tem uma cópia do backup
   pode tentar força bruta offline contra a senha. O scrypt caro reduz o
   risco; a senha precisa ser longa e única.
+- Trocar a senha não alcança backups já feitos (veja acima): senha vazada
+  pede descartar os backups anteriores à troca.
 - `operator_decisions` antigo continua cifrado (append-only). Sem chave nem
   senha, só o restaurar-sem-cofre o descarta.
 - Outros envelopes internos continuam usando a chave:
