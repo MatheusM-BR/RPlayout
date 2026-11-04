@@ -155,8 +155,15 @@ pub enum CellSource {
     Qc,
     /// Reserva de contingência preparada para a troca ao vivo.
     Contingency,
-    /// Entrada ao vivo cadastrada, onde quer que o engine a tenha aberta.
-    Source { id: String },
+    /// Entrada ao vivo cadastrada. Com `endpoint` (o servidor manda o do
+    /// cadastro), a célula lê o receptor compartilhado da entrada (ingest
+    /// único): aparece sempre, esteja ou não em algum barramento. Sem ele,
+    /// só onde o engine a tiver aberta (comportamento da r88-36).
+    Source {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<String>,
+    },
     Empty,
 }
 
@@ -175,8 +182,9 @@ impl Composition {
             return Err(anyhow!("o layout tem {} células e vieram {}", self.layout.cells(), self.cells.len()));
         }
         for cell in &self.cells {
-            if let CellSource::Source { id } = cell {
+            if let CellSource::Source { id, endpoint } = cell {
                 if id.is_empty() || id.len() > 256 { return Err(anyhow!("identificador de fonte inválido no multiview")); }
+                if endpoint.as_ref().is_some_and(|endpoint| endpoint.trim().is_empty() || endpoint.len() > 2048) { return Err(anyhow!("endereço de fonte inválido no multiview")); }
             }
         }
         Ok(())
@@ -219,6 +227,11 @@ pub struct CellState {
     /// Quadros que a sonda deixou de guardar porque o multiview estava ocupado
     /// (o PGM seguiu sem esperar).
     pub skipped: u64,
+    /// Receptor compartilhado que alimenta a célula (ingest único), quando há.
+    pub receiver: Option<u64>,
+    /// Imagem parada há tanto tempo, pela medição da entrada no receptor
+    /// (impressão do conteúdo ou grade de luma, as mesmas do watchdog).
+    pub frozen_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -333,7 +346,7 @@ impl TapPoints {
             CellSource::Next => self.next.clone(),
             CellSource::Qc => self.qc.clone(),
             CellSource::Contingency => self.contingency.clone(),
-            CellSource::Source { id } => self.sources.iter().find(|(key, _)| key == id).map(|(_, point)| point.clone()),
+            CellSource::Source { id, .. } => self.sources.iter().find(|(key, _)| key == id).map(|(_, point)| point.clone()),
             CellSource::Empty => None,
         }
     }
@@ -606,6 +619,11 @@ pub struct Multiview {
     /// ser aplicado quando o publicador é recriado (troca de teto).
     budgets: std::collections::BTreeMap<MonitorTier, f64>,
     hooks: Hooks,
+    /// Receptores compartilhados das entradas nas células (por endereço). Só
+    /// existem enquanto alguém assiste ao mosaico.
+    leases: std::collections::BTreeMap<String, super::ingest::Lease>,
+    /// Entrada que não abriu: próxima tentativa (não tentar a 50 Hz).
+    lease_retry: std::collections::BTreeMap<String, Instant>,
 }
 
 impl Multiview {
@@ -638,6 +656,7 @@ impl Multiview {
         let mut multiview = Multiview {
             video_channel, audio_channel, fps: (fps_n, fps_d), composition: composition.clone(), cells: Vec::new(),
             runner: None, publisher: publisher_spec.clone().map(Publisher::new), publisher_spec, tiers: Default::default(), budgets: Default::default(), hooks: Hooks::default(),
+            leases: Default::default(), lease_retry: Default::default(),
         };
         multiview.set_cells(&composition);
         multiview
@@ -725,6 +744,8 @@ impl Multiview {
 
     fn stop(&mut self) {
         self.runner = None;
+        // Sem espectador o mosaico não segura entrada nenhuma aberta.
+        self.leases.clear();
         for cell in &mut self.cells {
             if let Some(installed) = cell.installed.take() { installed.remove(); }
             cell.tap.clear();
@@ -742,12 +763,17 @@ impl Multiview {
         for cell in &mut self.cells {
             let wanted = points.find(&cell.source);
             let same = match (&cell.installed, &wanted) {
-                (Some(installed), Some(point)) => installed.identity == point.identity && installed.bus == point.bus
+                (Some(installed), Some(point)) => installed.identity == point.identity
                     && installed.pad.upgrade().is_some_and(|pad| pad == point.pad),
                 (None, None) => true,
                 _ => false,
             };
-            if same { continue; }
+            if same {
+                // Mesma fonte no mesmo ponto (receptor compartilhado) que mudou
+                // de barramento (PVW → PGM): só o tally muda, a sonda fica.
+                if let (Some(installed), Some(point)) = (cell.installed.as_mut(), wanted.as_ref()) { installed.bus = point.bus; }
+                continue;
+            }
             if let Some(installed) = cell.installed.take() { installed.remove(); }
             // Fonte nova na célula começa limpa: nada do item anterior.
             cell.tap.clear();
@@ -764,6 +790,39 @@ impl Multiview {
 
     pub fn report(&self) -> Option<Report> { self.publisher.as_ref().map(Publisher::report) }
 
+    /// Células com entrada cadastrada (e endereço): segura o receptor
+    /// compartilhado de cada uma enquanto alguém assiste. Abrir é coisa do
+    /// receptor, fora do laço (monitoramento sobe numa thread própria).
+    fn sync_leases(&mut self, hub: &super::ingest::Hub) {
+        if !hub.enabled() || !self.wanted() { self.leases.clear(); return; }
+        let wanted: std::collections::BTreeMap<String, String> = self.composition.cells.iter().filter_map(|cell| match cell {
+            CellSource::Source { id, endpoint: Some(endpoint) } => Some((endpoint.clone(), id.clone())),
+            _ => None,
+        }).collect();
+        self.leases.retain(|endpoint, _| wanted.contains_key(endpoint));
+        self.lease_retry.retain(|endpoint, _| wanted.contains_key(endpoint));
+        let now = Instant::now();
+        for (endpoint, id) in wanted {
+            if self.leases.contains_key(&endpoint) || self.lease_retry.get(&endpoint).is_some_and(|at| now < *at) { continue; }
+            match hub.monitor(&super::ingest::Hub::monitor_spec(&id, &endpoint), super::ingest::Consumer::Multiview) {
+                Ok(lease) => { self.lease_retry.remove(&endpoint); self.leases.insert(endpoint, lease); }
+                Err(error) => {
+                    eprintln!("[engine] multiview: entrada {id} não abriu: {error:#}");
+                    self.lease_retry.insert(endpoint, now + super::ingest::MONITOR_RETRY);
+                }
+            }
+        }
+    }
+
+    /// Pontos de sonda dos receptores das células (id da entrada → ponto).
+    fn receiver_points(&self, bus_of: impl Fn(&str) -> Option<&'static str>) -> Vec<(String, TapPoint)> {
+        self.composition.cells.iter().filter_map(|cell| {
+            let CellSource::Source { id, endpoint: Some(endpoint) } = cell else { return None };
+            let (pad, identity) = self.leases.get(endpoint)?.receiver().tap()?;
+            Some((id.clone(), TapPoint { pad, identity, bus: bus_of(id).unwrap_or("in") }))
+        }).collect()
+    }
+
     pub fn state(&self) -> MultiviewState {
         let profile = self.composition.quality.profile(self.fps.0, self.fps.1);
         let signals = self.runner.as_ref().and_then(|runner| runner.signals.lock().ok().map(|signals| signals.clone())).unwrap_or_default();
@@ -773,11 +832,19 @@ impl Multiview {
             let (signal, age_ms, fps) = signals.get(index).copied().unwrap_or((
                 if cell.source == CellSource::Empty { CellSignal::Empty } else if cell.installed.is_some() { CellSignal::NoSignal } else { CellSignal::Unavailable }, None, 0.0));
             let signal = if cell.installed.is_none() && cell.source != CellSource::Empty { CellSignal::Unavailable } else { signal };
+            let receiver = match &cell.source {
+                CellSource::Source { endpoint: Some(endpoint), .. } => self.leases.get(endpoint).map(|lease| Arc::clone(lease.receiver())),
+                _ => None,
+            };
+            // O endereço não volta para o navegador: pode levar senha (SRT).
+            let source = match &cell.source { CellSource::Source { id, .. } => CellSource::Source { id: id.clone(), endpoint: None }, other => other.clone() };
             CellState {
-                source: cell.source.clone(), signal, age_ms, fps: (fps * 10.0).round() / 10.0,
+                source, signal, age_ms, fps: (fps * 10.0).round() / 10.0,
                 width: structure.and_then(|s| s.0), height: structure.and_then(|s| s.1),
                 bus: cell.installed.as_ref().map(|installed| installed.bus),
                 skipped: cell.tap.skipped(),
+                receiver: receiver.as_ref().map(|receiver| receiver.id()),
+                frozen_ms: receiver.as_ref().and_then(|receiver| receiver.frozen_ms()),
             }
         }).collect();
         MultiviewState {
@@ -887,6 +954,11 @@ impl Channel {
         // Fonte cadastrada: onde estiver aberta, na ordem PGM, PVW, NEXT, QC,
         // contingência. No PGM a célula mostra o item (sem grafismo), que é o
         // que a entrada entrega.
+        // Entrada com receptor compartilhado: a célula lê o receptor (a
+        // entrada crua, sempre visível); o barramento só pinta o tally.
+        if let Some(multiview) = self.multiview.as_ref() {
+            points.sources = multiview.receiver_points(|id| self.bus_of_source(id));
+        }
         for (item, bus) in [(self.on_air.as_ref(), "pgm"), (self.previewing.as_ref(), "pvw"), (self.armed.as_ref(), "next"),
                             (self.qc_item.as_ref(), "qc"), (self.live_replacement.as_ref(), "contingency")] {
             let Some(item) = item.filter(|item| item.spec.is_live()) else { continue };
@@ -897,8 +969,17 @@ impl Channel {
         points
     }
 
+    /// Primeiro barramento em que a entrada cadastrada está aberta.
+    fn bus_of_source(&self, id: &str) -> Option<&'static str> {
+        [(self.on_air.as_ref(), "pgm"), (self.previewing.as_ref(), "pvw"), (self.armed.as_ref(), "next"),
+         (self.qc_item.as_ref(), "qc"), (self.live_replacement.as_ref(), "contingency")].into_iter()
+            .find(|(item, _)| item.is_some_and(|item| item.spec.is_live() && item.spec.configured_source_id.as_deref() == Some(id)))
+            .map(|(_, bus)| bus)
+    }
+
     pub(crate) fn service_multiview(&mut self) -> Option<Report> {
         let multiview = self.multiview.as_mut()?;
+        multiview.sync_leases(&self.ingest);
         // Sem espectador não há o que sondar: o laço roda a ~50 Hz e montar os
         // pontos (procurar o tee, os itens e as fontes) era trabalho jogado fora.
         // O serviço ainda roda, com pontos vazios, para desligar o que sobrou.
@@ -964,7 +1045,7 @@ mod tests {
         })).unwrap();
         assert_eq!(composition.layout, Layout::OnePlus5);
         assert_eq!(composition.quality, Quality::Leve);
-        assert_eq!(composition.cells[2], CellSource::Source { id: "cam-1".into() });
+        assert_eq!(composition.cells[2], CellSource::Source { id: "cam-1".into(), endpoint: None });
         composition.validate().unwrap();
         let too_many = Composition { layout: Layout::Grid2x2, cells: vec![CellSource::Pgm; 5], quality: Quality::Padrao };
         assert!(too_many.validate().is_err());
@@ -1391,7 +1472,7 @@ mod tests {
             let port = 20_100 + n as u16;
             let mut multiview = Multiview::new(&format!("bench-{n}"), 25, 1, Some((Kind::Srt, format!("srt://127.0.0.1:{port}?mode=listener"))));
             let layout = if n == 4 { Layout::Grid2x2 } else { Layout::Grid3x3 };
-            let cells: Vec<CellSource> = (0..n).map(|i| CellSource::Source { id: format!("s{i}") }).collect();
+            let cells: Vec<CellSource> = (0..n).map(|i| CellSource::Source { id: format!("s{i}"), endpoint: None }).collect();
             multiview.configure(Composition { layout, cells, quality: Quality::Padrao }).unwrap();
             let points = TapPoints { sources: sources.iter().enumerate().map(|(i, s)| (format!("s{i}"), point(s, i as u64 + 1, "pvw"))).collect(), ..TapPoints::default() };
             multiview.set_wanted(true);

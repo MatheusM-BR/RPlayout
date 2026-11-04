@@ -13,7 +13,7 @@ export type MultiviewQuality = 'REFERENCIA' | 'PADRAO' | 'LEVE'
 
 export type MultiviewCellSource =
   | { kind: 'pgm' } | { kind: 'pvw' } | { kind: 'next' } | { kind: 'qc' } | { kind: 'contingency' }
-  | { kind: 'source'; id: string } | { kind: 'empty' }
+  | { kind: 'source'; id: string; /** Só servidor → engine: endereço do cadastro (receptor compartilhado). */ endpoint?: string } | { kind: 'empty' }
 
 export interface MultiviewComposition {
   layout: MultiviewCompositeLayout
@@ -29,8 +29,26 @@ export interface MultiviewEngineState {
   layout: MultiviewCompositeLayout
   quality: MultiviewQuality
   profile: { width: number; height: number; fpsN: number; fpsD: number; bitrateKbps: number }
-  cells: Array<{ source: MultiviewCellSource; signal: MultiviewCellSignal; ageMs: number | null; fps: number; width: number | null; height: number | null; bus: string | null; skipped: number }>
+  cells: Array<{ source: MultiviewCellSource; signal: MultiviewCellSignal; ageMs: number | null; fps: number; width: number | null; height: number | null; bus: string | null; skipped: number
+    /** Receptor compartilhado (ingest único) que alimenta a célula. */
+    receiver?: number | null
+    /** Imagem parada há tanto tempo, medida na entrada (impressão/luma, como o watchdog). */
+    frozenMs?: number | null }>
   frames: number
+}
+
+/** Acima disto a célula de entrada mostra CONGELADO (mesma ordem do watchdog). */
+export const MULTIVIEW_FROZEN_MS = 2000
+
+/** Estado de uma célula para o operador: o que de fato chega da entrada. */
+export type MultiviewCellHealth = 'OK' | 'CONGELADO' | 'SEM_SINAL' | 'INDISPONIVEL' | 'VAZIA'
+export function multiviewCellHealth(cell: Pick<MultiviewEngineState['cells'][number], 'signal' | 'frozenMs'> | null | undefined): MultiviewCellHealth | null {
+  if (!cell) return null
+  if (cell.signal === 'empty') return 'VAZIA'
+  if (cell.signal === 'unavailable') return 'INDISPONIVEL'
+  if (cell.signal === 'noSignal') return 'SEM_SINAL'
+  if (typeof cell.frozenMs === 'number' && cell.frozenMs >= MULTIVIEW_FROZEN_MS) return 'CONGELADO'
+  return 'OK'
 }
 
 /** Células em unidades de 1/12: [x, y, largura, altura]. */

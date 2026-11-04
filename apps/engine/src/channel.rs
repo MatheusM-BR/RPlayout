@@ -30,6 +30,8 @@ use crate::live_replacement::{Journal as ReplacementJournal, Phase as Replacemen
 /// Multiview composto (R88-36). Módulo filho para ler os itens sem abrir campos.
 #[path = "multiview.rs"]
 pub mod multiview;
+#[path = "ingest.rs"]
+pub mod ingest;
 
 /// Para onde o programa sai. Todas as saídas penduram no mesmo par de tees,
 /// então o canal codifica uma vez, não uma vez por destino.
@@ -199,6 +201,10 @@ struct Item {
     /// Raw preview branch, before crop/240p scaling. Closed by default.
     qc_valve: Option<gst::Element>,
     qc_ready: Arc<AtomicBool>,
+    /// Fonte ao vivo recebida pelo receptor compartilhado (ingest único por
+    /// entrada). Solta o receptor quando o item morre (só segurar já basta).
+    #[allow(dead_code)]
+    ingest: Option<ingest::Lease>,
 }
 
 #[derive(Default)]
@@ -737,6 +743,8 @@ pub struct Channel {
     /// vira publicador depois da admissão do preview, como o QC: o mosaico
     /// mostra PGM/PVW deste nó e não pode publicar antes de ele ser o dono.
     held_multiview: Option<(Output, Option<multiview::Composition>)>,
+    /// Receptores compartilhados das entradas ao vivo (ingest único por entrada).
+    ingest: ingest::Hub,
 }
 
 /// A regra de comutação é deliberadamente pequena e isolada para que uma
@@ -1975,6 +1983,7 @@ impl Channel {
             meter_scratch: Vec::with_capacity(16_384),
             multiview: None,
             held_multiview: None,
+            ingest: ingest::Hub::from_env(),
         };
 
         if program_outputs_held { channel.attach_output(0,&Output::Null,&tee_video,&tee_audio)?; }
@@ -2821,6 +2830,7 @@ impl Channel {
         if self.qc_deadline.is_some() && self.qc_item.as_ref().is_some_and(|item| item.qc_ready.load(Ordering::Acquire)) {
             for publisher in &mut self.publishers { if publisher.role() == "qc" { publisher.set_wanted(true); } }
         }
+        self.ingest.service();
         let multiview = self.service_multiview();
         self.publishers
             .iter_mut()
@@ -2836,6 +2846,20 @@ impl Channel {
 
     pub fn bus(&self) -> gst::Bus {
         self.pipeline.bus().expect("pipeline sempre tem bus")
+    }
+
+    pub fn ingest_shared(&self) -> bool { self.ingest.enabled() }
+
+    /// Receptores compartilhados e a medição de cada entrada.
+    pub fn ingest_reports(&self) -> Vec<ingest::IngestReport> { self.ingest.reports() }
+
+    /// Entradas acompanhadas pelo watchdog fora do PVW.
+    pub fn set_ingest_watched(&mut self, sources: Vec<(String, String)>) -> Result<()> {
+        if !self.ingest.enabled() { return Err(anyhow!("ingest compartilhado desligado (RPLAYOUT_INGEST_SHARED=0)")); }
+        for (id, endpoint) in &sources {
+            if id.is_empty() || id.len() > 256 || endpoint.trim().is_empty() || endpoint.len() > 2048 { return Err(anyhow!("entrada inválida para o watchdog")); }
+        }
+        self.ingest.set_watched(sources)
     }
 
     /// Bus do item no ar, para captar o fim do trecho e os erros dele.
@@ -3201,7 +3225,12 @@ impl Channel {
         crate::audio_bus::validate_pairs(&spec.auxiliary_pairs, self.config.audio_channels)?;
         let pipeline = gst::Pipeline::with_name(&format!("item-{}", spec.item_id));
 
-        let src = source_for(spec)?;
+        // Fonte ao vivo: lida do receptor compartilhado da entrada (aberta uma
+        // vez só, para PGM, PVW, multiview e watchdog). Arquivo: aberto aqui.
+        let (src, ingest_lease) = if spec.is_live() && self.ingest.enabled() {
+            let (input, lease) = self.ingest.subscribe(spec)?;
+            (input, Some(lease))
+        } else { (source_for(spec)?, None) };
 
         let vconv = make("videoconvert")?;
         // Fonte entrelaçada vira progressiva aqui. O compositor não trabalha em
@@ -3464,6 +3493,12 @@ impl Channel {
                 }
             }
         }
+        // Receptor compartilhado: só agora, com o `pad-added` ligado, as
+        // trilhas que ele já conhece aparecem no bin do item.
+        if let Some(lease) = ingest_lease.as_ref() {
+            lease.set_statistics(Arc::clone(&source_statistics));
+            lease.activate(&pipeline);
+        }
 
         Ok(Item {
             decoder_id: NEXT_DECODER_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
@@ -3486,6 +3521,7 @@ impl Channel {
             meter_sink,
             qc_valve,
             qc_ready,
+            ingest: ingest_lease,
         })
     }
 
@@ -3891,6 +3927,7 @@ impl Channel {
         if let Some(item) = self.armed.take() {
             discard(item);
         }
+        self.ingest.shutdown();
 
         self.pipeline.send_event(gst::event::Eos::new());
         if let Some(bus) = self.pipeline.bus() {

@@ -162,18 +162,21 @@ async function timeBackends(wasm: ScopesWasm, video: LiveSource, iterations: num
     // cerca levou para passar.
     for (const mode of ['sync', 'async'] as const) {
       gl.debugSetReadback(mode)
-      const cpu: number[] = [], frames: number[] = []
+      const cpu: number[] = [], waits: number[] = []
       for (let i = 0; i < Math.max(4, iterations / 6); i++) {
         await new Promise(r => setTimeout(r, 520))
         gl.render(video, view(2)); gl.finish()
         await new Promise(r => setTimeout(r, 520))
         const t0 = performance.now(); gl.render(video, view(2)); cpu.push(performance.now() - t0)
-        let n = 0
-        if (mode === 'async') while (gl.debugReadPending() && n < 50) { await new Promise(r => setTimeout(r, 4)); gl.render(video, view(2)); n++ }
-        frames.push(n)
+        if (mode === 'async') {
+          // Até a cerca passar, só consultas sem espera (clientWaitSync 0) a
+          // cada 4 ms; mede quanto a GPU leva para entregar o histograma.
+          await gl.settleStats(30_000)
+          waits.push(performance.now() - t0)
+        }
         gl.finish()
       }
-      out[`webgl2_stats_${mode}`] = {renderWithReadMs: median(cpu), ...(mode === 'async' ? {framesUntilResult: median(frames)} : {})}
+      out[`webgl2_stats_${mode}`] = {renderWithReadMs: median(cpu), ...(mode === 'async' ? {msUntilResult: median(waits)} : {})}
     }
     gl.destroy()
   } else out.webgl2 = 'indisponível'
