@@ -1171,7 +1171,7 @@ export function MasterControlView({
                         <span className={`material-symbols-outlined text-[13px] ${soundOn ? 'text-status-ok' : 'text-outline'}`}>{soundOn ? 'volume_up' : 'volume_off'}</span>
                         <span className={`font-label-caps text-[11px] font-semibold ${soundOn ? 'text-status-ok' : 'text-outline'}`}>SOM</span>
                       </button>
-                      {onLockPanel && <button type="button" onClick={onLockPanel} title="Bloqueia cliques e teclas de operação nesta estação (transmissões longas). Desbloqueia com um clique no aviso do topo." className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle hover:bg-surface-container-high transition-colors" id="lock-toggle">
+                      {onLockPanel && <button type="button" onClick={onLockPanel} title="Bloqueia cliques e teclas de operação nesta estação (transmissões longas). Para desbloquear, use DESBLOQUEAR no aviso PAINEL BLOQUEADO, no canto inferior esquerdo da tela." className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-container border border-border-subtle hover:bg-surface-container-high transition-colors" id="lock-toggle">
                         <span className="material-symbols-outlined text-[13px] text-on-surface-variant">lock</span>
                         <span className="font-label-caps text-[11px] font-semibold text-on-surface-variant">BLOQUEAR</span>
                       </button>}
