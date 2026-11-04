@@ -188,8 +188,12 @@ parada:
 
 | leitura das medições | `render()` do quadro com leitura | quando chega o resultado |
 |---|---|---|
-| síncrona antiga (`readPixels` para a CPU) | 922 a 1652 ms (espera a GPU emulada terminar o quadro) | no mesmo quadro |
-| **assíncrona (PBO + `fenceSync`)** | **17,8 a 20,6 ms** (igual a um quadro sem leitura) | quando a GPU termina; a página segue desenhando |
+| síncrona antiga (`readPixels` para a CPU) | 920 a 1652 ms (espera a GPU emulada terminar o quadro) | no mesmo quadro |
+| **assíncrona (PBO + `fenceSync`)** | **4,1 a 20,6 ms** (igual a um quadro sem leitura, 3,5 ms) | 387 ms depois, só com consultas `clientWaitSync(…, 0)` a cada 4 ms; a página segue desenhando |
+
+Três rodadas; a última, com a medição do tempo até o resultado, deu 920 ms ×
+4,1 ms por quadro com leitura. O quadro sem leitura custa 3,5 ms de CPU nos
+dois casos.
 
 Paridade: `asyncEqualsSync: true` nas barras EBU 75% e no quadro natural (as
 medições da leitura assíncrona são idênticas às da síncrona sobre o mesmo
