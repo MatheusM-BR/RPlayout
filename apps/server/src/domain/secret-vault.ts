@@ -128,7 +128,18 @@ function recoveryKek(password:string,salt:Buffer,cost:RecoveryCost):Promise<Buff
 }
 
 interface WrappedKey { version: 1; protection: 'WINDOWS_CURRENT_USER' | 'OWNER_FILE'; data: string }
-function windowsProtect(data: Buffer, decrypt: boolean): Buffer {
+/** Variáveis que o PowerShell precisa para subir no perfil do usuário. O DPAPI
+ * usa o token do processo, não o ambiente. Nada mais passa: o processo do
+ * servidor pode ter RPLAYOUT_RECOVERY_PASSWORD, RPLAYOUT_VAULT_KEY, senhas de
+ * integração etc. no ambiente, e o filho não precisa de nenhuma delas. */
+const WINDOWS_HELPER_ENV = ['SystemRoot', 'SystemDrive', 'windir', 'ComSpec', 'PATH', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME', 'USERDOMAIN', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'OS', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'CommonProgramFiles', 'PSModulePath']
+export function windowsHelperEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const allowed = new Map(WINDOWS_HELPER_ENV.map(name => [name.toUpperCase(), name]))
+  const env: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(source)) if (value !== undefined && allowed.has(name.toUpperCase())) env[name] = value
+  return env
+}
+export function windowsProtect(data: Buffer, decrypt: boolean): Buffer {
   // The secret is delivered through stdin, never through process arguments.
   // CurrentUser avoids granting decryption to every account on the machine.
   const method = decrypt ? 'Unprotect' : 'Protect'
@@ -137,7 +148,7 @@ function windowsProtect(data: Buffer, decrypt: boolean): Buffer {
     `$result=[Security.Cryptography.ProtectedData]::${method}($value,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); ` +
     '[Console]::Out.Write([Convert]::ToBase64String($result))'
   try {
-    const value = execFileSync(windowsPowerShellExecutable(process.env.SystemRoot), ['-NoProfile', '-NonInteractive', '-Command', script], { input: data.toString('base64'), encoding: 'utf8', timeout: 10_000, windowsHide: true, stdio: ['pipe','pipe','pipe'] })
+    const value = execFileSync(windowsPowerShellExecutable(process.env.SystemRoot), ['-NoProfile', '-NonInteractive', '-Command', script], { input: data.toString('base64'), encoding: 'utf8', timeout: 10_000, windowsHide: true, stdio: ['pipe','pipe','pipe'], env: windowsHelperEnvironment() })
     return Buffer.from(value.trim(), 'base64')
   } catch {
     throw new Error('Cofre indisponível: o Windows não conseguiu proteger/abrir a chave para este usuário. Não troque nem apague a chave existente.')
