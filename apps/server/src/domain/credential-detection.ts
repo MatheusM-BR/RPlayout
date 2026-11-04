@@ -10,16 +10,19 @@
  * lado do cifrado só mantém o comportamento antigo. */
 const secretQuery=/^(?:passphrase|password|passwd|pwd|pass|secret|token|auth|authorization|stream[_-]?key|streamid|key|api[_-]?key|access[_-]?token|sig|signature)$/i
 // Também pega JSON serializado dentro de outro JSON (aspas escapadas).
-const secretJsonKey=/\\?"(?:passphrase|password|passwd|secret|token|accessToken|access_token|apiKey|api_key|streamKey|stream_key|authorization|credentials?)\\?"\s*:\s*(?:\\?"(?!\\?")|\{|\[(?!\]))/i
+const secretJsonKey=/\\?"(?:passphrase|password|passwd|secret|token|accessToken|access_token|apiKey|api_key|streamKey|stream_key|authorization|credentials?)\\?"\s*:\s*(?:\\?"(?!\\?")(?!(?:REDACTED|\[PROTEGIDO\])\\?")|\{|\[(?!\]))/i
 const urlPattern=/\b(?:https?|srt|rtmps?|rtsp|udp|tcp|wss?|rist):\/\/[^\s<>"'`\\]+/gi
 
 function urlHasCredential(raw:string):boolean{
   const address=raw.replace(/[),.;\]}]+$/,'')
   let url:URL
   try{url=new URL(address)}catch{return true}
-  if(url.username||url.password)return true
-  for(const key of url.searchParams.keys())if(secretQuery.test(key))return true
+  // Texto já mascarado pelo diagnóstico (REDACTED) não é credencial.
+  const masked=(value:string)=>!value||value==='REDACTED'
+  if(!masked(url.username)||!masked(url.password))return true
+  for(const [key,value] of url.searchParams)if(secretQuery.test(key)&&!masked(value))return true
   const path=url.pathname.replace(/^\/+|\/+$/g,'')
+  if(path.split('/').at(-1)==='REDACTED')return false
   if(/^rtmps?:$/.test(url.protocol)&&path)return true
   // Webhooks costumam levar o token no caminho, não na consulta.
   if(/^(?:https?|wss?):$/.test(url.protocol)&&(path||url.search))return true

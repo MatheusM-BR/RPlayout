@@ -272,6 +272,10 @@ export function sharedRead<T>(path: string, read: () => Promise<T>): Promise<T> 
   inflightReads.set(path, work)
   return work
 }
+export interface VaultRecoveryStatus {
+  configured: boolean; state: 'ABSENT' | 'CONFIGURED' | 'MISMATCH'; revision: number; updatedAt: string | null
+  localProtection: 'ENVIRONMENT' | 'WINDOWS_CURRENT_USER' | 'OWNER_FILE' | 'TEST'; restorableElsewhere: boolean; warning: string | null
+}
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
   const plainRead = (!init || (!init.method || init.method.toUpperCase() === 'GET') && !init.body && !init.headers && !init.signal)
   if (plainRead) return sharedRead(path, async () => (await requestResult<T>(path, init)).body)
@@ -639,6 +643,11 @@ export const api = {
   engineeringLogs:(filter:{level?:TechnicalLogLevel;source?:'ENGINE'|'SERVER';channelId?:string;q?:string;sinceMs?:number;afterSeq?:number;limit?:number}={},signal?:AbortSignal)=>
     send<{entries:TechnicalLogEntry[];lastSeq:number;capacity:number;retained:number;crashReports:Array<{path:string;at:string;bytes:number}>;generatedAt:string}>(`/api/engineering/logs?${new URLSearchParams(Object.entries(filter).filter(([,value])=>value!==undefined&&value!=='').map(([key,value])=>[key,String(value)])).toString()}`,{signal}),
   engineeringStatus:(signal?:AbortSignal)=>send<{version:{rplayout:string;build:string|null;node:string;platform:string;gstreamer:string|null;startedAt:string};uptimeSeconds:number;serverTime:string}>('/api/engineering/status',{signal}),
+  /** Senha de recuperação do cofre: status sem segredo. */
+  vaultRecovery: () => send<VaultRecoveryStatus>('/api/engineering/vault-recovery', { headers: { accept: 'application/json' } }),
+  /** A senha vai só no corpo (nunca na URL) e não volta na resposta. */
+  setVaultRecovery: (status: VaultRecoveryStatus, body: { password: string; confirmation: string; currentPassword: string }) =>
+    send<VaultRecoveryStatus & { fileWritten: boolean }>('/api/engineering/vault-recovery', { method: 'PUT', headers: { 'if-match': `"vault-recovery:${status.revision}"` }, body: JSON.stringify(body) }),
   storageStatus: () => send<{mode:'PROCESS'|'INLINE';connected:boolean;backendPid:number;storagePid:number;automaticReconnect:false;automaticReplay:false;latency:{calls:number;lastMs:number;maxMs:number;meanMs:number}|null;validation:'PENDING'}>('/api/engineering/storage'),
   hostMetrics:(signal?:AbortSignal)=>send<HostMetricSample>('/api/host-metrics',{signal}),
   clock:(signal?:AbortSignal)=>send<ClockStatusView>('/api/clock',{signal}),
