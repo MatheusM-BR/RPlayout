@@ -73,6 +73,17 @@ pub enum Consumer {
     Watchdog,
 }
 
+/// Consumidor de monitoramento (multiview, watchdog) que encontrou a fonte
+/// ainda abrindo ou fechando: não espera no laço principal, tenta de novo na
+/// próxima volta. Só um Item (programa) espera, limitado a [`CLOSE_WAIT`].
+#[derive(Debug)]
+pub struct Deferred;
+impl std::fmt::Display for Deferred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("entrada ainda abrindo ou fechando; nova tentativa na próxima volta") }
+}
+impl std::error::Error for Deferred {}
+pub fn is_deferred(error: &anyhow::Error) -> bool { error.downcast_ref::<Deferred>().is_some() }
+
 /// Desvios de teste.
 #[derive(Clone, Default)]
 pub struct Hooks {
@@ -494,7 +505,9 @@ impl Receiver {
     /// Sobe uma geração nova. `background`: a mudança de estado vai para uma
     /// thread própria (monitoramento: fonte que trava não segura ninguém).
     fn start(self: &Arc<Self>, background: bool) -> Result<()> {
-        self.wait_starting();
+        // Monitoramento nunca espera a abertura anterior terminar (até 3 s de
+        // sleep no laço principal): adia para a próxima volta.
+        if background { if self.is_starting() { return Err(Deferred.into()); } } else { self.wait_starting(); }
         let running = self.build()?;
         let pipeline = running.pipeline.clone();
         let old = self.running.lock().map_err(|_| anyhow!("receptor envenenado"))?.replace(running);
@@ -517,6 +530,14 @@ impl Receiver {
             }
             Ok(())
         }
+    }
+
+    /// Abertura em segundo plano ainda em curso? (sem esperar)
+    fn is_starting(&self) -> bool {
+        self.starting.lock().map(|mut starting| {
+            if starting.as_ref().is_some_and(JoinHandle::is_finished) { if let Some(handle) = starting.take() { let _ = handle.join(); } }
+            starting.is_some()
+        }).unwrap_or(false)
     }
 
     /// Espera (limitada) uma abertura em segundo plano terminar.
@@ -672,6 +693,9 @@ pub struct Hub {
     closing: Mutex<Vec<(String, JoinHandle<()>)>>,
     /// Entradas que o watchdog pediu para acompanhar (id -> concessão).
     watched: Mutex<BTreeMap<String, (String, Lease)>>,
+    /// Pedidas pelo watchdog mas adiadas (fonte abrindo/fechando): o serviço
+    /// tenta de novo a cada volta, sem esperar.
+    watched_pending: Mutex<BTreeMap<String, String>>,
     hooks: Hooks,
 }
 
@@ -679,7 +703,7 @@ impl Default for Hub { fn default() -> Self { Hub::from_env() } }
 
 impl Hub {
     pub fn new(enabled: bool, linger: Duration) -> Self {
-        Hub { enabled, linger, receivers: Mutex::new(Vec::new()), closing: Mutex::new(Vec::new()), watched: Mutex::new(BTreeMap::new()), hooks: Hooks::default() }
+        Hub { enabled, linger, receivers: Mutex::new(Vec::new()), closing: Mutex::new(Vec::new()), watched: Mutex::new(BTreeMap::new()), watched_pending: Mutex::new(BTreeMap::new()), hooks: Hooks::default() }
     }
 
     /// `RPLAYOUT_INGEST_SHARED=0` desliga; `RPLAYOUT_INGEST_LINGER_MS` muda a espera.
@@ -700,6 +724,11 @@ impl Hub {
 
     /// Espera (limitada) um receptor da mesma chave terminar de fechar: a porta
     /// SRT e o dispositivo só ficam livres depois do NULL.
+    /// Um receptor da mesma chave ainda está fechando (porta/dispositivo presos)?
+    fn closing_pending(&self, key: &str) -> bool {
+        self.closing.lock().map(|mut closing| { closing.retain(|(k, handle)| k != key || !handle.is_finished()); closing.iter().any(|(k, _)| k == key) }).unwrap_or(false)
+    }
+
     fn wait_closed(&self, key: &str) {
         let handles: Vec<JoinHandle<()>> = match self.closing.lock() {
             Ok(mut closing) => { let (same, other): (Vec<_>, Vec<_>) = closing.drain(..).partition(|(k, _)| k == key); *closing = other; same.into_iter().map(|(_, handle)| handle).collect() }
@@ -727,6 +756,8 @@ impl Hub {
                 receiver
             }
             None => {
+                // Só o Item espera a porta/dispositivo liberar; o monitoramento adia.
+                if background && self.closing_pending(&key) { return Err(Deferred.into()); }
                 self.wait_closed(&key);
                 let receiver = Receiver::new(key, spec, self.hooks.clone());
                 receiver.start(background)?;
@@ -769,14 +800,32 @@ impl Hub {
         let mut watched = self.watched.lock().map_err(|_| anyhow!("ingest envenenado"))?;
         let wanted: BTreeMap<String, String> = sources.into_iter().collect();
         watched.retain(|id, (endpoint, _)| wanted.get(id) == Some(endpoint));
+        let mut pending = self.watched_pending.lock().map_err(|_| anyhow!("ingest envenenado"))?;
+        pending.clear();
         for (id, endpoint) in wanted {
             if watched.contains_key(&id) { continue; }
             match self.monitor(&Self::monitor_spec(&id, &endpoint), Consumer::Watchdog) {
                 Ok(lease) => { watched.insert(id, (endpoint, lease)); }
+                Err(error) if is_deferred(&error) => { pending.insert(id, endpoint); }
                 Err(error) => eprintln!("[engine] watchdog: entrada {id} não aberta: {error:#}"),
             }
         }
         Ok(())
+    }
+
+    /// Retoma as entradas do watchdog que foram adiadas.
+    fn retry_watched(&self) {
+        let Ok(mut pending) = self.watched_pending.lock() else { return };
+        if pending.is_empty() { return; }
+        let Ok(mut watched) = self.watched.lock() else { return };
+        pending.retain(|id, endpoint| {
+            if watched.contains_key(id) { return false; }
+            match self.monitor(&Self::monitor_spec(id, endpoint), Consumer::Watchdog) {
+                Ok(lease) => { watched.insert(id.clone(), (endpoint.clone(), lease)); false }
+                Err(error) if is_deferred(&error) => true,
+                Err(error) => { eprintln!("[engine] watchdog: entrada {id} não aberta: {error:#}"); false }
+            }
+        });
     }
 
     /// Uma volta do laço principal: fecha quem ficou sem consumidor e reabre
@@ -800,11 +849,17 @@ impl Hub {
             let due = receiver.retry_at.lock().ok().and_then(|retry| *retry).is_some_and(|at| now >= at);
             if monitor_only && receiver.failed() && due {
                 if let Ok(mut retry) = receiver.retry_at.lock() { *retry = Some(now + MONITOR_RETRY); }
-                if let Err(error) = receiver.start(true) { eprintln!("[engine] ingest {}: reabertura recusada: {error:#}", receiver.id); }
+                match receiver.start(true) {
+                    // Ainda abrindo: tenta na próxima volta, sem esperar.
+                    Err(error) if is_deferred(&error) => { if let Ok(mut retry) = receiver.retry_at.lock() { *retry = Some(now); } }
+                    Err(error) => eprintln!("[engine] ingest {}: reabertura recusada: {error:#}", receiver.id),
+                    Ok(()) => {}
+                }
             }
         }
         drop(receivers);
         if !closed.is_empty() { if let Ok(mut closing) = self.closing.lock() { closing.extend(closed); closing.retain(|(_, handle)| !handle.is_finished()); } }
+        self.retry_watched();
     }
 
     pub fn reports(&self) -> Vec<IngestReport> {
@@ -840,6 +895,7 @@ impl Hub {
 
     pub fn shutdown(&self) {
         if let Ok(mut watched) = self.watched.lock() { watched.clear(); }
+        if let Ok(mut pending) = self.watched_pending.lock() { pending.clear(); }
         let receivers = self.receivers.lock().map(|mut receivers| std::mem::take(&mut *receivers)).unwrap_or_default();
         for receiver in receivers {
             receiver.wait_starting();
@@ -1182,5 +1238,50 @@ mod tests {
         for (n, cpu, rss) in &rows { eprintln!("[medida] {n} entrada(s) recebida(s): +{cpu:.0}% de um núcleo, +{rss:.0} MB RSS ({:.0}% e {:.0} MB por entrada)", cpu / *n as f64, rss / *n as f64); }
         eprintln!("[medida] + mosaico LEVE 2×2 sobre os 4 receptores (sem codificar): +{:.0}% de um núcleo; {frames} quadros compostos", with_mosaic - base - rows.last().unwrap().1);
         drop(senders);
+    }
+
+    // ---- r88-37 revisão (M4): monitoramento nunca espera no laço principal ----
+
+    fn sleeper(ms: u64) -> JoinHandle<()> { std::thread::spawn(move || std::thread::sleep(Duration::from_millis(ms))) }
+
+    #[test]
+    fn monitoramento_nao_espera_receptor_fechando_e_tenta_na_proxima_volta() {
+        gst::init().unwrap();
+        let hub = Hub::new(true, Duration::from_millis(300));
+        let spec = Hub::monitor_spec("cam", "srt://127.0.0.1:1?mode=caller&latency=120");
+        let key = key_for(&spec).unwrap();
+        // Um receptor da mesma porta ainda fechando (NULL lento).
+        hub.closing.lock().unwrap().push((key.clone(), sleeper(1500)));
+        for consumer in [Consumer::Multiview, Consumer::Watchdog] {
+            let started = Instant::now();
+            let result = hub.monitor(&spec, consumer);
+            assert!(started.elapsed() < Duration::from_millis(100), "{consumer:?} esperou {:?}", started.elapsed());
+            assert!(result.as_ref().is_err_and(is_deferred), "{consumer:?} deveria adiar");
+        }
+        assert!(hub.receivers().is_empty(), "nada abriu enquanto a porta estava presa");
+        // Watchdog adiado fica pendente e o serviço retoma depois, sem esperar.
+        let started = Instant::now();
+        hub.set_watched(vec![("cam".into(), "srt://127.0.0.1:1?mode=caller&latency=120".into())]).unwrap();
+        hub.service();
+        assert!(started.elapsed() < Duration::from_millis(100), "set_watched/service esperaram {:?}", started.elapsed());
+        assert_eq!(hub.watched_pending.lock().unwrap().len(), 1);
+        while hub.closing_pending(&key) { std::thread::sleep(Duration::from_millis(20)); }
+        hub.service();
+        assert!(hub.watched_pending.lock().unwrap().is_empty());
+        assert_eq!(hub.watched.lock().unwrap().len(), 1, "a próxima volta abriu o receptor do watchdog");
+        assert_eq!(hub.receivers().len(), 1);
+    }
+
+    #[test]
+    fn reabertura_de_monitoramento_nao_espera_abertura_anterior() {
+        gst::init().unwrap();
+        let spec = Hub::monitor_spec("cam", "srt://127.0.0.1:1?mode=caller&latency=120");
+        let receiver = Receiver::new(key_for(&spec).unwrap(), &spec, Hooks::default());
+        *receiver.starting.lock().unwrap() = Some(sleeper(1500));
+        let started = Instant::now();
+        let result = receiver.start(true);
+        assert!(started.elapsed() < Duration::from_millis(100), "esperou {:?}", started.elapsed());
+        assert!(result.as_ref().is_err_and(is_deferred));
+        assert!(receiver.running.lock().unwrap().is_none(), "não montou geração nova por cima da abertura em curso");
     }
 }

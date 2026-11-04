@@ -806,6 +806,8 @@ impl Multiview {
             if self.leases.contains_key(&endpoint) || self.lease_retry.get(&endpoint).is_some_and(|at| now < *at) { continue; }
             match hub.monitor(&super::ingest::Hub::monitor_spec(&id, &endpoint), super::ingest::Consumer::Multiview) {
                 Ok(lease) => { self.lease_retry.remove(&endpoint); self.leases.insert(endpoint, lease); }
+                // Fonte abrindo/fechando: a próxima volta tenta de novo, sem esperar.
+                Err(error) if super::ingest::is_deferred(&error) => {}
                 Err(error) => {
                     eprintln!("[engine] multiview: entrada {id} não abriu: {error:#}");
                     self.lease_retry.insert(endpoint, now + super::ingest::MONITOR_RETRY);
