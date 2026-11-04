@@ -3242,6 +3242,7 @@ impl Channel {
         // Fonte ao vivo: lida do receptor compartilhado da entrada (aberta uma
         // vez só, para PGM, PVW, multiview e watchdog). Arquivo: aberto aqui.
         let (src, ingest_lease) = if spec.is_live() && self.ingest.enabled() {
+            self.ingest.refuse_capture_upgrade(spec, self.on_air.as_ref().and_then(|item| item.ingest.as_ref()))?;
             let (input, lease) = self.ingest.subscribe(spec)?;
             (input, Some(lease))
         } else { (source_for(spec)?, None) };

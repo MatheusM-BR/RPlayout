@@ -775,6 +775,19 @@ impl Hub {
         Ok(Lease { receiver, id, consumer, sub })
     }
 
+    /// A placa só reabre com mais canais de áudio se isso não derrubar o ar:
+    /// com o item do PGM lendo este mesmo receptor numa captura menor, o CUE
+    /// que pede mais canais é recusado com o motivo (antes reabria a placa e o
+    /// PGM perdia o sinal).
+    pub fn refuse_capture_upgrade(&self, spec: &ItemSpec, on_air: Option<&Lease>) -> Result<()> {
+        let (Some(lease), Some(key)) = (on_air, key_for(spec)) else { return Ok(()) };
+        if lease.receiver.key != key { return Ok(()); }
+        let current = lease.receiver.spec.lock().map_err(|_| anyhow!("receptor envenenado"))?.clone();
+        if !needs_more_audio(&current, spec) { return Ok(()); }
+        Err(anyhow!("a entrada {key} está no ar com captura de {} canais de áudio e este item pede {}; reabrir a placa agora derrubaria o PGM. \
+            Faça o CUE com o roteamento de áudio do item no ar, ou tire a entrada do ar antes", sdi_channels(&current), sdi_channels(spec)))
+    }
+
     /// Item: devolve a fonte do item (um bin com um appsrc por trilha) e a
     /// concessão que o mantém ligado ao receptor.
     pub fn subscribe(&self, spec: &ItemSpec) -> Result<(LiveInput, Lease)> {
@@ -1283,5 +1296,36 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(100), "esperou {:?}", started.elapsed());
         assert!(result.as_ref().is_err_and(is_deferred));
         assert!(receiver.running.lock().unwrap().is_none(), "não montou geração nova por cima da abertura em curso");
+    }
+
+    // ---- r88-37 revisão (M5): CUE com mais canais não reabre a placa no ar ----
+
+    fn sdi_spec(item: &str, routing: Option<&str>) -> ItemSpec {
+        let mut value = serde_json::json!({"itemId": item, "source": "decklink://0", "configuredSourceId": "sdi-0", "trimIn": 0, "trimOut": 0, "gainDb": 0});
+        if let Some(mode) = routing { value["audioRouting"] = serde_json::json!({"mode": mode}); }
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn cue_sdi_com_mais_canais_e_recusado_enquanto_a_captura_menor_esta_no_ar() {
+        let hub = Hub::new(true, Duration::from_millis(300));
+        let on_air_spec = sdi_spec("pgm", None);
+        let receiver = Receiver::new(key_for(&on_air_spec).unwrap(), &on_air_spec, Hooks::default());
+        hub.receivers.lock().unwrap().push(Arc::clone(&receiver));
+        receiver.consumers.lock().unwrap().insert(1, Consumer::Item);
+        let on_air = Lease { receiver: Arc::clone(&receiver), id: 1, consumer: Consumer::Item, sub: None };
+        let wider = sdi_spec("pvw", Some("STEREO_3_4"));
+        assert_eq!(sdi_channels(&wider), 8);
+        let error = hub.refuse_capture_upgrade(&wider, Some(&on_air)).expect_err("deveria recusar");
+        let message = format!("{error:#}");
+        assert!(message.contains("sdi:0") && message.contains("2 canais") && message.contains("pede 8") && message.contains("derrubaria o PGM"), "{message}");
+        // Mesma captura, outra placa ou nada no ar: segue.
+        hub.refuse_capture_upgrade(&sdi_spec("pvw", None), Some(&on_air)).unwrap();
+        hub.refuse_capture_upgrade(&wider, None).unwrap();
+        let mut other = wider.clone(); other.source = Some("decklink://1".into());
+        hub.refuse_capture_upgrade(&other, Some(&on_air)).unwrap();
+        // A captura do receptor no ar não mudou.
+        assert_eq!(sdi_channels(&receiver.spec.lock().unwrap()), 2);
+        drop(on_air);
     }
 }
