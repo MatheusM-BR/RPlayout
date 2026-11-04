@@ -1,4 +1,5 @@
 import {readHealthPending} from './domain/health-pending.js'
+import { accessDenial } from './domain/access-denial.js'
 import { insertionConflicts } from './domain/insertion-conflicts.js'
 import { randomUUID } from 'node:crypto'
 import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
@@ -549,15 +550,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   }
   const assertEditorialAccess=(request:FastifyRequest,channelId:string)=>{
-    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão deste canal mudou; entre novamente antes de editar.'})
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_EDIT',channelId,'editar a grade')})
   }
   const assertConfigurationAccess=(request:FastifyRequest,channelId:string)=>{
-    if(access.required()&&!access.identity(request) || !can(access.role(request),'OUTPUT_CONTROL') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de configuração mudou; entre novamente antes de confirmar.'})
+    if(access.required()&&!access.identity(request) || !can(access.role(request),'OUTPUT_CONTROL') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'OUTPUT_CONTROL',channelId,'alterar a configuração do canal')})
   }
   const assertQcAccess=(request:FastifyRequest,channelId:string|null,ownerId:string|null)=>{
     const identity=access.identity(request)
     if((identity?.id??null)!==ownerId || access.required()&&!identity || !can(access.role(request),'PLAYLIST_EDIT') ||
-      (channelId===null ? identity?.channelIds!==undefined&&identity.channelIds!==null : !access.channelAllowed(request,channelId)))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de QC mudou; entre novamente antes de confirmar.'})
+      (channelId===null ? identity?.channelIds!==undefined&&identity.channelIds!==null : !access.channelAllowed(request,channelId)))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_EDIT',channelId,'decidir o QC')})
     if(channelId!==null && app.sqlite.prepare('SELECT 1 FROM channels WHERE id=? AND archived_at IS NOT NULL').get(channelId))throw new CollaborativeEditError(409,{error:'Canal arquivado: nenhuma decisão QC foi aplicada.'})
   }
   type EditorialTransaction=Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -575,13 +576,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   }
   const automationError=(reply:any,error:unknown)=>{if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
   const authorizePublication=(request:FastifyRequest,review:OperationalReview)=>{
-    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_PUBLISH') || !access.channelAllowed(request,review.channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de publicação mudou; entre novamente antes de confirmar.'})
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_PUBLISH') || !access.channelAllowed(request,review.channelId))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_PUBLISH',review.channelId,'publicar a grade')})
     if(review.rundownId!==(request.params as {id:string}).id)throw new CollaborativeEditError(409,{error:'A grade desta conferência mudou.'})
     requireEditorialRevision(app.concurrency,review.rundownId,request.headers['if-match'],review.editorialRevision)
     auditChannels.set(request,[review.channelId])
   }
   const authorizeScope=(request:FastifyRequest,owners:ScopeOwner[])=>{
-    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão mudou; entre novamente antes de editar.'})
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_EDIT',null,'editar')})
     if(!owners.length)throw new CollaborativeEditError(409,{error:'Os vínculos dos itens mudaram; atualize a grade antes de repetir.'})
     if(owners.some(row=>!access.channelAllowed(request,row.channelId)))throw new CollaborativeEditError(403,{error:'Este escopo altera um canal não autorizado. Escolha somente este item ou esta grade.'})
     if(owners.some(row=>row.archivedAt))throw new CollaborativeEditError(409,{error:'Este escopo alcança uma grade arquivada. Escolha somente este item ou reative explicitamente o canal.'})
@@ -599,7 +600,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     })
   }
   const historyGuard=(request:FastifyRequest):HistoryGuard=>(db,footprint)=>{
-    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão mudou; entre novamente antes de desfazer.'})
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_EDIT',null,'desfazer ou refazer')})
     if(footprint.deviceAutomation&&!can(access.role(request),'OUTPUT_CONTROL'))throw new CollaborativeEditError(403,{error:'Desfazer/refazer automação de equipamento exige permissão atual de controle de saídas.'})
     const sourceId=(request.params as {id:string}).id
     requireEditorialRevision(app.concurrency,sourceId,request.headers['if-match'],app.concurrency.getRundownVersion(sourceId))
@@ -4578,7 +4579,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   const insertionError=(reply:any,error:unknown)=>error instanceof CollaborativeEditError?reply.code(error.status).send(error.payload):reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:'Inserção não confirmada; confira o registro sem repetir o TAKE.')})
   const insertionInput=z.object({requestId:z.string().uuid(),mode:z.enum(['NEXT','NOW']),mediaId:z.string().min(1).optional(),sourceId:z.string().min(1).optional(),durationFrames:z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()}).strict()
   const assertInsertionAccess=(request:FastifyRequest,id:string)=>{
-    if(access.required()&&!access.identity(request) || !can(access.role(request),'TRANSPORT') || !access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:'Sessão/permissão de operação deste canal mudou.'})
+    if(access.required()&&!access.identity(request) || !can(access.role(request),'TRANSPORT') || !access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'TRANSPORT',id,'inserir no ar')})
     const row=app.db.select().from(channels).where(eq(channels.id,id)).get()
     if(!row || row.archivedAt)throw new CollaborativeEditError(404,{error:'Canal ativo não encontrado.'})
   }
