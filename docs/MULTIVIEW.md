@@ -179,3 +179,14 @@ Pedido: um multiviewer de verdade mostra **todas** as entradas cadastradas o tem
 
 - NDI, OMT e DeckLink pelo receptor (sem hardware/SDK aqui). O código é o mesmo `source_for`; o que muda é que a placa/NDI é aberta uma vez e repartida.
 - O custo com decodificação por hardware (`RPLAYOUT_HARDWARE_DECODE=1`): o receptor pede memória de sistema (`video/x-raw` sem *features*), como o item pedia.
+
+### Padrão na produção (decisão de 04/11/2026)
+
+O receptor compartilhado sai **desligado** por padrão: o servidor manda
+`RPLAYOUT_INGEST_SHARED=0` ao engine a menos que a instalação tenha
+`RPLAYOUT_INGEST_SHARED=1`. Motivo: com ele ligado, todo item ao vivo do PGM
+passa por um caminho novo (+80 ms de latência; retomada SRT depois de queda de
+3 s em 2,5 s contra 1,7 s do caminho antigo) que ainda não foi validado com
+NDI/OMT/DeckLink reais. Desligado, o comportamento é o da r88-36 (o mosaico mostra
+só as entradas que o engine já tem abertas). Ligar depois de validar no Windows
+de produção com as fontes reais.

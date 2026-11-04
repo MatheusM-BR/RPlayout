@@ -26,11 +26,14 @@ export function engineProcessEnvironment(environment: NodeJS.ProcessEnv = proces
   // Ingest único por entrada (receptor compartilhado): só os valores que o
   // engine entende; nada mais do ambiente do servidor passa.
   const value = (name: string) => Object.entries(environment).find(([key]) => key.toUpperCase() === name)?.[1]?.trim()
+  // Padrão DESLIGADO na produção: o receptor compartilhado põe todo item ao vivo
+  // num caminho novo (+80 ms, retomada SRT 2,5 s contra 1,7 s) e ainda não foi
+  // validado com NDI/OMT/DeckLink reais. Liga com RPLAYOUT_INGEST_SHARED=1.
   const shared = value('RPLAYOUT_INGEST_SHARED')
-  if (shared === '0' || shared === '1') result.RPLAYOUT_INGEST_SHARED = shared
-  for (const [name, max] of [['RPLAYOUT_INGEST_LINGER_MS', 60_000], ['RPLAYOUT_INGEST_ITEM_LATENCY_MS', 500]] as const) {
+  result.RPLAYOUT_INGEST_SHARED = shared === '1' ? '1' : '0'
+  for (const [name, min, max] of [['RPLAYOUT_INGEST_LINGER_MS', 0, 60_000], ['RPLAYOUT_INGEST_ITEM_LATENCY_MS', 0, 500], ['RPLAYOUT_SRT_DEMUX_LATENCY_MS', 50, 2000]] as const) {
     const ms = value(name)
-    if (ms && /^\d{1,6}$/.test(ms) && Number(ms) <= max) result[name] = ms
+    if (ms && /^\d{1,6}$/.test(ms) && Number(ms) >= min && Number(ms) <= max) result[name] = ms
   }
   // A Rust panic then prints where it happened; the crash report keeps it.
   result.RUST_BACKTRACE ??= '1'
