@@ -146,7 +146,34 @@ Pedido: um multiviewer de verdade mostra **todas** as entradas cadastradas o tem
 
 ## Números (container Linux, 2 CPUs, máquina compartilhada com outros 2 agentes, carga 10–18)
 
-NUMEROS_INGEST
+**Custo por entrada recebida o tempo todo** (`cargo test --release medir_custo_ingest -- --ignored --nocapture`; geradores SRT H.264 720p25 1,5 Mbps + AAC em processos à parte, CPU e RSS do processo do engine acima do canal parado):
+
+| entradas recebidas | CPU (% de um núcleo) | RSS |
+|---|---|---|
+| 1 | +4 % | +75 MB |
+| 2 | +8 % | +118 MB |
+| 3 | +13 % | +160 MB |
+| 4 | +27 % | +203 MB |
+| + mosaico LEVE 2×2 lendo os 4 (escala das células e composição, sem codificar) | +12 % | — |
+
+- Leitura: ~4–7 % de núcleo e ~50 MB por entrada 720p, quase tudo decodificação H.264 (`avdec_h264`) e as filas de quadros crus. O padrão `ball` do gerador é fácil de decodificar: câmera real em 1080p custa mais (ordem de 10–20 % de núcleo por entrada sem decodificação por hardware). O receptor não reescala nem converte: o item e o mosaico fazem isso uma vez cada, como antes.
+- **A escala para o mosaico é barata por construção:** a célula escala só o quadro que o mosaico vai mostrar, na cadência do mosaico (15 q/s no LEVE), num passo só (`videoconvertscale` bilinear com `add-borders`), e só quando o quadro mudou (`seq`); entrada parada não custa escala. O custo é fixo por célula (≈3 % de núcleo por célula 480×270 a 15 q/s aqui), não por entrada recebida.
+- A memória por receptor é dominada pelos quadros crus em fila (fila de vídeo antes do appsink, até a latência do pipeline). 16 entradas permanentes em 1080p cabem com folga numa máquina do ar, mas a CPU de decodificação não: para muitas entradas, `RPLAYOUT_HARDWARE_DECODE=1` (NVDEC/QSV) na máquina de produção.
+
+**TAKE** (`take_reaproveita_o_receptor_e_fica_mais_rapido`, LOAD até o item ter quadro, que é o que o TAKE espera; SRT 720p, GOP de 1 s, mediana de 3, duas rodadas):
+
+| | rodada 1 | rodada 2 |
+|---|---|---|
+| antes (item abre a fonte, r88-36) | 669 ms | 905 ms |
+| receptor frio (ninguém recebia a entrada) | 1238 ms | 1110 ms |
+| **receptor já recebendo** (multiview, watchdog, PVW) | **264 ms** | **79 ms** |
+
+- Com a entrada já recebida (multiview aberto, PVW, watchdog), o TAKE não abre conexão, não espera handshake, quadro-chave nem a latência do demux: o item recebe o próximo quadro. É o caso comum, porque o multiview mostra todas as entradas.
+- Receptor frio é ~0,2–0,5 s mais lento que o caminho antigo: a abertura passa por dois pipelines (o receptor espera a latência dele no appsink, e o item soma 40 ms de folga). É o caso raro (entrada que ninguém recebia) e fica dentro do prazo do TAKE ao vivo (10 s).
+
+**Isolamento do PGM** (`consumidor_lento_ou_receptor_travado_nao_atrasam_o_pgm`, PGM 640×360 pelo receptor): sozinho 25,3 q/s (maior intervalo 51 ms); multiview 12× mais lento no mesmo receptor + receptor de monitoramento travado 3 s ao subir 25,2 q/s (87 ms; serviço do laço no pior caso 69 ms); sonda do multiview presa 1 s 25,1 q/s (70 ms); fonte de monitoramento caída 24,9 q/s (53 ms; serviço 0,2 ms).
+
+**Latência acrescentada:** 40 ms (um quadro a 25 q/s) declarados pelo appsrc do item (`RPLAYOUT_INGEST_ITEM_LATENCY_MS`). Sem ela, a cadeia do item (conversão, escala, `videorate`) entregava quadros 50–120 ms atrasados ao `intervideosink` sob carga, que os descarta acima de 20 ms. Retomada SRT medida depois da mudança: listener 720 ms, caller 796 ms até a superfície (alvo < 1,5 s), soluço de 1,5 s sem reabrir.
 
 ## Só no Windows de produção
 
