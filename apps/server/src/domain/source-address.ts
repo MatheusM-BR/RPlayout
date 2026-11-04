@@ -1,17 +1,18 @@
 import { installationVault } from './secret-vault.js'
 import { sanitizeDiagnostic } from './sanitize-diagnostic.js'
 
-/** Endereço de fonte na forma canônica, a mesma do engine (`ingest::key_for`):
- * `decklink://0`, `sdi://0` e `decklink:0` viram `sdi:0`; `ndi://X` vira
- * `ndi:X` (idem `omt://X` → `omt:X`). Espaços nas pontas saem. O resto fica
- * como está: a query de SRT/RTMP faz parte da identidade da conexão. */
+/** Endereço de fonte na forma canônica, exatamente a do engine
+ * (`channel::source_for` e `ingest::key_for`): `decklink://0`, `sdi://0` e
+ * `decklink:0` viram `sdi:0`; `ndi://X` vira `ndi:X`. Espaços nas pontas saem.
+ * O resto fica como está (`omt://` vai ao uridecodebin no engine, não é
+ * `omt:`), e a query de SRT/RTMP faz parte da identidade da conexão. */
 export function canonicalSourceAddress(endpoint: string): string {
   const source = endpoint.trim()
-  const sdi = /^(?:decklink:\/\/|sdi:\/\/|decklink:)(.*)$/i.exec(source)
+  const sdi = /^(?:decklink:\/\/|sdi:\/\/|decklink:)(.*)$/.exec(source)
   if (sdi) return 'sdi:' + sdi[1]
-  const named = /^(ndi|omt):\/\/(.*)$/i.exec(source)
-  if (named) return named[1]!.toLowerCase() + ':' + named[2]
-  return source.replace(/^(sdi|ndi|omt):/i, (_, scheme: string) => scheme.toLowerCase() + ':')
+  const ndi = /^ndi:\/\/(.*)$/.exec(source)
+  if (ndi) return 'ndi:' + ndi[1]
+  return source
 }
 
 /** Identificador estável e sem segredo de uma fonte, para gravar no banco

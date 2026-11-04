@@ -1,3 +1,4 @@
+import { canonicalSourceAddress } from './source-address.js'
 import { randomUUID } from 'node:crypto'
 import {
   WATCHDOG_DETECTIONS, WATCHDOG_DETECTION_LABELS, WATCHDOG_STATE_LABELS, effectiveWatchdogPolicy, signalSampleAge,
@@ -502,7 +503,12 @@ export class ChannelLiveWatchdog {
     void Promise.resolve().then(work).then(() => machine.complete(effect, true, now()), (error: unknown) => machine.complete(effect, false, now(), error instanceof Error ? error.message : String(error)))
   }
 
-  tick(input: WatchdogTickInput, clock: () => number = Date.now): void {
+  tick(raw: WatchdogTickInput, clock: () => number = Date.now): void {
+    // Cada fonte chega de um lugar (endereço do item no engine, cadastro,
+    // receptor compartilhado): compara tudo pelo mesmo endereço canônico, ou
+    // `ndi://X` do item e `ndi:X` do cadastro viram entradas diferentes.
+    const canonical = (source: WatchdogObservedSource): WatchdogObservedSource => ({ ...source, sourceKey: canonicalSourceAddress(source.sourceKey) })
+    const input: WatchdogTickInput = { ...raw, program: raw.program ? canonical(raw.program) : null, preview: raw.preview.map(canonical), ...(raw.ingest ? { ingest: raw.ingest.map(canonical) } : {}) }
     const { now } = input
     const off = input.policy.mode === 'OFF'
     // PGM: começa a acompanhar quando uma live entra no ar.
@@ -520,7 +526,8 @@ export class ChannelLiveWatchdog {
       }
     }
     if (!tracked && !input.program && !off && this.executor.contingencyActive()) {
-      const origin = this.executor.contingencyOrigin?.() ?? null
+      const found = this.executor.contingencyOrigin?.() ?? null
+      const origin = found ? canonical(found) : null
       if (origin) {
         const machine = new WatchdogMachine(origin.sourceKey, now, origin.name)
         machine.adoptContingency(now)

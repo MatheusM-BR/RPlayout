@@ -73,7 +73,7 @@ import {
 import { RelaySupervisor } from './domain/relays.js'
 import { destinations, guestKeys, liveSources as liveSourcesTable } from './db/schema.js'
 import { configuredSourceEndpoint } from './domain/item-source-binding.js'
-import { displaySourceAddress, storedSourceKey } from './domain/source-address.js'
+import { canonicalSourceAddress, displaySourceAddress, storedSourceKey } from './domain/source-address.js'
 import { existsSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { ContinuityCache } from './domain/continuity-cache.js'
@@ -1328,9 +1328,10 @@ export class ChannelRuntime {
     monitorSource: async source => {
       // Engine com receptor compartilhado: a entrada é medida sem ocupar o PVW
       // do operador (ingest único). Sem ele, como antes: CUE no PVW.
-      const id=this.watchdogSourceId(source)
+      // A chave do watchdog é o endereço canônico; ao engine vai o do cadastro.
+      const configured=this.watchdogEndpointCatalog().get(canonicalSourceAddress(source)),id=configured?.id??null
       if(this.transport instanceof EngineTransport&&this.transport.supportsIngest()&&id){
-        try{await this.transport.watchIngest([{id,endpoint:source}]);this.watchdogIngestKey=source;return}catch(error){console.error('[watchdog] receptor compartilhado recusado; observando no PVW:',error instanceof Error?error.message:error)}
+        try{await this.transport.watchIngest([{id,endpoint:configured!.endpoint}]);this.watchdogIngestKey=source;return}catch(error){console.error('[watchdog] receptor compartilhado recusado; observando no PVW:',error instanceof Error?error.message:error)}
       }
       await this.transport.cue({kind:'SOURCE',source,title:'Watchdog: entrada em observação'})
     },
@@ -1374,24 +1375,24 @@ export class ChannelRuntime {
   private watchdogCatalog: {at:number;rows:Map<string,{name:string;kind:string}>}|null=null
   /** Entrada que o watchdog acompanha pelo receptor compartilhado (fora do PVW). */
   private watchdogIngestKey:string|null=null
-  private watchdogEndpoints:{at:number;byEndpoint:Map<string,{id:string;name:string;kind:string}>}|null=null
+  private watchdogEndpoints:{at:number;byEndpoint:Map<string,{id:string;name:string;kind:string;endpoint:string}>}|null=null
   private watchdogEndpointCatalog(){
     if(!this.watchdogEndpoints||Date.now()-this.watchdogEndpoints.at>10_000){
       const rows=this.db.select({id:liveSourcesTable.id,name:liveSourcesTable.name,kind:liveSourcesTable.kind,targetUrl:liveSourcesTable.targetUrl,enabled:liveSourcesTable.enabled}).from(liveSourcesTable).where(eq(liveSourcesTable.channelId,this.channel.id)).all()
-      this.watchdogEndpoints={at:Date.now(),byEndpoint:new Map(rows.filter(row=>row.enabled&&row.targetUrl).map(row=>[configuredSourceEndpoint(row),{id:row.id,name:row.name,kind:row.kind}]))}
+      this.watchdogEndpoints={at:Date.now(),byEndpoint:new Map(rows.filter(row=>row.enabled&&row.targetUrl).map(row=>[canonicalSourceAddress(configuredSourceEndpoint(row)),{id:row.id,name:row.name,kind:row.kind,endpoint:configuredSourceEndpoint(row)}]))}
     }
     return this.watchdogEndpoints.byEndpoint
   }
-  private watchdogSourceId(endpoint:string):string|null{return this.watchdogEndpointCatalog().get(endpoint)?.id??null}
+  private watchdogSourceId(endpoint:string):string|null{return this.watchdogEndpointCatalog().get(canonicalSourceAddress(endpoint))?.id??null}
   /** Entradas medidas pelos receptores compartilhados, no formato do watchdog. */
   private watchdogIngestSources(transport:EngineTransport):WatchdogObservedSource[]{
-    const catalog=this.watchdogEndpointCatalog(),byId=new Map([...catalog].map(([endpoint,row])=>[row.id,{endpoint,...row}]))
+    const catalog=this.watchdogEndpointCatalog(),byId=new Map([...catalog].map(([key,row])=>[row.id,{...row,key}]))
     const out:WatchdogObservedSource[]=[]
     for(const receiver of transport.ingestState()){
       if(receiver.failed)continue
       for(const id of receiver.sourceIds){
         const row=byId.get(id)
-        if(row)out.push({sourceKey:row.endpoint,sourceId:id,name:row.name,kind:row.kind,itemId:null,sample:{...receiver.signal,sampledAt:new Date().toISOString()} as unknown as WatchdogSample})
+        if(row)out.push({sourceKey:row.key,sourceId:id,name:row.name,kind:row.kind,itemId:null,sample:{...receiver.signal,sampledAt:new Date().toISOString()} as unknown as WatchdogSample})
       }
     }
     return out
@@ -1427,7 +1428,7 @@ export class ChannelRuntime {
     const ingest=this.watchdogIngestKey||this.transport.supportsIngest()?this.watchdogIngestSources(this.transport):[]
     this.liveWatchdog.tick({now,policy,channelFps:this.channel.rate.num/this.channel.rate.den,program:programEntry?this.watchdogSource(programEntry,'pgm'):null,preview,ingest})
     // Fim da contingência (retorno, STOP, troca): solta o receptor do acompanhamento.
-    if(this.watchdogIngestKey&&this.liveWatchdog.monitoredSourceKey()!==this.watchdogIngestKey){
+    if(this.watchdogIngestKey&&canonicalSourceAddress(this.liveWatchdog.monitoredSourceKey()??'')!==canonicalSourceAddress(this.watchdogIngestKey)){
       const transport=this.transport;this.watchdogIngestKey=null
       void transport.watchIngest([]).catch(()=>{})
     }

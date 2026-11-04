@@ -258,6 +258,29 @@ describe('watchdog do canal com executor', () => {
     const events = watchdog.drain()
     expect(events.filter(event => event.kind === 'TRANSITION').map(event => event.to)).toEqual(['SUSPEITA', 'ESPERA', 'CONTINGENCIA', 'RETORNO', 'OK'])
   })
+  it('contingência medida pelo receptor compartilhado: endereço do item (ndi://) e do cadastro (ndi:) são a mesma entrada', async () => {
+    const calls: string[] = []
+    let contingency = false
+    const watchdog = new ChannelLiveWatchdog({ showWait: async () => {}, hideWait: async () => {}, enterContingency: async () => { contingency = true }, monitorSource: async source => { calls.push('monitor:' + source) },
+      returnLive: async () => { calls.push('return'); contingency = false }, contingencyActive: () => contingency, canMonitor: () => true })
+    const p = policy()
+    // O engine informa o endereço do item; o receptor, o do cadastro (configuredSourceEndpoint).
+    const program = (sample: WatchdogSample | null) => ({ sourceKey: 'ndi://ESTUDIO (vMix - Output 1)', sourceId: 'cam', name: 'Estúdio', kind: 'NDI', itemId: 'live-1', sample })
+    const ingest = (sample: WatchdogSample | null) => ({ sourceKey: ' ndi:ESTUDIO (vMix - Output 1)', sourceId: 'cam', name: 'Estúdio', kind: 'NDI', itemId: null, sample })
+    let now = T0
+    for (; now <= T0 + 9000; now += 250) {
+      watchdog.tick({ now, policy: p, channelFps: 29.97, program: contingency ? null : program(now >= T0 + 1000 ? lost(now, T0 + 1000) : healthy(now)), preview: [] }, () => now)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    expect(calls).toEqual(['monitor:ndi:ESTUDIO (vMix - Output 1)'])
+    expect(watchdog.monitoredSourceKey()).toBe('ndi:ESTUDIO (vMix - Output 1)')
+    // A medida da entrada vem só do receptor compartilhado (sem PVW): com sinal estável, volta.
+    for (; now <= T0 + 25_000 && !calls.includes('return'); now += 250) {
+      watchdog.tick({ now, policy: p, channelFps: 29.97, program: null, preview: [], ingest: [ingest(healthy(now))] }, () => now)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    expect(calls).toEqual(['monitor:ndi:ESTUDIO (vMix - Output 1)', 'return'])
+  })
   it('se a entrada some do PVW durante a contingência, volta a sintonizá-la', async () => {
     const calls: string[] = []
     let contingency = false
