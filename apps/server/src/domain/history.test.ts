@@ -288,3 +288,28 @@ describe('histórico selado e protegido contra alterações posteriores',()=>{
     expect(db.select().from(secondaryEvents).all()).toHaveLength(1)
   })
 })
+
+describe('memória do histórico', () => {
+  it('guarda histórico só das grades editadas mais recentemente (teto configurado)', async () => {
+    const small = new History(2)
+    const capture = (rundownId: string) => {
+      const remember = small.prepareCapture(db, rundownId, 'editar', { wholeRundown: true })
+      remember.seal(); remember()
+    }
+    capture(gradeA); capture(gradeB)
+    expect(small.stats()).toEqual({ rundowns: 2, frames: 2 })
+    expect(small.state(gradeA).canUndo).toBe(true)
+    // Terceira grade (outro dia): a mais antiga sem edição perde o histórico em memória.
+    const gradeC = randomUUID()
+    await db.insert(rundowns).values({ id: gradeC, channelId: (await db.select().from(rundowns).where(eq(rundowns.id, gradeA)))[0]!.channelId, name: 'Grade C', plannedStart: 0, loop: true, date: '2026-09-01', createdAt: now, updatedAt: now })
+    capture(gradeC)
+    expect(small.stats()).toEqual({ rundowns: 2, frames: 2 })
+    expect(small.state(gradeA).canUndo).toBe(false)
+    expect(small.state(gradeB).canUndo).toBe(true)
+    expect(small.state(gradeC).canUndo).toBe(true)
+    // Editar de novo a B a deixa como mais recente: a próxima a sair é a C.
+    capture(gradeB); capture(gradeA)
+    expect(small.state(gradeC).canUndo).toBe(false)
+    expect(small.state(gradeB).canUndo).toBe(true)
+  })
+})
