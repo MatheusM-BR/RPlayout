@@ -441,6 +441,10 @@ fn run_command(channel: &mut Channel, command: Command, request_id:u64) -> Resul
             }
             Ok(true)
         }
+        Command::IngestWatch { sources } => {
+            channel.set_ingest_watched(sources.into_iter().map(|source| (source.id, source.endpoint)).collect())?;
+            Ok(true)
+        }
         Command::Multiview { composition } => {
             channel.configure_multiview(composition)?;
             // A troca de teto recria o publicador do mosaico: anuncia já.
@@ -604,6 +608,7 @@ fn main() -> Result<()> {
         preview_admission:true,
         live_replacement_protocol: 1,
         engine_generation: channel.generation_id().to_string(),
+        ingest_shared: channel.ingest_shared(),
     }
     .emit();
 
@@ -618,6 +623,7 @@ fn main() -> Result<()> {
     let mut last_meter = Instant::now();
     let mut last_graphics = Instant::now();
     let mut live_recovery = LiveRecovery::default();
+    let mut ingest_reported = false;
     let mut running = true;
 
     while running {
@@ -766,6 +772,9 @@ fn main() -> Result<()> {
             for (item_id, bus, signal) in channel.live_signal_reports() {
                 Event::SourceTelemetry { item_id, bus, decoder_id:channel.decoder_id(bus), configured_source_id:channel.configured_source_id(bus), signal }.emit();
             }
+            let receivers = channel.ingest_reports();
+            if !receivers.is_empty() || ingest_reported { Event::IngestState { receivers: receivers.clone() }.emit(); }
+            ingest_reported = !receivers.is_empty();
             // Só com espectador: parado, o multiview não fala nada.
             if let Some(state) = channel.multiview_state().filter(|state| state.running) {
                 Event::MultiviewState { state }.emit();

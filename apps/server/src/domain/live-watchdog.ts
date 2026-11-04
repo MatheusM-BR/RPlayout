@@ -1,3 +1,4 @@
+import { canonicalSourceAddress } from './source-address.js'
 import { randomUUID } from 'node:crypto'
 import {
   WATCHDOG_DETECTIONS, WATCHDOG_DETECTION_LABELS, WATCHDOG_STATE_LABELS, effectiveWatchdogPolicy, signalSampleAge,
@@ -461,6 +462,9 @@ export interface WatchdogTickInput {
   program: WatchdogObservedSource | null
   /** Entradas no PVW (inclui a monitorada durante a contingência). */
   preview: WatchdogObservedSource[]
+  /** Entradas medidas pelo receptor compartilhado do engine (ingest único),
+   * sem ocupar o PVW. Na contingência, valem quando a entrada não está no PVW. */
+  ingest?: WatchdogObservedSource[]
 }
 
 export interface RecordedWatchdogEvent extends WatchdogEvent { sourceKey: string; sourceId: string | null; sourceName: string; bus: 'pgm' | 'pvw'; itemId: string | null }
@@ -499,7 +503,12 @@ export class ChannelLiveWatchdog {
     void Promise.resolve().then(work).then(() => machine.complete(effect, true, now()), (error: unknown) => machine.complete(effect, false, now(), error instanceof Error ? error.message : String(error)))
   }
 
-  tick(input: WatchdogTickInput, clock: () => number = Date.now): void {
+  tick(raw: WatchdogTickInput, clock: () => number = Date.now): void {
+    // Cada fonte chega de um lugar (endereço do item no engine, cadastro,
+    // receptor compartilhado): compara tudo pelo mesmo endereço canônico, ou
+    // `ndi://X` do item e `ndi:X` do cadastro viram entradas diferentes.
+    const canonical = (source: WatchdogObservedSource): WatchdogObservedSource => ({ ...source, sourceKey: canonicalSourceAddress(source.sourceKey) })
+    const input: WatchdogTickInput = { ...raw, program: raw.program ? canonical(raw.program) : null, preview: raw.preview.map(canonical), ...(raw.ingest ? { ingest: raw.ingest.map(canonical) } : {}) }
     const { now } = input
     const off = input.policy.mode === 'OFF'
     // PGM: começa a acompanhar quando uma live entra no ar.
@@ -517,7 +526,8 @@ export class ChannelLiveWatchdog {
       }
     }
     if (!tracked && !input.program && !off && this.executor.contingencyActive()) {
-      const origin = this.executor.contingencyOrigin?.() ?? null
+      const found = this.executor.contingencyOrigin?.() ?? null
+      const origin = found ? canonical(found) : null
       if (origin) {
         const machine = new WatchdogMachine(origin.sourceKey, now, origin.name)
         machine.adoptContingency(now)
@@ -529,7 +539,9 @@ export class ChannelLiveWatchdog {
     if (!tracked && input.program && !off) tracked = this.program = { machine: new WatchdogMachine(input.program.sourceKey, now, input.program.name), source: input.program, metrics: detect(null, input.policy, { now, channelFps: input.channelFps, audioExpected: true }).metrics }
     if (tracked) {
       const machine = tracked.machine
-      const observed = machine.contingencyOnAir ? input.preview.find(source => source.sourceKey === machine.sourceKey) ?? null : input.program
+      const observed = machine.contingencyOnAir
+        ? input.preview.find(source => source.sourceKey === machine.sourceKey) ?? input.ingest?.find(source => source.sourceKey === machine.sourceKey) ?? null
+        : input.program
       if (observed) tracked.source = { ...observed, sample: observed.sample }
       // Um CUE do operador (ou a troca de item da reserva) pode tirar a entrada
       // do PVW: depois de 4 s sem ela, o watchdog volta a sintonizá-la.
@@ -596,6 +608,12 @@ export class ChannelLiveWatchdog {
     }
     for (const { machine, source, metrics } of this.previews.values()) rows.push({ ...machine.status(now, { sourceId: source.sourceId, name: source.name, kind: source.kind, bus: 'pvw', itemId: source.itemId, metrics }, effectiveWatchdogPolicy(policy, source.sourceId)), mode: 'ALERT_ONLY' })
     return rows
+  }
+  /** Entrada que o watchdog observa durante a contingência (para o executor
+   * manter o receptor compartilhado dela aberto); nula fora da contingência. */
+  monitoredSourceKey(): string | null {
+    const machine = this.program?.machine
+    return machine?.contingencyOnAir && (machine.monitoring || machine.pending === 'MONITOR_SOURCE') ? machine.sourceKey : null
   }
   /** Paradas ainda acompanhadas (não devem ser fechadas por quem lê o AIRED). */
   activeOutageIds(): Set<string> { const id = this.program?.machine.outage?.id; return new Set(id ? [id] : []) }

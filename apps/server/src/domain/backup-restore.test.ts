@@ -13,3 +13,8 @@ it.each([
   ['--backup','b.db','--destination','novo','--key','SECRET'],
   ['--backup','--destination','novo'],
 ].map(args=>({args})))('recusa entrada incompleta, repetida ou expansão não autorizada: $args',({args})=>{expect(()=>parseRestoreArguments(args)).toThrow()})
+it('senha de recuperação só por arquivo (ou ambiente), nunca por argumento',()=>{
+  expect(parseRestoreArguments(['--backup','b.db','--destination','novo','--recovery-password-file','C:/temp/senha.txt'])).toEqual({backup:'b.db',destination:'novo',recoveryPasswordFile:'C:/temp/senha.txt'})
+  expect(()=>parseRestoreArguments(['--backup','b.db','--destination','novo','--recovery-password','segredo'])).toThrow()
+  expect(()=>parseRestoreArguments(['--backup','b.db','--destination','novo','--vault-file','v.json','--recovery-password-file','s.txt'])).toThrow('não ambos')
+})

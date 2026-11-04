@@ -339,19 +339,23 @@ export function BroadcastMonitor({
         ) : asset ? (
           /* Consulta leve de arquivo: não confirma sinal/saída do engine. */
           <div className="relative w-full h-full flex items-center justify-center bg-black">
-            <span className="absolute bottom-1 left-1 right-1 z-30 rounded bg-black/80 px-2 py-1 text-[11px] text-armed-amber pointer-events-none">
-              {hasMediaError ? 'Proxy indisponível — confira a fila de mídia' : 'Proxy de consulta — não confirma PGM/PVW'}
-            </span>
-            {webrtcFailed && webrtcPath && (
-              <button
-                onClick={() => setWebrtcFailed(false)}
-                className="absolute top-1.5 left-1.5 z-30 px-2 py-0.5 rounded bg-surface-card/90 hover:bg-surface-card text-[12px] font-label-mono text-outline hover:text-white border border-border-subtle cursor-pointer flex items-center gap-1 shadow"
-                title="Tentar reconectar stream WebRTC"
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-armed-amber animate-pulse"></span>
-                <span>Reconectar monitor do engine</span>
-              </button>
-            )}
+            {/* Avisos no TOPO: a base do quadro (miniatura e controles) traz
+                tempo e formato, e o aviso ali cobria o tempo (B8). */}
+            <div data-testid="monitor-proxy-notice" className="absolute top-1 left-1 right-1 z-30 flex flex-wrap items-start gap-1 pointer-events-none">
+              {webrtcFailed && webrtcPath && (
+                <button
+                  onClick={() => setWebrtcFailed(false)}
+                  className="pointer-events-auto px-2 py-0.5 rounded bg-surface-card/90 hover:bg-surface-card text-[12px] font-label-mono text-outline hover:text-white border border-border-subtle cursor-pointer flex items-center gap-1 shadow"
+                  title="Tentar reconectar stream WebRTC"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-armed-amber animate-pulse"></span>
+                  <span>Reconectar monitor do engine</span>
+                </button>
+              )}
+              <span className="rounded bg-black/80 px-2 py-0.5 text-[11px] text-armed-amber">
+                {hasMediaError ? 'Proxy indisponível — confira a fila de mídia' : 'Proxy de consulta — não confirma PGM/PVW'}
+              </span>
+            </div>
             {isStillImage || hasMediaError ? (
               <img
                 src={hiddenTab ? undefined : `/api/assets/${asset.id}/thumbnail.svg`}

@@ -3,7 +3,7 @@ import { api } from '../../api.js'
 import {useRef} from 'react'
 import {latestRequestGate} from '../../domain/latest-request.js'
 import type { SourceList, LiveSource } from '../../types.js'
-import { initialProtocolConfig, sourceName } from './protocol-config.js'
+import { availableInputKind, initialProtocolConfig, sourceName } from './protocol-config.js'
 import { ServerFileTargetDialog } from '../ServerFileTargetDialog.js'
 import {NdiAttribution} from './NdiAttribution.js'
 
@@ -85,6 +85,7 @@ export function CanonicalProtocolSelector({
   const [omtOutputName, setOmtOutputName] = useState(defaultKind === 'OMT' && initialUri ? initial.name : 'RPLAYOUT_PGM')
   const sdiFamily = mode === 'INPUT' ? sources?.sdi : sources?.sdiOutputs
   const discoveryGeneration=useRef(latestRequestGate())
+  const kindTouched=useRef(false)
 
   // Busca fontes físicas e de rede
   const fetchSources = useCallback(async (refresh = false) => {
@@ -98,6 +99,8 @@ export function CanonicalProtocolSelector({
       // fonte ao vivo fecha um laço (o programa entra nele mesmo).
       const data = mode === 'INPUT' ? withoutOwnOutputs(discovered) : discovered
       setSources(data)
+      // Entrada nova, sem escolha do operador: não abre num protocolo que não existe aqui.
+      if (mode === 'INPUT' && !initialUri && !kindTouched.current) setKind((current) => availableInputKind(current, data) as ProtocolKind)
 
       // Atualiza seleção inicial se houver dispositivos detectados
       const sdi = mode === 'INPUT' ? data.sdi : data.sdiOutputs
@@ -111,7 +114,7 @@ export function CanonicalProtocolSelector({
     } finally {
       if(isCurrent())setIsLoadingSources(false)
     }
-  }, [mode])
+  }, [mode, initialUri])
 
   useEffect(() => {
     void fetchSources()
@@ -271,11 +274,15 @@ export function CanonicalProtocolSelector({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 bg-surface-base rounded-lg border border-border-subtle">
           {availableProtocols.map((p) => {
             const isSelected = kind === p
+            const family = p === 'NDI' ? sources?.ndi : p === 'OMT' ? sources?.omt : p === 'SDI' ? sdiFamily : undefined
+            const missing = family && !family.available ? family.reason ?? 'Não disponível nesta instalação.' : null
             return (
               <button
                 key={p}
                 type="button"
-                onClick={() => setKind(p)}
+                title={missing ?? undefined}
+                data-unavailable={missing ? 'true' : undefined}
+                onClick={() => { kindTouched.current = true; setKind(p) }}
                 className={`py-1.5 px-2 rounded text-center font-label-caps text-[11px] font-bold transition-all cursor-pointer border ${
                   isSelected
                     ? 'bg-primary text-surface-base border-primary shadow-xs'
@@ -288,6 +295,7 @@ export function CanonicalProtocolSelector({
                 {p === 'RTMP' && 'RTMP / CDN'}
                 {p === 'FILE' && 'Gravação Local'}
                 {p === 'OMT' && 'OMT IP'}
+                {missing && <span className="block font-normal normal-case opacity-70">indisponível</span>}
               </button>
             )
           })}

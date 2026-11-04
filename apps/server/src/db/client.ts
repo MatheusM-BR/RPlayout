@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import * as schema from './schema.js'
 import { createHash } from 'node:crypto'
 import { migrateSecretVault,finishVaultCleanup } from './vault-migration.js'
+import { migrateCredentialOnlyVault } from './credential-only-vault.js'
 import {migrateEditorialRevisions} from './editorial-revisions.js'
 import {migrateTrimCadence} from './trim-cadence.js'
 import {migrateAudioBus} from './audio-bus.js'
@@ -44,7 +45,7 @@ import {migrateChannelMirrors,migrateMirrorUnlock,migrateMirrorUnlockExpiry} fro
 import {migrateAssetCutMarks} from './asset-cut-marks.js'
 import {migrateAuditImmutable} from './audit-immutable.js'
 import {migrateLiveWatchdogPolicies} from './live-watchdog-policies.js'
-import {migrateLiveOutages} from './live-outages.js'
+import {migrateLiveOutages,migrateLiveOutageSourceKeys} from './live-outages.js'
 import {assertNoUncertainUpgradeProfile} from '../domain/upgrade-profile-adoption.js'
 import {assertNoUnboundReturnCandidate} from './return-candidate-admission.js'
 
@@ -416,6 +417,9 @@ export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.D
   const assertAdmission=()=>{if(options.maintenance)options.maintenance.assertHeldOn(sqlite);else assertStorageAdmissionOpen(sqlite);options.assertAdmission?.(sqlite)}
   try{assertSchemaCompatibility(sqlite);assertNoUnboundReturnCandidate(sqlite);assertAdmission()}catch(error){sqlite.close();throw error}
   sqlite.pragma('journal_mode = WAL')
+  // Depois de cada checkpoint completo o -wal volta a no máximo 64 MB (sem
+  // isto o arquivo fica no maior tamanho que já teve).
+  sqlite.pragma('journal_size_limit = 67108864')
   sqlite.pragma('foreign_keys = ON')
   sqlite.pragma('synchronous = FULL')
   let vaultCleanup=false
@@ -629,6 +633,8 @@ export function openDatabase(file: string, options:{onOpened?:(sqlite:Database.D
     migrateAuditImmutable(sqlite)
     migrateLiveWatchdogPolicies(sqlite)
     migrateLiveOutages(sqlite)
+    migrateCredentialOnlyVault(sqlite)
+    migrateLiveOutageSourceKeys(sqlite)
     assertSchemaCompatibility(sqlite,true)
     assertNoUncertainUpgradeProfile(sqlite)
     options.onOpened?.(sqlite)

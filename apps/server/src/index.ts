@@ -11,7 +11,7 @@ import { probeAudioDbfs } from './domain/intentional-silence.js'
 import { createApp, pgmProbeFor, runtimeFor, syncDistribution,blockRuntimeCreation, serviceMonitors } from './app.js'
 import {EngineTransport} from './domain/engine.js'
 import { sealAudit, verifyAudit } from './domain/audit-seal.js'
-import { BACKUP_EVERY_HOURS, BACKUP_MIRROR_DIR, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS, HTTP_AUDIT_RETENTION_DAYS } from './config.js'
+import { BACKUP_EVERY_HOURS, BACKUP_MIRROR_DIR, DB_FILE, HOST, PORT, HEALTH_RETENTION_DAYS, HTTP_AUDIT_RETENTION_DAYS, HEALTH_RESOLVED_RETENTION_DAYS, METRIC_RETENTION, WAL_TRUNCATE_MB } from './config.js'
 import { listChannels, listRundowns } from './db/repo.js'
 import { backupDatabase, backupDue, mirrorNewestBackup } from './domain/backup.js'
 import { listRoots } from './domain/roots.js'
@@ -24,7 +24,9 @@ import { emitIntegrationEvent } from './domain/integrations.js'
 import {persistPgmSignalIncidents} from './domain/pgm-signal-incidents.js'
 import {captureIncidentContext} from './domain/incident-context.js'
 import {operationalMetricLabels} from './domain/operational-metric-labels.js'
-import {pruneHealthHistory,pruneHttpAudit} from './domain/health-retention.js'
+import {pruneHealthHistory,pruneHttpAudit,pruneResolvedHealth} from './domain/health-retention.js'
+import {compactMetricHistory} from './domain/metric-history-store.js'
+import {walMaintenance} from './domain/wal-maintenance.js'
 import { executionHorizon, horizonWarning } from './domain/continuous.js'
 import { recordHorizonWarning } from './domain/horizon-ledger.js'
 import { AccessControl } from './domain/access.js'
@@ -366,6 +368,11 @@ async function main(): Promise<void> {
     if (Number.isFinite(HEALTH_RETENTION_DAYS) && HEALTH_RETENTION_DAYS > 0) pruneHealthHistory(app.sqlite,HEALTH_RETENTION_DAYS)
     // Batches of 5 000 every 10 minutes clear a large backlog without a long lock.
     pruneHttpAudit(app.sqlite,HTTP_AUDIT_RETENTION_DAYS)
+    pruneResolvedHealth(app.sqlite,HEALTH_RESOLVED_RETENTION_DAYS)
+    // Métricas do host: resolução cheia só nas últimas horas (era ~70 % do banco).
+    compactMetricHistory(app.sqlite,Date.now(),METRIC_RETENTION)
+    // Depois das remoções: checkpoint e, acima do teto, -wal de volta a zero.
+    if(DB_FILE!==':memory:')walMaintenance(app.sqlite,`${DB_FILE}-wal`,WAL_TRUNCATE_MB*1048576)
   },()=>!isRecoveryRehearsal(app.sqlite)), 10 * 60 * 1000)
   const expireSessionBatch=()=>{
     if(!storageConnected())return

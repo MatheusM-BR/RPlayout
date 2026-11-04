@@ -1,4 +1,5 @@
 import { MONITOR_MAX_KBPS } from '@rplayout/protocol'
+import { publishedStreamUrls } from '../domain/stream-endpoints.js'
 import { confirmAction } from '../domain/confirm.js'
 import { useCallback, useEffect, useState,useRef } from 'react'
 import { api } from '../api.js'
@@ -237,6 +238,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
   }
 
   const channel = data?.channels.find((entry) => entry.channelId === channelId)
+  const streams = publishedStreamUrls(data, channelId)
   const criticalPending = healthPending?.critical ?? null
   const warnPending = healthPending?.warn ?? null
   const visibleProcesses = processes.filter((process) =>
@@ -455,7 +457,8 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
               )}
 
               {/* Endereços de programa para cópia rápida */}
-              {channel?.urls && (
+              {streams.reason && <p role="status" className="text-[12px] text-outline">{streams.reason}</p>}
+              {streams.urls && (
                 <div className="flex flex-col gap-2.5">
                   <div className="flex items-center justify-between">
                     <span className="font-label-caps text-[11px] text-outline font-bold uppercase tracking-wider flex items-center gap-1.5">
@@ -467,7 +470,7 @@ function DistributionContent({channelId,onClose,onMessage,initialTab='resumo'}:P
                     </span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {Object.entries(channel.urls).map(([protocol, url]) => (
+                    {Object.entries(streams.urls).map(([protocol, url]) => (
                       <button
                         key={protocol}
                         type="button"

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, type HostMetricSample } from '../../api.js'
 import {OperationalHistoryPanel} from './OperationalHistoryPanel.js'
 import {StorageStatusPanel} from './StorageStatusPanel.js'
+import {VaultRecoveryPanel} from './VaultRecoveryPanel.js'
 import {UpgradeBackupPanel} from './UpgradeBackupPanel.js'
 import {HostMetricHistoryPanel} from './HostMetricHistoryPanel.js'
 import { whenVisible } from '../../domain/live-topics.js'
@@ -39,6 +40,7 @@ export function HostResourcesPanel({channels=[],initialChannelId}:{channels?:rea
     </div>
     <OperationalHistoryPanel channels={channels} initialChannelId={initialChannelId}/>
     <StorageStatusPanel/>
+    <VaultRecoveryPanel/>
     <UpgradeBackupPanel/>
     {error && <p role="alert" className="text-on-air-crimson text-sm mb-3">Recursos globais do servidor: {error} Os dados globais exibidos abaixo podem estar desatualizados. O histórico por canal é consultado separadamente.</p>}
     <div className="grid sm:grid-cols-3 gap-3 mb-3 text-sm">

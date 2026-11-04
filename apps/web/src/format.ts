@@ -1,4 +1,4 @@
-import { formatClock, formatDuration, type Frames, type Rate } from '@rplayout/protocol'
+import { formatClock, formatDuration, RATE_PADRAO, type Frames, type Rate } from '@rplayout/protocol'
 
 export const clock = (frames: Frames, rate: Rate): string => formatClock(frames, rate)
 export const dur = (frames: Frames, rate: Rate): string => formatDuration(frames, rate)
@@ -21,6 +21,12 @@ export function formatStandardRate(rate: Rate, scan?: string, height = 1080): st
   const interlaced = scan === 'INTERLACED'
   const cadence = (rate.num / rate.den * (interlaced ? 2 : 1)).toFixed(2).replace(/\.00$/, '')
   return `${height}${interlaced ? 'i' : 'p'}${cadence}`
+}
+
+/** Formato com que um canal novo nasce (o mesmo do servidor: 1920×1080
+ * progressivo em RATE_PADRAO). A tela inicial não pode prometer outro. */
+export function newChannelFormatLabel(): string {
+  return formatStandardRate(RATE_PADRAO, 'PROGRESSIVE', 1080)
 }
 
 export function rateFpsLabel(rate: Rate, scan?: string): string {

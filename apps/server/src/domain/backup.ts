@@ -34,6 +34,8 @@ import {readRestorationRecords} from '../db/restoration-records.js'
 import {readRestoredActivations} from '../db/restored-activations.js'
 import {assertSchemaCompatibility} from '../db/schema-compatibility.js'
 import {validateUpgradeBackupRequests} from '../db/upgrade-backup-requests.js'
+import {validateCredentialOnlyVault} from '../db/credential-only-vault.js'
+import {readVaultRecovery} from './vault-recovery.js'
 import {writeStandaloneBackup} from './standalone-backup.js'
 
 /**
@@ -119,8 +121,12 @@ export async function validateBackupRestore(file: string): Promise<RestoreValida
     readStorageAdmission(restored)
     readRestorationRecords(restored)
     readRestoredActivations(restored)
+    validateCredentialOnlyVault(restored)
+    const recovery=secrets.protectedSecrets==='verified'?readVaultRecovery(restored,secrets.vaultFingerprint!):null
     return { integrity: 'ok', foreignKeys: 'ok', tables, operationalState:backupOperationalState(restored), restoredAt: new Date().toISOString(), ...secrets,
-      ...(secrets.protectedSecrets === 'verified' ? { keyRecovery: 'Preserve a chave fora do banco. No Windows, vault.json só pode ser aberto pelo usuário Windows original; outra máquina/conta exige RPLAYOUT_VAULT_KEY compartilhada previamente configurada.' } : {}),
+      ...(secrets.protectedSecrets === 'verified' ? { keyRecovery: recovery?.state==='CONFIGURED'
+        ? 'Restaurável em outra máquina: a chave vai embrulhada pela senha de recuperação dentro deste backup (restore-rplayout-backup.ps1 -RecoveryPasswordFile ou RPLAYOUT_RECOVERY_PASSWORD).'
+        : 'Backup não restaurável em outra máquina: sem senha de recuperação cadastrada, só o vault.json original (mesmo usuário Windows) ou RPLAYOUT_VAULT_KEY compartilhada abrem as credenciais.' } : {}),
     }
   } finally {
     restored?.close(); source?.close()

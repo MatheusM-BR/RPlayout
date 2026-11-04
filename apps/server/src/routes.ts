@@ -1,4 +1,6 @@
 import {readHealthPending} from './domain/health-pending.js'
+import { accessDenial } from './domain/access-denial.js'
+import { insertionConflicts } from './domain/insertion-conflicts.js'
 import { randomUUID } from 'node:crypto'
 import { EngineTransport, type HotOutputProfile } from './domain/engine.js'
 import { transportRefusalStatus } from './domain/transport-refusal.js'
@@ -23,7 +25,11 @@ import {captureAssetMetadataAuthority,readAssetMetadata,editAssetMetadata} from 
 import {EditorialVersions} from './db/editorial-revisions.js'
 import {Interruptions,type InterruptedItem} from './domain/interruptions.js'
 import {inspectInsertion,requireInsertionReview,OperationalInsertions,type InsertionInput} from './domain/operational-insertion.js'
-import {installationVault} from './domain/secret-vault.js'
+import {installationVault,assertRecoveryPassword} from './domain/secret-vault.js'
+import {setVaultRecoveryPassword,vaultRecoveryETag,vaultRecoveryStatus,VaultRecoveryConflict} from './domain/vault-recovery.js'
+import {AttemptLimiter} from './domain/attempt-limiter.js'
+import {storedSourceKey} from './domain/source-address.js'
+import {sealStoredValue} from './db/protected-columns.js'
 import {inspectCompensation,commitCompensation,compensationReceipt} from './domain/operational-compensation.js'
 import {inspectAlignment,commitAlignment} from './domain/operational-alignment.js'
 import {Checkpoints,stoppedCheckpoint} from './domain/checkpoints.js'
@@ -171,7 +177,7 @@ import {scopedSourceList} from './domain/sources.js'
 import { activeHorizonRule, executionHorizon } from './domain/continuous.js'
 import { localDate, rundownClock, rundownFrames, rundownMidnight } from './domain/rundown-clock.js'
 import { inspectBoundary, PlaylistBoundaryLedger } from './domain/playlist-boundary.js'
-import { AUTH_PASSWORD, AUTH_USER, BACKUP_DIR, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL } from './config.js'
+import { AUTH_PASSWORD, AUTH_USER, BACKUP_DIR, EXTERNAL_CONTROL_TOKEN, N1_PEER_URL, METRIC_RETENTION } from './config.js'
 import { isIntentionalSilence, setIntentionalSilence } from './domain/intentional-silence.js'
 import { technicalLog, type TechnicalLogLevel } from './domain/technical-log.js'
 import { softwareVersion } from './domain/software-version.js'
@@ -548,15 +554,15 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     }
   }
   const assertEditorialAccess=(request:FastifyRequest,channelId:string)=>{
-    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão deste canal mudou; entre novamente antes de editar.'})
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_EDIT',channelId,'editar a grade')})
   }
   const assertConfigurationAccess=(request:FastifyRequest,channelId:string)=>{
-    if(access.required()&&!access.identity(request) || !can(access.role(request),'OUTPUT_CONTROL') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de configuração mudou; entre novamente antes de confirmar.'})
+    if(access.required()&&!access.identity(request) || !can(access.role(request),'OUTPUT_CONTROL') || !access.channelAllowed(request,channelId))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'OUTPUT_CONTROL',channelId,'alterar a configuração do canal')})
   }
   const assertQcAccess=(request:FastifyRequest,channelId:string|null,ownerId:string|null)=>{
     const identity=access.identity(request)
     if((identity?.id??null)!==ownerId || access.required()&&!identity || !can(access.role(request),'PLAYLIST_EDIT') ||
-      (channelId===null ? identity?.channelIds!==undefined&&identity.channelIds!==null : !access.channelAllowed(request,channelId)))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de QC mudou; entre novamente antes de confirmar.'})
+      (channelId===null ? identity?.channelIds!==undefined&&identity.channelIds!==null : !access.channelAllowed(request,channelId)))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_EDIT',channelId,'decidir o QC')})
     if(channelId!==null && app.sqlite.prepare('SELECT 1 FROM channels WHERE id=? AND archived_at IS NOT NULL').get(channelId))throw new CollaborativeEditError(409,{error:'Canal arquivado: nenhuma decisão QC foi aplicada.'})
   }
   type EditorialTransaction=Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -574,13 +580,13 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   }
   const automationError=(reply:any,error:unknown)=>{if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload);throw error}
   const authorizePublication=(request:FastifyRequest,review:OperationalReview)=>{
-    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_PUBLISH') || !access.channelAllowed(request,review.channelId))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão de publicação mudou; entre novamente antes de confirmar.'})
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_PUBLISH') || !access.channelAllowed(request,review.channelId))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_PUBLISH',review.channelId,'publicar a grade')})
     if(review.rundownId!==(request.params as {id:string}).id)throw new CollaborativeEditError(409,{error:'A grade desta conferência mudou.'})
     requireEditorialRevision(app.concurrency,review.rundownId,request.headers['if-match'],review.editorialRevision)
     auditChannels.set(request,[review.channelId])
   }
   const authorizeScope=(request:FastifyRequest,owners:ScopeOwner[])=>{
-    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão mudou; entre novamente antes de editar.'})
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_EDIT',null,'editar')})
     if(!owners.length)throw new CollaborativeEditError(409,{error:'Os vínculos dos itens mudaram; atualize a grade antes de repetir.'})
     if(owners.some(row=>!access.channelAllowed(request,row.channelId)))throw new CollaborativeEditError(403,{error:'Este escopo altera um canal não autorizado. Escolha somente este item ou esta grade.'})
     if(owners.some(row=>row.archivedAt))throw new CollaborativeEditError(409,{error:'Este escopo alcança uma grade arquivada. Escolha somente este item ou reative explicitamente o canal.'})
@@ -598,7 +604,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     })
   }
   const historyGuard=(request:FastifyRequest):HistoryGuard=>(db,footprint)=>{
-    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:'A sessão ou a permissão mudou; entre novamente antes de desfazer.'})
+    if(access.required() && !access.identity(request) || !can(access.role(request),'PLAYLIST_EDIT'))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'PLAYLIST_EDIT',null,'desfazer ou refazer')})
     if(footprint.deviceAutomation&&!can(access.role(request),'OUTPUT_CONTROL'))throw new CollaborativeEditError(403,{error:'Desfazer/refazer automação de equipamento exige permissão atual de controle de saídas.'})
     const sourceId=(request.params as {id:string}).id
     requireEditorialRevision(app.concurrency,sourceId,request.headers['if-match'],app.concurrency.getRundownVersion(sourceId))
@@ -794,13 +800,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const authenticated = (await usernameOf(request)) !== null
     return { role, label: roleLabel(role), authenticated, required: access.required() }
   })
-  const loginAttempts = new Map<string, { count: number; until: number }>()
+  const loginAttempts = new AttemptLimiter()
+  const reauthAttempts = new AttemptLimiter()
   server.post('/api/auth/login', async (request, reply) => {
-    const attempt = loginAttempts.get(request.ip)
-    if (attempt && attempt.until > Date.now() && attempt.count >= 10) return reply.header('retry-after', String(Math.ceil((attempt.until - Date.now()) / 1000))).code(429).send({ error: 'Muitas tentativas. Aguarde antes de tentar entrar novamente.' })
-    if (loginAttempts.size > 1000) for (const [ip, entry] of loginAttempts) { if (entry.until <= Date.now()) loginAttempts.delete(ip) }
-    if (loginAttempts.size > 2000 && !attempt) return reply.code(429).send({ error: 'Limite de tentativas de login atingido.' })
-    loginAttempts.set(request.ip, attempt && attempt.until > Date.now() ? { ...attempt, count: attempt.count + 1 } : { count: 1, until: Date.now() + 900_000 })
+    const blocked = loginAttempts.blockedFor(request.ip)
+    if (blocked > 0) return reply.header('retry-after', String(Math.ceil(blocked / 1000))).code(429).send({ error: 'Muitas tentativas. Aguarde antes de tentar entrar novamente.' })
+    if (!loginAttempts.record(request.ip)) return reply.code(429).send({ error: 'Limite de tentativas de login atingido.' })
     const body = z.object({ username: z.string().min(1).max(80), password: z.string().min(1).max(1024) }).strict().safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe usuário e senha.' })
     let [user] = await app.db.select().from(users).where(eq(users.username, body.data.username)).limit(1)
@@ -818,7 +823,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload)
       throw error
     }
-    loginAttempts.delete(request.ip)
+    loginAttempts.clear(request.ip)
     const secure = request.protocol === 'https' || process.env.RPLAYOUT_SECURE_COOKIES === '1' ? '; Secure' : ''
     return reply.header('set-cookie', `rplayout_session=${issued.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}`).send({ role: issued.role, label: roleLabel(issued.role) })
   })
@@ -1481,6 +1486,54 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Diagnóstico do banco exige administrador.'})
     reply.header('Cache-Control','private, no-store')
     return databaseStorageStatus(app.db.$client)
+  })
+  // Senha de recuperação do cofre (r88-37). Status sem segredo; definir/trocar
+  // só ADMIN, com If-Match e a senha da própria conta. A senha nunca vai para
+  // log, URL, banco nem resposta: só o corpo desta requisição a carrega.
+  server.get('/api/engineering/vault-recovery',async(request,reply)=>{
+    if(!(await allowed(request,'OUTPUT_CONTROL')))return reply.code(403).send({error:'Status do cofre exige Supervisor, Gestor ou Administrador.'})
+    try{const status=vaultRecoveryStatus(app.sqlite);return reply.header('Cache-Control','private, no-store').header('ETag',vaultRecoveryETag(status.revision)).send(status)}
+    catch{return reply.code(409).send({error:'Status da recuperação do cofre indisponível.'})}
+  })
+  server.put('/api/engineering/vault-recovery',async(request,reply)=>{
+    reply.header('Cache-Control','private, no-store')
+    if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Senha de recuperação do cofre exige administrador.'})
+    const identity=access.identity(request)
+    if(!identity)return reply.code(403).send({error:'Senha de recuperação exige conta de administrador autenticada.'})
+    const body=z.object({password:z.string().max(1024),confirmation:z.string().max(1024),currentPassword:z.string().min(1).max(1024)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe a nova senha, a confirmação e a senha da sua conta.'})
+    if(body.data.password!==body.data.confirmation)return reply.code(400).send({error:'A confirmação não confere com a nova senha.'})
+    try{assertRecoveryPassword(body.data.password)}catch(error){return reply.code(400).send({error:(error as Error).message})}
+    let expectedRevision:number
+    try{expectedRevision=vaultRecoveryStatus(app.sqlite).revision}catch{return reply.code(409).send({error:'Recuperação do cofre indisponível neste banco.'})}
+    if(request.headers['if-match']!==vaultRecoveryETag(expectedRevision))return reply.code(412).send({error:'A senha de recuperação mudou ou a tela está desatualizada; recarregue antes de trocar.'})
+    // Reautenticação com o mesmo limite do login (10 tentativas em 15 min),
+    // contado por usuário e por estação: uma sessão roubada não vira oráculo
+    // de força bruta da senha da conta.
+    const reauthKeys=['user:'+identity.id,'ip:'+request.ip]
+    const blocked=reauthKeys.map(key=>reauthAttempts.blockedFor(key)).reduce((a,b)=>Math.max(a,b),0)
+    if(blocked>0){
+      await securityAudit('VAULT_RECOVERY_REAUTH_BLOCKED',identity.username,{station:request.ip})
+      return reply.header('retry-after',String(Math.ceil(blocked/1000))).code(429).send({error:'Muitas tentativas. Aguarde antes de tentar novamente.'})
+    }
+    if(!reauthKeys.every(key=>reauthAttempts.record(key)))return reply.code(429).send({error:'Limite de tentativas atingido.'})
+    const [user]=await app.db.select().from(users).where(eq(users.id,identity.id)).limit(1)
+    if(!user||!user.enabled||!(await verifyPassword(body.data.currentPassword,user.passwordHash))){
+      // A senha digitada não vai para a auditoria: só quem e de onde.
+      await securityAudit('VAULT_RECOVERY_REAUTH_FAILED',identity.username,{station:request.ip})
+      return reply.code(403).send({error:'Senha da conta não confere.'})
+    }
+    for(const key of reauthKeys)reauthAttempts.clear(key)
+    try{
+      const result=await setVaultRecoveryPassword(app.sqlite,{password:body.data.password,expectedRevision,actor:identity.username,databaseFile:app.sqlite.name,
+        audit:revision=>app.sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,item_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?,?)')
+          .run(randomUUID(),'@security',null,'VAULT_RECOVERY_PASSWORD_SET',sealStoredValue(JSON.stringify({revision,replaced:revision>1}),'operator_decisions.payload'),identity.username,new Date().toISOString())})
+      const status=vaultRecoveryStatus(app.sqlite)
+      return reply.header('ETag',vaultRecoveryETag(status.revision)).send({...status,fileWritten:result.fileWritten})
+    }catch(error){
+      if(error instanceof VaultRecoveryConflict)return reply.code(412).send({error:error.message})
+      return reply.code(409).send({error:'Senha de recuperação não confirmada. Confira o status antes de tentar de novo.'})
+    }
   })
   server.get('/api/ha/rehearsal',async(request,reply)=>{
     if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Ensaio HA exige administrador.'})
@@ -3988,7 +4041,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if(query.channelId&&!access.channelAllowed(request,query.channelId))return reply.code(403).send({error:'Sem acesso ao histórico deste canal.'})
     const page=app.hostMetrics.historyPage(query.since,query.until,query.before,query.limit)
     const samples=page.samples.map(({sample})=>scopedOperationalSample(sample,id=>access.channelAllowed(request,id),query.channelId))
-    return {since:query.since,until:query.until,retainedDays:14,limit:query.limit,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
+    return {since:query.since,until:query.until,retainedDays:METRIC_RETENTION.days,limit:query.limit,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
   })
   server.get('/api/channels/:id/operational-metrics/history',async(request,reply)=>{
     const id=(request.params as {id:string}).id
@@ -3998,7 +4051,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const {since,until,before,limit}=query
     const page=app.hostMetrics.historyPage(since,until,before,limit)
     const samples=page.samples.map(({sampledAt,sample})=>({sampledAt,operations:scopedOperationalSample(sample,channelId=>access.channelAllowed(request,channelId),id).operations??null}))
-    return {channelId:id,since,until,retainedDays:14,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
+    return {channelId:id,since,until,retainedDays:METRIC_RETENTION.days,totalSamples:page.totalSamples,truncated:page.totalSamples>samples.length,nextBefore:page.nextBefore,samples}
   })
 
   /**
@@ -4577,7 +4630,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
   const insertionError=(reply:any,error:unknown)=>error instanceof CollaborativeEditError?reply.code(error.status).send(error.payload):reply.code(409).send({error:sanitizeDiagnostic(error instanceof Error?error.message:'Inserção não confirmada; confira o registro sem repetir o TAKE.')})
   const insertionInput=z.object({requestId:z.string().uuid(),mode:z.enum(['NEXT','NOW']),mediaId:z.string().min(1).optional(),sourceId:z.string().min(1).optional(),durationFrames:z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()}).strict()
   const assertInsertionAccess=(request:FastifyRequest,id:string)=>{
-    if(access.required()&&!access.identity(request) || !can(access.role(request),'TRANSPORT') || !access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:'Sessão/permissão de operação deste canal mudou.'})
+    if(access.required()&&!access.identity(request) || !can(access.role(request),'TRANSPORT') || !access.channelAllowed(request,id))throw new CollaborativeEditError(403,{error:accessDenial(access,request,'TRANSPORT',id,'inserir no ar')})
     const row=app.db.select().from(channels).where(eq(channels.id,id)).get()
     if(!row || row.archivedAt)throw new CollaborativeEditError(404,{error:'Canal ativo não encontrado.'})
   }
@@ -4591,7 +4644,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
         const reason=runtime.reconfigurationStatus().reason;if(reason)throw new CollaborativeEditError(409,{error:reason})
         const plan=inspectInsertion(app.db,runtime.insertionContext(),body.data,view=>runtime.insertionTiming(view,body.data))
         reply.header('Cache-Control','private, no-store')
-        return {reviewToken:plan.reviewToken,input:plan.input,item:{id:plan.itemId,title:plan.view.items.find(row=>row.item.id===plan.itemId)!.item.title},sourceRevisionId:plan.context.revisionId,conflicts:runtime.insertionTiming(plan.view,body.data).schedule.conflicts,nativeEngine:runtime.transport instanceof EngineTransport,estimatedTiming:true,notice:'Intervenção somente na revisão operacional. Não publica rascunhos. Timing é recalculado na execução; uma entrada descoberta ainda precisa entregar quadro. NEXT não altera PGM/CUE; NOW corta somente após confirmação.'}
+        return {reviewToken:plan.reviewToken,input:plan.input,item:{id:plan.itemId,title:plan.view.items.find(row=>row.item.id===plan.itemId)!.item.title},sourceRevisionId:plan.context.revisionId,conflicts:insertionConflicts(runtime.executionView?runtime.insertionTiming(runtime.executionView,body.data).schedule.conflicts:[],runtime.insertionTiming(plan.view,body.data).schedule.conflicts,plan.itemId),nativeEngine:runtime.transport instanceof EngineTransport,estimatedTiming:true,notice:'Intervenção somente na revisão operacional. Não publica rascunhos. Timing é recalculado na execução; uma entrada descoberta ainda precisa entregar quadro. NEXT não altera PGM/CUE; NOW corta somente após confirmação.'}
       })
     }catch(error){return insertionError(reply,error)}
   })
@@ -6122,7 +6175,8 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const runtime = app.runtimes.get(id), now = Date.now()
     return reply.header('cache-control', 'private, no-store').send({ channelId: id, policy: stored.policy, revision: stored.revision, updatedAt: stored.updatedAt, updatedBy: stored.updatedBy,
       nativeEngine: runtime ? runtime.transport instanceof EngineTransport : false,
-      inputs: runtime ? runtime.liveWatchdog.status(now, stored.policy) : [],
+      // Endereço bruto (passphrase SRT) não sai para o navegador: só o identificador.
+      inputs: runtime ? runtime.liveWatchdog.status(now, stored.policy).map(input => ({ ...input, sourceKey: storedSourceKey(input.sourceKey) })) : [],
       events: runtime ? runtime.liveWatchdog.history.slice(-30).reverse().map(event => ({ at: new Date(event.at).toISOString(), sourceName: event.sourceName, kind: event.kind, message: event.message })) : [] })
   })
   server.put('/api/channels/:id/live-watchdog', async (request, reply) => {

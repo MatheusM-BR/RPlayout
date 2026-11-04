@@ -52,6 +52,12 @@ const EMPTY: HistoryState = { canUndo: false, canRedo: false, undoLabel: null, r
 
 /** Passos guardados por grade. Além disso, o operador já não lembra o que fez. */
 const LIMIT = 50
+/** Grades com histórico em memória. Cada passo de grade inteira (Auto-Fill,
+ * mover, inserir) guarda TODOS os itens; com uma grade nova por dia, as de
+ * dias passados ficavam na memória para sempre (até 50 passos cada). Guarda
+ * só as mais recentemente editadas; as outras perdem o desfazer, como num
+ * reinício do servidor. */
+export const HISTORY_MAX_RUNDOWNS = 8
 
 function readNow(
   db: Pick<Db,'select'>,
@@ -138,6 +144,8 @@ export class History {
   private readonly future = new Map<string, Frame[]>()
   private readonly pending = new Map<string, Promise<unknown>>()
   private readonly epochs=new Map<string,number>()
+  private readonly recent=new Set<string>()
+  constructor(private readonly maxRundowns=HISTORY_MAX_RUNDOWNS){}
 
   /** Read inside the same write transaction, but remember only after commit.
    * A permission/SQL failure must not create a fictitious undo action. */
@@ -149,6 +157,7 @@ export class History {
       const stack=this.past.get(rundownId)??[]
       stack.push(frame);if(stack.length>LIMIT)stack.shift()
       this.past.set(rundownId,stack);this.future.delete(rundownId)
+      this.touch(rundownId)
     }
     remember.seal=()=>{frame.expected=fingerprint(readNow(db,rundownId,label,target))}
     return remember
@@ -196,6 +205,7 @@ export class History {
     other.push(mirror)
     if (other.length > LIMIT) other.shift()
     to.set(rundownId, other)
+    this.touch(rundownId)
     return frame.label
   }
 
@@ -217,7 +227,26 @@ export class History {
     return current
   }
 
+  /** Grade editada agora vai para o fim da fila; além do teto, a que ficou
+   * mais tempo sem edição perde o histórico em memória. */
+  private touch(rundownId:string):void{
+    this.recent.delete(rundownId);this.recent.add(rundownId)
+    while(this.recent.size>this.maxRundowns){
+      const oldest=this.recent.values().next().value as string
+      if(oldest===rundownId)break
+      this.forget(oldest)
+    }
+  }
+  /** Para diagnóstico e testes: quantas grades e passos estão na memória. */
+  stats():{rundowns:number;frames:number}{
+    let frames=0
+    for(const stack of this.past.values())frames+=stack.length
+    for(const stack of this.future.values())frames+=stack.length
+    return {rundowns:new Set([...this.past.keys(),...this.future.keys()]).size,frames}
+  }
+
   forget(rundownId: string): void {
+    this.recent.delete(rundownId)
     this.epochs.set(rundownId,(this.epochs.get(rundownId) ?? 0)+1)
     this.past.delete(rundownId)
     this.future.delete(rundownId)

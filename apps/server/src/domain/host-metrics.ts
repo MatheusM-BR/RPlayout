@@ -1,3 +1,4 @@
+import {sealStoredValue} from '../db/protected-columns.js'
 import { cpus, freemem, totalmem, platform } from 'node:os'
 import { statfs, readFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
@@ -7,6 +8,7 @@ import type Database from 'better-sqlite3'
 import { installationVault } from './secret-vault.js'
 import type {OperationalMetricFrame} from './operational-metrics.js'
 import {persistMetricHistory} from './metric-history-store.js'
+import {METRIC_RETENTION} from '../config.js'
 const run = promisify(execFile)
 type CpuCounters = { idle: number; total: number }
 export function cpuUtilization(previous: CpuCounters | null, current: CpuCounters): number | null {
@@ -206,14 +208,14 @@ export class HostMetrics {
       const changes=this.incidents.evaluate(sample)
       persistMetricHistory(this.sqlite,sample,Date.now(),()=>{
         for(const change of changes){
-          const message=installationVault().encrypt(change.message,'health_events.message')
+          const message=sealStoredValue(change.message,'health_events.message')
           if(change.kind==='open')this.sqlite.prepare('INSERT INTO health_events (id,component,state,severity,message,occurred_at) VALUES (?,?,?,?,?,?)').run(change.id,'HOST','degraded','WARN',message,sample.generatedAt)
           else {
             this.sqlite.prepare('UPDATE health_events SET resolved_at=? WHERE id=? AND resolved_at IS NULL').run(sample.generatedAt,change.id)
             this.sqlite.prepare('INSERT OR IGNORE INTO health_events (id,component,state,severity,message,occurred_at) VALUES (?,?,?,?,?,?)').run(change.id+':recovered','HOST','recovered','INFO',message,sample.generatedAt)
           }
         }
-      })
+      },METRIC_RETENTION)
       this.incidents.commit(changes)
       this.cached=sample
       for(const change of changes)this.onIncident?.(change.kind==='open'?'degraded':'running',change.message,sample)

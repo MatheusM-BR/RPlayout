@@ -133,6 +133,7 @@ it('preserva estado parado e snapshot protegido em backup restaurado',async()=>{
   app.db.update(rundownItems).set({sourceRef:'srt://host:9000?passphrase=CADENCE-SECRET'}).where(eq(rundownItems.id,'i-a')).run()
   const preview=previewCadenceConversion(app.db,'a',rate);applyCadenceConversion(app.db,'a',rate,preview.fingerprint,'QA')
   const raw=app.sqlite.prepare('SELECT snapshot FROM channel_cadence_conversions').get() as {snapshot:string}
+  // r88-37: snapshot não é segredo, mas este embute passphrase SRT e continua envelope.
   expect(raw.snapshot.startsWith(SECRET_PREFIX)).toBe(true);expect(raw.snapshot).not.toContain('CADENCE-SECRET')
   expect(new Checkpoints(app.sqlite).read('a')).toMatchObject({playing:false,itemId:null,elapsed:0,rate})
   const directory=await mkdtemp(join(tmpdir(),'RPlayout-cadence-backup-')),backup=await backupDatabase(app.sqlite,directory)

@@ -7,7 +7,8 @@ const terminal=`SELECT 1 FROM operator_decisions t INDEXED BY graphic_command_ph
   substr(a.id,1,length(a.id)-9)||':REJECTED',substr(a.id,1,length(a.id)-9)||':REVIEWED')
   AND t.rundown_id=a.rundown_id AND t.kind='GRAPHIC_COMMAND_'||substr(t.id,length(a.id)-7)`
 const unresolvedPredicate=`a.kind='GRAPHIC_COMMAND_ACCEPTED' AND NOT EXISTS(${terminal})`
-const expected=`SELECT a.id,a.rundown_id AS scope FROM operator_decisions a WHERE ${unresolvedPredicate}`
+export const graphicCommandPendingExpectedSql=`SELECT a.id,a.rundown_id AS scope FROM operator_decisions a WHERE ${unresolvedPredicate}`
+const expected=graphicCommandPendingExpectedSql
 const ddl:Record<string,string>={
   graphic_command_pending:"CREATE TABLE graphic_command_pending(id TEXT PRIMARY KEY,scope TEXT NOT NULL)",
   graphic_command_pending_scope:"CREATE INDEX graphic_command_pending_scope ON graphic_command_pending(scope,id)",

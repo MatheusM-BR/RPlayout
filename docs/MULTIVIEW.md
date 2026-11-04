@@ -53,7 +53,7 @@ Clicar numa célula abre o monitor individual (o WHEP por barramento que já exi
 - `GET /api/channels/:id/multiview/composite` devolve os layouts, os níveis, o layout salvo e a ETag, a composição efetiva, o estado do engine, o WHEP e o motivo de indisponibilidade. Pede sessão e acesso ao canal.
 - `PUT /api/channels/:id/multiview/composite` pede `If-Match`. Salvar layout e células exige `PLAYLIST_EDIT`, como o layout das fontes individuais. **Trocar o teto exige `OUTPUT_CONTROL` (Supervisor ou acima)**, porque muda o custo de codificação na máquina do ar. A regra entrou na matriz `route-authorization-matrix.test.ts`.
 - Sem células salvas, o preenchimento é automático, como num master: PGM, PVW, as entradas do canal (principal antes do backup), NEXT, QC e contingência.
-- **Sem migração:** cada gravação é uma decisão `@multiview` / `MULTIVIEW_COMPOSITE` em `operator_decisions`, com o canal em `item_id`, e vale a última. A migração 59 não foi usada: com a 58 de outro agente ainda inexistente, a lista posicional de `schema-compatibility.ts` deixaria este branch sem banco "current". Na integração, uma tabela própria pode ler essas linhas.
+- **Sem migração:** cada gravação é uma decisão `@multiview` / `MULTIVIEW_COMPOSITE` em `operator_decisions`, com o canal em `item_id`, e vale a última. (A migração 59 acabou usada na revisão da r88-37 para as paradas do ao vivo.) Na época, a 59 não foi usada: com a 58 de outro agente ainda inexistente, a lista posicional de `schema-compatibility.ts` deixaria este branch sem banco "current". Na integração, uma tabela própria pode ler essas linhas.
 - MediaMTX ganha o caminho `{canal}/mv`. O engine recebe `multiview` na configuração privada, e a composição é reenviada quando o engine reinicia.
 
 ## Números (container Linux, 2 CPUs, sem GPU, x264 em software, outros agentes rodando)
@@ -102,6 +102,91 @@ Leitura:
 
 ## Limites e próximos passos
 
-- Uma entrada aparece **só quando o engine a tem aberta** (PGM, PVW, NEXT, QC ou contingência). Não é limitação do multiview: é a regra da casa de não abrir segunda conexão (SDI e SRT listener não aceitam duas) e de o Monitor não sintonizar nada. Para ver todas as entradas o tempo todo, como num multiviewer de hardware, o passo seguinte é o **ingest único por entrada**: cada entrada decodificada uma vez e distribuída por superfícies para PGM, PVW e multiview. O multiview já está pronto para isso: basta mais um `TapPoint` por entrada.
+- ~~Uma entrada aparece só quando o engine a tem aberta.~~ Resolvido na r88-37 pelo **ingest único por entrada** (seção abaixo): toda entrada cadastrada e ativa numa célula aparece o tempo todo.
 - O mosaico é **um por canal**. Trocar o layout troca para todos que estão olhando, e a interface avisa antes de salvar.
 - VU só existe onde há medição real (PGM e PVW).
+
+# Ingest único por entrada (r88-37)
+
+Pedido: um multiviewer de verdade mostra **todas** as entradas cadastradas o tempo todo, não só as que estão em PGM, PVW, NEXT, QC ou contingência. Sem abrir a mesma fonte duas vezes (NDI e SDI não aceitam; SRT listener tem conflito de porta) e sem que o monitoramento possa afetar o programa.
+
+## Desenho
+
+```
+                        receptor da entrada (pipeline próprio, relógio do sistema)
+ srt/rtmp/ndi/omt/sdi ─ source_for + decodificador ─┬─ fila ─ appsink vídeo (sync) ──┬─► appsrc no item PVW  ─ cadeia de sempre ─ inter
+  (aberta UMA vez)       retomada SRT, keep-listening│   ▲ medição da entrada (uma vez)├─► appsrc no item PGM  (TAKE sem reabrir)
+                         latência do tsdemux, bytes  │   └ sonda do multiview (try_lock)└─► appsrc no item QC/NEXT/contingência
+                                                     └─ fila ─ appsink áudio N (sync) ─► appsrc da trilha que cada item pediu
+```
+
+- **Engine: `apps/engine/src/ingest.rs`** (módulo filho de `channel`, como o multiview). Um `Hub` por canal guarda os receptores; a chave é o endereço normalizado da fonte (`decklink://0` = `sdi:0`, `ndi://X` = `ndi:X`).
+- **Receptor:** monta a fonte com o mesmo `source_for` que o item usava — e com ele a retomada SRT (`srt_input`), o `keep-listening`, a latência de 150 ms do `tsdemux`, o contador de bytes de rede e a política de decodificador. Cada trilha decodificada (primeira de vídeo, todas as de áudio, na ordem da fonte) vai a uma fila e a um `appsink` **no relógio** (`sync=true`, `async=false`): o receptor faz o papel que o sink do item fazia, de segurar o quadro até a hora certa.
+- **Item (consumidor do programa):** recebe um `bin` com um `appsrc` por trilha (`block=false`, fila de 2 quadros de vídeo / 8 de áudio, `leaky-type=downstream`). O bin expõe as trilhas como pads dinâmicos, e a montagem do item (o `pad-added` de sempre, com a escolha de trilha de áudio, deinterlace, escala, `videorate`, roteamento e medição) não mudou. Cada quadro chega carimbado com a hora em que o receptor o apresentou pela linha do tempo da fonte (running time do PTS + base + latência do receptor, no relógio do sistema, o mesmo dos dois pipelines), menos a base do item: igual à chegada quando tudo anda em dia, mas sem o jitter de agendamento e com os mesmos saltos da fonte que o `videorate` do item via antes. Fora de ±1 s da chegada vale a chegada. O áudio ainda encaixa na sequência contínua (até 40 ms) para não virar buraco/sobreposição.
+- **Multiview:** a célula `{kind:"source",id,endpoint}` segura o receptor da entrada (concessão `Multiview`) e sonda o pad do `appsink` de vídeo dele, com o mesmo `Tap` (`try_lock`, O(1)). O barramento em que o item da entrada está (PGM, PVW, NEXT...) só pinta o tally: a troca de barramento (TAKE) **não** reinstala a sonda. O servidor manda o `endpoint` do cadastro (`engineComposition`) **só quando o engine anuncia o receptor compartilhado** (`ingestShared`); com o ingest desligado vai só o `id`. O endereço nunca é gravado nem volta ao navegador (pode levar senha SRT).
+- **Watchdog:** a medição da entrada (`SourceStatistics`/`InputQuality`: fps, conteúdo, luma, áudio, kbps) é feita **uma vez por entrada**, no receptor, e sai no evento `ingestState` a cada 500 ms. Na contingência, o watchdog do servidor acompanha a entrada pelo receptor (`ingestWatch`, concessão `Watchdog`) em vez de sintonizá-la no PVW do operador; se o engine não tiver receptor compartilhado, volta ao CUE no PVW. O retorno à live (TAKE) reaproveita o receptor que o watchdog já mantinha.
+- **Vida do receptor:** existe enquanto houver concessão (item, multiview com espectador, watchdog). Sem nenhuma, espera `RPLAYOUT_INGEST_LINGER_MS` (2 s; um CUE seguido de TAKE não reabre) e fecha numa thread própria. Quem precisa da mesma porta/dispositivo espera esse NULL terminar (até 3 s).
+- **Falha da fonte:** erro/EOS no receptor é repassado ao bus de cada item assinante, então a recuperação de sempre continua valendo (`LiveRecovery` do PGM, reabertura do QC). Reabrir cria uma nova geração do mesmo receptor. Receptor só de monitoramento é reaberto pelo serviço a cada 2 s, fora do laço.
+- **SDI:** a captura de áudio é do receptor. Se um item pede mais canais (8/16) que o receptor aberto (2), ele é reaberto com a captura maior (o monitoramento pisca; o programa recebe o que precisa).
+- **Desligar:** `RPLAYOUT_INGEST_SHARED=0` volta cada item a abrir a fonte no próprio pipeline (r88-36). Nesse modo as células de entrada voltam a aparecer só onde a entrada estiver aberta, e o watchdog usa o PVW. Duas diferenças de código em relação à r88-36 nesse modo, conferidas na revisão: (1) a célula cuja fonte só troca de barramento (mesmo decodificador e mesmo pad, TAKE PVW → PGM) mantém a sonda e o último quadro e só troca o tally — antes a sonda era reinstalada no mesmo pad e o quadro piscava; é inócuo (teste `troca_de_barramento_da_mesma_fonte_so_muda_o_tally`); (2) o papel por nome de um pad ANY (`video`/`audio`) vale só no bin `ingest-*` do receptor: o decodificador do próprio item continua ignorando pad ANY, como na r88-36 (teste `pad_any_so_ganha_papel_pelo_nome_no_bin_do_receptor`).
+
+## Prioridade do PGM
+
+- O receptor entrega cada quadro **depois** da espera do relógio, num `appsrc` por item que não bloqueia; o multiview só faz `try_lock` na referência do último quadro. Consumidor lento perde quadros dele.
+- Receptor pedido só pelo monitoramento (multiview, watchdog) sobe numa thread própria (`ingest-abre`): fonte que trava no `set_state` não segura o laço do engine. Fechar também é em thread própria (`ingest-fecha`). Receptor pedido por item sobe na hora, como antes, para o erro de abertura voltar no LOAD/CUE.
+- Interface: cada célula de entrada mostra **OK**, **CONGELADO n s** (imagem parada há ≥ 2 s pela medição da entrada: impressão do conteúdo ou grade de luma, as mesmas do watchdog), **SEM SINAL** ou **ABRINDO ENTRADA** (`multiviewCellHealth` em `packages/protocol`).
+
+## Provas (`cargo test --release ingest::`)
+
+- `uma_fonte_aberta_uma_vez_com_varios_consumidores`: SRT local; watchdog, multiview (célula da entrada) e o NEXT ao mesmo tempo → **1 receptor, 1 abertura**, consumidores `item+multiview+watchdog`; TAKE leva o NEXT ao ar sem reabrir e a célula só troca o tally para o PGM; o estado do multiview não contém o endereço.
+- `consumidor_lento_ou_receptor_travado_nao_atrasam_o_pgm`: PGM recebido pelo receptor; multiview **12× mais lento** lendo o mesmo receptor, um segundo receptor de monitoramento que **trava 3 s** ao subir, a sonda presa 1 s e depois a fonte de monitoramento caindo. O PGM mede-se na entrega do item à superfície dele, contra a mesma medida sem consumidor; o laço do engine (`service_outputs`) não passa de 100 ms.
+- `take_reaproveita_o_receptor_e_fica_mais_rapido`: tempo do LOAD até o item ter quadro (o que o TAKE espera), SRT 720p, mediana de 3.
+- `receptor_desaparece_sem_consumidores`: solta o watchdog → fica a espera → fecha; item descartado também solta.
+- Todos os testes de entrada ao vivo já existentes (retomada SRT caller/listener, soluço sem reabrir, LIVE TAKE com quadro velho, QC, áudio embutido) passam pelo receptor agora.
+
+## Números (container Linux, 2 CPUs, máquina compartilhada com outros 2 agentes, carga 10–18)
+
+**Custo por entrada recebida o tempo todo** (`cargo test --release medir_custo_ingest -- --ignored --nocapture`; geradores SRT H.264 720p25 1,5 Mbps + AAC em processos à parte, CPU e RSS do processo do engine acima do canal parado):
+
+| entradas recebidas | CPU (% de um núcleo) | RSS |
+|---|---|---|
+| 1 | +4 % | +75 MB |
+| 2 | +8 % | +118 MB |
+| 3 | +13 % | +160 MB |
+| 4 | +27 % | +203 MB |
+| + mosaico LEVE 2×2 lendo os 4 (escala das células e composição, sem codificar) | +12 % | — |
+
+- Leitura: ~4–7 % de núcleo e ~50 MB por entrada 720p, quase tudo decodificação H.264 (`avdec_h264`) e as filas de quadros crus. O padrão `ball` do gerador é fácil de decodificar: câmera real em 1080p custa mais (ordem de 10–20 % de núcleo por entrada sem decodificação por hardware). O receptor não reescala nem converte: o item e o mosaico fazem isso uma vez cada, como antes.
+- **A escala para o mosaico é barata por construção:** a célula escala só o quadro que o mosaico vai mostrar, na cadência do mosaico (15 q/s no LEVE), num passo só (`videoconvertscale` bilinear com `add-borders`), e só quando o quadro mudou (`seq`); entrada parada não custa escala. O custo é fixo por célula (≈3 % de núcleo por célula 480×270 a 15 q/s aqui), não por entrada recebida.
+- A memória por receptor é dominada pelos quadros crus em fila (fila de vídeo antes do appsink, até a latência do pipeline). 16 entradas permanentes em 1080p cabem com folga numa máquina do ar, mas a CPU de decodificação não: para muitas entradas, `RPLAYOUT_HARDWARE_DECODE=1` (NVDEC/QSV) na máquina de produção.
+
+**TAKE** (`take_reaproveita_o_receptor_e_fica_mais_rapido`, LOAD até o item ter quadro, que é o que o TAKE espera; SRT 720p, GOP de 1 s, mediana de 3, duas rodadas):
+
+| | rodada 1 | rodada 2 |
+|---|---|---|
+| antes (item abre a fonte, r88-36) | 669 ms | 905 ms |
+| receptor frio (ninguém recebia a entrada) | 1238 ms | 1110 ms |
+| **receptor já recebendo** (multiview, watchdog, PVW) | **264 ms** | **79 ms** |
+
+- Com a entrada já recebida (multiview aberto, PVW, watchdog), o TAKE não abre conexão, não espera handshake, quadro-chave nem a latência do demux: o item recebe o próximo quadro. É o caso comum, porque o multiview mostra todas as entradas.
+- Receptor frio é ~0,2–0,5 s mais lento que o caminho antigo: a abertura passa por dois pipelines (o receptor espera a latência dele no appsink, e o item soma a folga dele). É o caso raro (entrada que ninguém recebia) e fica dentro do prazo do TAKE ao vivo (10 s).
+
+**Isolamento do PGM** (`consumidor_lento_ou_receptor_travado_nao_atrasam_o_pgm`, PGM 640×360 pelo receptor): sozinho 25,3 q/s (maior intervalo 51 ms); multiview 12× mais lento no mesmo receptor + receptor de monitoramento travado 3 s ao subir 25,2 q/s (87 ms; serviço do laço no pior caso 69 ms); sonda do multiview presa 1 s 25,1 q/s (70 ms); fonte de monitoramento caída 24,9 q/s (53 ms; serviço 0,2 ms).
+
+**Latência acrescentada:** 80 ms (dois quadros a 25 q/s) declarados pelo appsrc do item (`RPLAYOUT_INGEST_ITEM_LATENCY_MS`, 0 a 500). Sem ela, a cadeia do item (conversão, escala, `videorate`) entregava quadros 50–140 ms atrasados ao `intervideosink` com a máquina carregada (medido com 40 ms: 54–138 ms de atraso no sink nas rodadas paralelas da suíte). Foi escolhida a folga a favor do PGM: um quadro descartado no ar é pior que 40 ms a mais de atraso. Retomada SRT medida no fim: listener 701 ms, caller 782 ms até a superfície (alvo < 1,5 s), atraso no sink 43–47 ms (limite 100), soluço de 1,5 s sem reabrir.
+
+## Só no Windows de produção
+
+- NDI, OMT e DeckLink pelo receptor (sem hardware/SDK aqui). O código é o mesmo `source_for`; o que muda é que a placa/NDI é aberta uma vez e repartida.
+- O custo com decodificação por hardware (`RPLAYOUT_HARDWARE_DECODE=1`): o receptor pede memória de sistema (`video/x-raw` sem *features*), como o item pedia.
+
+### Padrão na produção (decisão de 04/11/2026)
+
+O receptor compartilhado sai **desligado** por padrão: o servidor manda
+`RPLAYOUT_INGEST_SHARED=0` ao engine a menos que a instalação tenha
+`RPLAYOUT_INGEST_SHARED=1`. Motivo: com ele ligado, todo item ao vivo do PGM
+passa por um caminho novo (+80 ms de latência; retomada SRT depois de queda de
+3 s em 2,5 s contra 1,7 s do caminho antigo) que ainda não foi validado com
+NDI/OMT/DeckLink reais. Desligado, o comportamento é o da r88-36 (o mosaico mostra
+só as entradas que o engine já tem abertas). Ligar depois de validar no Windows
+de produção com as fontes reais.

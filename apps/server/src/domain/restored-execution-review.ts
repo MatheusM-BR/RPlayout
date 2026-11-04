@@ -1,3 +1,4 @@
+import {sealStoredValue} from '../db/protected-columns.js'
 import {createHash,randomUUID} from 'node:crypto'
 import type Database from 'better-sqlite3'
 import {readdir} from 'node:fs/promises'
@@ -78,7 +79,7 @@ class HeldRestoredAdmission {
     }else this.assertBeforeOpen(sqlite)
     const instance=new ServerInstanceRegistration(sqlite,this.maintenance),id=randomUUID(),createdAt=new Date().toISOString()
     const payload={version:1,requestId:this.requestId,instanceId:instance.id,phase:'BACKEND_ADMITTED_QUARANTINED',activationPerformed:false,physicalOutputValidated:false}
-    sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(id,'@restore','RESTORED_BACKEND_ADMITTED',installationVault(false).encrypt(JSON.stringify(payload),'operator_decisions.payload'),'@restore',createdAt)
+    sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(id,'@restore','RESTORED_BACKEND_ADMITTED',sealStoredValue(JSON.stringify(payload),'operator_decisions.payload'),'@restore',createdAt)
     this.registered=instance
     return instance
   }
@@ -114,7 +115,7 @@ class HeldRestoredAdmission {
       if(stage==='CONFIRMED'&&bus==='PROGRAM'&&(!proof||proof.channelId!==channelId||Boolean(proof.paused)!==paused))throw new Error('Liberação sem recibo nativo correspondente.')
       const id=`restored-output:${this.activationId}:${channelId}:${bus}:${stage}`
       const payload={version:1,activationId:this.activationId,channelId,bus,stage,paused,proof:proof??null,physicalOutputValidated:false}
-      sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(id,'@restore','RESTORED_OUTPUT_RELEASE_'+stage,installationVault(false).encrypt(JSON.stringify(payload),'operator_decisions.payload'),'@restore',new Date().toISOString())
+      sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(id,'@restore','RESTORED_OUTPUT_RELEASE_'+stage,sealStoredValue(JSON.stringify(payload),'operator_decisions.payload'),'@restore',new Date().toISOString())
     }).immediate()
   }
   assertLocalEngineLease(sqlite:Database.Database):void{
@@ -141,7 +142,7 @@ class HeldRestoredAdmission {
     }).immediate()
   }
   private auditActivation(sqlite:Database.Database,row:RestoredActivation){
-    sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),'@restore','RESTORED_ACTIVATION_'+row.phase,installationVault(false).encrypt(JSON.stringify(row),'operator_decisions.payload'),'@restore',new Date().toISOString())
+    sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),'@restore','RESTORED_ACTIVATION_'+row.phase,sealStoredValue(JSON.stringify(row),'operator_decisions.payload'),'@restore',new Date().toISOString())
   }
 }
 export type RestoredBackendAdmission=HeldRestoredAdmission

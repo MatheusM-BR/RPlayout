@@ -1,6 +1,9 @@
 import { StringDecoder } from 'node:string_decoder'
+import { SECRET_NAME_SOURCE, URL_PATTERN_SOURCE, isSecretName } from './credential-detection.js'
 
-const secretField = '(?:passphrase|password|passwd|secret|token|stream[_-]?key|streamid|key|api[_-]?key|access[_-]?token|authorization)'
+// Os mesmos nomes e o mesmo padrão de URL da detecção de credencial: o que sai
+// daqui nunca conta como credencial (containsCredential).
+const secretField = SECRET_NAME_SOURCE
 
 /** Só para telemetria/diagnóstico. Nunca devolver esta cópia ao decoder ou
  * salvar como configuração: destinos redigidos não são endereços executáveis. */
@@ -9,7 +12,7 @@ export function diagnosticValue<T>(value: T): T {
   if(Array.isArray(value))return value.map(entry=>diagnosticValue(entry)) as T
   if(value && typeof value==='object'){
     return Object.fromEntries(Object.entries(value).map(([key,entry])=>[key,
-      new RegExp(`^${secretField}$`,'i').test(key) && entry!==null && entry!==undefined ? 'REDACTED' : diagnosticValue(entry)])) as T
+      isSecretName(key) && entry!==null && entry!==undefined ? 'REDACTED' : diagnosticValue(entry)])) as T
   }
   return value
 }
@@ -17,24 +20,28 @@ export function diagnosticValue<T>(value: T): T {
 /** Diagnostic text is not a configuration endpoint. Hide HTTP paths too:
  * webhook tokens are frequently embedded in their path rather than query. */
 export function sanitizeDiagnostic(message: string): string {
-  const urls = message.replace(/\b(?:https?|srt|rtmps?|rtsp|udp|tcp):\/\/[^\s<>"'`]+/gi, raw => {
+  const urls = message.replace(new RegExp(URL_PATTERN_SOURCE, 'gi'), raw => {
     const suffix = raw.match(/[),.;\]}]+$/)?.[0] ?? ''
     const address = suffix ? raw.slice(0, -suffix.length) : raw
     try {
       const url = new URL(address)
-      if (url.username) url.username = 'REDACTED'
-      if (url.password) url.password = 'REDACTED'
-      if (/^https?:$/.test(url.protocol)) {
-        url.pathname = '/REDACTED'; url.search = ''; url.hash = ''
+      const scheme = url.protocol.slice(0, -1).toLowerCase()
+      let changed = false
+      if (url.username) { url.username = 'REDACTED'; changed = true }
+      if (url.password) { url.password = 'REDACTED'; changed = true }
+      if (/^(?:https?|wss?)$/.test(scheme)) {
+        url.pathname = '/REDACTED'; url.search = ''; url.hash = ''; changed = true
       } else {
-        for (const key of [...url.searchParams.keys()]) if (new RegExp(`^${secretField}$`, 'i').test(key)) url.searchParams.set(key, 'REDACTED')
-        if (/^rtmps?:$/.test(url.protocol)) {
+        for (const key of [...url.searchParams.keys()]) if (isSecretName(key)) { url.searchParams.set(key, 'REDACTED'); changed = true }
+        if (/^rtmp[a-z]*$/.test(scheme)) {
           const segments = url.pathname.split('/').filter(Boolean)
-          if (segments.length) { segments[segments.length - 1] = 'REDACTED'; url.pathname = '/' + segments.join('/') }
+          if (segments.length) { segments[segments.length - 1] = 'REDACTED'; url.pathname = '/' + segments.join('/'); changed = true }
         }
-        url.hash = ''
+        // Fragmento (streamid SRT "#!::u=…" e o que vier depois) sai inteiro.
+        if (url.hash && scheme !== 'file') { url.hash = ''; changed = true }
       }
-      return url.toString() + suffix
+      // Sem nada a mascarar, o texto fica como veio (NDI/OMT com acento, arquivo).
+      return (changed ? url.toString() : address) + suffix
     } catch { return '[endereço omitido]' + suffix }
   })
   return urls.replace(/\bBearer\s+[^\s,"';]+/gi, 'Bearer REDACTED')

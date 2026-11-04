@@ -246,6 +246,10 @@ pub enum Command {
     /// Layout, células e qualidade do multiview composto. Recria só o pipeline
     /// do multiview; PGM e saídas não são tocados.
     Multiview { composition: crate::channel::multiview::Composition },
+    /// Entradas que o watchdog quer acompanhar sem ocupar o PVW: cada uma
+    /// ganha (ou mantém) o receptor compartilhado. Substitui a lista anterior;
+    /// lista vazia solta todas.
+    IngestWatch { sources: Vec<WatchedSource> },
     /// Troca um destino já ligado ao barramento do programa.
     /// Só suporta RTMP, SRT e arquivo; SDI/NDI/OMT não fazem hot-switch.
     ReplaceOutput {
@@ -272,6 +276,11 @@ pub struct ProgramHoldState {
     pub frames:Option<i64>,
 }
 
+/// Entrada cadastrada para o watchdog: id do cadastro e o endereço do engine.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WatchedSource { pub id: String, pub endpoint: String }
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "event", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Event {
@@ -293,6 +302,9 @@ pub enum Event {
         preview_admission: bool,
         live_replacement_protocol: u32,
         engine_generation: String,
+        /// Entradas ao vivo pelo receptor compartilhado (ingest único) e
+        /// comando `ingestWatch` disponíveis.
+        ingest_shared: bool,
     },
     Ack {
         id: u64,
@@ -401,6 +413,10 @@ pub enum Event {
         #[serde(flatten)]
         state: crate::channel::multiview::MultiviewState,
     },
+    /// Receptores compartilhados das entradas (ingest único): quem usa cada
+    /// um e a medição da entrada, uma vez por entrada. A cada 500 ms enquanto
+    /// houver receptor, e uma vez vazio quando o último fecha.
+    IngestState { receivers: Vec<crate::channel::ingest::IngestReport> },
     /// Situação de uma saída de rede. Emitido quando muda e no `status`, para
     /// a interface saber se o canal está de fato chegando ao destino.
     Publisher {

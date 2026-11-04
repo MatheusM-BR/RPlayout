@@ -11,6 +11,11 @@
 // Grade em edição (itens de VT), acervo, QC, usuários, AIRED, categorias e artes
 // ficam como estavam.
 //
+// A partir da r88-37 (migração 58) só credencial fica cifrada: grade, auditoria
+// nova, alertas e snapshots sem credencial estão em claro e são mantidos. Só o
+// que ainda é envelope sai. Se o backup tem senha de recuperação cadastrada,
+// prefira restore-rplayout-backup.ps1 -RecoveryPasswordFile: ele recupera tudo.
+//
 // Uso: node restaurar-sem-cofre.cjs <backup.db> <novo.db> [--relatorio <arquivo.json>]
 // O better-sqlite3 vem da instalação do RPlayout (apps/server/node_modules) ou do
 // repositório; informe RPLAYOUT_SQLITE_MODULE com o caminho, se precisar.
@@ -31,6 +36,16 @@ const PROTECTED = [
 ]
 // Colunas que aceitam NULL: limpa o valor e mantém a linha.
 const NULLABLE_KEEP_ROW = new Set(['health_events.message', 'health_events.context'])
+// Índice de comandos de grafismo pendentes (migração 49): o mesmo predicado de
+// "aceito e não resolvido" de apps/server/src/db/graphic-command-pending.ts. O
+// servidor recusa partir se o índice divergir do histórico (o teste confere que
+// os dois textos são iguais).
+const GRAPHIC_TERMINAL = `SELECT 1 FROM operator_decisions t INDEXED BY graphic_command_phase_identity WHERE t.id IN (
+  substr(a.id,1,length(a.id)-9)||':CONFIRMED',substr(a.id,1,length(a.id)-9)||':SIMULATED',
+  substr(a.id,1,length(a.id)-9)||':REJECTED',substr(a.id,1,length(a.id)-9)||':REVIEWED')
+  AND t.rundown_id=a.rundown_id AND t.kind='GRAPHIC_COMMAND_'||substr(t.id,length(a.id)-7)`
+const GRAPHIC_UNRESOLVED = `a.kind='GRAPHIC_COMMAND_ACCEPTED' AND NOT EXISTS(${GRAPHIC_TERMINAL})`
+const GRAPHIC_PENDING_EXPECTED = `SELECT a.id,a.rundown_id AS scope FROM operator_decisions a WHERE ${GRAPHIC_UNRESOLVED}`
 
 function loadSqlite() {
   const candidates = [process.env.RPLAYOUT_SQLITE_MODULE,
@@ -64,10 +79,15 @@ function main(argv) {
     const triggers = db.prepare("SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger' AND sql IS NOT NULL ORDER BY rowid").all()
     db.transaction(() => {
       for (const { name } of triggers) db.exec(`DROP TRIGGER "${name}"`)
-      // 1. Auditoria: payload cifrado ilegível. Os selos cobrem essas linhas, então saem juntos.
-      if (tableExists('operator_decisions')) report.removed.operator_decisions = db.prepare('DELETE FROM operator_decisions').run().changes
-      for (const table of ['audit_sealed_rows', 'audit_seals', 'graphic_command_pending']) if (tableExists(table)) report.removed[table] = db.prepare(`DELETE FROM "${table}"`).run().changes
-      if (tableExists('sqlite_sequence')) db.prepare("DELETE FROM sqlite_sequence WHERE name='audit_seals'").run()
+      // 1. Auditoria: payload cifrado ilegível (até a r88-36 era tudo; depois só o
+      // histórico antigo). Os selos cobrem essas linhas, então saem juntos; as
+      // linhas em claro que ficam são seladas de novo pelo servidor.
+      const auditRemoved = tableExists('operator_decisions') ? db.prepare('DELETE FROM operator_decisions WHERE payload LIKE ?').run(PREFIX + '%').changes : 0
+      if (tableExists('operator_decisions')) report.removed.operator_decisions = auditRemoved
+      if (auditRemoved) {
+        for (const table of ['audit_sealed_rows', 'audit_seals', 'graphic_command_pending']) if (tableExists(table)) report.removed[table] = db.prepare(`DELETE FROM "${table}"`).run().changes
+        if (tableExists('sqlite_sequence')) db.prepare("DELETE FROM sqlite_sequence WHERE name='audit_seals'").run()
+      }
       // 2. Itens ao vivo da grade (fonte cifrada) e seus dependentes.
       const liveItems = db.prepare(`SELECT id FROM rundown_items WHERE source_ref LIKE '${PREFIX}%' OR live_endpoint LIKE '${PREFIX}%'`).all().map(row => row.id)
       for (const table of ['item_graphics', 'secondary_events']) if (tableExists(table) && liveItems.length) report.removed[table + ' (itens ao vivo)'] = db.prepare(`DELETE FROM "${table}" WHERE item_id IN (${liveItems.map(() => '?').join(',')})`).run(...liveItems).changes
@@ -126,7 +146,9 @@ function main(argv) {
         }
       }
       // 4. Chave antiga esquecida: o servidor cria um cofre novo na primeira partida.
+      // A chave antiga embrulhada pela senha de recuperação não serve à chave nova.
       if (tableExists('vault_metadata')) db.prepare('DELETE FROM vault_metadata').run()
+      if (tableExists('vault_recovery')) report.removed['vault_recovery (chave antiga)'] = db.prepare('DELETE FROM vault_recovery').run().changes
       // 5. Dependentes órfãos das linhas apagadas.
       for (let pass = 0; pass < 5; pass++) {
         const orphans = db.prepare('PRAGMA foreign_key_check').all()
@@ -135,6 +157,16 @@ function main(argv) {
           db.prepare(`DELETE FROM "${row.table}" WHERE rowid=?`).run(row.rowid)
           report.removed[row.table + ' (órfãos)'] = (report.removed[row.table + ' (órfãos)'] || 0) + 1
         }
+      }
+      // 6. Índice de comandos de grafismo pendentes: reconstruído a partir do que
+      // ficou em operator_decisions. Apagá-lo inteiro deixaria de fora os
+      // comandos aceitos em claro ainda sem resolução, e o servidor recusa a
+      // partida ("Índice de comandos pendentes diverge do histórico").
+      if (tableExists('graphic_command_pending') && tableExists('operator_decisions') && db.prepare('SELECT 1 FROM schema_migrations WHERE version=49').get()) {
+        const indexed = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='graphic_command_phase_identity'").get()
+        const expected = indexed ? GRAPHIC_PENDING_EXPECTED : GRAPHIC_PENDING_EXPECTED.replace(' INDEXED BY graphic_command_phase_identity', '')
+        db.prepare('DELETE FROM graphic_command_pending').run()
+        report.rebuilt = { graphic_command_pending: db.prepare(`INSERT INTO graphic_command_pending(id,scope) ${expected}`).run().changes }
       }
       for (const { tbl_name, sql } of triggers) if (tableExists(tbl_name)) db.exec(sql)
     })()
@@ -163,4 +195,4 @@ if (require.main === module) {
   try { console.log(JSON.stringify(main(process.argv.slice(2)), null, 2)) }
   catch (error) { console.error('ERRO: ' + error.message); process.exit(1) }
 }
-module.exports = { main }
+module.exports = { main, GRAPHIC_PENDING_EXPECTED }

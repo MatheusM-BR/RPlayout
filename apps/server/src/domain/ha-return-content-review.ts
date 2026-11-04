@@ -1,3 +1,4 @@
+import {openStoredValue} from '../db/protected-columns.js'
 import type Database from 'better-sqlite3'
 import {installationVault} from './secret-vault.js'
 import {readOperationalPayload} from './operational-playlist.js'
@@ -50,7 +51,7 @@ export function inspectReturnContent(db:Database.Database,channelId:string,basel
   for(const row of db.prepare('SELECT p.id,p.rundown_id,p.active,p.payload FROM operational_playlist_revisions p JOIN rundowns r ON r.id=p.rundown_id WHERE r.channel_id=? ORDER BY p.id').iterate(channelId) as Iterable<{id:string;rundown_id:string;active:number;payload:string}>){
     const id=identifier(row.id),rundownId=identifier(row.rundown_id)
     if(received.has(id)||received.size>=100000||typeof row.payload!=='string'||row.payload.length>8*1024*1024)throw new Error('Edição recebida inválida/excede limite.')
-    const {record,itemIds}=validatePayload(JSON.parse(vault.decrypt(row.payload,'operational_playlist_revisions.payload')),rundownId),payloadMac=mac(encode(record)),old=before.get(id)
+    const {record,itemIds}=validatePayload(JSON.parse(openStoredValue(row.payload,'operational_playlist_revisions.payload')),rundownId),payloadMac=mac(encode(record)),old=before.get(id)
     for(const check of inspectMedia(readOperationalPayload(record))){if(++mediaChecks>100000)throw new Error('Montagens excedem limite global de revisão.');if(check.errors.length)mediaBlocked++;if(check.livePending)liveBindingsRequired++;if(mediaDetails.length<1000)mediaDetails.push({revisionId:id,itemId:check.itemId,errors:check.errors,warnings:check.warnings})}
     received.set(id,{rundownId,itemIds})
     if(row.active!==0&&row.active!==1)throw new Error('Estado de ativação da edição inválido.')

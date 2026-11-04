@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3'
 import { installationVault, SECRET_PREFIX } from '../domain/secret-vault.js'
-import { protectedColumns } from './protected-columns.js'
+import { sanitizeDiagnostic } from '../domain/sanitize-diagnostic.js'
+import { assertLiveOutagesWithoutCredential } from './live-outages.js'
+import { envelopeColumns, protectedColumns, needsEnvelope, isEnvelope } from './protected-columns.js'
 
 function hasIncidentContextColumn(sqlite:Database.Database){
   const exists=(sqlite.prepare('PRAGMA table_info(health_events)').all() as {name:string}[]).some(row=>row.name==='context')
@@ -37,7 +39,10 @@ export function validateDatabaseSecrets(sqlite: Database.Database): { protectedS
   const vault = installationVault(false)
   if (!metadata || metadata.key_fingerprint !== vault.fingerprint) throw new Error('Backup protegido requer a chave original da instalação.')
   if (metadata.scrub_pending) throw new Error('Limpeza de valores antigos pendente; conclua a migração antes do backup.')
-  for (const [table, column] of protectedColumns) {
+  // Todo envelope, em qualquer coluna que já foi protegida, é autenticado com a
+  // chave (backup antigo, histórico append-only). Texto em claro só é aceito
+  // onde a política permite: credencial em claro é backup incompleto.
+  for (const [table, column] of envelopeColumns) {
     if (!sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name=? AND type='table'").get(table)) {
       const introduced = table==='channel_cadence_conversions' ? 16 : table==='secondary_events' ? 11 : table==='integration_deliveries' ? 10 : null
       // Authenticate an older protected backup before schema upgrades. A
@@ -47,11 +52,15 @@ export function validateDatabaseSecrets(sqlite: Database.Database): { protectedS
     }
     const legacyDiagnostic = table === 'health_events' && !sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=12').get()
     if(table==='health_events'&&column==='context'&&!hasIncidentContextColumn(sqlite))continue
+    const context = `${table}.${column}`
     for (const row of protectedColumnRows(sqlite, table, column)) {
-      if (legacyDiagnostic && !row.value.startsWith(SECRET_PREFIX)) continue
-      vault.decrypt(row.value, `${table}.${column}`)
+      if (isEnvelope(row.value)) { vault.decrypt(row.value, context); continue }
+      if (legacyDiagnostic) continue
+      if (needsEnvelope(row.value, context)) throw new Error('Backup contém credencial sem proteção em '+context+'; conclua a migração do cofre antes do backup.')
     }
   }
+  // Paradas do ao vivo (migração 59): só identificador e nome mascarado.
+  assertLiveOutagesWithoutCredential(sqlite)
   return { protectedSecrets: 'verified', vaultFingerprint: vault.fingerprint }
 }
 
@@ -67,25 +76,38 @@ export function migrateSecretVault(sqlite: Database.Database,options:{deferClean
   const cleanup=sqlite.transaction(() => {
     const hasMetadata = !!sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='vault_metadata' AND type='table'").get()
     const metadata = hasMetadata ? sqlite.prepare('SELECT key_fingerprint, scrub_pending FROM vault_metadata WHERE id=1').get() as { key_fingerprint: string; scrub_pending: number } | undefined : undefined
-    const rows = protectedColumns.map(([table, column]) => ({
+    const read = (columns: readonly (readonly [string, string])[]) => columns.map(([table, column]) => ({
       table, column,
-      values: table==='health_events'&&column==='context'&&!hasIncidentContextColumn(sqlite)?[]:protectedColumnRows(sqlite, table, column),
+      values: !sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name=? AND type='table'").get(table)||table==='health_events'&&column==='context'&&!hasIncidentContextColumn(sqlite)?[]:protectedColumnRows(sqlite, table, column),
     }))
-    const hasEncrypted = rows.some(field => field.values.some(row => row.value.startsWith(SECRET_PREFIX)))
+    const rows = read(protectedColumns)
+    // Envelopes antigos em colunas que deixaram de ser segredo também provam
+    // que existe uma chave: nunca criar chave nova por cima deles.
+    const former = read(envelopeColumns.filter(([table,column]) => !protectedColumns.some(([t,c]) => t===table&&c===column)))
+    const hasEncrypted = [...rows, ...former].some(field => field.values.some(row => isEnvelope(row.value)))
     const vault = installationVault(!metadata && !hasEncrypted)
     if (metadata && metadata.key_fingerprint !== vault.fingerprint) throw new Error('Chave do cofre incompatível com este banco. Restaure a chave original; os dados não foram substituídos.')
-    for (const field of rows) for (const row of field.values) {
-      if (row.value.startsWith(SECRET_PREFIX)) vault.decrypt(row.value, `${field.table}.${field.column}`)
+    for (const field of [...rows, ...former]) for (const row of field.values) {
+      if (isEnvelope(row.value)) vault.decrypt(row.value, `${field.table}.${field.column}`)
     }
-    const hasPlaintext = rows.some(field => field.values.some(row => !row.value.startsWith(SECRET_PREFIX)))
+    // Só credencial em claro precisa de envelope; endereço NDI/OMT ou caminho
+    // de arquivo é texto normal e não dispara regravação nem limpeza.
+    // Alerta antigo gravado em claro com credencial (diagnóstico nativo não
+    // mascarado): é texto normal agora, mas mascarado, nunca a credencial.
+    const health = former.find(field => field.table==='health_events'&&field.column==='message')
+    const unmasked = (health?.values ?? []).filter(row => !isEnvelope(row.value) && sanitizeDiagnostic(row.value) !== row.value)
+    const hasPlaintext = unmasked.length > 0 || rows.some(field => field.values.some(row => needsEnvelope(row.value, `${field.table}.${field.column}`)))
     // Normal reopening authenticates without rewriting metadata unnecessarily.
     if(metadata && !hasPlaintext && sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=9').get() && sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=12').get())return Boolean(metadata.scrub_pending)
     sqlite.exec('CREATE TABLE IF NOT EXISTS vault_metadata (id INTEGER PRIMARY KEY CHECK(id=1), key_fingerprint TEXT NOT NULL, scrub_pending INTEGER NOT NULL)')
     for (const field of rows) {
       if(!field.values.length)continue
+      const context = `${field.table}.${field.column}`
       const update = sqlite.prepare(`UPDATE "${field.table}" SET "${field.column}"=? WHERE rowid=?`)
-      for (const row of field.values) if (!row.value.startsWith(SECRET_PREFIX)) update.run(vault.encrypt(row.value, `${field.table}.${field.column}`), row.row_id)
+      for (const row of field.values) if (needsEnvelope(row.value, context)) update.run(vault.encrypt(row.value, context), row.row_id)
     }
+    const mask = sqlite.prepare('UPDATE health_events SET message=? WHERE rowid=?')
+    for (const row of unmasked) mask.run(sanitizeDiagnostic(row.value), row.row_id)
     sqlite.prepare('INSERT INTO vault_metadata VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET scrub_pending=max(scrub_pending,excluded.scrub_pending)').run(vault.fingerprint, hasPlaintext ? 1 : 0)
     sqlite.prepare('INSERT OR IGNORE INTO schema_migrations VALUES (9,?,?)').run('authenticated-secret-vault', new Date().toISOString())
     sqlite.prepare('INSERT OR IGNORE INTO schema_migrations VALUES (12,?,?)').run('protected-health-diagnostics', new Date().toISOString())

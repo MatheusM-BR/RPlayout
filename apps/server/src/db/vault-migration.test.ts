@@ -98,7 +98,8 @@ describe('migração de segredos reais do SQLite', () => {
     expect((await value.db.select().from(destinations))[0]!.url).toBe(url)
     expect((await value.db.select().from(healthEvents))[0]!.message).toContain('Falha srt://host:9000?passphrase=REDACTED')
     expect((await value.db.select().from(healthEvents))[0]!.message).not.toContain(secret)
-    expect((value.sqlite.prepare('SELECT message FROM health_events').get() as {message:string}).message.startsWith(SECRET_PREFIX)).toBe(true)
+    // r88-37: alerta não é segredo; fica em claro, mas mascarado.
+    expect((value.sqlite.prepare('SELECT message FROM health_events').get() as {message:string}).message).toBe('Falha srt://host:9000?passphrase=REDACTED')
     expect(readFileSync(file).includes(Buffer.from(secret))).toBe(false)
     if (existsSync(file+'-wal')) expect(readFileSync(file+'-wal').includes(Buffer.from(secret))).toBe(false)
     expect(await validateBackupRestore(file)).toMatchObject({ protectedSecrets: 'verified' })
@@ -124,7 +125,11 @@ describe('migração de segredos reais do SQLite', () => {
     const value=openDatabase(file);opened.push(value.sqlite)
     value.sqlite.prepare('INSERT INTO health_events (id,component,state,message,occurred_at) VALUES (?,?,?,?,?)').run('plain','ENGINE','failed','plain-fixture','now')
     value.sqlite.close()
-    await expect(validateBackupRestore(file)).rejects.toThrow()
+    // r88-37: alerta em claro é normal; credencial sem máscara não.
+    await expect(validateBackupRestore(file)).resolves.toMatchObject({protectedSecrets:'verified'})
+    const leak=new Database(file);opened.push(leak)
+    leak.prepare("UPDATE health_events SET message='Falha srt://h:9000?passphrase=abc' WHERE id='plain'").run();leak.close()
+    await expect(validateBackupRestore(file)).rejects.toThrow('credencial sem proteção')
     const raw=new Database(file);opened.push(raw)
     raw.exec('DELETE FROM health_events; DROP TABLE integration_deliveries');raw.close()
     await expect(validateBackupRestore(file)).rejects.toThrow('falta tabela integration_deliveries')

@@ -1,4 +1,5 @@
 import { ClockMonitor, clockConfigFromEnv } from './domain/clock-monitor.js'
+import { joinNotice } from './domain/insertion-conflicts.js'
 import { and, eq } from 'drizzle-orm'
 import { randomUUID,createHash } from 'node:crypto'
 import {captureGraphicDisplay} from './domain/graphic-composition.js'
@@ -71,6 +72,8 @@ import {
 } from './domain/outputs.js'
 import { RelaySupervisor } from './domain/relays.js'
 import { destinations, guestKeys, liveSources as liveSourcesTable } from './db/schema.js'
+import { configuredSourceEndpoint } from './domain/item-source-binding.js'
+import { canonicalSourceAddress, displaySourceAddress, storedSourceKey } from './domain/source-address.js'
 import { existsSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { ContinuityCache } from './domain/continuity-cache.js'
@@ -1211,7 +1214,7 @@ export class ChannelRuntime {
     } catch(error) {
       const state=ledger.read(run.id)?.state
       if(state==='QUEUED'||state==='PREPARING'&&claimed)ledger.phase(run.id,[state],'FAILED',()=>true,{message:error instanceof Error?error.message:String(error)})
-      return {kind:'HOLD',reason:'Passagem não preparada; PGM anterior preservado. '+(error instanceof Error?error.message:String(error))}
+      return {kind:'HOLD',reason:joinNotice('Passagem não preparada; PGM anterior preservado.',error instanceof Error?error.message:String(error))}
     }
   }
 
@@ -1322,7 +1325,16 @@ export class ChannelRuntime {
     showWait: (art, key) => this.watchdogShowWait(art, key),
     hideWait: async () => { if (this.emergencyOverlay) await this.setEmergencySlate(false,{key:'watchdog-hide-'+randomUUID(),actorName:'WATCHDOG'}) },
     enterContingency: revisionId => this.enterContingency(revisionId,{watchdog:true}),
-    monitorSource: async source => { await this.transport.cue({kind:'SOURCE',source,title:'Watchdog: entrada em observação'}) },
+    monitorSource: async source => {
+      // Engine com receptor compartilhado: a entrada é medida sem ocupar o PVW
+      // do operador (ingest único). Sem ele, como antes: CUE no PVW.
+      // A chave do watchdog é o endereço canônico; ao engine vai o do cadastro.
+      const configured=this.watchdogEndpointCatalog().get(canonicalSourceAddress(source)),id=configured?.id??null
+      if(this.transport instanceof EngineTransport&&this.transport.supportsIngest()&&id){
+        try{await this.transport.watchIngest([{id,endpoint:configured!.endpoint}]);this.watchdogIngestKey=source;return}catch(error){console.error('[watchdog] receptor compartilhado recusado; observando no PVW:',error instanceof Error?error.message:error)}
+      }
+      await this.transport.cue({kind:'SOURCE',source,title:'Watchdog: entrada em observação'})
+    },
     returnLive: async () => {
       // A mesma entrada aberta no PVW pode segurar a porta (SRT listener) ou a
       // placa (SDI): libera o PVW antes do TAKE da live.
@@ -1333,10 +1345,11 @@ export class ChannelRuntime {
     cancelReturn: async () => this.transport instanceof EngineTransport ? this.transport.cancelPendingSourceTake('Retorno à live cancelado: o operador manteve a contingência.') : false,
     // Reserva no ar de fato: STOP do operador encerra o acompanhamento.
     contingencyActive: () => Boolean(this.contingencyState?.active && this.transport.state().onAir),
-    canMonitor: () => this.temMonitor('pvw'),
+    // Com receptor compartilhado a entrada é medida sem PVW: retorno não é às cegas.
+    canMonitor: () => this.temMonitor('pvw') || (this.transport instanceof EngineTransport && this.transport.supportsIngest()),
     contingencyOrigin: () => this.watchdogContingencyOrigin(),
     openOutage: sourceKey => {
-      const row=this.db.$client.prepare('SELECT id,started_at AS startedAt,reasons,action FROM live_outages WHERE channel_id=? AND source_key=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1').get(this.channel.id,sourceKey) as {id:string;startedAt:string;reasons:string;action:string}|undefined
+      const row=this.db.$client.prepare('SELECT id,started_at AS startedAt,reasons,action FROM live_outages WHERE channel_id=? AND source_key=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1').get(this.channel.id,storedSourceKey(sourceKey)) as {id:string;startedAt:string;reasons:string;action:string}|undefined
       if(!row)return null
       let reasons:import('@rplayout/protocol').WatchdogDetection[]=[];try{reasons=JSON.parse(row.reasons)}catch{}
       return {id:row.id,startedAt:Date.parse(row.startedAt),reasons,action:row.action as import('@rplayout/protocol').LiveOutageAction}
@@ -1360,6 +1373,30 @@ export class ChannelRuntime {
     }catch{return null}
   }
   private watchdogCatalog: {at:number;rows:Map<string,{name:string;kind:string}>}|null=null
+  /** Entrada que o watchdog acompanha pelo receptor compartilhado (fora do PVW). */
+  private watchdogIngestKey:string|null=null
+  private watchdogEndpoints:{at:number;byEndpoint:Map<string,{id:string;name:string;kind:string;endpoint:string}>}|null=null
+  private watchdogEndpointCatalog(){
+    if(!this.watchdogEndpoints||Date.now()-this.watchdogEndpoints.at>10_000){
+      const rows=this.db.select({id:liveSourcesTable.id,name:liveSourcesTable.name,kind:liveSourcesTable.kind,targetUrl:liveSourcesTable.targetUrl,enabled:liveSourcesTable.enabled}).from(liveSourcesTable).where(eq(liveSourcesTable.channelId,this.channel.id)).all()
+      this.watchdogEndpoints={at:Date.now(),byEndpoint:new Map(rows.filter(row=>row.enabled&&row.targetUrl).map(row=>[canonicalSourceAddress(configuredSourceEndpoint(row)),{id:row.id,name:row.name,kind:row.kind,endpoint:configuredSourceEndpoint(row)}]))}
+    }
+    return this.watchdogEndpoints.byEndpoint
+  }
+  private watchdogSourceId(endpoint:string):string|null{return this.watchdogEndpointCatalog().get(canonicalSourceAddress(endpoint))?.id??null}
+  /** Entradas medidas pelos receptores compartilhados, no formato do watchdog. */
+  private watchdogIngestSources(transport:EngineTransport):WatchdogObservedSource[]{
+    const catalog=this.watchdogEndpointCatalog(),byId=new Map([...catalog].map(([key,row])=>[row.id,{...row,key}]))
+    const out:WatchdogObservedSource[]=[]
+    for(const receiver of transport.ingestState()){
+      if(receiver.failed)continue
+      for(const id of receiver.sourceIds){
+        const row=byId.get(id)
+        if(row)out.push({sourceKey:row.key,sourceId:id,name:row.name,kind:row.kind,itemId:null,sample:{...receiver.signal,sampledAt:new Date().toISOString()} as unknown as WatchdogSample})
+      }
+    }
+    return out
+  }
   private watchdogSource(entry: import('./domain/transport.js').LiveSourceSignal, bus: 'pgm'|'pvw'): WatchdogObservedSource {
     if(!this.watchdogCatalog||Date.now()-this.watchdogCatalog.at>10_000){
       const rows=this.db.select({id:liveSourcesTable.id,name:liveSourcesTable.name,kind:liveSourcesTable.kind}).from(liveSourcesTable).where(eq(liveSourcesTable.channelId,this.channel.id)).all()
@@ -1370,7 +1407,7 @@ export class ChannelRuntime {
     const sourceId=entry.nativeCatalogBindings?.[bus]??item?.sourceRef??null
     const catalog=sourceId?this.watchdogCatalog.rows.get(sourceId):undefined
     const scheme=/^([a-z0-9]+):/i.exec(entry.source)?.[1]?.toUpperCase()??null
-    return {sourceKey:entry.source,sourceId,name:catalog?.name??item?.title??entry.source.split('?')[0]!,kind:catalog?.kind??scheme,itemId,
+    return {sourceKey:entry.source,sourceId,name:catalog?.name??item?.title??displaySourceAddress(entry.source),kind:catalog?.kind??scheme,itemId,
       sample:(entry.measurements?.[bus] as WatchdogSample|undefined)??null}
   }
   private watchdogPolicyCache:StoredLiveWatchdogPolicy|null=null
@@ -1388,7 +1425,13 @@ export class ChannelRuntime {
     const state=this.transport.state(),onAir=state.onAir?.itemId
     const programEntry=onAir?state.liveSources.find(entry=>entry.busItemIds?.pgm===onAir):undefined
     const preview=state.liveSources.filter(entry=>entry.busItemIds?.pvw).map(entry=>this.watchdogSource(entry,'pvw'))
-    this.liveWatchdog.tick({now,policy,channelFps:this.channel.rate.num/this.channel.rate.den,program:programEntry?this.watchdogSource(programEntry,'pgm'):null,preview})
+    const ingest=this.watchdogIngestKey||this.transport.supportsIngest()?this.watchdogIngestSources(this.transport):[]
+    this.liveWatchdog.tick({now,policy,channelFps:this.channel.rate.num/this.channel.rate.den,program:programEntry?this.watchdogSource(programEntry,'pgm'):null,preview,ingest})
+    // Fim da contingência (retorno, STOP, troca): solta o receptor do acompanhamento.
+    if(this.watchdogIngestKey&&canonicalSourceAddress(this.liveWatchdog.monitoredSourceKey()??'')!==canonicalSourceAddress(this.watchdogIngestKey)){
+      const transport=this.transport;this.watchdogIngestKey=null
+      void transport.watchIngest([]).catch(()=>{})
+    }
     return this.liveWatchdog.drain()
   }
 
@@ -1852,7 +1895,9 @@ export class ChannelRuntime {
       if (this.closed) return
       const composition = effectiveComposition(readComposite(this.db, this.channel.id), sources)
       this.multiviewComposition = composition
-      transport.configureMultiview(composition)
+      // Para o engine, cada entrada vai com o endereço do cadastro: o receptor
+      // compartilhado mostra todas as entradas, não só as que estão no ar.
+      transport.configureMultiview(engineComposition(composition, sources, { ingestShared: transport.supportsIngest() }))
     }).catch((error: unknown) => console.error('[multiview] layout não aplicado:', error instanceof Error ? error.message : error))
       .finally(() => { this.multiviewSyncing = false })
   }
@@ -1880,6 +1925,8 @@ export class ChannelRuntime {
       now: this.view ? rundownFrames(this.view.rundown.date, this.channel.rate) ?? framesSinceMidnight(new Date(), this.channel.rate) : framesSinceMidnight(new Date(), this.channel.rate),
       // Multiview composto: o navegador desenha rótulo/tally/estado a partir disto.
       multiview: this.hasMultiview() ? { composition: this.multiviewComposition, state: this.multiviewEngineState() } : null,
+      // Receptores compartilhados (ingest único): quem usa cada entrada, sem endereço.
+      ingest: this.transport instanceof EngineTransport ? this.transport.ingestState().map(receiver => ({ receiverId: receiver.receiverId, kind: receiver.kind, sourceIds: receiver.sourceIds, consumers: receiver.consumers, items: receiver.items, openings: receiver.openings, failed: receiver.failed, frames: receiver.frames, latencyMs: receiver.latencyMs ?? null })) : [],
       meters: {
         // Havendo engine, os dois medidores são medição de verdade, pela
         // BS.1770-4 sobre as amostras de cada barramento.
@@ -1939,7 +1986,7 @@ import {assertRestoredAdmission,type RestoredBackendAdmission} from './domain/re
 import {isRecoveryRehearsal} from './domain/recovery-rehearsal.js'
 import {assertHaExecutionAdmission,type HaExecutionAdmission} from './domain/ha-execution-admission.js'
 import {startupTrace} from './domain/startup-trace.js'
-import {effectiveComposition,readComposite} from './domain/multiview-composite.js'
+import {effectiveComposition,engineComposition,readComposite} from './domain/multiview-composite.js'
 import {listLiveSources} from './domain/srt.js'
 import type {MultiviewComposition,MultiviewEngineState} from '@rplayout/protocol'
 /** Monitores sob demanda: preview, programa e multiview composto. */
