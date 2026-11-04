@@ -52,6 +52,14 @@ const CLOSE_WAIT: Duration = Duration::from_secs(3);
 /// contínua (a chegada tem jitter de agendamento; o áudio não pode ter).
 const AUDIO_SNAP: Duration = Duration::from_millis(40);
 
+/// Latência declarada pelo appsrc de cada item (`RPLAYOUT_INGEST_ITEM_LATENCY_MS`, 0 a 500).
+pub const ITEM_LATENCY: Duration = Duration::from_millis(40);
+fn item_latency() -> gst::ClockTime {
+    let ms = std::env::var("RPLAYOUT_INGEST_ITEM_LATENCY_MS").ok().and_then(|value| value.trim().parse::<u64>().ok()).filter(|ms| *ms <= 500)
+        .unwrap_or(ITEM_LATENCY.as_millis() as u64);
+    gst::ClockTime::from_mseconds(ms)
+}
+
 static NEXT_RECEIVER: AtomicU64 = AtomicU64::new(1);
 static NEXT_LEASE: AtomicU64 = AtomicU64::new(1);
 
@@ -98,7 +106,12 @@ fn appsrc(name: &str, kind: &str) -> Result<gst_app::AppSrc> {
         .do_timestamp(false).block(false).caps(&gst::Caps::new_empty_simple(kind)).build();
     crate::output::set_if_exists(src.upcast_ref(), "max-buffers", if kind.starts_with("video") { 2u64 } else { 8u64 });
     src.set_property_from_str("leaky-type", "downstream");
-    crate::output::set_if_exists(src.upcast_ref(), "min-latency", 0i64);
+    // Folga do item: o quadro chega carimbado com a hora de chegada, e a
+    // cadeia do item (conversão, desentrelaçamento, escala, videorate) ainda
+    // leva alguns ms até o `intervideosink`, que descarta o que passa de 20 ms
+    // atrasado. Declarar esta latência dá ao item o tempo que antes vinha da
+    // latência do decodificador no próprio pipeline dele.
+    crate::output::set_if_exists(src.upcast_ref(), "min-latency", item_latency().nseconds() as i64);
     Ok(src)
 }
 
@@ -932,6 +945,7 @@ mod tests {
         assert_eq!(channel.0.ingest.receivers().len(), 1);
         assert_eq!(receiver.openings(), 1, "TAKE reabriu a fonte");
         // Relatório do watchdog: medido uma vez por entrada.
+        serve_until(&mut channel, Duration::from_secs(5), |channel| channel.0.ingest_reports().first().is_some_and(|report| report.signal.received_frames > 10)).expect("medição da entrada parada");
         let report = channel.0.ingest_reports().pop().unwrap();
         assert_eq!(report.source_ids, vec!["cam-1".to_string()]);
         assert!(report.signal.video_present && report.signal.received_frames > 10, "{report:?}");

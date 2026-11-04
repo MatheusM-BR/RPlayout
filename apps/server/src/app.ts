@@ -1922,6 +1922,8 @@ export class ChannelRuntime {
       now: this.view ? rundownFrames(this.view.rundown.date, this.channel.rate) ?? framesSinceMidnight(new Date(), this.channel.rate) : framesSinceMidnight(new Date(), this.channel.rate),
       // Multiview composto: o navegador desenha rótulo/tally/estado a partir disto.
       multiview: this.hasMultiview() ? { composition: this.multiviewComposition, state: this.multiviewEngineState() } : null,
+      // Receptores compartilhados (ingest único): quem usa cada entrada, sem endereço.
+      ingest: this.transport instanceof EngineTransport ? this.transport.ingestState().map(receiver => ({ receiverId: receiver.receiverId, kind: receiver.kind, sourceIds: receiver.sourceIds, consumers: receiver.consumers, items: receiver.items, openings: receiver.openings, failed: receiver.failed, frames: receiver.frames })) : [],
       meters: {
         // Havendo engine, os dois medidores são medição de verdade, pela
         // BS.1770-4 sobre as amostras de cada barramento.
