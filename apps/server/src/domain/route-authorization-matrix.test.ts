@@ -119,4 +119,30 @@ describe('senha de recuperação do cofre (rotas)',()=>{
     expect((await put({'if-match':'"vault-recovery:0"'})).statusCode).toBe(412)
     expect((await put({'if-match':'"vault-recovery:1"'})).statusCode).toBe(200)
   },60_000)
+  it('reautenticação limitada como o login, por usuário e por estação, e falha auditada sem a senha',async()=>{
+    const headers=await admin('senha-da-conta-admin')
+    const body={password:RECOVERY,confirmation:RECOVERY,currentPassword:'senha-da-conta-admin'}
+    const put=(currentPassword:string,remoteAddress='10.0.0.1')=>server.inject({method:'PUT',url:'/api/engineering/vault-recovery',remoteAddress,headers:{...headers,'if-match':'"vault-recovery:0"'},payload:{...body,currentPassword}})
+    for(let i=0;i<10;i++)expect((await put('chute-'+i)).statusCode).toBe(403)
+    // A 11ª, mesmo com a senha certa, é recusada; de outra estação também (limite por usuário).
+    const blocked=await put('senha-da-conta-admin')
+    expect(blocked.statusCode).toBe(429);expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0)
+    expect((await put('senha-da-conta-admin','10.0.0.2')).statusCode).toBe(429)
+    expect(app.sqlite.prepare('SELECT count(*) AS n FROM vault_recovery').get()).toEqual({n:0})
+    const audit=app.sqlite.prepare("SELECT kind,payload FROM operator_decisions WHERE rundown_id='@security' AND kind LIKE 'VAULT_RECOVERY_REAUTH_%'").all() as {kind:string;payload:string}[]
+    expect(audit.filter(row=>row.kind==='VAULT_RECOVERY_REAUTH_FAILED')).toHaveLength(10)
+    expect(audit.some(row=>row.kind==='VAULT_RECOVERY_REAUTH_BLOCKED')).toBe(true)
+    for(const row of audit){expect(row.payload).not.toContain('chute-');expect(row.payload).not.toContain('senha-da-conta-admin')}
+  },60_000)
+  it('o limite por estação vale para outra conta de administrador',async()=>{
+    const {hashPassword}=await import('./auth.js')
+    const headers=await admin('senha-da-conta-admin')
+    const now=new Date().toISOString(),session=randomUUID()
+    await app.db.insert(users).values({id:'adm2',username:'adm2',passwordHash:await hashPassword('outra-senha-admin'),role:'ADMIN',enabled:true,createdAt:now})
+    await app.db.insert(sessions).values({token:sessionDigest(session),userId:'adm2',expiresAt:new Date(Date.now()+600000).toISOString(),createdAt:now})
+    const payload=(currentPassword:string)=>({password:RECOVERY,confirmation:RECOVERY,currentPassword})
+    for(let i=0;i<10;i++)expect((await server.inject({method:'PUT',url:'/api/engineering/vault-recovery',remoteAddress:'10.0.0.9',headers:{...headers,'if-match':'"vault-recovery:0"'},payload:payload('x'+i)})).statusCode).toBe(403)
+    const other=await server.inject({method:'PUT',url:'/api/engineering/vault-recovery',remoteAddress:'10.0.0.9',headers:{cookie:`rplayout_session=${session}`,'if-match':'"vault-recovery:0"'},payload:payload('outra-senha-admin')})
+    expect(other.statusCode).toBe(429)
+  },60_000)
 })

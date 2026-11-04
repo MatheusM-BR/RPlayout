@@ -27,6 +27,7 @@ import {Interruptions,type InterruptedItem} from './domain/interruptions.js'
 import {inspectInsertion,requireInsertionReview,OperationalInsertions,type InsertionInput} from './domain/operational-insertion.js'
 import {installationVault,assertRecoveryPassword} from './domain/secret-vault.js'
 import {setVaultRecoveryPassword,vaultRecoveryETag,vaultRecoveryStatus,VaultRecoveryConflict} from './domain/vault-recovery.js'
+import {AttemptLimiter} from './domain/attempt-limiter.js'
 import {sealStoredValue} from './db/protected-columns.js'
 import {inspectCompensation,commitCompensation,compensationReceipt} from './domain/operational-compensation.js'
 import {inspectAlignment,commitAlignment} from './domain/operational-alignment.js'
@@ -798,13 +799,12 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     const authenticated = (await usernameOf(request)) !== null
     return { role, label: roleLabel(role), authenticated, required: access.required() }
   })
-  const loginAttempts = new Map<string, { count: number; until: number }>()
+  const loginAttempts = new AttemptLimiter()
+  const reauthAttempts = new AttemptLimiter()
   server.post('/api/auth/login', async (request, reply) => {
-    const attempt = loginAttempts.get(request.ip)
-    if (attempt && attempt.until > Date.now() && attempt.count >= 10) return reply.header('retry-after', String(Math.ceil((attempt.until - Date.now()) / 1000))).code(429).send({ error: 'Muitas tentativas. Aguarde antes de tentar entrar novamente.' })
-    if (loginAttempts.size > 1000) for (const [ip, entry] of loginAttempts) { if (entry.until <= Date.now()) loginAttempts.delete(ip) }
-    if (loginAttempts.size > 2000 && !attempt) return reply.code(429).send({ error: 'Limite de tentativas de login atingido.' })
-    loginAttempts.set(request.ip, attempt && attempt.until > Date.now() ? { ...attempt, count: attempt.count + 1 } : { count: 1, until: Date.now() + 900_000 })
+    const blocked = loginAttempts.blockedFor(request.ip)
+    if (blocked > 0) return reply.header('retry-after', String(Math.ceil(blocked / 1000))).code(429).send({ error: 'Muitas tentativas. Aguarde antes de tentar entrar novamente.' })
+    if (!loginAttempts.record(request.ip)) return reply.code(429).send({ error: 'Limite de tentativas de login atingido.' })
     const body = z.object({ username: z.string().min(1).max(80), password: z.string().min(1).max(1024) }).strict().safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: 'Informe usuário e senha.' })
     let [user] = await app.db.select().from(users).where(eq(users.username, body.data.username)).limit(1)
@@ -822,7 +822,7 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
       if(error instanceof CollaborativeEditError)return reply.code(error.status).send(error.payload)
       throw error
     }
-    loginAttempts.delete(request.ip)
+    loginAttempts.clear(request.ip)
     const secure = request.protocol === 'https' || process.env.RPLAYOUT_SECURE_COOKIES === '1' ? '; Secure' : ''
     return reply.header('set-cookie', `rplayout_session=${issued.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}`).send({ role: issued.role, label: roleLabel(issued.role) })
   })
@@ -1506,8 +1506,23 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     let expectedRevision:number
     try{expectedRevision=vaultRecoveryStatus(app.sqlite).revision}catch{return reply.code(409).send({error:'Recuperação do cofre indisponível neste banco.'})}
     if(request.headers['if-match']!==vaultRecoveryETag(expectedRevision))return reply.code(412).send({error:'A senha de recuperação mudou ou a tela está desatualizada; recarregue antes de trocar.'})
+    // Reautenticação com o mesmo limite do login (10 tentativas em 15 min),
+    // contado por usuário e por estação: uma sessão roubada não vira oráculo
+    // de força bruta da senha da conta.
+    const reauthKeys=['user:'+identity.id,'ip:'+request.ip]
+    const blocked=reauthKeys.map(key=>reauthAttempts.blockedFor(key)).reduce((a,b)=>Math.max(a,b),0)
+    if(blocked>0){
+      await securityAudit('VAULT_RECOVERY_REAUTH_BLOCKED',identity.username,{station:request.ip})
+      return reply.header('retry-after',String(Math.ceil(blocked/1000))).code(429).send({error:'Muitas tentativas. Aguarde antes de tentar novamente.'})
+    }
+    if(!reauthKeys.every(key=>reauthAttempts.record(key)))return reply.code(429).send({error:'Limite de tentativas atingido.'})
     const [user]=await app.db.select().from(users).where(eq(users.id,identity.id)).limit(1)
-    if(!user||!user.enabled||!(await verifyPassword(body.data.currentPassword,user.passwordHash)))return reply.code(403).send({error:'Senha da conta não confere.'})
+    if(!user||!user.enabled||!(await verifyPassword(body.data.currentPassword,user.passwordHash))){
+      // A senha digitada não vai para a auditoria: só quem e de onde.
+      await securityAudit('VAULT_RECOVERY_REAUTH_FAILED',identity.username,{station:request.ip})
+      return reply.code(403).send({error:'Senha da conta não confere.'})
+    }
+    for(const key of reauthKeys)reauthAttempts.clear(key)
     try{
       const result=await setVaultRecoveryPassword(app.sqlite,{password:body.data.password,expectedRevision,actor:identity.username,databaseFile:app.sqlite.name,
         audit:revision=>app.sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,item_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?,?)')
