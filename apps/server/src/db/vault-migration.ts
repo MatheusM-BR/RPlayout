@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { installationVault, SECRET_PREFIX } from '../domain/secret-vault.js'
+import { sanitizeDiagnostic } from '../domain/sanitize-diagnostic.js'
 import { envelopeColumns, protectedColumns, needsEnvelope, isEnvelope } from './protected-columns.js'
 
 function hasIncidentContextColumn(sqlite:Database.Database){
@@ -88,7 +89,11 @@ export function migrateSecretVault(sqlite: Database.Database,options:{deferClean
     }
     // Só credencial em claro precisa de envelope; endereço NDI/OMT ou caminho
     // de arquivo é texto normal e não dispara regravação nem limpeza.
-    const hasPlaintext = rows.some(field => field.values.some(row => needsEnvelope(row.value, `${field.table}.${field.column}`)))
+    // Alerta antigo gravado em claro com credencial (diagnóstico nativo não
+    // mascarado): é texto normal agora, mas mascarado, nunca a credencial.
+    const health = former.find(field => field.table==='health_events'&&field.column==='message')
+    const unmasked = (health?.values ?? []).filter(row => !isEnvelope(row.value) && sanitizeDiagnostic(row.value) !== row.value)
+    const hasPlaintext = unmasked.length > 0 || rows.some(field => field.values.some(row => needsEnvelope(row.value, `${field.table}.${field.column}`)))
     // Normal reopening authenticates without rewriting metadata unnecessarily.
     if(metadata && !hasPlaintext && sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=9').get() && sqlite.prepare('SELECT 1 FROM schema_migrations WHERE version=12').get())return Boolean(metadata.scrub_pending)
     sqlite.exec('CREATE TABLE IF NOT EXISTS vault_metadata (id INTEGER PRIMARY KEY CHECK(id=1), key_fingerprint TEXT NOT NULL, scrub_pending INTEGER NOT NULL)')
@@ -98,6 +103,8 @@ export function migrateSecretVault(sqlite: Database.Database,options:{deferClean
       const update = sqlite.prepare(`UPDATE "${field.table}" SET "${field.column}"=? WHERE rowid=?`)
       for (const row of field.values) if (needsEnvelope(row.value, context)) update.run(vault.encrypt(row.value, context), row.row_id)
     }
+    const mask = sqlite.prepare('UPDATE health_events SET message=? WHERE rowid=?')
+    for (const row of unmasked) mask.run(sanitizeDiagnostic(row.value), row.row_id)
     sqlite.prepare('INSERT INTO vault_metadata VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET scrub_pending=max(scrub_pending,excluded.scrub_pending)').run(vault.fingerprint, hasPlaintext ? 1 : 0)
     sqlite.prepare('INSERT OR IGNORE INTO schema_migrations VALUES (9,?,?)').run('authenticated-secret-vault', new Date().toISOString())
     sqlite.prepare('INSERT OR IGNORE INTO schema_migrations VALUES (12,?,?)').run('protected-health-diagnostics', new Date().toISOString())

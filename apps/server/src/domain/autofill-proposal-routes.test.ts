@@ -37,7 +37,8 @@ describe('montagem aplica somente a proposta persistida que foi conferida',()=>{
     expect(review.plan.items.map((item:any)=>item.mediaId)).toEqual(['vt'])
     expect(review.plan.items[0]).toMatchObject({trim:{in:50,out:2500},durationFrames:2450})
     const stored=app.sqlite.prepare('SELECT payload FROM operator_decisions WHERE id=?').get(review.proposal.id) as {payload:string}
-    expect(stored.payload).toMatch(/^rplayout-secret:v1:/);expect(stored.payload).not.toContain('VT Conferido')
+    // r88-37: auditoria sem credencial é texto normal (não depende da chave).
+    expect(JSON.parse(stored.payload)).toBeTypeOf('object')
     expect(rows()).toEqual(before);expect(revision()).toBe(version);expect(app.history.state('future').canUndo).toBe(false)
     expect(app.runtimes.get('ch')!.transport.state()).toMatchObject({onAir:{itemId:transport.onAir?.itemId,startedAt:transport.onAir?.startedAt},preview:transport.preview})
   })

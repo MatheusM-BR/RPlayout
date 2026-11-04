@@ -50,6 +50,8 @@ export const needsEnvelope = (value: string, context: string) => !isEnvelope(val
 
 /** Grava: envelope só para credencial; o resto em claro. */
 export function sealStoredValue(value: string, context: string): string {
+  // Mensagem de alerta nunca carrega credencial: mascarada em toda gravação.
+  if (context === 'health_events.message') value = sanitizeDiagnostic(value)
   return needsEnvelope(value, context) ? installationVault().encrypt(value, context) : value
 }
 /** Lê: envelope é aberto e autenticado com o contexto; texto em claro só é
