@@ -1,5 +1,5 @@
 import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core'
-import { protectedDiagnosticText, protectedText, protectedJson } from './protected-columns.js'
+import { clearDiagnosticText, clearJson, protectedText, protectedJson } from './protected-columns.js'
 import type {
   Anchor,
   AudioLevel,
@@ -108,7 +108,7 @@ export const channelProjectSnapshots = sqliteTable('channel_project_snapshots', 
   id: text('id').primaryKey(),
   channelId: text('channel_id').notNull(),
   label: text('label').notNull(),
-  payload: protectedJson<Record<string, unknown>>('payload', 'channel_project_snapshots.payload').notNull(),
+  payload: clearJson<Record<string, unknown>>('payload','channel_project_snapshots.payload').notNull(),
   createdAt: text('created_at').notNull(),
 })
 
@@ -193,7 +193,7 @@ export const operationalPlaylistRevisions = sqliteTable('operational_playlist_re
   revision: integer('revision').notNull(),
   state: text('state').$type<'PUBLISHED' | 'SUPERSEDED'>().notNull(),
   active: integer('active', { mode: 'boolean' }).notNull().default(false),
-  payload: protectedJson<Record<string, unknown>>('payload', 'operational_playlist_revisions.payload').notNull(),
+  payload: clearJson<Record<string, unknown>>('payload','operational_playlist_revisions.payload').notNull(),
   publishedBy: text('published_by'),
   publishedAt: text('published_at').notNull(),
   activatedAt: text('activated_at'),
@@ -204,7 +204,7 @@ export const channelCadenceConversions=sqliteTable('channel_cadence_conversions'
   id:text('id').primaryKey(),channelId:text('channel_id').notNull().references(()=>channels.id),
   fingerprint:text('fingerprint').notNull(),fromNum:integer('from_num').notNull(),fromDen:integer('from_den').notNull(),
   toNum:integer('to_num').notNull(),toDen:integer('to_den').notNull(),
-  snapshot:protectedJson<Record<string,unknown>>('snapshot','channel_cadence_conversions.snapshot').notNull(),
+  snapshot:clearJson<Record<string,unknown>>('snapshot','channel_cadence_conversions.snapshot').notNull(),
   createdAt:text('created_at').notNull(),actor:text('actor'),
 })
 
@@ -230,12 +230,12 @@ export const healthEvents = sqliteTable('health_events', {
   component: text('component').notNull(),
   state: text('state').notNull(),
   severity: text('severity').$type<'INFO' | 'WARN' | 'CRITICAL'>().notNull().default('INFO'),
-  message: protectedDiagnosticText('message', 'health_events.message'),
+  message: clearDiagnosticText('message', 'health_events.message'),
   occurredAt: text('occurred_at').notNull(),
   acknowledgedAt: text('acknowledged_at'),
   resolvedAt: text('resolved_at'),
   observationEndedAt: text('observation_ended_at'),
-  context: protectedJson<import('@rplayout/protocol').IncidentContext>('context','health_events.context'),
+  context: clearJson<import('@rplayout/protocol').IncidentContext>('context','health_events.context'),
 })
 
 export const integrations = sqliteTable('integrations', {
@@ -251,7 +251,7 @@ export const integrations = sqliteTable('integrations', {
 /** Editorial definitions; execution always reads the published snapshot. */
 export const secondaryEvents = sqliteTable('secondary_events', {
   id: text('id').primaryKey(), channelId: text('channel_id').notNull(), itemId: text('item_id').notNull(),
-  definition: protectedJson<import('@rplayout/protocol').SecondaryEvent>('definition','secondary_events.definition').notNull(),
+  definition: clearJson<import('@rplayout/protocol').SecondaryEvent>('definition','secondary_events.definition').notNull(),
   createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
 })
 export const secondaryEventRuns = sqliteTable('secondary_event_runs', {
@@ -267,7 +267,7 @@ export const integrationDeliveries = sqliteTable('integration_deliveries', {
   ownerHost:text('owner_host'),ownerPid:integer('owner_pid'),ownerBoot:text('owner_boot'),manualTest:integer('manual_test',{mode:'boolean'}).notNull().default(false),
   id: text('id').primaryKey(), integrationId: text('integration_id').notNull(), channelId: text('channel_id'),
   event: text('event').notNull(), target: protectedText('target','integration_deliveries.target').notNull(),
-  payload: protectedJson<Record<string, unknown>>('payload','integration_deliveries.payload').notNull(),
+  payload: clearJson<Record<string, unknown>>('payload','integration_deliveries.payload').notNull(),
   state: text('state').$type<'QUEUED' | 'SENDING' | 'DELIVERED' | 'FAILED' | 'CANCELLED'>().notNull(),
   attempts: integer('attempts').notNull(), nextAttemptAt: text('next_attempt_at').notNull(),
   lastError: text('last_error'), createdAt: text('created_at').notNull(), deliveredAt: text('delivered_at'),
@@ -426,7 +426,7 @@ export const operatorDecisions = sqliteTable('operator_decisions', {
   rundownId: text('rundown_id').notNull(),
   itemId: text('item_id'),
   kind: text('kind').notNull(),
-  payload: protectedJson<Record<string, unknown>>('payload', 'operator_decisions.payload').notNull(),
+  payload: clearJson<Record<string, unknown>>('payload','operator_decisions.payload').notNull(),
   actorUsername: text('actor_username'),
   createdAt: text('created_at').notNull(),
 })
@@ -508,6 +508,6 @@ export const multiviewConfigs = sqliteTable('multiview_configs', {
   id: text('id').primaryKey(),
   channelId: text('channel_id'),
   layout: text('layout').$type<MultiviewLayout>().notNull().default('GRID_2X2'),
-  cells: protectedJson<MultiviewCell[] | null>('cells', 'multiview_configs.cells'),
+  cells: clearJson<MultiviewCell[] | null>('cells','multiview_configs.cells'),
   updatedAt: text('updated_at').notNull(),
 })

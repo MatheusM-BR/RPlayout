@@ -1,3 +1,4 @@
+import {sealStoredValue} from '../db/protected-columns.js'
 import Database from 'better-sqlite3'
 import type {HaRecovery} from './ha-recovery.js'
 import {verifyStagedHaExecutionCopy,type HaExecutionCopy} from './ha-execution-copy.js'
@@ -40,7 +41,7 @@ export class HaExecutionAdmission {
     this.assertBeforeOpen(connection)
     const instance=new ServerInstanceRegistration(connection,this.maintenance)
     const facts={version:1,promotionId:this.copy.id,preparationId:this.copy.preparationId,instanceId:instance.id,phase:'BACKEND_ADMITTED_QUARANTINED',automaticTake:false,physicalOutputValidated:false}
-    connection.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),'@ha','HA_BACKEND_ADMITTED',installationVault(false).encrypt(JSON.stringify(facts),'operator_decisions.payload'),'@ha',new Date().toISOString())
+    connection.prepare('INSERT INTO operator_decisions(id,rundown_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),'@ha','HA_BACKEND_ADMITTED',sealStoredValue(JSON.stringify(facts),'operator_decisions.payload'),'@ha',new Date().toISOString())
     this.registered=instance;return instance
   }
   completeTransfer(connection:Database.Database){

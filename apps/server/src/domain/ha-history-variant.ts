@@ -1,3 +1,4 @@
+import {sealStoredValue,openStoredValue} from '../db/protected-columns.js'
 import type Database from 'better-sqlite3'
 import {z} from 'zod'
 import {installationVault} from './secret-vault.js'
@@ -15,7 +16,7 @@ export function queryHaHistoryVariant(db:Database.Database,decisionId:string,cha
   const row=db.prepare('SELECT kind,payload FROM operator_decisions WHERE id=?').get(decisionId) as {kind:string;payload:string}|undefined
   if(!row)return null
   if(row.kind!=='HA_HISTORY_VARIANT_REVIEW')throw new Error('UUID pertence a outra ação.')
-  const raw=JSON.parse(installationVault(false).decrypt(row.payload,'operator_decisions.payload')) as {receipt:unknown}
+  const raw=JSON.parse(openStoredValue(row.payload,'operator_decisions.payload')) as {receipt:unknown}
   const receipt=receiptSchema.parse(raw.receipt)
   if(receipt.request.decisionId!==decisionId||receipt.request.channelId!==channelId||receipt.preserved!==receipt.request.records.length)throw new Error('Recibo pertence a outra decisão/canal.')
   return receipt // No private variants or source titles sent to the browser.
@@ -39,7 +40,7 @@ export function preserveHaHistoryVariants(db:Database.Database,raw:HaHistoryVari
     })
     const receipt:HaHistoryVariantReceipt={version:1,request,preserved:variants.length,asRunModified:false,nativeUncertaintyResolved:false,historyFullyReconciled:false,publicationAuthorized:false,authorityTransferred:false,committedAt:new Date().toISOString()}
     const serialized=JSON.stringify({receipt,variants});if(Buffer.byteLength(serialized)>1024*1024)throw new Error('Lote de variantes excede limite durável; selecione menos registros.')
-    authorize();db.prepare('INSERT INTO operator_decisions(id,rundown_id,item_id,kind,payload,actor_username,created_at) VALUES(?,?,NULL,?,?,?,?)').run(request.decisionId,'@ha:'+request.channelId,'HA_HISTORY_VARIANT_REVIEW',installationVault(false).encrypt(serialized,'operator_decisions.payload'),actor,receipt.committedAt)
+    authorize();db.prepare('INSERT INTO operator_decisions(id,rundown_id,item_id,kind,payload,actor_username,created_at) VALUES(?,?,NULL,?,?,?,?)').run(request.decisionId,'@ha:'+request.channelId,'HA_HISTORY_VARIANT_REVIEW',sealStoredValue(serialized,'operator_decisions.payload'),actor,receipt.committedAt)
     return receipt
   }).immediate()
 }

@@ -23,7 +23,9 @@ import {captureAssetMetadataAuthority,readAssetMetadata,editAssetMetadata} from 
 import {EditorialVersions} from './db/editorial-revisions.js'
 import {Interruptions,type InterruptedItem} from './domain/interruptions.js'
 import {inspectInsertion,requireInsertionReview,OperationalInsertions,type InsertionInput} from './domain/operational-insertion.js'
-import {installationVault} from './domain/secret-vault.js'
+import {installationVault,assertRecoveryPassword} from './domain/secret-vault.js'
+import {setVaultRecoveryPassword,vaultRecoveryETag,vaultRecoveryStatus,VaultRecoveryConflict} from './domain/vault-recovery.js'
+import {sealStoredValue} from './db/protected-columns.js'
 import {inspectCompensation,commitCompensation,compensationReceipt} from './domain/operational-compensation.js'
 import {inspectAlignment,commitAlignment} from './domain/operational-alignment.js'
 import {Checkpoints,stoppedCheckpoint} from './domain/checkpoints.js'
@@ -1481,6 +1483,39 @@ export function registerRoutes(app: App, server: FastifyInstance, onChange: () =
     if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Diagnóstico do banco exige administrador.'})
     reply.header('Cache-Control','private, no-store')
     return databaseStorageStatus(app.db.$client)
+  })
+  // Senha de recuperação do cofre (r88-37). Status sem segredo; definir/trocar
+  // só ADMIN, com If-Match e a senha da própria conta. A senha nunca vai para
+  // log, URL, banco nem resposta: só o corpo desta requisição a carrega.
+  server.get('/api/engineering/vault-recovery',async(request,reply)=>{
+    if(!(await allowed(request,'OUTPUT_CONTROL')))return reply.code(403).send({error:'Status do cofre exige Supervisor, Gestor ou Administrador.'})
+    try{const status=vaultRecoveryStatus(app.sqlite);return reply.header('Cache-Control','private, no-store').header('ETag',vaultRecoveryETag(status.revision)).send(status)}
+    catch{return reply.code(409).send({error:'Status da recuperação do cofre indisponível.'})}
+  })
+  server.put('/api/engineering/vault-recovery',async(request,reply)=>{
+    reply.header('Cache-Control','private, no-store')
+    if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Senha de recuperação do cofre exige administrador.'})
+    const identity=access.identity(request)
+    if(!identity)return reply.code(403).send({error:'Senha de recuperação exige conta de administrador autenticada.'})
+    const body=z.object({password:z.string().max(1024),confirmation:z.string().max(1024),currentPassword:z.string().min(1).max(1024)}).strict().safeParse(request.body)
+    if(!body.success)return reply.code(400).send({error:'Informe a nova senha, a confirmação e a senha da sua conta.'})
+    if(body.data.password!==body.data.confirmation)return reply.code(400).send({error:'A confirmação não confere com a nova senha.'})
+    try{assertRecoveryPassword(body.data.password)}catch(error){return reply.code(400).send({error:(error as Error).message})}
+    let expectedRevision:number
+    try{expectedRevision=vaultRecoveryStatus(app.sqlite).revision}catch{return reply.code(409).send({error:'Recuperação do cofre indisponível neste banco.'})}
+    if(request.headers['if-match']!==vaultRecoveryETag(expectedRevision))return reply.code(412).send({error:'A senha de recuperação mudou ou a tela está desatualizada; recarregue antes de trocar.'})
+    const [user]=await app.db.select().from(users).where(eq(users.id,identity.id)).limit(1)
+    if(!user||!user.enabled||!(await verifyPassword(body.data.currentPassword,user.passwordHash)))return reply.code(403).send({error:'Senha da conta não confere.'})
+    try{
+      const result=await setVaultRecoveryPassword(app.sqlite,{password:body.data.password,expectedRevision,actor:identity.username,databaseFile:app.sqlite.name,
+        audit:revision=>app.sqlite.prepare('INSERT INTO operator_decisions(id,rundown_id,item_id,kind,payload,actor_username,created_at) VALUES(?,?,?,?,?,?,?)')
+          .run(randomUUID(),'@security',null,'VAULT_RECOVERY_PASSWORD_SET',sealStoredValue(JSON.stringify({revision,replaced:revision>1}),'operator_decisions.payload'),identity.username,new Date().toISOString())})
+      const status=vaultRecoveryStatus(app.sqlite)
+      return reply.header('ETag',vaultRecoveryETag(status.revision)).send({...status,fileWritten:result.fileWritten})
+    }catch(error){
+      if(error instanceof VaultRecoveryConflict)return reply.code(412).send({error:error.message})
+      return reply.code(409).send({error:'Senha de recuperação não confirmada. Confira o status antes de tentar de novo.'})
+    }
   })
   server.get('/api/ha/rehearsal',async(request,reply)=>{
     if(!(await allowed(request,'OUTPUT_CONTROL'))||access.role(request)!=='ADMIN')return reply.code(403).send({error:'Ensaio HA exige administrador.'})

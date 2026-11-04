@@ -1,3 +1,4 @@
+import {sealStoredValue,openStoredValue} from '../db/protected-columns.js'
 import type Database from 'better-sqlite3'
 import {createHash} from 'node:crypto'
 import {z} from 'zod'
@@ -14,7 +15,7 @@ export function queryHaHistoryImport(db:Database.Database,importId:string,channe
   const row=db.prepare('SELECT kind,payload FROM operator_decisions WHERE id=?').get(z.string().uuid().parse(importId)) as {kind:string;payload:string}|undefined
   if(!row)return null
   if(row.kind!=='HA_HISTORY_IMPORT')throw new Error('UUID pertence a outra operação.')
-  const report=JSON.parse(installationVault(false).decrypt(row.payload,'operator_decisions.payload')) as ReturnType<HaHistoryCommit>
+  const report=JSON.parse(openStoredValue(row.payload,'operator_decisions.payload')) as ReturnType<HaHistoryCommit>
   const request=haHistoryImportRequest.parse(report.request)
   if(request.importId!==importId||request.channelId!==channelId||report.version!==1||report.imported!==request.records.length||report.historyFullyReconciled!==false||report.primaryApproved!==false||report.publicationAuthorized!==false||report.authorityTransferred!==false)throw new Error('Diário de importação não corresponde ao canal/intenção.')
   return {...report,request}
@@ -38,7 +39,7 @@ export function appendHaHistory(db:Database.Database,request:HaHistoryImportRequ
       authorize();if(insert.run(...columns.map(key=>row[key])).changes!==1)throw new Error('Histórico não foi inserido integralmente.')
     }
     const report:ReturnType<HaHistoryCommit>={version:1,request,imported:request.records.length,historyFullyReconciled:false,primaryApproved:false,publicationAuthorized:false,authorityTransferred:false,committedAt:new Date().toISOString()}
-    authorize();db.prepare('INSERT INTO operator_decisions(id,rundown_id,item_id,kind,payload,actor_username,created_at) VALUES(?,?,NULL,?,?,?,?)').run(request.importId,'@ha:'+request.channelId,'HA_HISTORY_IMPORT',installationVault(false).encrypt(JSON.stringify(report),'operator_decisions.payload'),actor,report.committedAt)
+    authorize();db.prepare('INSERT INTO operator_decisions(id,rundown_id,item_id,kind,payload,actor_username,created_at) VALUES(?,?,NULL,?,?,?,?)').run(request.importId,'@ha:'+request.channelId,'HA_HISTORY_IMPORT',sealStoredValue(JSON.stringify(report),'operator_decisions.payload'),actor,report.committedAt)
     return report
   }).immediate()
 }

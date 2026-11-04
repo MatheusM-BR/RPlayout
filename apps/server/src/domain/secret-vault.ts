@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac } from 'node:crypto'
+import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, scrypt as nodeScrypt, type ScryptOptions } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -57,6 +57,74 @@ export class SecretVault {
     try{return createHmac('sha256',derived).update(context).update('\0').update(value,'utf8').digest('base64url')}
     finally{derived.fill(0)}
   }
+  /** Embrulha a chave de 32 bytes com uma senha de recuperação (scrypt +
+   * AES-256-GCM). O registro vai junto no banco e em todo backup; sem a senha
+   * ele não abre nada. A senha nunca é guardada. */
+  async wrapForRecovery(password:string,cost:RecoveryCost=RECOVERY_COST):Promise<RecoveryRecord>{
+    assertRecoveryPassword(password)
+    const salt=randomBytes(16),nonce=randomBytes(12),kek=await recoveryKek(password,salt,cost)
+    try{
+      const cipher=createCipheriv('aes-256-gcm',kek,nonce,{authTagLength:16})
+      cipher.setAAD(recoveryAad(this.fingerprint,cost))
+      const sealed=Buffer.concat([cipher.update(this.key),cipher.final(),cipher.getAuthTag()])
+      return {version:1,kdf:'scrypt',N:cost.N,r:cost.r,p:cost.p,salt:salt.toString('base64'),nonce:nonce.toString('base64'),ciphertext:sealed.toString('base64'),fingerprint:this.fingerprint}
+    }finally{kek.fill(0)}
+  }
+  /** Conteúdo de vault.json para ESTA máquina/usuário (DPAPI no Windows). */
+  localWrappedFile():string{
+    const data=process.platform==='win32'?windowsProtect(this.key,false):Buffer.from(this.key)
+    try{return JSON.stringify({version:1,protection:process.platform==='win32'?'WINDOWS_CURRENT_USER':'OWNER_FILE',data:data.toString('base64')} satisfies WrappedKey)}
+    finally{data.fill(0)}
+  }
+  /** Desembrulha com a senha. Erro genérico: não diz se a senha, o sal ou o
+   * texto cifrado estavam errados, nem ecoa nada do que foi informado. */
+  static async openRecovery(raw:unknown,password:string):Promise<SecretVault>{
+    const record=parseRecoveryRecord(raw)
+    if(typeof password!=='string'||password.length<1||password.length>RECOVERY_PASSWORD_MAX)throw new Error(RECOVERY_REFUSED)
+    const kek=await recoveryKek(password,Buffer.from(record.salt,'base64'),record)
+    let key:Buffer|null=null
+    try{
+      const bytes=Buffer.from(record.ciphertext,'base64')
+      const decipher=createDecipheriv('aes-256-gcm',kek,Buffer.from(record.nonce,'base64'),{authTagLength:16})
+      decipher.setAAD(recoveryAad(record.fingerprint,record))
+      decipher.setAuthTag(bytes.subarray(32))
+      key=Buffer.concat([decipher.update(bytes.subarray(0,32)),decipher.final()])
+      const vault=new SecretVault(key)
+      if(vault.fingerprint!==record.fingerprint)throw new Error('fingerprint')
+      return vault
+    }catch{throw new Error(RECOVERY_REFUSED)}
+    finally{kek.fill(0);key?.fill(0)}
+  }
+}
+
+export interface RecoveryCost {N:number;r:number;p:number}
+/** ~128 MiB e alguns décimos de segundo por tentativa: caro para força bruta
+ * offline de um backup vazado, aceitável para quem restaura uma vez. */
+export const RECOVERY_COST:RecoveryCost=Object.freeze({N:2**17,r:8,p:1})
+export const RECOVERY_PASSWORD_MIN=12
+const RECOVERY_PASSWORD_MAX=1024
+export const RECOVERY_REFUSED='Senha de recuperação incorreta ou registro de recuperação alterado. Nada foi aberto nem gravado.'
+export interface RecoveryRecord {version:1;kdf:'scrypt';N:number;r:number;p:number;salt:string;nonce:string;ciphertext:string;fingerprint:string}
+const b64=(value:unknown,bytes:number)=>typeof value==='string'&&/^[A-Za-z0-9+/]*={0,2}$/.test(value)&&Buffer.from(value,'base64').length===bytes&&Buffer.from(value,'base64').toString('base64')===value
+export function parseRecoveryRecord(raw:unknown):RecoveryRecord{
+  const value=typeof raw==='string'?(()=>{try{return JSON.parse(raw) as unknown}catch{return null}})():raw
+  const record=value as Partial<RecoveryRecord>|null
+  const keys=['version','kdf','N','r','p','salt','nonce','ciphertext','fingerprint']
+  // Custo limitado: um registro adulterado não escolhe memória/tempo arbitrários.
+  if(!record||typeof record!=='object'||Object.keys(record).some(key=>!keys.includes(key))||record.version!==1||record.kdf!=='scrypt'||
+    !Number.isSafeInteger(record.N)||record.N!<2**10||record.N!>2**20||(record.N!&(record.N!-1))!==0||record.r!==8||record.p!==1||
+    !b64(record.salt,16)||!b64(record.nonce,12)||!b64(record.ciphertext,48)||typeof record.fingerprint!=='string'||!/^[a-f0-9]{64}$/.test(record.fingerprint))
+    throw new Error('Registro de recuperação do cofre inválido.')
+  return record as RecoveryRecord
+}
+export function assertRecoveryPassword(password:unknown):asserts password is string{
+  if(typeof password!=='string'||[...password].length<RECOVERY_PASSWORD_MIN||password.length>RECOVERY_PASSWORD_MAX||password.trim()!==password)
+    throw new Error(`A senha de recuperação deve ter ao menos ${RECOVERY_PASSWORD_MIN} caracteres, sem espaços nas pontas.`)
+}
+const recoveryAad=(fingerprint:string,cost:RecoveryCost)=>Buffer.from(`rplayout-vault-recovery:v1:${cost.N}:${cost.r}:${cost.p}:${fingerprint}`,'utf8')
+function recoveryKek(password:string,salt:Buffer,cost:RecoveryCost):Promise<Buffer>{
+  const options:ScryptOptions={N:cost.N,r:cost.r,p:cost.p,maxmem:256*1024*1024}
+  return new Promise((resolvePromise,reject)=>nodeScrypt(password.normalize('NFC'),salt,32,options,(error,key)=>error?reject(new Error(RECOVERY_REFUSED)):resolvePromise(key)))
 }
 
 interface WrappedKey { version: 1; protection: 'WINDOWS_CURRENT_USER' | 'OWNER_FILE'; data: string }
@@ -108,6 +176,25 @@ export function loadInstallationVault(path: string, allowCreate: boolean): Secre
 }
 
 let installation: SecretVault | null = null
+/** Restauração com senha de recuperação: a chave aberta pela senha passa a ser
+ * a da instalação neste processo (ferramenta de restauração, nunca o servidor
+ * no ar). Recusa trocar uma chave já carregada por outra. */
+export function adoptInstallationVault(vault:SecretVault):SecretVault{
+  if(installation&&installation.fingerprint!==vault.fingerprint)throw new Error('Outra chave do cofre já está em uso neste processo.')
+  installation??=vault
+  return installation
+}
+/** Só testes: simula "outra máquina" (processo que ainda não abriu chave). */
+export function resetInstallationVaultForTests(){
+  if(!process.env.VITEST)throw new Error('Somente em testes.')
+  installation=null
+}
+/** Proteção do arquivo local (sem abrir a chave). */
+export function installationVaultProtection():'ENVIRONMENT'|'WINDOWS_CURRENT_USER'|'OWNER_FILE'|'TEST'{
+  if(process.env.RPLAYOUT_VAULT_KEY)return 'ENVIRONMENT'
+  if(process.env.VITEST)return 'TEST'
+  return process.platform==='win32'?'WINDOWS_CURRENT_USER':'OWNER_FILE'
+}
 export function installationVault(allowCreate = true): SecretVault {
   if (installation) return installation
   const explicit = process.env.RPLAYOUT_VAULT_KEY
