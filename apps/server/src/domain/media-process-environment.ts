@@ -23,6 +23,15 @@ export function engineProcessEnvironment(environment: NodeJS.ProcessEnv = proces
   const result = mediaProcessEnvironment(environment)
   const choice = Object.entries(environment).find(([key]) => key.toUpperCase() === 'RPLAYOUT_HARDWARE_DECODE')?.[1]
   if (choice === '1') result.RPLAYOUT_HARDWARE_DECODE = '1'
+  // Ingest único por entrada (receptor compartilhado): só os valores que o
+  // engine entende; nada mais do ambiente do servidor passa.
+  const value = (name: string) => Object.entries(environment).find(([key]) => key.toUpperCase() === name)?.[1]?.trim()
+  const shared = value('RPLAYOUT_INGEST_SHARED')
+  if (shared === '0' || shared === '1') result.RPLAYOUT_INGEST_SHARED = shared
+  for (const [name, max] of [['RPLAYOUT_INGEST_LINGER_MS', 60_000], ['RPLAYOUT_INGEST_ITEM_LATENCY_MS', 500]] as const) {
+    const ms = value(name)
+    if (ms && /^\d{1,6}$/.test(ms) && Number(ms) <= max) result[name] = ms
+  }
   // A Rust panic then prints where it happened; the crash report keeps it.
   result.RUST_BACKTRACE ??= '1'
   return result

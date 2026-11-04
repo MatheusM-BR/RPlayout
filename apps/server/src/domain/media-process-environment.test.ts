@@ -18,3 +18,18 @@ describe('ambiente exclusivo do broker MediaMTX',()=>{
     expect(mediaMtxProcessEnvironment({MTX:'keep',RTSP:'keep',MTXCLIENT:'keep',MY_MTX_SETTING:'keep'})).toEqual({MTX:'keep',RTSP:'keep',MTXCLIENT:'keep',MY_MTX_SETTING:'keep'})
   })
 })
+
+describe('ambiente do engine: ingest único por entrada',()=>{
+  it('repassa só os valores qualificados do receptor compartilhado',async()=>{
+    const {engineProcessEnvironment}=await import('./media-process-environment.js')
+    const env=engineProcessEnvironment({PATH:'/bin',RPLAYOUT_INGEST_SHARED:'0',RPLAYOUT_INGEST_LINGER_MS:'5000',RPLAYOUT_INGEST_ITEM_LATENCY_MS:'120',RPLAYOUT_ADMIN_PASSWORD:'x'})
+    expect(env.RPLAYOUT_INGEST_SHARED).toBe('0')
+    expect(env.RPLAYOUT_INGEST_LINGER_MS).toBe('5000')
+    expect(env.RPLAYOUT_INGEST_ITEM_LATENCY_MS).toBe('120')
+    expect(env.RPLAYOUT_ADMIN_PASSWORD).toBeUndefined()
+    const bad=engineProcessEnvironment({RPLAYOUT_INGEST_SHARED:'talvez',RPLAYOUT_INGEST_LINGER_MS:'999999',RPLAYOUT_INGEST_ITEM_LATENCY_MS:'-1'})
+    expect(bad.RPLAYOUT_INGEST_SHARED).toBeUndefined()
+    expect(bad.RPLAYOUT_INGEST_LINGER_MS).toBeUndefined()
+    expect(bad.RPLAYOUT_INGEST_ITEM_LATENCY_MS).toBeUndefined()
+  })
+})

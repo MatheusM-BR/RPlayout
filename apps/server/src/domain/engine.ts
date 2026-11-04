@@ -155,6 +155,7 @@ export interface IngestReceiverReport {
   error: string | null
   frames: number
   uptimeMs: number
+  latencyMs?: number | null
   /** Mesma medição da telemetria por barramento (amostra do watchdog). */
   signal: Record<string, unknown>
 }

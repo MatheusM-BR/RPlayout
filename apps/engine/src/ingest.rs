@@ -660,6 +660,8 @@ pub struct IngestReport {
     pub error: Option<String>,
     pub frames: u64,
     pub uptime_ms: u64,
+    /// Latência do pipeline do receptor (o que o appsink espera), em ms.
+    pub latency_ms: Option<u64>,
     pub signal: SourceSignalReport,
 }
 
@@ -820,6 +822,10 @@ impl Hub {
                 error: receiver.last_error.lock().ok().and_then(|error| error.clone()),
                 frames: receiver.frames.load(Ordering::Relaxed),
                 uptime_ms: receiver.opened_at.elapsed().as_millis() as u64,
+                latency_ms: receiver.running.lock().ok().and_then(|running| running.as_ref().map(|running| running.pipeline.clone())).and_then(|pipeline| {
+                    let mut query = gst::query::Latency::new();
+                    pipeline.query(&mut query).then(|| query.result().1.mseconds())
+                }),
                 signal: receiver.signal(),
             }
         }).collect()
