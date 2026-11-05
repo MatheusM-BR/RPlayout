@@ -59,6 +59,9 @@ export interface IngestStatus {
   readonly startedAt: string | null
   readonly finishedAt: string | null
   readonly error: string | null
+  /** Pastas cadastradas que não existem/não abrem nesta máquina (disco ou
+   * compartilhamento ausente). Não derrubam o lote: as demais são lidas. */
+  readonly unavailableRoots?: readonly string[]
 }
 
 /**
@@ -134,6 +137,7 @@ export class Ingest {
     startedAt: null,
     finishedAt: null,
     error: null,
+    unavailableRoots: [],
   }
 
   /**
@@ -214,6 +218,7 @@ export class Ingest {
       startedAt: new Date().toISOString(),
       finishedAt: null,
       error: null,
+      unavailableRoots: [],
     }
     this.active=this.run(pastas).finally(()=>{
       this.active=null
@@ -263,6 +268,12 @@ export class Ingest {
       for (const root of roots) {
         if(this.closed)return
         this.patch({ root })
+        // Pasta cadastrada que não existe nesta máquina (disco trocado,
+        // compartilhamento fora): registra e segue com as outras. Antes uma
+        // única pasta ausente marcava o lote inteiro como falho a cada minuto
+        // e a medição de loudness parecia não funcionar.
+        try { if (!(await stat(root)).isDirectory()) throw new Error('não é pasta') }
+        catch { this.patch({ unavailableRoots: [...(this.state.unavailableRoots ?? []), root] }); continue }
         // Procurar numa pasta de rede grande leva minutos, e até aqui a
         // interface mostrava "0/0" e mais nada: do lado de fora isso é uma
         // varredura que não termina. Agora ela diz onde está.
@@ -455,11 +466,15 @@ export class Ingest {
   /** Synchronous merge, called only inside the IMMEDIATE writer transaction. */
   private commitProbe(path: string, observedId: string | null,
     technical: {contentHash: string; sizeBytes: number; modifiedAt: string}, probe: ProbeResult) {
-    const existing = this.db.select().from(mediaAssets).where(eq(mediaAssets.path, path)).get()
+    const atPath = this.db.select().from(mediaAssets).where(eq(mediaAssets.path, path)).get()
     // A pending scan must not resurrect an entry removed/replaced by somebody
     // else, nor apply this pathname's probe to an ID moved to another path.
-    if (observedId && existing?.id !== observedId) return { state: 'skipped' as const, asset: null }
+    if (observedId && atPath?.id !== observedId) return { state: 'skipped' as const, asset: null }
     const { contentHash } = technical
+    // Arquivo movido (outra pasta/disco, máquina reinstalada): mesmo conteúdo
+    // de um cadastro cujo arquivo sumiu. O cadastro antigo passa a apontar
+    // para cá e mantém id, grade, QC, loudness e decisões do operador.
+    const existing = atPath ?? (probe.ok ? this.movedFrom(contentHash) : undefined)
     const base = {
       ...technical,
       path,
@@ -555,6 +570,15 @@ export class Ingest {
           (probe.video.height > 0 && probe.video.width / probe.video.height < 0.8)),
     }
     return { state: existing ? 'updated' as const : 'added' as const, asset: this.upsert(existing?.id ?? null, row) }
+  }
+
+  /** Cadastro com o mesmo conteúdo cujo arquivo sumiu da pasta. Com mais de
+   * um, fica o mais usado na grade (depois o mais antigo). */
+  private movedFrom(contentHash: string): typeof mediaAssets.$inferSelect | undefined {
+    const sqlite = this.sqlite ?? this.db.$client
+    const row = sqlite.prepare(`SELECT a.id FROM media_assets a WHERE a.content_hash=? AND a.probe_error=?
+      ORDER BY (SELECT count(*) FROM rundown_items r WHERE r.media_id=a.id) DESC, a.created_at ASC LIMIT 1`).get(contentHash, VANISHED) as { id: string } | undefined
+    return row ? this.db.select().from(mediaAssets).where(eq(mediaAssets.id, row.id)).get() : undefined
   }
 
   private async absorbSafely(path: string, ultimaChance = false): Promise<boolean> {

@@ -27,6 +27,7 @@ export class MediaWorkflow {
   lastError:string|null=null
   cleanup:PartialCleanup|null=null
   private nextCleanup=0
+  private nextHeal=0
   private active:Promise<void>|null=null
   private copyAbort:AbortController|null=null
   private closed = false
@@ -88,6 +89,57 @@ export class MediaWorkflow {
         }).immediate()
         result.moved++
       } catch { result.failed++ }
+    }
+    return result
+  }
+
+  /** Cópias de versão (e proxies) que sumiram do disco: comum depois de
+   * reinstalar a máquina com o banco restaurado, quando o banco ainda aponta
+   * para a pasta de arquivo antiga. Para cada uma: (1) se a cópia com o mesmo
+   * nome já está na pasta de arquivo atual e confere pelo hash, só corrige o
+   * caminho; (2) senão, se o original do acervo existe e confere pelo hash,
+   * refaz a cópia e o proxy a partir dele; (3) senão, fica como está (o QC
+   * mostra "original não encontrado"). Não apaga nada. */
+  async healMissingArchives(): Promise<{ relinked: number; requeued: number; missing: number }> {
+    const result = { relinked: 0, requeued: 0, missing: 0 }
+    if (this.closed || isRecoveryRehearsal(this.sqlite)) return result
+    const exists = async (path: string | null) => { if (!path) return false; try { return (await stat(path)).isFile() } catch { return false } }
+    const rows = this.sqlite.prepare(`SELECT v.id,v.asset_id,v.content_hash,v.archive_path,v.metadata,a.path AS asset_path,a.content_hash AS asset_hash,
+      (SELECT output_path FROM media_jobs p WHERE p.version_id=v.id AND p.kind='PROXY' AND p.state='READY') AS proxy_path
+      FROM media_versions v LEFT JOIN media_assets a ON a.id=v.asset_id
+      WHERE EXISTS(SELECT 1 FROM media_jobs j WHERE j.version_id=v.id AND j.kind='ARCHIVE' AND j.state='READY')`).all() as
+      { id: string; asset_id: string; content_hash: string; archive_path: string | null; metadata: string; asset_path: string | null; asset_hash: string | null; proxy_path: string | null }[]
+    const now = () => new Date().toISOString()
+    for (const row of rows) {
+      if (this.closed) break
+      const archiveOk = await exists(row.archive_path), proxyOk = row.proxy_path === null || await exists(row.proxy_path)
+      if (archiveOk && proxyOk) continue
+      try {
+        if (!archiveOk) {
+          const local = row.archive_path ? join(this.root, basename(row.archive_path.replace(/\\/g, '/'))) : null
+          if (local && await this.fileVersions.matches(local, row.content_hash).catch(() => false)) {
+            this.sqlite.transaction(() => {
+              this.sqlite.prepare('UPDATE media_versions SET archive_path=? WHERE id=?').run(local, row.id)
+              this.sqlite.prepare("UPDATE media_jobs SET output_path=?,updated_at=? WHERE version_id=? AND kind='ARCHIVE'").run(local, now(), row.id)
+            }).immediate()
+            result.relinked++
+          } else if (row.asset_path && row.asset_hash === row.content_hash && await this.fileVersions.matches(row.asset_path, row.content_hash).catch(() => false)) {
+            let metadata: Record<string, unknown> = {}; try { metadata = JSON.parse(row.metadata) } catch { /* refeito abaixo */ }
+            this.sqlite.transaction(() => {
+              this.sqlite.prepare('UPDATE media_versions SET metadata=?,archive_path=NULL WHERE id=?').run(JSON.stringify({ ...metadata, path: row.asset_path, contentHash: row.content_hash }), row.id)
+              this.sqlite.prepare("UPDATE media_jobs SET state='PENDING',attempts=0,error=NULL,output_path=NULL,output_hash=NULL,owner_host=NULL,owner_pid=NULL,owner_boot=NULL,updated_at=? WHERE version_id=?").run(now(), row.id)
+            }).immediate()
+            result.requeued++
+            continue
+          } else { result.missing++; continue }
+        }
+        if (!proxyOk) {
+          const local = join(this.root, `${row.content_hash}.proxy.mp4`)
+          if (await exists(local) && local !== row.proxy_path) this.sqlite.prepare("UPDATE media_jobs SET output_path=?,updated_at=? WHERE version_id=? AND kind='PROXY'").run(local, now(), row.id)
+          else this.sqlite.prepare("UPDATE media_jobs SET state='PENDING',attempts=0,error=NULL,output_path=NULL,output_hash=NULL,owner_host=NULL,owner_pid=NULL,owner_boot=NULL,updated_at=? WHERE version_id=? AND kind='PROXY'").run(now(), row.id)
+          result.requeued++
+        }
+      } catch { result.missing++ }
     }
     return result
   }
@@ -184,6 +236,10 @@ export class MediaWorkflow {
       if(Date.now()>=this.nextCleanup){
         this.nextCleanup=Date.now()+60*60_000
         try{this.cleanup=await cleanupMediaPartials(this.sqlite,this.root,Date.now(),this.cleanup?.cursor)}catch(error){this.lastError=error instanceof Error?error.message:String(error)}
+      }
+      if(Date.now()>=this.nextHeal){
+        this.nextHeal=Date.now()+60_000
+        try{const healed=await this.healMissingArchives();if(healed.relinked||healed.requeued)console.log(`[mídia] cópias ausentes: ${healed.relinked} religadas na pasta de arquivo, ${healed.requeued} refeitas do original, ${healed.missing} sem original`)}catch(error){this.lastError=error instanceof Error?error.message:String(error)}
       }
       while (!this.closed) {
         const job = this.sqlite.transaction(()=>{

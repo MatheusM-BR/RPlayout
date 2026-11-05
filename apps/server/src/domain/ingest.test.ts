@@ -57,7 +57,9 @@ describe('varredura', () => {
     rmSync(root, { recursive: true })
     ingest.start(root); await esperarFim()
     expect((await db.select().from(mediaAssets))[0]?.probeError).toBe(VANISHED)
-    expect(ingest.status().error).toContain(root)
+    // Pasta ausente não é falha do lote: fica registrada à parte.
+    expect(ingest.status().error).toBeNull()
+    expect(ingest.status().unavailableRoots).toEqual([root])
     mkdirSync(root); writeFileSync(file, 'video'); utimesSync(file, old, old)
     ingest.start(root); await esperarFim()
     expect((await db.select().from(mediaAssets))[0]?.probeError).toBeNull()
