@@ -29,3 +29,16 @@ export function insertBlockReason(asset: AssetLike): string | null {
   if (status === 'ANALYSIS') return 'Em análise no QC: aguarde a decisão antes de inserir.'
   return 'Pendente de QC: aprove no Quality Control antes de inserir na grade.'
 }
+
+export type AssetTone = 'ok' | 'pending' | 'blocked' | 'live'
+
+/** Tom da tarja da linha na biblioteca: laranja = aguardando QC (pendente ou
+ * em análise), vermelho = não pode ir ao ar (ignorado, sem leitura, reprovado,
+ * bloqueado), nenhum = aprovado. Substitui os badges que escondiam o nome. */
+export function assetTone(asset: AssetLike): AssetTone {
+  if (asset.isLiveSource) return 'live'
+  if (asset.ignored || asset.probeError) return 'blocked'
+  const status = asset.qcStatus ?? 'PENDING'
+  if (status === 'REJECTED' || status === 'BLOCKED') return 'blocked'
+  return qcApproved(status as never) ? 'ok' : 'pending'
+}

@@ -47,16 +47,19 @@ function RemovalDialog({assetId,onApplied,onCancel}:Props){
       {!review&&<p role="status">{busy?'Conferindo impacto…':'Impacto não conferido. Não significa acervo vazio.'}</p>}
       {error&&<p role="alert" className="text-armed-amber">{error} Seleção preservada. Reabra explicitamente; não haverá repetição automática.</p>}
       {complete&&<p role="status">Remoção gravada. Feche a conferência para continuar.</p>}
-      <fieldset disabled={busy||blocked||complete||reopening} className="overflow-auto min-h-0 flex flex-col gap-3">
+      {/* fieldset não respeita min-height em flex: a rolagem fica num div, para a lista nunca passar por cima do rodapé. */}
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-1" data-testid="asset-removal-list">
+      <fieldset disabled={busy||blocked||complete||reopening} className="min-w-0 flex flex-col gap-3">
         {review?.assets.length===0&&<p>Nenhum vídeo elegível para limpeza nesta conferência.</p>}
         {review?.assets.map(asset=><article key={asset.assetId} className="border border-border-subtle rounded p-3">
           <label className="flex gap-2"><input type="checkbox" disabled={Boolean(asset.blockers.length)} checked={selected.includes(asset.assetId)} onChange={event=>{setAck(false);setSelected(previous=>event.target.checked?[...previous,asset.assetId]:previous.filter(id=>id!==asset.assetId))}}/><span>{asset.title}</span></label>
           <p className="text-xs text-outline">{asset.publishedReferences} publicação(ões), {asset.historicalReferences} execução(ões) encerradas — preservadas.</p>
-          {asset.uses.map(use=><p key={use.itemId} className="text-sm">{use.channelName} / {use.rundownName} / {use.itemTitle}: {use.action==='REMOVE_ITEM'?'remover item da grade':'desvincular apenas o fallback; manter entrada ao vivo'}.</p>)}
+          <AssetUsesSummary uses={asset.uses}/>
           {asset.blockers.map(reason=><p key={reason} className="text-armed-amber text-sm">Protegido: {reason}</p>)}
         </article>)}
         {review?.assets.some(asset=>selected.includes(asset.assetId)&&asset.uses.length>0)&&<label className="flex gap-2"><input type="checkbox" checked={ack} onChange={event=>setAck(event.target.checked)}/>Confirmo remover os itens e desvincular os fallbacks selecionados acima. Será necessário conferir e publicar a grade alterada.</label>}
       </fieldset>
+      </div>
       <div className="flex flex-wrap gap-2 shrink-0">
         <button className="px-3 py-2 border rounded disabled:opacity-50" disabled={busy} onClick={onCancel}>Fechar conferência</button>
         <button className="px-3 py-2 border rounded disabled:opacity-50" disabled={busy||complete} onClick={()=>{if(review)setReopening(true);else void load()}}>Reabrir impacto</button>
@@ -71,5 +74,34 @@ function RemovalDialog({assetId,onApplied,onCancel}:Props){
         <button disabled={busy} onClick={()=>setReopening(false)}>Manter seleção</button>
       </section>}
     </section>
+  </div>
+}
+
+type AssetUse={itemId:string;channelName:string;rundownName:string;itemTitle:string;action:string}
+const USE_GROUPS_SHOWN=8
+/** O mesmo vídeo pode estar em centenas de itens (grades por data, repetições
+ * no loop). Agrupa por canal, grade, título e ação, com a contagem, e mostra
+ * só os primeiros grupos: a conferência continua completa no total. */
+export function groupAssetUses(uses:readonly AssetUse[]):Array<{key:string;channelName:string;rundownName:string;itemTitle:string;action:string;count:number}>{
+  const groups=new Map<string,{key:string;channelName:string;rundownName:string;itemTitle:string;action:string;count:number}>()
+  for(const use of uses){
+    const key=JSON.stringify([use.channelName,use.rundownName,use.itemTitle,use.action])
+    const group=groups.get(key)
+    if(group)group.count++
+    else groups.set(key,{key,channelName:use.channelName,rundownName:use.rundownName,itemTitle:use.itemTitle,action:use.action,count:1})
+  }
+  return [...groups.values()].sort((a,b)=>b.count-a.count||a.rundownName.localeCompare(b.rundownName))
+}
+export function AssetUsesSummary({uses}:{uses:readonly AssetUse[]}){
+  if(!uses.length)return null
+  const groups=groupAssetUses(uses),shown=groups.slice(0,USE_GROUPS_SHOWN),hidden=groups.slice(USE_GROUPS_SHOWN)
+  const hiddenItems=hidden.reduce((sum,group)=>sum+group.count,0)
+  const grades=new Set(uses.map(use=>use.channelName+'\u0000'+use.rundownName)).size
+  return <div className="text-sm">
+    <p className="font-semibold">{uses.length} item(ns) em {grades} grade(s):</p>
+    <ul className="mt-1 space-y-0.5">
+      {shown.map(group=><li key={group.key} className="break-words">{group.channelName} / {group.rundownName} / {group.itemTitle}: {group.action==='REMOVE_ITEM'?'remover item da grade':'desvincular apenas o fallback; manter entrada ao vivo'}{group.count>1?` (×${group.count})`:''}.</li>)}
+    </ul>
+    {hidden.length>0&&<p className="text-outline mt-1">e mais {hiddenItems} item(ns) em {hidden.length} outra(s) grade(s), incluídos na remoção.</p>}
   </div>
 }

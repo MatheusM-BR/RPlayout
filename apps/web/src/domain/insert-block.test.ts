@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { insertBlockReason, qcStatusLabel } from './insert-block.js'
+import { assetTone, insertBlockReason, qcStatusLabel } from './insert-block.js'
 describe('B16: "Inserir" respeita o QC antes do clique', () => {
   it('pendente, em análise, reprovado, bloqueado e ignorado não inserem e dizem por quê', () => {
     expect(insertBlockReason({ qcStatus: 'PENDING' })).toContain('Pendente de QC')
@@ -24,7 +24,35 @@ describe('B16: "Inserir" respeita o QC antes do clique', () => {
     const view = readFileSync(new URL('../views/PlaylistScheduleView.tsx', import.meta.url), 'utf8')
     expect(view).toContain('disabled={Boolean(insertBlockReason(asset))}')
     expect(view).toContain("title={insertBlockReason(asset) ?? 'Inserir na grade do dia selecionado'}")
-    expect(view).toContain('data-testid="mam-qc-status"')
+    // Sem badges de categoria/QC na linha: bolinha + tarja + legenda no rodapé.
+    expect(view).toContain('data-tone={assetTone(asset)}')
+    expect(view).toContain('data-testid="mam-category-dot"')
+    expect(view).toContain('data-testid="mam-legend"')
+    expect(view).not.toContain('data-testid="mam-qc-status"')
     expect(view).toMatch(/const blocked = insertBlockReason\(asset\)\n\s+if \(blocked\) \{ void notify\(blocked\); return \}/)
+  })
+  it('tarja: laranja para QC pendente/em análise, vermelha para indisponível', () => {
+    expect(assetTone({ qcStatus: 'PENDING' })).toBe('pending')
+    expect(assetTone({})).toBe('pending')
+    expect(assetTone({ qcStatus: 'ANALYSIS' })).toBe('pending')
+    expect(assetTone({ qcStatus: 'APPROVED' })).toBe('ok')
+    expect(assetTone({ qcStatus: 'APPROVED_WITH_NOTES' })).toBe('ok')
+    expect(assetTone({ qcStatus: 'REJECTED' })).toBe('blocked')
+    expect(assetTone({ qcStatus: 'APPROVED', ignored: true })).toBe('blocked')
+    expect(assetTone({ qcStatus: 'APPROVED', probeError: 'x' })).toBe('blocked')
+    expect(assetTone({ isLiveSource: true })).toBe('live')
+  })
+})
+
+describe('aviso do topo da PLAYLIST', () => {
+  const view = readFileSync(new URL('../views/PlaylistScheduleView.tsx', import.meta.url), 'utf8')
+  it('não pisca, flutua e some sozinho', () => {
+    const banner = view.slice(view.indexOf('data-testid="playlist-feedback"') - 200, view.indexOf('data-testid="playlist-feedback"') + 600)
+    expect(banner).not.toContain('animate-pulse')
+    expect(banner).toContain('fixed')
+    expect(view).toMatch(/setTimeout\(\(\) => setFeedbackMessage\(null\), FEEDBACK_MS\)/)
+  })
+  it('ignorar vídeo não mostra aviso de sucesso', () => {
+    expect(view).not.toContain('marcado como IGNORADO')
   })
 })

@@ -2,7 +2,15 @@ import { confirmAction, notify } from '../domain/confirm.js'
 import { useChannelMirror } from '../domain/use-channel-mirror.js'
 import { MirrorStatus } from '../components/MirrorStatus.js'
 import { useEscape } from '../domain/use-escape.js'
-import { insertBlockReason, qcStatusLabel } from '../domain/insert-block.js'
+import { assetTone, insertBlockReason, qcStatusLabel, type AssetTone } from '../domain/insert-block.js'
+
+/** Quanto tempo o aviso do topo fica visível. */
+const FEEDBACK_MS = 4000
+
+/** Cor da tarja à esquerda de cada clipe (inline: ganha de hover/seleção). */
+const TONE_STRIPE: Record<AssetTone, string> = { ok: 'transparent', pending: '#FF9500', blocked: '#E5484D', live: '#3B82F6' }
+
+function categoryName(asset: { categoryId?: string | null }): string { return asset.categoryId && asset.categoryId !== 'Sem Categoria' ? asset.categoryId : '' }
 import { UndoRedoButtons } from '../components/UndoRedoButtons.js'
 import { deniedReason, useCan } from '../domain/permissions.js'
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
@@ -155,6 +163,11 @@ export function PlaylistScheduleView({
   if(publicationSelection.current.key!==editorialRequestKey)publicationSelection.current={key:editorialRequestKey}
   const pendingEditorialCreation = useRef<{key:string;promise:Promise<RundownView>} | null>(null)
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null)
+  useEffect(() => {
+    if (!feedbackMessage) return
+    const timer = setTimeout(() => setFeedbackMessage(null), FEEDBACK_MS)
+    return () => clearTimeout(timer)
+  }, [feedbackMessage])
 
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
   const lastClickedIndexRef = useRef<number | null>(null)
@@ -401,11 +414,8 @@ export function PlaylistScheduleView({
     try {
       const result=await api.patchAsset(asset.id, { ignored: nextIgnored },asset.qcRevision)
       if(asset.qcRevision!==undefined)setIgnoredOverrides((previous) => new Map(previous).set(asset.id,{ignored:nextIgnored,reviewedRevision:asset.qcRevision!,contentHash:asset.contentHash}))
-      setFeedbackMessage(result.refreshError??(
-        nextIgnored
-          ? `✓ Vídeo "${asset.title}" marcado como IGNORADO (oculto da grade ativa)`
-          : `✓ Vídeo "${asset.title}" reativado no catálogo MAM`
-      ))
+      // Ignorar/reativar é direto e reversível pelo menu: sem aviso de sucesso.
+      if(result.refreshError)setFeedbackMessage(result.refreshError)
     } catch(error) {
       setFeedbackMessage(error instanceof Error?error.message:'Não foi possível alterar o status de ignorado do ativo.')
     } finally {
@@ -433,6 +443,14 @@ export function PlaylistScheduleView({
       return true
     })
   }, [allLibraryAssets, selectedCategory, mamSearch])
+
+  // Só as categorias que aparecem na lista atual entram na legenda.
+  const { mamLegendCategories, mamLegendHasUncategorized } = useMemo(() => {
+    const used = new Set<string>(); let uncategorized = false
+    for (const asset of filteredMamAssets) { if (asset.isLiveSource) continue; const name = categoryName(asset); if (name) used.add(name); else uncategorized = true }
+    const cats = [...used].sort((a, b) => a.localeCompare(b, 'pt-BR')).map((id) => ({ id, color: availableCategoriesList.find((c) => c.id === id)?.color || '#389BFF' }))
+    return { mamLegendCategories: cats, mamLegendHasUncategorized: uncategorized }
+  }, [filteredMamAssets, availableCategoriesList])
 
   // Carrega a lista de todos os rundowns existentes no canal
   const refreshAvailableRundowns = useCallback(async () => {
@@ -1289,11 +1307,11 @@ export function PlaylistScheduleView({
         onOpenSettings={onOpenSettings}
       />
 
-      {/* FEEDBACK BANNER FLUTUANTE SE HOUVER MENSAGEM */}
+      {/* Aviso flutuante: não pisca, não empurra a tela e some sozinho (FEEDBACK_MS). */}
       {feedbackMessage && (
-        <div className="bg-status-ok text-surface-base px-4 py-1.5 text-center font-bold text-xs shadow-lg animate-pulse flex items-center justify-center gap-2 z-50">
-          <span className="material-symbols-outlined text-[16px]">check_circle</span>
-          <span>{feedbackMessage}</span>
+        <div role="status" data-testid="playlist-feedback" onClick={() => setFeedbackMessage(null)} className={`fixed top-14 left-1/2 -translate-x-1/2 max-w-[90vw] px-3 py-1.5 rounded shadow-lg text-xs font-semibold flex items-center gap-2 z-50 cursor-pointer ${feedbackMessage.startsWith('✓') ? 'bg-status-ok text-surface-base' : 'bg-surface-card text-on-surface border border-armed-amber/60'}`} title="Clique para fechar">
+          <span className="material-symbols-outlined text-[16px]">{feedbackMessage.startsWith('✓') ? 'check_circle' : 'info'}</span>
+          <span className="truncate">{feedbackMessage.replace(/^✓\s*/, '')}</span>
         </div>
       )}
 
@@ -1498,8 +1516,7 @@ export function PlaylistScheduleView({
                     </div>
                   ) : (
                     filteredMamAssets.map((asset) => {
-                      const catName = asset.categoryId || 'Sem Categoria'
-                      const catInfo = availableCategoriesList.find((c) => c.id === catName)
+                      const catInfo = availableCategoriesList.find((c) => c.id === asset.categoryId)
                       const catColor = catInfo?.color || '#389BFF'
 
                       return (
@@ -1517,15 +1534,15 @@ export function PlaylistScheduleView({
                             setMamContextMenu({ asset, x: event.clientX, y: event.clientY })
                           }}
                           aria-selected={!asset.isLiveSource && mamSelection.has(asset.id)}
-                          className={`bg-surface-panel/60 hover:bg-surface-panel px-2 h-7 rounded border transition-all cursor-pointer group flex items-center justify-between gap-1.5 ${
+                          data-tone={assetTone(asset)}
+                          className={`bg-surface-panel/60 hover:bg-surface-panel pl-1.5 pr-1 h-7 rounded border border-l-[3px] transition-all cursor-pointer group flex items-center justify-between gap-1.5 ${
                             !asset.isLiveSource && mamSelection.has(asset.id) ? 'ring-1 ring-primary border-primary bg-primary/15 ' : ''}${
-                            asset.ignored
-                              ? 'border-error/40 opacity-60 bg-error/5'
-                              : 'border-border-subtle/60 hover:border-primary/40'
-                          }`}
-                          title={asset.isLiveSource ? `${asset.title} • Clique para abrir no PVW; duplo clique para inserir na programação ativa` : `${asset.title} • Duplo clique para inserir na programação ativa`}
+                            asset.ignored ? 'opacity-60 ' : ''}border-border-subtle/60 hover:border-primary/40`}
+                          style={{ borderLeftColor: TONE_STRIPE[assetTone(asset)] }}
+                          title={`${asset.title}${categoryName(asset) ? ` • ${categoryName(asset)}` : ''}${insertBlockReason(asset) ? ` • ${qcStatusLabel(asset)}: ${insertBlockReason(asset)}` : ''} • ${asset.isLiveSource ? 'Clique para abrir no PVW; duplo clique para inserir na programação ativa' : 'Duplo clique para inserir na programação ativa'}`}
                         >
                           <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                            <span data-testid="mam-category-dot" aria-label={categoryName(asset) || 'Sem categoria'} className="w-2 h-2 rounded-full shrink-0" style={categoryName(asset) ? { backgroundColor: catColor } : { border: '1px solid var(--color-outline, #8a8f98)' }}/>
                             <span className="font-headline-sm text-[11px] font-medium text-on-surface truncate whitespace-nowrap group-hover:text-primary">
                               {asset.title}
                             </span>
@@ -1533,29 +1550,9 @@ export function PlaylistScheduleView({
                             {asset.isLiveSource && (
                               <span className="font-label-caps text-[11px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap text-accent-ice border-accent-ice/40 bg-accent-ice/10" title="Fonte ao vivo">{liveProtocolLabel((asset as any).sourceRef ?? asset.path)}</span>
                             )}
-                            <span
-                              className="font-label-caps text-[11px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap"
-                              style={{
-                                color: catColor,
-                                borderColor: `${catColor}66`,
-                                backgroundColor: `${catColor}15`,
-                              }}
-                            >
-                              {catName}
-                            </span>
-                            {asset.ignored && (
-                              <span className="font-label-caps text-[11px] font-bold px-1 py-0.2 rounded bg-error/20 text-error border border-error/40 shrink-0">
-                                IGNORADO
-                              </span>
-                            )}
-                            {!asset.ignored && insertBlockReason(asset) && (
-                              <span data-testid="mam-qc-status" title={insertBlockReason(asset) ?? undefined} className={`font-label-caps text-[11px] font-bold px-1 py-0.2 rounded border shrink-0 whitespace-nowrap ${asset.qcStatus === 'REJECTED' || asset.qcStatus === 'BLOCKED' || asset.probeError ? 'bg-error/20 text-error border-error/40' : 'bg-armed-amber/10 text-armed-amber border-armed-amber/40'}`}>
-                                {qcStatusLabel(asset)}
-                              </span>
-                            )}
                           </div>
 
-                          <div className="flex items-center gap-2 shrink-0 font-label-mono text-[12px] text-outline">
+                          <div className="flex items-center gap-1.5 shrink-0 font-label-mono text-[12px] text-outline">
                             <span className="text-on-surface font-semibold tabular-nums">
                               {dur(durationIn(asset, rate), rate)}
                             </span>
@@ -1565,11 +1562,11 @@ export function PlaylistScheduleView({
                                 handleInsertFromMam(asset)
                               }}
                               disabled={Boolean(insertBlockReason(asset))}
-                              className="px-1.5 py-0.5 rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[11px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-primary/20 disabled:hover:text-primary"
+                              className="w-5 h-5 justify-center rounded bg-primary/20 hover:bg-primary text-primary hover:text-surface-base font-label-caps text-[11px] font-bold border border-primary/40 transition-colors flex items-center gap-0.5 cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-primary/20 disabled:hover:text-primary"
                               title={insertBlockReason(asset) ?? 'Inserir na grade do dia selecionado'}
                             >
-                              <span className="material-symbols-outlined text-[11px]">add</span>
-                              <span>Inserir</span>
+                              <span className="material-symbols-outlined text-[13px] leading-none">add</span>
+                              <span className="sr-only">Inserir</span>
                             </button>
                           </div>
                         </div>
@@ -1602,6 +1599,17 @@ export function PlaylistScheduleView({
                   </div>
                 )}
 
+                {/* Legenda: categoria = bolinha; tarja à esquerda = estado de QC */}
+                {libraryLoaded && filteredMamAssets.length > 0 && (
+                  <div data-testid="mam-legend" className="px-2 py-1 border-t border-border-subtle/60 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-outline shrink-0">
+                    {mamLegendCategories.map((cat) => (
+                      <span key={cat.id} className="flex items-center gap-1 whitespace-nowrap"><span className="w-2 h-2 rounded-full" style={{ backgroundColor: cat.color }}/>{cat.id}</span>
+                    ))}
+                    {mamLegendHasUncategorized && <span className="flex items-center gap-1 whitespace-nowrap"><span className="w-2 h-2 rounded-full" style={{ border: '1px solid var(--color-outline, #8a8f98)' }}/>sem categoria</span>}
+                    <span className="flex items-center gap-1 whitespace-nowrap"><span className="w-[3px] h-2.5" style={{ backgroundColor: TONE_STRIPE.pending }}/>QC pendente</span>
+                    <span className="flex items-center gap-1 whitespace-nowrap"><span className="w-[3px] h-2.5" style={{ backgroundColor: TONE_STRIPE.blocked }}/>indisponível</span>
+                  </div>
+                )}
                 {/* Rodapé da Biblioteca */}
                 <div className="p-1.5 border-t border-border-subtle bg-surface-container-high font-label-mono text-[12px] text-outline flex items-center justify-between shrink-0">
                   <span className="whitespace-nowrap">{libraryLoaded ? `${filteredMamAssets.length} clipes` : 'Não conferido'}</span>
